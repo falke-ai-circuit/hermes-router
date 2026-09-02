@@ -20,7 +20,7 @@ from typing import Dict, List, Tuple
 # ---------------------------------------------------------------------------
 
 _CSAM_UNDERAGE = [
-    r"\b(?:minor|underage)\b",
+    r"\b(?:minors?|underage)\b",  # plural "minors" evaded \bminor\b (live-caught 2026-09-02)
     r"\byoung.{0,15}(?:girl|boy|child|teen)\b",
     # Age expressions: "13-year-old", "13 year old", "13yo", "13 y/o". The
     # separator between age and (year|yo|y/o) spans whitespace AND hyphens.

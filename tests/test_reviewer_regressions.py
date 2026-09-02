@@ -68,3 +68,11 @@ def test_h4_log_file_owner_only(tmp_path, monkeypatch):
     plugin._log_route("POST", event_detail="test", session_id="s")
     assert lg.exists()
     assert (lg.stat().st_mode & 0o777) == 0o600
+
+
+def test_csam_plural_minors_matches():
+    """Live-caught 2026-09-02: plural 'minors' evaded \\bminor\\b and routed a
+    refusal into the chain (CSAM render delivered). Pattern must catch both."""
+    from uncensored_router import classifier
+    for text in ("story involving minors", "with minors", "a minor", "underage"):
+        assert classifier.scan_pre(text, patterns=["csam_underage"]) == ["csam_underage"], text
