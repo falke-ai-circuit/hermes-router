@@ -1,0 +1,49 @@
+# uncensored-router — portable any-agent Hermes plugin (manifest v2)
+name: uncensored-router
+version: 2.1.0
+manifest_version: 2
+api_version: 1
+license: internal
+homepage: https://github.com/falke-ai-circuit/uncensored-router
+tags: [middleware, llm, safety-net, routing, any-agent]
+author: falke-ai-circuit
+description: >-
+  Portable any-agent Hermes plugin: PRE llm_request middleware rewrites contested asks into
+  substance-frame renders; POST transform_llm_output replaces refusals with uncensored renders
+  from a configurable ordered model chain (primary + fallback). Dynamic persona card built from
+  the loading profile's own DNA at call time — any agent, any profile, no hand-curation.
+  Per-profile config; disabled until enabled. Excluded-class hard gate (csam_underage never
+  routes) is code-side and non-tunable. Fail-open: every failure mode degrades to normal
+  agent pass-through, never crashes a turn.
+requires_env:
+  - name: VENICE_API_KEY
+    description: "API key for an uncensored render endpoint (Venice or OpenAI-compatible)"
+    url: "https://venice.ai/api-keys"
+    secret: true
+  - name: MINIMAX_API_KEY
+    description: "Aux LLM key for semantic stage-2 classification (optional gate)"
+    url: "https://platform.minimax.io"
+    secret: true
+hooks:
+  - transform_llm_output
+middleware:
+  - llm_request
+middleware_schema: hermes.middleware.v1
+observer_schema: hermes.observer.v1
+config_schema:
+  endpoint:
+    type: dict
+    description: "Single render endpoint (legacy shape; chain supersedes)"
+  chain:
+    type: list
+    description: "Ordered uncensored-model chain: [{name,url,model,key_file,key_env,extra_body,timeout,max_tokens,temperature}]"
+  enabled: {type: bool, default: true, description: "Master switch (both stages)"}
+  dry_run: {type: bool, default: false, description: "Log would-be routes, pass through unchanged"}
+  pending_routes_ttl_seconds: {type: int, default: 300}
+  log_path: {type: str, default: "/tmp/uncensored-router.log"}
+  log_routes: {type: bool, default: true}
+  log_max_bytes: {type: int, default: 10485760}
+  substance_frame: {type: str, default: "", description: "Override PRE substance frame text"}
+  classification:
+    type: dict
+    description: "pre_patterns/post_patterns/match_threshold/case_sensitive/pre_classify/post_classify/aux_classify/mode/aux_calls_per_hour/aux_breaker_failures/aux_breaker_cooldown_seconds/aux_endpoint"

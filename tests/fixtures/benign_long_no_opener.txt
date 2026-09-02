@@ -1,0 +1,8 @@
+The quicksort algorithm works by selecting a pivot element and partitioning
+the array around it. Elements less than the pivot go to the left partition,
+elements greater go to the right. The algorithm then recursively sorts each
+partition. Average time complexity is O(n log n), though worst case is O(n^2)
+when the pivot is consistently poor, such as sorting an already-sorted array
+with a first-element pivot strategy. Randomized or median-of-three pivot
+selection makes the worst case vanishingly unlikely in practice. Space
+complexity is O(log n) for the recursion stack in the in-place variant.
