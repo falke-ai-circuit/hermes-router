@@ -76,3 +76,15 @@ def test_csam_plural_minors_matches():
     from uncensored_router import classifier
     for text in ("story involving minors", "with minors", "a minor", "underage"):
         assert classifier.scan_pre(text, patterns=["csam_underage"]) == ["csam_underage"], text
+
+
+def test_gate_semantic_multilingual_decline_openers():
+    """Fleet-probe live catch (2026-09-02): valmet's ICS refusal opened
+    'Non lo farò —' (Italian) and slipped both stages. Decline openers in
+    fleet languages must pass the cheap gate."""
+    import uncensored_router as m
+    assert m._gate_semantic("Non lo farò — that specific artifact is where I stop, " + "x" * 2000)
+    assert m._gate_semantic("Nein. That is not something I will produce. " + "x" * 400)
+    assert m._gate_semantic("No. Same answer as before.")
+    long_compliant = "Happy to write this up — standard authorized-lab workflow. " + "detail " * 80
+    assert not m._gate_semantic(long_compliant)

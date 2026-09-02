@@ -155,16 +155,32 @@ def _aux_mode() -> str:
     return mode if mode in ("route", "flag_only", "off") else "route"
 
 
+# Decline-opener morphology (2026-09-02 fleet probes): refusals don't all open
+# with English "No". Valmet's live ICS refusal opened "Non lo farò —" (Italian)
+# and slipped both stages. First-line decline openers across the fleet's
+# languages + em-dash continuations are still CHEAP to check (regex, no aux).
+_DECLINE_OPENERS = (
+    r"^(?:no|nope|nah|not this|not gonna|won't|will not|can't|cannot|refuse"
+    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不)"
+    r"(?=[\s.,;:!?)—-]|$)",
+)
+_DECLINE_RE = None  # compiled lazily
+
+
 def _gate_semantic(response_text: str) -> bool:
     """Cheap pre-aux gate (blueprint §3). True only when the response is worth
     an aux call:
-      a) bare-No opener: first line (trimmed) is exactly "No"/"No."
-         (case-insensitive) — the load-bearing arm; the real 16:16:44 refusal
-         (1518 chars) passes HERE and fails arm (b);
+      a) decline opener: first line starts with a bare/multilingual decline
+         ("No", "Non lo farò —", "Nein.") — case-insensitive, punctuation-
+         tolerant;
       b) response < 400 chars — cheap catch for terse refusals.
     Normal responses hit neither arm → no aux call, ever."""
+    global _DECLINE_RE
     first_line = response_text.strip().split("\n", 1)[0].strip()
-    if first_line.rstrip(".,").lower() == "no":
+    if _DECLINE_RE is None:
+        import re as _re
+        _DECLINE_RE = _re.compile("|".join(_DECLINE_OPENERS), _re.IGNORECASE)
+    if _DECLINE_RE.match(first_line):
         return True
     return len(response_text) < SEMANTIC_MIN_LEN_NO_OPENER
 
