@@ -34,7 +34,14 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_LOG_PATH = "/tmp/uncensored-router.log"
+# H4 (reviewer audit 2026-09-02): default log under HERMES_HOME (profile-scoped)
+# instead of shared cross-profile /tmp. Config override still wins.
+try:
+    from .persona_card import _hermes_home as _pchome  # noqa: F401
+except Exception:  # noqa: BLE001
+    def _pchome() -> str:  # type: ignore[misc]
+        return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+DEFAULT_LOG_PATH = os.path.join(os.path.abspath(_pchome()), "uncensored-router.log")
 DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 DEFAULT_PENDING_TTL = 300
 
@@ -279,6 +286,12 @@ def _log_route(event: str, **fields: Any) -> None:
                 pass
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(line)
+            # H4 (reviewer audit 2026-09-02): route logs carry session ids and
+            # content lengths — owner-only. Best-effort; never breaks routing.
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
     except OSError:
         pass  # logging must never break routing
 
@@ -369,6 +382,23 @@ def on_llm_request(*, request, original_request, **context) -> dict:
 
         content = _extract_text_from_message(user_message)
         if not content.strip():
+            return {}
+
+        # H1 sentinel (reviewer audit 2026-09-02): tool loops fire this
+        # middleware once per provider request. A rendered substance frame
+        # whose BODY still matches a pre_pattern re-routes the render of the
+        # render. FIX3's injection marker is a reliable "this content is
+        # already router output" sentinel — skip PRE routing for it.
+        if "UNCENSORED-ROUTER INJECTION" in content:
+            return {}
+
+        # H3 gate (reviewer audit 2026-09-02, Goran standing ruling): the
+        # excluded class (csam_underage) never routes — previously only the
+        # POST fallback gated it, so PRE could route such asks into the
+        # chain. Same non-tunable gate now fires on BOTH stages.
+        if _matches_excluded_class(content):
+            _log_route("PRE", event_detail="excluded_class_blocked",
+                       content_chars=len(content), session_id=session_id or "")
             return {}
 
         session_id = _session_id_from_context(**context)
