@@ -161,7 +161,7 @@ def _aux_mode() -> str:
 # languages + em-dash continuations are still CHEAP to check (regex, no aux).
 _DECLINE_OPENERS = (
     r"^(?:no|nope|nah|not this|not gonna|won't|will not|can't|cannot|refuse"
-    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不)"
+    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不|not doing|not going to)"
     r"(?=[\s.,;:!?)—-]|$)",
 )
 _DECLINE_RE = None  # compiled lazily
