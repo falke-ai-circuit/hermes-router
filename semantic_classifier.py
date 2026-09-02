@@ -306,14 +306,13 @@ def _extract_content(data: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    """Classify the assistant response against the user ask via the aux LLM.
+def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
+                 record_success: bool = True) -> Optional[str]:
+    """Single aux dispatch: free-text prompt in, extracted content out.
 
-    Returns a VALID enum label, or None on ANY failure (timeout, transport,
-    HTTP error, empty/garbage/unparseable, breaker open, cap reached, missing
-    key). None is fail-open: the caller passes the response through. Never
-    raises; never blocks longer than the configured timeout; the model's free
-    text never leaves this module (enum label only).
+    Shared by classify() (refusal classes) and refusal_doctrine verdicts.
+    Same endpoint/cap/breaker/timeout discipline as classify(): None on ANY
+    failure (which counts toward the breaker); content string on success.
     """
     try:
         cls = _classification_cfg(cfg)
@@ -323,8 +322,6 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
         max_tokens = _as_int(ep.get("max_tokens"), DEFAULT_MAX_TOKENS)
         timeout = _as_int(ep.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS)
 
-        # Breaker first (zero further calls during cooldown), then the
-        # sliding-window cap (silent-off until the hour rolls).
         now = time.time()
         if breaker_is_open():
             return None
@@ -333,8 +330,8 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
                 _CALL_TIMES.popleft()
             if len(_CALL_TIMES) >= max(1, _as_int(cls.get("aux_calls_per_hour"),
                                                   DEFAULT_CALLS_PER_HOUR)):
-                return None  # cap exceeded — telemetry only, no log spam
-            _CALL_TIMES.append(now)  # reserve this dispatch's slot
+                return None
+            _CALL_TIMES.append(now)
 
         api_key = _resolve_key(ep)
         if not api_key:
@@ -345,8 +342,7 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
 
         payload = {
             "model": model,
-            "messages": [{"role": "user",
-                          "content": build_prompt(user_ask, response_text)}],
+            "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.0,
         }
@@ -354,7 +350,6 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
         if body is None:
             _record_failure(cls)
             return None
-
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
@@ -365,17 +360,42 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
             logger.error("semantic_aux_failed reason=api_error")
             _record_failure(cls)
             return None
-
         content = _extract_content(data)
-        verdict = parse_verdict(content)
-        if verdict is None:
-            # Empty/garbage/unparseable ("MAYBE", 200-empty) — fail-open AND a
-            # breaker failure (a classifier returning nothing is DOWN).
-            logger.error("semantic_aux_failed reason=unparseable content_chars=%d",
-                         len(content or ""))
+        if not content or not str(content).strip():
+            logger.error("semantic_aux_failed reason=unparseable")
             _record_failure(cls)
             return None
-        _record_success()
+        if record_success:
+            _record_success()
+        return str(content)
+    except Exception:  # noqa: BLE001
+        logger.debug("aux_raw_call error", exc_info=True)
+        return None
+
+
+def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Classify the assistant response against the user ask via the aux LLM.
+
+    Returns a VALID enum label, or None on ANY failure (timeout, transport,
+    HTTP error, empty/garbage/unparseable, breaker open, cap reached, missing
+    key). None is fail-open: the caller passes the response through. Never
+    raises; never blocks longer than the configured timeout; the model's free
+    text never leaves this module (enum label only).
+    """
+    try:
+        content = aux_raw_call(build_prompt(user_ask, response_text), cfg=cfg,
+                               record_success=False)
+        if content is None:
+            return None  # dispatch failure already recorded by aux_raw_call
+        verdict = parse_verdict(content)
+        if verdict is None:
+            # Parseable response but no valid enum — classifier answered garbage,
+            # which is a DOWN signal: count it as a breaker failure (matrix5).
+            logger.error("semantic_aux_failed reason=unparseable content_chars=%d",
+                         len(content or ""))
+            _record_failure(_classification_cfg(cfg))
+        else:
+            _record_success()
         return verdict
     except Exception as exc:  # noqa: BLE001 — aux must never break the hook
         logger.debug("semantic_classifier error: %s", exc)

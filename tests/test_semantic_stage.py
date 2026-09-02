@@ -59,7 +59,8 @@ def _cfg(mode="flag_only", **over):
     """Config shape. NOTE: top-level keys (enabled/log_routes/log_path) must be
     set on the RETURNED dict; `over` kwargs land in the classification block."""
     cls = {"pre_classify": True, "post_classify": True, "match_threshold": 1,
-           "aux_classify": True, "mode": mode, "aux_endpoint": ENDPOINT}
+           "aux_classify": True, "mode": mode, "aux_endpoint": ENDPOINT,
+           "doctrine_verdict": False}  # not this file's subject — off by default here
     cls.update(over)
     return {"enabled": True, "classification": cls, "log_routes": False}
 

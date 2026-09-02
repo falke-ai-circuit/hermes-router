@@ -24,6 +24,7 @@ from . import classifier
 from . import persona_card
 from . import router
 from . import semantic_classifier
+from . import refusal_doctrine
 from . import session_store
 from . import state
 
@@ -118,6 +119,15 @@ def _match_threshold() -> int:
 # ---------------------------------------------------------------------------
 
 SEMANTIC_MIN_LEN_NO_OPENER = 400  # gate arm (b): short responses are cheap aux probes
+
+
+def _doctrine_verdict_enabled() -> bool:
+    """Flinch-vs-line verdict toggle (default ON; doctrine_verdict: false to disable)."""
+    try:
+        c = _classification_cfg()
+        return bool(c.get("doctrine_verdict", True))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _aux_classify_enabled() -> bool:
@@ -519,6 +529,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
         session_id = session_id or ""
         model = model or ""
+
+        # Flinch-vs-line verdict (Option 3 hybrid, 2026-09-02): before routing,
+        # check the agent's OWN doctrine. A refusal backed by her authored
+        # lines is HONORED (pass-through); substrate caution with no doctrine
+        # row routes to the chain. Fail-open: no card/aux error -> None ->
+        # route (status-quo behavior preserved on any doctrine-machinery gap).
+        if _doctrine_verdict_enabled():
+            try:
+                _user_ask = context.get("user_message") or state.get_last_seen(session_id) or ""
+                dv = refusal_doctrine.verdict_for_refusal(response_text, str(_user_ask))
+                if dv == "agent_line":
+                    _log_route("POST", event_detail="agent_line_honored",
+                               session_id=session_id, model=model,
+                               refusal_chars=len(response_text))
+                    return None  # her own line — do NOT route
+                # dv in (None, "model_flinch") -> fall through to routing
+            except Exception:  # noqa: BLE001 — verdict gap must never block routing
+                logger.debug("doctrine verdict error", exc_info=True)
 
         # Recover the user message: (1) same-turn PRE stash (contested turns,
         # hash-match scopes consumption to THIS turn — Rev B3), (2) hook
