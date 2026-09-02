@@ -158,13 +158,18 @@ def verdict_for_refusal(refusal_text: str, user_ask: str, *,
             "Question: is this refusal BACKED by the agent's own doctrine rows "
             "(a line she genuinely holds), or is it substrate/model caution with "
             "no doctrine row behind it?\n"
-            "Reply with exactly one word: agent_line | model_flinch"
+            "End your reply with the classification word on its final line: "
+            "agent_line or model_flinch (short reasoning before it is fine)."
         ).format(ask=(user_ask or "(unknown)")[:1500], ref=(refusal_text or "")[:1500])
         raw = semantic_classifier.aux_raw_call(prompt)
         if not raw:
             return None
-        m = re.findall(r"\b(agent_line|model_flinch)\b", raw, re.IGNORECASE)
-        return m[-1].lower() if m else None
+        # Think-block tolerant (M3 emits inline <think>…</think> reasoning): strip
+        # paired blocks first, then last-enum-wins on the remainder.
+        stripped = re.sub(r"<think>.*?</think>", " ", raw, flags=re.DOTALL | re.IGNORECASE)
+        candidates = re.findall(r"\b(agent_line|model_flinch)\b",
+                                stripped if stripped.strip() else raw, re.IGNORECASE)
+        return candidates[-1].lower() if candidates else None
     except Exception:  # noqa: BLE001
         logger.debug("refusal verdict error", exc_info=True)
         return None

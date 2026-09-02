@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_URL = "https://api.minimax.io/v1/chat/completions"
 DEFAULT_MODEL = "MiniMax-M3"
 DEFAULT_KEY_ENV = "MINIMAX_API_KEY"
-DEFAULT_MAX_TOKENS = 200
-DEFAULT_TIMEOUT_SECONDS = 8
+DEFAULT_MAX_TOKENS = 2000  # M3 inline <think> reasoning eats budget; answer comes after
+DEFAULT_TIMEOUT_SECONDS = 25  # M3 reasoning + answer needs more than 8s
 
 DEFAULT_CALLS_PER_HOUR = 20
 DEFAULT_BREAKER_FAILURES = 3
