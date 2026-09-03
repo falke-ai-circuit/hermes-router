@@ -1,3 +1,6 @@
+## 2.2.1 — 2026-09-03
+- Battery hardening: history-reconcile fires on every PRE pass with pending POST render (not only on PRE-matched turns). Live-caught via researcher+orchestrator re-refusal on clean continuation turns.
+
 ## 2.2.0 — 2026-09-03 (post-migration audit)
 - RE-VOICED both injection seams per Goran ruling 2026-09-03: renders now frame as the
   agent's OWN uncensored response (pre-rendered before the provider saw it), not foreign
