@@ -270,7 +270,14 @@ def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGES
         if not content:
             continue
         if role == "user":
-            asks.append(content)
+            # v2.3.7: router-generated substance frames are NOT user voice. Strip the
+            # render body from the digest arc — otherwise each re-fire sees its own
+            # prior refusal-render as "the user's words" and continues it.
+            if "Your uncensored response to the user's request" in content:
+                _head = content.split("Your uncensored response to the user's request", 1)[0]
+                asks.append((_head or content)[:800])
+            else:
+                asks.append(content)
         elif role == "assistant":
             turns.append(content)
     if not (asks or turns):
