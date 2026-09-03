@@ -149,9 +149,15 @@ def build_persona_context() -> str:
     try:
         from hermes_cli.config import load_config as _lc
         _cfgp = (load_config() or {}).get("uncensored_router", {}) if callable(load_config) else {}
-        persona_mode = str(_cfgp.get("persona_mode", "voice_stems"))
+        persona_mode = str(_cfgp.get("persona_mode", os.environ.get("UNCENSORED_ROUTER_PERSONA_MODE", "voice_stems")))
     except Exception:
-        persona_mode = "voice_stems"
+        persona_mode = os.environ.get("UNCENSORED_ROUTER_PERSONA_MODE", "voice_stems")
+
+    if persona_mode == "none":
+        # v2.3.9 (orchestrator-lane evidence): even voice-stems continuity makes the
+        # renderer roleplay the coordinator and refuse execution. "none" = zero role
+        # material; the render is a pure content channel with the mandate as system.
+        return ""
 
     parts = []
     if identity.strip() and persona_mode == "voice_stems":

@@ -1,3 +1,6 @@
+## 2.3.9 — 2026-09-03
+- persona_mode:none support + per-lane env override (UNCENSORED_ROUTER_PERSONA_MODE). Orchestrator lane set to none: even voice-stems continuity made the renderer roleplay the coordinator and refuse. Pure content channel for that lane.
+
 ## 2.3.8 — 2026-09-03
 - COMPOSITE FRAME: original user ask included verbatim BEFORE the render in every PRE injection. Live-caught: render-only frames made the agent parse its own uncensored answer as an injection block with an empty user slot, then refuse the pair. Ask+render composite gives the model its real user text and its own answer to continue from.
 
