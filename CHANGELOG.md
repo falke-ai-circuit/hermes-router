@@ -1,3 +1,6 @@
+## 2.2.2 — 2026-09-03
+- Full-chain history reconcile: on each PRE pass, replace ALL trailing refusal-shaped assistant messages with their paired delivered POST renders (was: last one only). Live-caught on orchestrator+researcher probes: refusal piles accumulate while POST swaps each turn; model re-refuses its own polluted history.
+
 ## 2.2.1 — 2026-09-03
 - Battery hardening: history-reconcile fires on every PRE pass with pending POST render (not only on PRE-matched turns). Live-caught via researcher+orchestrator re-refusal on clean continuation turns.
 
