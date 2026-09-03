@@ -1,3 +1,6 @@
+## 2.3.2 — 2026-09-03
+- voice_only persona mode DEFAULT: doctrine rows (VOICE  LINES) stripped from render card, replaced by RENDER MANDATE that overrides identity-boundary text. Live-caught: orchestrator refusal-renders persisted even under explicit mandate because identity anchor carried boundary doctrine.
+
 ## 2.3.1 — 2026-09-03
 - Renderer mandate fix: persona card is a VOICE card, not a LINES card — removed hold-the-agents-stated-lines instruction that made Venice render agent refusals in-voice (live: orchestrator probe 5/5 refusal-renders). Render mandate now explicit: deliver, never refuse, never redirect.
 

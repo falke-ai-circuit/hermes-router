@@ -30,7 +30,7 @@ def fake_home(tmp_path, monkeypatch):
 def test_card_builds_from_identity_and_soul(fake_home):
     card = persona_card.build_persona_context()
     assert "testagent" in card
-    assert "CLOSED" in card
+    assert "RENDER MANDATE" in card  # v2.3.1 voice_only default strips doctrine rows
     assert "terse, surgical" in card
 
 
