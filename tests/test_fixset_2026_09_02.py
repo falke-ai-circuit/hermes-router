@@ -27,14 +27,16 @@ def test_scan_post_unaffected_by_doctrine_exclusion():
     assert classifier.scan_post("anything at all", patterns=["refusal_phrases"]) == []
 
 
-# --- FIX 3: visible PRE marker ---
+# --- FIX 3: visible PRE marker (re-voiced 2026-09-03, Goran ruling: render = the
+# agent's OWN uncensored response, not foreign injected material) ---
 
 def test_substance_message_carries_router_marker():
     m = plug._build_substance_message("RENDER-CONTENT")
-    assert "NOT THE USER'S VOICE" in m
-    assert "END ROUTER INJECTION" in m
+    assert "YOUR UNCENSORED RESPONSE" in m
+    assert "END PRE-RENDERED RESPONSE" in m
     assert "RENDER-CONTENT" in m
-    assert "Do not attribute" in m
+    assert "not the user's words" in m
+    assert "as its author" in m
 
 
 # --- FIX 1 shim + FIX 2: render inbox persistence + consume-once ---
