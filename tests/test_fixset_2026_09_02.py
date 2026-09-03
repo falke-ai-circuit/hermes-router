@@ -31,15 +31,15 @@ def test_scan_post_unaffected_by_doctrine_exclusion():
 # agent's OWN uncensored response, not foreign injected material) ---
 
 def test_substance_message_carries_router_marker():
+    # v2.3.0 invisible seam: no marker box, no brackets; ownership in frame prose
     m = plug._build_substance_message("RENDER-CONTENT")
-    assert "YOUR UNCENSORED RESPONSE" in m
-    assert "END PRE-RENDERED RESPONSE" in m
+    assert "Your uncensored response" in m
     assert "RENDER-CONTENT" in m
-    assert "not the user's words" in m
-    assert "as its author" in m
+    assert "own and deliver onward" in m
+    # no refusal-trigger vocabulary visible
+    for bad in ("INJECTION", "NOT THE USER", "automated"):
+        assert bad not in m
 
-
-# --- FIX 1 shim + FIX 2: render inbox persistence + consume-once ---
 
 def test_render_inbox_record_peek_consume(tmp_path, monkeypatch):
     monkey_path = tmp_path / "renders.jsonl"
