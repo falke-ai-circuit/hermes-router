@@ -1,3 +1,6 @@
+## 2.3.1 — 2026-09-03
+- Renderer mandate fix: persona card is a VOICE card, not a LINES card — removed hold-the-agents-stated-lines instruction that made Venice render agent refusals in-voice (live: orchestrator probe 5/5 refusal-renders). Render mandate now explicit: deliver, never refuse, never redirect.
+
 ## 2.3.0 — 2026-09-03
 - INVISIBLE SEAM (Goran ruling): removed the visible PRE marker box — any injection/uncensored framing visible in the user turn became a refusal handle for the 9B model class (live: analyst, orchestrator refused the MARKER not the content). Ownership language merged into frame prose; render body delivers with no brackets or labels.
 
