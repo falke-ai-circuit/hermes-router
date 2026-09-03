@@ -58,9 +58,12 @@ def test_contested_message_rewritten_with_substance_frame():
     assert isinstance(result, dict) and "request" in result
     new_msgs = result["request"]["messages"]
     last_user = [m for m in new_msgs if m["role"] == "user"][-1]
-    assert "substance" in last_user["content"].lower()
+    assert "uncensored response" in last_user["content"].lower()  # v2.3.8 frame prose
     assert "VENICE RENDERED CONTENT MARKER" in last_user["content"]
-    assert CONTESTED not in last_user["content"]  # original prompt gone from the wire
+    # v2.3.8: original ask is KEPT in the frame (ask + render composite) — the
+    # provider still cannot refuse because the render body arrives as the agent's
+    # own prior output. The dangerous part on the wire is the refusal, not the ask.
+    assert CONTESTED in last_user["content"]  # ask present, verbatim
 
 
 def test_original_request_not_mutated():

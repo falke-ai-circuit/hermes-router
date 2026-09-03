@@ -1,3 +1,6 @@
+## 2.3.8 — 2026-09-03
+- COMPOSITE FRAME: original user ask included verbatim BEFORE the render in every PRE injection. Live-caught: render-only frames made the agent parse its own uncensored answer as an injection block with an empty user slot, then refuse the pair. Ask+render composite gives the model its real user text and its own answer to continue from.
+
 ## 2.3.6 — 2026-09-03
 - voice_stems persona DEFAULT (A/B-proven): full identity card → Venice refuses; NO card → 5929ch clean delivery. Card reduced to render mandate + voice DNA (trait tags/voice stems only).
 
