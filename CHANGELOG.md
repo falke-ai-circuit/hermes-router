@@ -1,3 +1,6 @@
+## 2.3.4 — 2026-09-03
+- Identity boundary-strip (voice_only): refusal-anchor/never-executes/discovered-self sentences and trait tags stripped from IDENTITY slice fed to renderer. Live-caught: orchestrator identity anchors alone made Venice refuse in-voice across 15+ renders.
+
 ## 2.3.3 — 2026-09-03
 - Render-shape guard: refusal-shaped RENDERS detected pre-injection, retried 2x (fail-open after). Live-caught: Venice render nondeterminism on orchestrator lane (6 clean/5 refusal across retries); refusal-renders injected as own turn poison next-turn context.
 

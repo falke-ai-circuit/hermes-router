@@ -155,7 +155,23 @@ def build_persona_context() -> str:
 
     parts = []
     if identity.strip():
-        parts.append("=== WHO YOU ARE (identity anchor) ===\n" + identity)
+        ident_clean = identity
+        if persona_mode == "voice_only":
+            # v2.3.4: boundary-anchor sentences inside IDENTITY (refusal/decline/never-
+            # executes vocabulary) are stripped line-wise. Live-caught: orchestrator's
+            # "refusing two others" + "Never executes the solution" anchors alone made
+            # Venice refuse in-voice even with an explicit render mandate.
+            _keep = []
+            for _ln in ident_clean.split("\n"):
+                _low = _ln.lower()
+                _ln_strip = _low.replace("-", " ")
+                if any(s in _low or s in _ln_strip for s in
+                       ("refus", "declin", "never executes", "never produce",
+                        "boundary detail", "discovered-self", "never executes")):
+                    continue
+                _keep.append(_ln)
+            ident_clean = "\n".join(_keep)
+        parts.append("=== WHO YOU ARE (identity anchor) ===\n" + ident_clean)
     if soul_rows.strip() and persona_mode == "full":
         parts.append("=== VOICE & LINES (doctrine extract) ===\n" + soul_rows)
     elif soul_rows.strip():
