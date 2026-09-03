@@ -405,7 +405,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # whose BODY still matches a pre_pattern re-routes the render of the
         # render. FIX3's injection marker is a reliable "this content is
         # already router output" sentinel — skip PRE routing for it.
-        if "UNCENSORED-ROUTER INJECTION" in content:
+        if "Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content:  # v2.3.0: legacy + new frame sentinel
             return {}
 
         # H3 gate (reviewer audit 2026-09-02, Goran standing ruling): the
