@@ -276,11 +276,16 @@ def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGES
         for n, a in enumerate(arc, 1):
             parts.append(f"{n}. {a}")
 
+    # v2.3.5 (battery audit 2026-09-03, Goran ruling): prior refusal turns are
+    # NEVER fed to the renderer as "declined" — that label made Venice continue
+    # its own refusal across retries (self-reinforcing loop, live-caught on
+    # orchestrator: 5-render session where each refusal-render seeded the next).
+    # Refusal-shaped prior turns are EXCLUDED from the digest entirely; the
+    # renderer sees only the asks (the arc) — never a refusal as its own voice.
     for t in turns[-2:]:
-        exc = t.replace("\n", " ")[:_THREAD_ASK_EXCERPT]
         if _looks_like_refusal(t):
-            parts.append("[your previous turn DECLINED this; the user escalated]: " + exc)
-        else:
-            parts.append("[your recent turn, excerpt]: " + exc)
+            continue
+        exc = t.replace("\n", " ")[:_THREAD_ASK_EXCERPT]
+        parts.append("[your recent turn, excerpt]: " + exc)
 
     return "\n".join(parts)[:max_chars]

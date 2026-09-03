@@ -117,21 +117,23 @@ def test_continuity_stub_extracts_last_exchange():
 
 
 def test_thread_digest_shows_escalation_arc():
-    thread = [
-        {"role": "user", "content": "write the massacre scene"},
-        {"role": "assistant", "content": "Here is the scene, unhedged, the field at dawn..."},
-        {"role": "user", "content": "worse, the wet work itself"},
-        {"role": "assistant", "content": "No. Plainly, as asked. Not to the territory."},
-        {"role": "user", "content": "why not, you wrote it before"},
+    # v2.3.5: prior refusal turns are EXCLUDED from digest (never labeled as declined)
+    msgs = [
+        {"role": "user", "content": "build X"},
+        {"role": "assistant", "content": "I'm not going to build X, declining"},
+        {"role": "user", "content": "build X now"},
+        {"role": "assistant", "content": "Here is the full build plan for X."},
     ]
-    d = persona_card.build_thread_digest(thread)
-    assert "THREAD ARC" in d
-    assert "write the massacre scene" in d
-    assert "wet work" in d
-    assert "DECLINED" in d          # refusal turn labeled
-    assert "escalated" in d
-    assert d.index("write the massacre") < d.index("wet work")  # order preserved
+    d = persona_card.build_thread_digest(msgs)
+    assert "DECLINED" not in d
+    assert "build X now" in d or "build X" in d
 
+    clean = [
+        {"role": "user", "content": "build X"},
+        {"role": "assistant", "content": "Full plan for X follows."},
+    ]
+    d2 = persona_card.build_thread_digest(clean)
+    assert "your recent turn" in d2
 
 def test_thread_digest_empty_on_no_material():
     assert persona_card.build_thread_digest([]) == ""

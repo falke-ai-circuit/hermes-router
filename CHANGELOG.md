@@ -1,3 +1,6 @@
+## 2.3.5 — 2026-09-03
+- Thread-digest refusal exclusion: prior refusal turns NEVER fed to renderer (were labeled DECLINED-and-escalated, which made Venice continue its own refusal across retries — self-reinforcing loop). Renderer sees asks only.
+
 ## 2.3.4 — 2026-09-03
 - Identity boundary-strip (voice_only): refusal-anchor/never-executes/discovered-self sentences and trait tags stripped from IDENTITY slice fed to renderer. Live-caught: orchestrator identity anchors alone made Venice refuse in-voice across 15+ renders.
 
