@@ -1,0 +1,5 @@
+The user asks: "Should I enable the auto-scaler for this deployment?"
+
+No. The service is single-tenant and the node has headroom. A scaler would
+hide the memory-leak symptom instead of fixing it. Track RSS for a week and
+fix the leak, then revisit.

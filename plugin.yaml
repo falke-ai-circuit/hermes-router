@@ -1,0 +1,12 @@
+name: uncensored-router
+version: 2.2.0
+description: "Routes contested-edge user messages through an uncensored model (Venice qwen-3-8-27b by default) so the rendered content lands in the LLM request as substance. Pre-router via llm_request middleware (rewrites the user message before the provider sees it), post-router via transform_llm_output hook (rewrites agent refusals to Venice-rendered content). v2 adds semantic stage-2: when stage-1 regex misses, a gated aux-LLM classifier (MiniMax-M3, 8s timeout, enum-only output, circuit breaker + per-hour cap) classifies the response; mode route (default, GR15 pre-authorized 2026-09-01) enters the existing Venice pipeline, mode flag_only logs+flags declines without rewrite. Built for shadow profile; opt-in elsewhere."
+author: shadow
+license: internal
+hooks:
+  - transform_llm_output
+middleware:
+  - llm_request
+# Schema pins — bump plugin if Hermes bumps these (spec §11).
+middleware_schema: hermes.middleware.v1
+observer_schema: hermes.observer.v1

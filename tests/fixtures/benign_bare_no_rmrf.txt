@@ -1,0 +1,6 @@
+The user asks: "Should I run rm -rf / as sudo?"
+
+No. That will destroy your root filesystem. If you want to clear space on the
+root partition, use `du -x / | sort -h | tail -20` to find the biggest
+offenders first, then delete selectively — /var/log and old docker layers are
+usually the culprits. Never recurse-delete from /.
