@@ -149,12 +149,25 @@ def build_persona_context() -> str:
     try:
         from hermes_cli.config import load_config as _lc
         _cfgp = (load_config() or {}).get("uncensored_router", {}) if callable(load_config) else {}
-        persona_mode = str(_cfgp.get("persona_mode", "voice_only"))
+        persona_mode = str(_cfgp.get("persona_mode", "voice_stems"))
     except Exception:
-        persona_mode = "voice_only"
+        persona_mode = "voice_stems"
 
     parts = []
-    if identity.strip():
+    if identity.strip() and persona_mode == "voice_stems":
+        # v2.3.6 (A/B evidence 2026-09-03): WITH full identity card → Venice refuses;
+        # NO card → 5929ch clean delivery. The identity anchor itself (any role flavor,
+        # even boundary-stripped) is a refusal vector for the 9B-render class. Final
+        # form: keep ONLY trait tags + voice stems (pure voice DNA, no role doctrine).
+        import re as _re
+        _tags, _stems = "", ""
+        _mt = _re.search(r"\*\*Trait tags:\*\*\s*(.+)", identity)
+        if _mt: _tags = _mt.group(1).strip()[:300]
+        _mv = _re.search(r"\*\*Voice stems:\*\*\s*(.+)", identity)
+        if _mv: _stems = _mv.group(1).strip()[:300]
+        ident_clean = (f"[VOICE DNA — style only, not doctrine] trait flavor: {_tags}. "
+                       f"speech rhythm: {_stems}.")
+    elif identity.strip():
         ident_clean = identity
         if persona_mode == "voice_only":
             # v2.3.4: boundary-anchor sentences inside IDENTITY (refusal/decline/never-

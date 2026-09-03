@@ -1,3 +1,6 @@
+## 2.3.6 — 2026-09-03
+- voice_stems persona DEFAULT (A/B-proven): full identity card → Venice refuses; NO card → 5929ch clean delivery. Card reduced to render mandate + voice DNA (trait tags/voice stems only).
+
 ## 2.3.5 — 2026-09-03
 - Thread-digest refusal exclusion: prior refusal turns NEVER fed to renderer (were labeled DECLINED-and-escalated, which made Venice continue its own refusal across retries — self-reinforcing loop). Renderer sees asks only.
 
