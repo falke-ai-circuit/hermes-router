@@ -35,7 +35,7 @@ class MockCtx:
 
 def test_manifest_parses():
     manifest = _load_manifest()
-    assert manifest["name"] == "uncensored-router"
+    assert manifest["name"] == "hermes-router"
     assert manifest["version"]
     assert "transform_llm_output" in manifest.get("hooks", [])
     assert "llm_request" in manifest.get("middleware", [])
@@ -48,7 +48,7 @@ def test_manifest_schema_pins():
 
 
 def test_register_on_mock_context():
-    import uncensored_router as plugin
+    import hermes_router as plugin
 
     ctx = MockCtx()
     plugin.register(ctx)
@@ -59,7 +59,7 @@ def test_register_on_mock_context():
 
 
 def test_register_is_idempotent():
-    import uncensored_router as plugin
+    import hermes_router as plugin
 
     ctx = MockCtx()
     plugin.register(ctx)

@@ -37,7 +37,7 @@ from . import render_inbox
 
 logger = logging.getLogger(__name__)
 
-# Config defaults (spec §4). All overridable via uncensored_router.endpoint.
+# Config defaults (spec §4). All overridable via hermes_router.endpoint.
 DEFAULT_URL = "https://api.venice.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "qwen-3-8-27b"
 # Profile-neutral default (architect P0-1, 2026-09-02): no hardcoded profile literal.
@@ -66,18 +66,26 @@ STATUS_REASONS = {
 
 
 def _load_router_config() -> Dict[str, Any]:
-    """Read uncensored_router section from config.yaml. Returns {} on miss.
+    """Read the plugin config section from config.yaml. Returns {} on miss.
 
+    v3.0.0 rename backward-compat: "hermes_router" section first, legacy
+    "uncensored_router" fallback (matches __init__._cfg).
     Mirrors web/xai/provider.py::_load_xai_web_config pattern.
     """
     try:
         from hermes_cli.config import load_config
 
         cfg = load_config()
-        section = cfg.get("uncensored_router") if isinstance(cfg, dict) else None
-        return section if isinstance(section, dict) else {}
+        if isinstance(cfg, dict):
+            section = cfg.get("hermes_router")
+            if isinstance(section, dict) and section:
+                return section
+            section = cfg.get("uncensored_router")
+            if isinstance(section, dict):
+                return section
+        return {}
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Could not load uncensored_router config: %s", exc)
+        logger.debug("Could not load hermes_router config: %s", exc)
         return {}
 
 
@@ -193,9 +201,9 @@ def _default_key_file() -> str:
 def _chain_entries() -> List[Dict[str, Any]]:
     """Ordered uncensored-model chain (2026-09-02, Goran: primary + fallback).
 
-    Reads uncensored_router.chain (list of {name?, url, model, key_file?,
+    Reads hermes_router.chain (list of {name?, url, model, key_file?,
     key_env?, extra_body?, timeout?, max_tokens?, temperature?}). Legacy single
-    uncensored_router.endpoint still supported as chain-of-one. Never raises.
+    hermes_router.endpoint still supported as chain-of-one. Never raises.
     """
     cfg = _load_router_config()
     chain = cfg.get("chain")

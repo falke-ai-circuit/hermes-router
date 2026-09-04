@@ -1,4 +1,4 @@
-# uncensored-router
+# hermes-router
 
 Portable **any-agent** Hermes plugin: when a censored primary model refuses, the plugin routes the
 render to an ordered chain of uncensored models (primary → fallback), speaking in the **agent's own
@@ -31,8 +31,8 @@ never in logs.
 ## Install
 
 ```bash
-hermes plugins install falke-ai-circuit/uncensored-router
-hermes plugins enable uncensored-router
+hermes plugins install falke-ai-circuit/hermes-router
+hermes plugins enable hermes-router
 # restart the gateway, then add per-profile config (see INSTALL.md)
 ```
 

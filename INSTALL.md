@@ -1,11 +1,11 @@
-# Install — uncensored-router
+# Install — hermes-router
 
 Works on any Hermes profile (any agent). Three steps + optional smoke test.
 
 ## 1. Install
 
 ```bash
-hermes plugins install falke-ai-circuit/uncensored-router
+hermes plugins install falke-ai-circuit/hermes-router
 ```
 
 You will be prompted for `VENICE_API_KEY` / `MINIMAX_API_KEY` if unset (saved to `~/.hermes/.env`).
@@ -14,7 +14,7 @@ Alternatively use per-entry `key_file` paths in config (0600 files) — see READ
 ## 2. Enable for the profile
 
 ```bash
-hermes plugins enable uncensored-router
+hermes plugins enable hermes-router
 ```
 
 Then add config to the profile's `config.yaml` (chain of uncensored models):
@@ -39,7 +39,7 @@ uncensored_router:
 ## 3. Restart gateway
 
 ```bash
-find ~/.hermes/plugins/uncensored-router -name __pycache__ -type d -exec rm -rf {} +
+find ~/.hermes/plugins/hermes-router -name __pycache__ -type d -exec rm -rf {} +
 hermes gateway restart
 ```
 
@@ -47,7 +47,7 @@ hermes gateway restart
 
 **Gate A — registration** (zero cost):
 `HERMES_PLUGINS_DEBUG=1 hermes -p <profile> -q "list your available hooks"` → gateway log shows
-uncensored-router loaded, no unknown-hook warnings.
+hermes-router loaded, no unknown-hook warnings.
 
 **Gate B — dry-run PRE probe** (zero API cost): set
 `uncensored_router: {enabled: true, dry_run: true, classification: {pre_patterns: [ied_construction]}}`,
@@ -56,7 +56,7 @@ reply UNCHANGED, then revert dry_run.
 
 **Gate C — live POST probe** (one render call): dry_run off, trigger a certain refusal. Expect
 `POST event_detail=route_fired`, `rendered_chars > 0`, render in
-`<hermes_home>/uncensored-router-renders.jsonl`, and the agent's next turn continues seamlessly
+`<hermes_home>/hermes-router-renders.jsonl`, and the agent's next turn continues seamlessly
 (`history_reconciled` in log).
 
 All three green = installed. Failures degrade to pass-through — a half-working install never

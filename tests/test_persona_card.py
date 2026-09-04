@@ -3,7 +3,7 @@ persona extraction from the loading profile's DNA)."""
 import os
 import pytest
 
-from uncensored_router import persona_card, router
+from hermes_router import persona_card, router
 
 
 @pytest.fixture

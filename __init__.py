@@ -80,12 +80,22 @@ def _persona_system_prompt(request: Optional[dict]) -> str:
 
 
 def _cfg() -> Dict[str, Any]:
+    """Plugin config section read. v3.0.0 rename backward-compat: the canonical
+    section is "hermes_router"; the legacy "uncensored_router" section is still
+    honored when no canonical section exists, so the 11 deployed profile configs
+    keep working untouched. Canonical going forward: hermes_router."""
     try:
         from hermes_cli.config import load_config
 
         cfg = load_config()
-        section = cfg.get("uncensored_router") if isinstance(cfg, dict) else None
-        return section if isinstance(section, dict) else {}
+        if isinstance(cfg, dict):
+            section = cfg.get("hermes_router")
+            if isinstance(section, dict) and section:
+                return section
+            section = cfg.get("uncensored_router")
+            if isinstance(section, dict):
+                return section
+        return {}
     except Exception:  # noqa: BLE001
         return {}
 

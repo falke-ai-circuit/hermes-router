@@ -15,11 +15,11 @@ PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 
-import uncensored_router.router as router
+import hermes_router.router as router
 
 _REAL_READ_KEY = router._read_key  # original, for live tests that need real key files
-from uncensored_router import state
-from uncensored_router.state import hash_text
+from hermes_router import state
+from hermes_router.state import hash_text
 
 KEY_FILE = os.path.expanduser("~/.hermes/profiles/shadow/.secrets/venice_key")
 LIVE_SKIPPED = not os.path.exists(KEY_FILE)

@@ -19,7 +19,7 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from uncensored_router import session_store  # noqa: E402
+from hermes_router import session_store  # noqa: E402
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def test_readonly_uri_mode(tmp_db):
 
 def test_path_resolution_uses_get_hermes_home(tmp_path, monkeypatch):
     """_state_db_path() = get_hermes_home() / 'state.db' — no hardcoded home."""
-    import uncensored_router.session_store as ss
+    import hermes_router.session_store as ss
     fake_home = tmp_path / "hermes-home"
     fake_home.mkdir()
     (fake_home / "state.db").write_bytes(b"")  # exists → path check passes

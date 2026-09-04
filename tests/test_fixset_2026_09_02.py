@@ -3,8 +3,8 @@ FIX 1: history reconciliation shim (consume-once, next-turn PRE).
 FIX 3: PRE injections visibly marked as router material.
 FIX 4: doctrine-quote exclusion in scan_pre.
 """
-from uncensored_router import classifier, render_inbox
-import uncensored_router as plug
+from hermes_router import classifier, render_inbox
+import hermes_router as plug
 
 
 # --- FIX 4: doctrine-quote exclusion ---

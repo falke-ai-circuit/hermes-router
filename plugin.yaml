@@ -1,10 +1,10 @@
-# uncensored-router — portable any-agent Hermes plugin (manifest v2)
-name: uncensored-router
-version: 2.3.7
+# hermes-router — portable any-agent Hermes plugin (manifest v2)
+name: hermes-router
+version: 3.0.0a0
 manifest_version: 2
 api_version: 1
 license: internal
-homepage: https://github.com/falke-ai-circuit/uncensored-router
+homepage: https://github.com/falke-ai-circuit/hermes-router
 tags: [middleware, llm, safety-net, routing, any-agent]
 author: falke-ai-circuit
 description: >-
@@ -40,7 +40,7 @@ config_schema:
   enabled: {type: bool, default: true, description: "Master switch (both stages)"}
   dry_run: {type: bool, default: false, description: "Log would-be routes, pass through unchanged"}
   pending_routes_ttl_seconds: {type: int, default: 300}
-  log_path: {type: str, default: "/tmp/uncensored-router.log"}
+  log_path: {type: str, default: "/tmp/hermes-router.log"}
   log_routes: {type: bool, default: true}
   log_max_bytes: {type: int, default: 10485760}
   substance_frame: {type: str, default: "", description: "Override PRE substance frame text"}

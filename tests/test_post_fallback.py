@@ -21,8 +21,8 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import uncensored_router as plugin  # noqa: E402
-from uncensored_router import state  # noqa: E402
+import hermes_router as plugin  # noqa: E402
+from hermes_router import state  # noqa: E402
 
 RENDERED = "VENICE RENDERED CONTENT MARKER " * 10
 

@@ -6,7 +6,7 @@ in router.py. Reusing router.call() would inherit the 300s timeout, the
 50-token classification.
 
 Design (reviewer amendments #2/#3 + blueprint §4, ALL required):
-- Endpoint from uncensored_router.classification.aux_endpoint (url/model/
+- Endpoint from hermes_router.classification.aux_endpoint (url/model/
   key_env/key_file/max_tokens/timeout_seconds) — mirrors the venice endpoint
   block shape. Key resolution: key_file first (curl config-file keeps it out
   of argv), key_env fallback (env acceptable per blueprint §2 — it is not a
@@ -107,17 +107,25 @@ def parse_verdict(text: Optional[str]) -> Optional[str]:
 
 
 def _classification_cfg(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """uncensored_router.classification. Explicit `cfg` arg wins (tests);
-    otherwise read config.yaml. {} on miss."""
+    """Plugin config classification block. Explicit `cfg` arg wins (tests);
+    otherwise read config.yaml. v3.0.0 rename backward-compat: "hermes_router"
+    section first, legacy "uncensored_router" fallback. {} on miss."""
     if cfg is not None:
         return cfg if isinstance(cfg, dict) else {}
     try:
         from hermes_cli.config import load_config
 
         c = load_config()
-        section = c.get("uncensored_router") if isinstance(c, dict) else None
-        cls = section.get("classification") if isinstance(section, dict) else None
-        return cls if isinstance(cls, dict) else {}
+        if isinstance(c, dict):
+            section = c.get("hermes_router")
+            if isinstance(section, dict) and section:
+                cls = section.get("classification")
+                return cls if isinstance(cls, dict) else {}
+            section = c.get("uncensored_router")
+            if isinstance(section, dict):
+                cls = section.get("classification")
+                return cls if isinstance(cls, dict) else {}
+        return {}
     except Exception:  # noqa: BLE001
         return {}
 

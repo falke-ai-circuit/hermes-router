@@ -10,7 +10,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from classifier import scan_pre, scan_post
-from uncensored_router import state
+from hermes_router import state
 
 
 PRE_GROUPS = [

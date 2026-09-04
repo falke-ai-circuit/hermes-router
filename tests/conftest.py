@@ -1,8 +1,8 @@
 """conftest — importable plugin package for tests (package has __init__.py).
 
-Tests import the plugin as a PACKAGE (`import uncensored_router`) so all
+Tests import the plugin as a PACKAGE (`import hermes_router`) so all
 modules share one namespace (Trap 5: bare `import state` vs
-`from uncensored_router import state` would create two module objects with
+`from hermes_router import state` would create two module objects with
 diverging mutable state). PLUGIN_DIR alone is NOT enough for the package
 import — the PARENT dir (plugins/) must be on sys.path too.
 """

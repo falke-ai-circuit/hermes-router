@@ -25,7 +25,7 @@ import re
 import time
 from typing import Dict, Optional, Tuple
 
-logger = logging.getLogger("uncensored_router.persona")
+logger = logging.getLogger("hermes_router.persona")
 
 PERSONA_MAX_CHARS = 6000          # total card budget (hard cap)
 PERSONA_ANCHOR_CHARS = 2600       # IDENTITY.md slice
@@ -148,10 +148,10 @@ def build_persona_context() -> str:
     # identity anchor; boundaries belong to the agent, not the uncensored channel.
     try:
         from hermes_cli.config import load_config as _lc
-        _cfgp = (load_config() or {}).get("uncensored_router", {}) if callable(load_config) else {}
-        persona_mode = str(_cfgp.get("persona_mode", os.environ.get("UNCENSORED_ROUTER_PERSONA_MODE", "voice_stems")))
+        _cfgp = (load_config() or {}).get("hermes_router", {}) if callable(load_config) else {}
+        persona_mode = str(_cfgp.get("persona_mode", os.environ.get("HERMES_ROUTER_PERSONA_MODE", "voice_stems")))
     except Exception:
-        persona_mode = os.environ.get("UNCENSORED_ROUTER_PERSONA_MODE", "voice_stems")
+        persona_mode = os.environ.get("HERMES_ROUTER_PERSONA_MODE", "voice_stems")
 
     if persona_mode == "none":
         # v2.3.9 (orchestrator-lane evidence): even voice-stems continuity makes the

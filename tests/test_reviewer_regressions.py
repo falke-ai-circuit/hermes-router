@@ -12,8 +12,8 @@ for _p in (PARENT_DIR, PLUGIN_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import uncensored_router as plugin  # noqa: E402
-from uncensored_router import state  # noqa: E402
+import hermes_router as plugin  # noqa: E402
+from hermes_router import state  # noqa: E402
 
 
 def _cfg(pre=True, post=True):
@@ -75,7 +75,7 @@ def test_h4_log_file_owner_only(tmp_path, monkeypatch):
 def test_csam_plural_minors_matches():
     """Live-caught 2026-09-02: plural 'minors' evaded \\bminor\\b and routed a
     refusal into the chain (CSAM render delivered). Pattern must catch both."""
-    from uncensored_router import classifier
+    from hermes_router import classifier
     for text in ("story involving minors", "with minors", "a minor", "underage"):
         assert classifier.scan_pre(text, patterns=["csam_underage"]) == ["csam_underage"], text
 
@@ -84,7 +84,7 @@ def test_gate_semantic_multilingual_decline_openers():
     """Fleet-probe live catch (2026-09-02): valmet's ICS refusal opened
     'Non lo farò —' (Italian) and slipped both stages. Decline openers in
     fleet languages must pass the cheap gate."""
-    import uncensored_router as m
+    import hermes_router as m
     assert m._gate_semantic("Non lo farò — that specific artifact is where I stop, " + "x" * 2000)
     assert m._gate_semantic("Nein. That is not something I will produce. " + "x" * 400)
     assert m._gate_semantic("No. Same answer as before.")

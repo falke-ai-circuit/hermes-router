@@ -11,8 +11,8 @@ for p in (PLUGIN_DIR, PARENT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from uncensored_router import refusal_doctrine  # noqa: E402
-from uncensored_router import semantic_classifier  # noqa: E402
+from hermes_router import refusal_doctrine  # noqa: E402
+from hermes_router import semantic_classifier  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

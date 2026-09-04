@@ -9,8 +9,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from uncensored_router import state
-import uncensored_router as plugin
+from hermes_router import state
+import hermes_router as plugin
 
 
 class TestUnconditionalPost:

@@ -11,9 +11,9 @@ for _p in (PARENT_DIR, PLUGIN_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import uncensored_router as plugin  # noqa: E402
-from uncensored_router import state  # noqa: E402
-from uncensored_router import refusal_doctrine, semantic_classifier as sc  # noqa: E402
+import hermes_router as plugin  # noqa: E402
+from hermes_router import state  # noqa: E402
+from hermes_router import refusal_doctrine, semantic_classifier as sc  # noqa: E402
 
 
 def _cfg(mode="route"):

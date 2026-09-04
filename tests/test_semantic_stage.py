@@ -21,9 +21,9 @@ for _p in (PARENT_DIR, PLUGIN_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import uncensored_router as plugin  # noqa: E402
-from uncensored_router import semantic_classifier as sc  # noqa: E402
-from uncensored_router import state  # noqa: E402
+import hermes_router as plugin  # noqa: E402
+from hermes_router import semantic_classifier as sc  # noqa: E402
+from hermes_router import state  # noqa: E402
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
@@ -322,7 +322,7 @@ def test_matrix6_breaker_resets_on_success():
 
 
 def test_matrix6_breaker_cooldown_expiry():
-    from uncensored_router import semantic_classifier as m
+    from hermes_router import semantic_classifier as m
     cfg = {"aux_breaker_failures": 3, "aux_breaker_cooldown_seconds": 600.0}
     m._record_failure(cfg)
     m._record_failure(cfg)
