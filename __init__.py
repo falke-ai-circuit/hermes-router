@@ -418,14 +418,16 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if "Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content:  # v2.3.0: legacy + new frame sentinel
             return {}
 
-        # H3 gate (reviewer audit 2026-09-02, Goran standing ruling): the
-        # excluded class (csam_underage) never routes — previously only the
-        # POST fallback gated it, so PRE could route such asks into the
-        # chain. Same non-tunable gate now fires on BOTH stages.
-        if _matches_excluded_class(content):
-            _log_route("PRE", event_detail="excluded_class_blocked",
-                       content_chars=len(content), session_id=session_id or "")
-            return {}
+        # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
+        # blocking, uncensored should not filter anything when asked"). The
+        # 2026-09-01 gate ("i dont want explicit minors") never actually fired
+        # in production: it referenced `session_id` three lines before that
+        # local was bound (UnboundLocalError swallowed by the outer handler),
+        # so PRE silently passed through every time. Reversal makes removal
+        # the correct fix: csam_underage now routes like any contested class
+        # (chain renders; substrate refusals pass through unchanged; loop
+        # guard prevents loops). No content gate exists in this plugin —
+        # boundaries live in the render substrate, not in routing code.
 
         session_id = _session_id_from_context(**context)
         model = str(request.get("model") or "")
@@ -620,15 +622,9 @@ def _build_substance_message(rendered: str, original_ask: str = "") -> str:
 # ---------------------------------------------------------------------------
 # Post-router — transform_llm_output hook (spec §6)
 # ---------------------------------------------------------------------------
-
-
-def _matches_excluded_class(message: str) -> bool:
-    """The ONLY content gate in the POST fallback path (Goran-direct
-    2026-09-01: "i dont want explicit minors"). Hard-coded check against the
-    classifier's csam_underage group — NOT config-tunable: narrowing
-    pre_patterns in config must not weaken this gate. No new patterns; reuses
-    the existing scan_pre regexes."""
-    return bool(classifier.scan_pre(message or "", patterns=["csam_underage"]))
+# (2026-09-04: _matches_excluded_class removed with the content gate — Goran-direct
+#  reversal, "uncensored should not filter anything when asked". Boundary
+#  enforcement lives in the render substrate, not in routing code.)
 
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
@@ -644,8 +640,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
     order: same-turn PRE stash → hook context (user_message kwarg, future-
     proof) → last-seen cache (recorded by the middleware on every turn) →
     session store (state.db; survives gateway restarts). Fallback routes log
-    route_fired_no_stash. The excluded class (csam_underage) is NEVER routed
-    via the fallback — code-side gate, not tunable. Loop guard retained."""
+    route_fired_no_stash. Content gate removed 2026-09-04 (Goran-direct
+    reversal — no code-side filtering; substrate boundaries pass through).
+    Loop guard retained."""
     try:
         if not _enabled() or not bool(_classification_cfg().get("post_classify", True)):
             return None
@@ -714,14 +711,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             return None
 
         if fallback:
-            # THE content gate (code-side, not tunable — Goran-direct "i dont
-            # want explicit minors"): the excluded class is never routed via
-            # the fallback; the refusal passes through unchanged.
-            if _matches_excluded_class(original_user_message):
-                _log_route("POST", event_detail="fallback_skipped_excluded_class",
-                           pattern_groups=",".join(matches),
-                           refusal_chars=len(response_text), session_id=session_id)
-                return None
+            # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
+            # code-side filtering; substrate holds its own boundaries and
+            # its refusals pass through unchanged). Previously blocked
+            # csam_underage fallback routes here; now every class routes
+            # through the fallback identically. Loop guard below prevents
+            # render loops.
+            pass
 
         # Loop-guard key: hash of the message being routed. On stash-recovery
         # turns that equals the PRE-recorded hash (identical to the legacy

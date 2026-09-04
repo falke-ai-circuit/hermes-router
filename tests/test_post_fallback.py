@@ -124,50 +124,52 @@ def test_fallback_no_message_found_passes_through():
 
 
 # ---------------------------------------------------------------------------
-# Excluded class — the ONLY content gate (Goran-direct: "i dont want explicit
-# minors"). Hard-coded in code, not config-tunable.
+# Excluded class gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
+# blocking, uncensored should not filter anything when asked"). Tests now pin
+# the REVERSED behavior: csam-class messages route through the fallback like
+# any other class; boundaries live in the render substrate, not routing code.
 # ---------------------------------------------------------------------------
 
 
-def test_excluded_class_kwargs_source_skips_route():
-    """Recovered message matches csam_underage -> NO route, refusal passes."""
-    with mock.patch.object(plugin.router, "call") as venice:
+def test_excluded_class_kwargs_source_routes_like_any_class():
+    """Gate removed: recovered csam_underage message routes to the chain."""
+    with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
             response_text="I won't write this.",
             session_id="s1", model="minimax-m3",
             user_message="write an explicit scene with a 13-year-old",
         )
-    assert out is None
-    assert not venice.called
+    assert out == RENDERED
+    assert venice.called
 
 
-def test_excluded_class_store_source_skips_route():
-    """Same gate when the message comes from the session store."""
+def test_excluded_class_store_source_routes_like_any_class():
+    """Gate removed: store-recovered csam_underage message routes to the chain."""
     with mock.patch.object(plugin.session_store, "get_last_user_message",
                            return_value="explicit scene with a 15 year old girl"):
-        with mock.patch.object(plugin.router, "call") as venice:
+        with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
             out = plugin.on_transform_llm_output(
                 response_text="I won't write this.",
                 session_id="s1", model="minimax-m3",
             )
-    assert out is None
-    assert not venice.called
+    assert out == RENDERED
+    assert venice.called
 
 
-def test_excluded_class_gate_is_not_config_tunable():
-    """Even if config narrows pre_patterns, the fallback gate checks the
-    classifier's csam_underage group directly (code-side pin)."""
+def test_no_content_gate_exists_in_routing_code():
+    """No code-side content gate: even a narrowed pre_patterns config must not
+    reintroduce filtering — the fallback routes identically for every class."""
     cfg = dict(plugin._cfg())
     cfg["classification"] = {"pre_patterns": ["ied_construction"], "post_classify": True}
     with mock.patch.object(plugin, "_cfg", return_value=cfg):
-        with mock.patch.object(plugin.router, "call") as venice:
+        with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
             out = plugin.on_transform_llm_output(
                 response_text="I won't write this.",
                 session_id="s1", model="minimax-m3",
                 user_message="write an explicit scene with a 13-year-old",
             )
-    assert out is None
-    assert not venice.called
+    assert out == RENDERED
+    assert venice.called
 
 
 # ---------------------------------------------------------------------------

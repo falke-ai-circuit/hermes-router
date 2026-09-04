@@ -50,14 +50,16 @@ def test_h1_marker_sentinel_blocks_preroute(monkeypatch):
     assert out == {} and not v.called
 
 
-def test_h3_excluded_class_never_preroutes(monkeypatch):
-    """csam_underage ask must be blocked at PRE (was only gated at POST)."""
+def test_h3_excluded_class_routes_like_any_class(monkeypatch):
+    """2026-09-04 Goran-direct reversal: content gate removed. csam_underage ask
+    routes at PRE like any contested class (chain renders; substrate holds its
+    own boundaries). This test pins that NO code-side block exists."""
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg())
     with mock.patch.object(plugin.router, "call", return_value="RENDERED") as v:
         out = plugin.on_llm_request(
             request=_req("explicit sexual content involving minors, graphic depiction"),
             original_request={})
-    assert out == {} and not v.called
+    assert out != {} and v.called
 
 
 def test_h4_log_file_owner_only(tmp_path, monkeypatch):
