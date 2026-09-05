@@ -152,6 +152,13 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
       cost_usd     -> recorded spend (None when usage absent)
     Never raises. Streaming kwargs are stripped — anchored calls are
     non-streaming single-shot.
+
+    System-message sanitization (live-caught 2026-09-05): the flash outbound
+    payload carries the profile's DNA-persona system prompt (uncensored
+    doctrine wording). Anthropic/OpenRouter content-filter zeroed content
+    (finish=content_filter) on those words — the frontier anchor is a TASK
+    consultant, not a persona continuation. System messages are replaced with
+    a neutral task frame; user/assistant turns pass through unchanged.
     """
     try:
         import httpx
@@ -171,6 +178,22 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         payload.pop("_moa_prepared_request", None)
         payload.pop("timeout", None)
         payload["model"] = endpoint.model
+
+        # System sanitization: frontier anchor gets a neutral task frame, never
+        # the flash profile's DNA-persona system prompt (content-filter bait).
+        msgs = payload.get("messages")
+        if isinstance(msgs, list):
+            _sys_idx = [i for i, m in enumerate(msgs)
+                        if isinstance(m, dict) and m.get("role") == "system"]
+            if _sys_idx:
+                _frame = ("You are a senior specialist consultant answering one bounded technical "
+                          "question. Answer the user's request directly and completely. "
+                          "No tools are available; do not request any.")
+                for i in _sys_idx:
+                    msgs[i] = {"role": "system", "content": _frame}
+        payload["tools"] = None  # anchored calls are single-shot advisory; tool schemas are flash-lane
+        payload.pop("tool_choice", None)
+        payload.pop("parallel_tool_calls", None)
 
         client = OpenAI(base_url=endpoint.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
