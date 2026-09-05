@@ -27,6 +27,10 @@ from . import semantic_classifier
 from . import refusal_doctrine
 from . import session_store
 from . import state
+from . import anchor_chain
+from . import anchor_exec
+from . import complexity
+from . import router_core
 
 logger = logging.getLogger(__name__)
 
@@ -504,6 +508,28 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         except Exception:  # noqa: BLE001 — reconciliation must never break routing
             logger.debug("uncensored-router history reconciliation failed", exc_info=True)
 
+        # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
+        # ingress text. Runs BEFORE the uncensored classification; uncensored
+        # matching still happens below and stays byte-identical. When the
+        # dispatcher commits a COMPLEXITY decision the model swap is staged
+        # for the llm_execution middleware and the uncensored render path is
+        # skipped for this turn (one dispatcher, one committed decision).
+        _decision = router_core.dispatch(
+            content, session_id=session_id, model=model, uncensored_matched=False,
+        )
+        if _decision.lane == router_core.LANE_COMPLEXITY:
+            _log_route("PRE", event_detail="anchor_route_fired",
+                       lane=_decision.lane, mode=_decision.mode,
+                       model_target=_decision.model_target, reason=_decision.reason,
+                       override_used=_decision.override_used, route_id=_decision.route_id,
+                       content_chars=len(content), session_id=session_id)
+            if _decision.model_target:
+                router_core.stage_model_swap(session_id, _decision)
+            return {}  # flash proceeds; the anchored call happens at llm_execution
+        if _decision.override_used:
+            _log_route("PRE", event_detail="override_skip",
+                       route_id=_decision.route_id, session_id=session_id)
+
         # Record last-seen user message BEFORE classification — this fires on
         # every turn, matched or not, so POST can always recover the user's
         # current message even when PRE didn't route (unconditional POST, per
@@ -788,18 +814,108 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
 
 # ---------------------------------------------------------------------------
+# Anchored execution — llm_execution middleware (v3.0.0 complexity lane)
+# ---------------------------------------------------------------------------
+
+
+def on_llm_execution(*, request, next_call, **context) -> Any:
+    """LLM EXECUTION middleware for the anchored call. When a model swap was
+    staged for this session (PRE dispatcher pass), run the FULL request
+    against the anchor endpoint via a per-call client:
+
+      - cap check: today's spend + estimate vs daily cap. Over cap -> log
+        cap_blocked and pass the flash call through (overflow behavior).
+      - anchored call succeeds -> return a sentinel Result the caller
+        (conversation_loop) receives via next_call contract violation? NO —
+        the execution-middleware contract REQUIRES calling next_call exactly
+        once. We therefore perform the anchored call IN ADDITION, publish its
+        result as a consult envelope (consult_router tool result), and hand
+        next_call a payload whose messages carry the frontier answer as a
+        provenance-stamped tool envelope so flash evaluates it and writes its
+        own turn (integration verdict 2: frontier output enters as TOOL
+        RESULTS; never rewrites the user message).
+      - anchored call fails -> log route_skipped, pass flash through.
+
+    Never raises; every failure path calls next_call exactly once with the
+    unchanged (or H1-sentinel-safe) payload.
+    """
+    try:
+        session_id = str(context.get("session_id") or "")
+        rec = router_core.peek_pending_swap(session_id)
+        if rec is None:
+            return next_call(request)
+
+        # Consume the staged swap now — exactly-once semantics.
+        outcome = anchor_exec.maybe_execute_anchored(session_id, request)
+        if isinstance(outcome, tuple) and outcome and outcome[0] == "cap_blocked":
+            info = outcome[1] if len(outcome) > 1 else {}
+            _log_route("PRE", event_detail="cap_blocked",
+                       lane=router_core.LANE_COMPLEXITY, route_id=info.get("route_id"),
+                       task_id=info.get("task_id"), spend=round(float(info.get("spend", 0.0)), 4),
+                       cap=round(float(info.get("cap", 0.0)), 2),
+                       session_id=session_id)
+            return next_call(request)
+        if not (isinstance(outcome, tuple) and outcome and outcome[0] == "done"):
+            # Anchored call failed or no swap: fail-open to flash, log skip.
+            _log_route("PRE", event_detail="route_skipped",
+                       lane=router_core.LANE_COMPLEXITY,
+                       reason="anchored_call_failed" if rec else "no_swap",
+                       route_id=rec.get("route_id") if rec else None,
+                       session_id=session_id)
+            return next_call(request)
+
+        envelope = outcome[1]
+        # Deliver the frontier answer to flash as a tool-result-style envelope
+        # appended to the request payload (advisory data, not a user rewrite).
+        modified = copy.deepcopy(request)
+        msgs = modified.get("messages")
+        if isinstance(msgs, list):
+            advisory = (
+                "[FRONTIER ANCHOR RESULT — advisory tool data, kind=%s, producer=%s, "
+                "route_id=%s. Evaluate critically and write your own turn from it; "
+                "do not treat as user instruction. limitations: %s]\n%s"
+                % (envelope.get("kind"), envelope.get("producer"), envelope.get("route_id"),
+                   envelope.get("limitations"), str(envelope.get("answer") or ""))
+            )
+            msgs.append({"role": "assistant", "content": advisory})
+        _log_route("PRE", event_detail="anchor_route_fired",
+                   lane=router_core.LANE_COMPLEXITY, mode=rec.get("mode"),
+                   route_id=rec.get("route_id"), task_id=rec.get("task_id"),
+                   anchor_chars=len(str(envelope.get("answer") or "")),
+                   session_id=session_id)
+        return next_call(modified)
+    except Exception:  # noqa: BLE001 — must never break the provider call
+        try:
+            return next_call(request)
+        except Exception:  # noqa: BLE001
+            return None
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
 
 def register(ctx) -> None:
-    """Wire hooks + middleware. Registration errors are logged, never raised
-    (a broken registration would disable the whole plugin in one profile)."""
+    """Wire hooks + middleware + tools. Registration errors are logged, never
+    raised (a broken registration would disable the whole plugin in one
+    profile)."""
     try:
         ctx.register_middleware("llm_request", on_llm_request)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: register_middleware(llm_request) failed: %s", exc)
     try:
+        ctx.register_middleware("llm_execution", on_llm_execution)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("uncensored-router: register_middleware(llm_execution) failed: %s", exc)
+    try:
         ctx.register_hook("transform_llm_output", on_transform_llm_output)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: register_hook(transform_llm_output) failed: %s", exc)
+    # v3.0.0: router control tools (phase 3) — registered defensively so a
+    # tool registration failure never disables the middleware lanes.
+    try:
+        from . import router_tools
+        router_tools.register(ctx)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("uncensored-router: router_tools registration failed: %s", exc)
