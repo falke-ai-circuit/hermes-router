@@ -89,6 +89,57 @@ def _state_db_path() -> str:
     return session_store._state_db_path()
 
 
+def get_last_canonical_answer(session_id: str, max_chars: int = 2000) -> str:
+    """v3.1.1 contamination fix (Astra canonical-event doctrine, round-2 Q4c):
+    the most recent persisted assistant answer for THIS session, read from
+    state.db (session-filtered, ORDER BY id DESC, capped). Continuation-style
+    asks ("summarize what you just explained") must be rendered grounded in
+    the actual delivered answer — not free-associated from persona memory.
+
+    Refusal-shaped rows are SKIPPED: turn_finalizer persists the flash turn
+    (the refusal itself) before the POST hook fires, so the newest assistant
+    row is often the very refusal being substituted — feeding it back as
+    "the previous answer" would anchor the render on the refusal instead of
+    the substance.
+
+    Returns "" when nothing usable is found; never raises (fail-open — the
+    render proceeds with current behavior on any fetch error)."""
+    if not session_id or not str(session_id).strip():
+        return ""
+    try:
+        import sqlite3
+
+        from . import session_store as _ss
+
+        db_path = _state_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return ""
+        from . import persona_card as _pc
+
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            rows = conn.execute(
+                "SELECT substr(content, 1, ?) FROM messages"
+                " WHERE session_id = ? AND role = 'assistant'"
+                "   AND content IS NOT NULL AND trim(content) <> ''"
+                " ORDER BY id DESC LIMIT 10",
+                (_ss._CONTENT_CAP, str(session_id)),
+            ).fetchall()
+        finally:
+            conn.close()
+        for (text,) in rows or []:
+            text = str(text or "")
+            if not text.strip():
+                continue
+            if _pc._looks_like_refusal(text):
+                continue  # skip the just-persisted refusal (and any older one)
+            return text[:max_chars]
+        return ""
+    except Exception as exc:  # noqa: BLE001 — grounding must never break the hook
+        logger.debug("canonical last-answer fetch failed: %s", exc)
+        return ""
+
+
 def _load_locked() -> None:
     """Warm the in-memory idempotency sets from the sidecar (bounded scan).
     Caller holds _lock. Tolerates torn lines."""
@@ -170,12 +221,16 @@ def has_refusal_record(session_id: str, original_refusal_hash: str) -> bool:
 
 def commit_canonical_event(session_id: str, turn_marker: str, content: str,
                            original_refusal_hash: str,
-                           producer: str = _PRODUCER) -> bool:
+                           producer: str = _PRODUCER,
+                           grounded: bool = False, route_id: str = "") -> bool:
     """Append one canonical-event record (idempotent). Returns True when a NEW
     record was written; False when already canonicalized or on any failure.
     Dedup keys: (session_id, content_hash) [brief key] and
     (session_id, original_refusal_hash) [turn identity]. The turn marker is
-    registered either way so repeat POST fires of the same turn stay skipped."""
+    registered either way so repeat POST fires of the same turn stay skipped.
+    v3.1.1: records also carry `grounded` (render grounded in this session's
+    canonical conversation) and `route_id` (anchored-lane correlation; "" for
+    plain POST renders)."""
     if not content or not str(content).strip():
         return False
     sid = str(session_id or "")
@@ -199,6 +254,8 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
                     "content_hash": ch,
                     "committed_at": round(time.time(), 3),
                     "original_refusal_hash": rh,
+                    "grounded": bool(grounded),
+                    "route_id": str(route_id or ""),
                 }
                 path = _store_path()
                 d = os.path.dirname(path)

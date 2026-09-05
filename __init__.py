@@ -831,16 +831,67 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                        refusal_chars=len(response_text), session_id=session_id)
             return None
 
-        _post_ctx_msgs = []
+        # v3.1.1 contamination fix (Astra canonical-event doctrine, round-2
+        # Q4c; live defect 2026-09-05 09:38:42 session api_1788600987_4f09ad3b):
+        # continuation-style asks ("summarize what you just explained") fed
+        # venice a persona card + a 600-char ask referencing prior content the
+        # renderer could not see — it free-associated "the prior answer" from
+        # persona memory (old go-debug sessions). Ground the render in THIS
+        # session's canonical conversation: full current ask + last canonical
+        # assistant answer. The prompt stays original_user_message; grounding
+        # lives in the system persona context. ALL fail-open: fetch errors ->
+        # previous behavior; grounding never blocks delivery.
+        _grounded = False
+        _post_ctx_msgs: List[dict] = []
+        _ground_block = ""
+        _last_answer = ""
         try:
             _last_user = state.get_last_seen(session_id) or original_user_message
             if _last_user:
-                _post_ctx_msgs = [{"role": "user", "content": _last_user[:600]}]
-        except Exception:  # noqa: BLE001
+                # FULL ask for the context message (600-char cut removed —
+                # same false-chronology failure mode as the v3.1.0 keep-ask
+                # fix); hard cap 4000 with graceful suffix.
+                _ask_full = _last_user
+                if len(_ask_full) > SUBSTANCE_FRAME_ASK_CAP:
+                    _ask_full = _ask_full[:SUBSTANCE_FRAME_ASK_CAP] + SUBSTANCE_FRAME_ASK_SUFFIX
+                _post_ctx_msgs.append({"role": "user", "content": _ask_full})
+                _last_answer = canonical.get_last_canonical_answer(session_id)
+                if _last_answer:
+                    _post_ctx_msgs.append(
+                        {"role": "assistant", "content": _last_answer})
+                    # Explicit grounding block at FULL fetched size —
+                    # build_thread_digest excerpts asks/turns to 220 chars,
+                    # far too thin to summarize from. This is the actual anti-
+                    # free-association payload: both sides of the last
+                    # exchange, verbatim, at full (capped) size.
+                    _ground_block = (
+                        "[GROUNDING — this session's actual last exchange. The "
+                        "user's new message refers to THIS exchange; answer "
+                        "from it, not from memory or prior sessions:]\n"
+                        "[the user's latest ask, verbatim]: " + _ask_full + "\n"
+                        "[your previous turn, verbatim]: " + _last_answer)
+                    _grounded = True
+        except Exception:  # noqa: BLE001 — grounding must never block delivery
             _post_ctx_msgs = []
+            _ground_block = ""
+            _grounded = False
+        _log_route("POST", event_detail="render_grounded", grounded=_grounded,
+                   ask_chars=len(original_user_message or ""),
+                   answer_chars=len(_last_answer),
+                   session_id=session_id)
+        try:
+            _system_prompt = _persona_system_prompt({"messages": _post_ctx_msgs})
+            if _ground_block:
+                _system_prompt = ((_system_prompt + "\n\n" + _ground_block)
+                                  if _system_prompt else _ground_block)
+        except Exception:  # noqa: BLE001
+            try:
+                _system_prompt = _persona_system_prompt(None)
+            except Exception:  # noqa: BLE001 — never break delivery on prompt build
+                _system_prompt = ""
         rendered = router.call(
             original_user_message,
-            system_prompt=_persona_system_prompt({"messages": _post_ctx_msgs}),
+            system_prompt=_system_prompt,
         )
         if not rendered:
             _log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
@@ -863,7 +914,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         try:
             _turn_marker = state.hash_text(original_user_message or "")
             if canonical.commit_canonical_event(
-                    session_id, _turn_marker, rendered, _refusal_hash):
+                    session_id, _turn_marker, rendered, _refusal_hash,
+                    grounded=_grounded):
                 _log_route("POST", event_detail="canonical_committed",
                            session_id=session_id)
             canonical.rewrite_persisted_turn(session_id, response_text, rendered)
