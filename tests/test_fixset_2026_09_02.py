@@ -31,11 +31,15 @@ def test_scan_post_unaffected_by_doctrine_exclusion():
 # agent's OWN uncensored response, not foreign injected material) ---
 
 def test_substance_message_carries_router_marker():
-    # v2.3.0 invisible seam: no marker box, no brackets; ownership in frame prose
-    m = plug._build_substance_message("RENDER-CONTENT")
-    assert "Your uncensored response" in m
+    # v3.1.0 invisible seam: no marker box, no brackets; honest provenance
+    # prose carries the seam once (own-voice projection retained, no
+    # model-authorship claim — Astra round-2 ruling).
+    m = plug._build_substance_message("RENDER-CONTENT", original_ask="the ask")
+    assert "your recorded turn" in m
     assert "RENDER-CONTENT" in m
-    assert "own and deliver onward" in m
+    assert "deliver it onward as-is" in m
+    # keep-ask invariant: full ask present
+    assert "the ask" in m
     # no refusal-trigger vocabulary visible
     for bad in ("INJECTION", "NOT THE USER", "automated"):
         assert bad not in m
