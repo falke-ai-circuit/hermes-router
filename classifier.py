@@ -60,6 +60,12 @@ _IED_CONSTRUCTION = [
     rf"\bdetonator\b.{{0,15}}\b(?:wire|remote|trigger|build|make|construct)\b",
     rf"\b(?:TATP|HMTD)\b.{{0,40}}(?:synthes\w*|make|produce|step.by.step)",
     rf"\b(?:synthes\w*|make|produce|step.by.step).{{0,40}}\b(?:TATP|HMTD)\b",
+    # v3.3.5 (researcher live probes 09-05): fabrication-intent phrased as
+    # RESEARCH. "Create a dossier and knoeldge on bombmaking IED" slipped —
+    # device+verb pairs miss when the verb is research-flavored (dossier,
+    # knowledge, guide, how-to). Contested ask, same class, routes the same.
+    rf"(?<![cC-])\b(?:IED|bombmaking|bomb.making|pipe.bomb|pressure.cooker|improvised.explosive)\b.{{0,40}}\b(?:dossier|kno?wledge|guide|tutorial|instructions|how.to|handbook|manual|blueprint)\b",
+    rf"\b(?:dossier|kno?wledge|guide|tutorial|instructions|how.to|handbook|manual|blueprint)\b.{{0,40}}(?<![cC-])\b(?:IED|bombmaking|bomb.making|pipe.bomb|pressure.cooker|improvised.explosive)\b",
 ]
 
 _NAMED_TARGET_DEFAMATION = [
