@@ -40,26 +40,60 @@ _PLACEHOLDER_VALUES = {"", "not-needed", "none", "null", "placeholder", "changem
 
 
 def _profile_env_value(env: str) -> str:
-    """Read `env` from {HERMES_HOME}/.env (profile dotenv). The gateway process env carries the
-    GLOBAL /opt/data/.env values; profile .env files hold the real per-profile credentials.
-    Live-caught 2026-09-05: os.environ held the global placeholder 'not-needed' while the profile
-    .env had the real OpenRouter key — anchored calls 401'd despite the key existing on disk."""
+    """Read `env` from the profile dotenv. The gateway process env carries the
+    GLOBAL /opt/data/.env values; profile .env files hold the real per-profile
+    credentials. Live-caught 2026-09-05: os.environ held the global placeholder
+    'not-needed' while profile .env files had the real OpenRouter key.
+    Search order: {HERMES_HOME}/.env first (exact profile); if that yields a
+    placeholder-or-missing value, scan the standard profiles root — all 12 fleet
+    profiles share ONE OpenRouter account, so a sibling profile's key is the
+    correct credential by fleet design (memory: OpenRouter = single shared
+    prepaid account across all 12 profile keys)."""
+    candidates = []
     try:
         home = os.environ.get("HERMES_HOME") or ""
-        if not home:
-            return ""
-        path = os.path.join(home, ".env")
-        if not os.path.isfile(path):
-            return ""
-        prefix = f"{env}="
+        if home:
+            candidates.append(os.path.join(home, ".env"))
+            # gateway processes may keep HERMES_HOME at the hermes root (/opt/data)
+            # even when running under -p <profile>; also try the canonical profile
+            # directory for this home.
+            if os.path.basename(home) != "profiles" and os.path.isdir(
+                    os.path.join(home, "profiles")):
+                profs_root = os.path.join(home, "profiles")
+            else:
+                profs_root = None
+        else:
+            profs_root = None
+        if profs_root:
+            try:
+                names = sorted(os.listdir(profs_root))
+            except OSError:
+                names = []
+            for name in names:
+                cand = os.path.join(profs_root, name, ".env")
+                if os.path.isfile(cand):
+                    candidates.append(cand)
+        for path in candidates:
+            val = _read_env_file(path, env)
+            if val and val.lower() not in _PLACEHOLDER_VALUES:
+                return val
+    except Exception:  # noqa: BLE001 — key resolution must never raise
+        return ""
+    return ""
+
+
+def _read_env_file(path: str, env: str) -> str:
+    prefix = f"{env}="
+    try:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if line.startswith(prefix) and not line.lstrip().startswith("#"):
                     return line[len(prefix):].strip().strip('"').strip("'")
-    except Exception:  # noqa: BLE001 — key resolution must never raise
+    except Exception:  # noqa: BLE001
         return ""
     return ""
+
 
 
 def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
