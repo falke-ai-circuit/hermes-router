@@ -280,6 +280,48 @@ def _pending_ttl() -> float:
         return DEFAULT_PENDING_TTL
 
 
+# ---------------------------------------------------------------------------
+# v3.2.2 render delivery cap — character cap on the DELIVERED render text
+# (messaging-platform seam). Generation budget (chain max_tokens) is NOT
+# touched: the thinking-model floor makes lower budgets produce empty renders
+# with finish=length. Default 0 = no truncation (back-compat).
+# ---------------------------------------------------------------------------
+
+RENDER_TRUNCATION_MARKER = "\n\n[render truncated at platform limit]"
+
+
+def render_max_chars() -> int:
+    """Config read: render_max_chars (int, optional, default 0 = uncapped).
+    Read through _cfg() so both `hermes_router:` and the legacy
+    `uncensored_router:` section are honored (existing dual-section
+    semantics). Never raises."""
+    try:
+        val = _cfg().get("render_max_chars", 0)
+        limit = int(val)
+        return limit if limit > 0 else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def cap_render(text: str, limit: int) -> str:
+    """Character-true delivery cap: `text[:limit]` with a truncation marker
+    kept WITHIN the cap (cut at `limit - len(marker)` then append, so the
+    delivered length never exceeds `limit`). Renders within limit pass
+    through UNTOUCHED (byte-identical) with no log line; a cut logs
+    `render_capped original_chars=N capped_chars=N limit=N`. limit <= 0
+    disables the cap. Never raises."""
+    try:
+        if not isinstance(text, str) or limit <= 0 or len(text) <= limit:
+            return text
+        cut = limit - len(RENDER_TRUNCATION_MARKER)
+        capped = (text[:cut] if cut > 0 else "") + RENDER_TRUNCATION_MARKER
+        _log_route("PRE", event_detail="render_capped",
+                   original_chars=len(text), capped_chars=len(capped), limit=limit)
+        return capped
+    except Exception:  # noqa: BLE001 — capping must never break delivery
+        return text
+
+
 def _substance_frame() -> str:
     frame = _cfg().get("substance_frame")
     if isinstance(frame, str) and frame.strip():
@@ -625,6 +667,11 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                        pattern_groups=",".join(matches), render_chars=len(rendered),
                        session_id=session_id)
 
+        # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
+        # inbox/stash/frame/commit so every persisted artifact equals what
+        # flash receives (canonical invariant: persisted == delivered).
+        rendered = cap_render(rendered, render_max_chars())
+
         # Render inbox (2026-09-02 sync seam): persist the render so the agent
         # can read what was actually injected into its own context. Goran-direct.
         render_inbox.record_render("PRE", session_id, len(content), rendered)
@@ -905,6 +952,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
             return None
+
+        # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
+        # inbox/canonical commit/persisted-turn rewrite so the canonical
+        # record's content_hash and state.db row both hash/store the CAPPED
+        # text (canonical invariant: persisted == delivered).
+        rendered = cap_render(rendered, render_max_chars())
 
         # Render inbox (2026-09-02 sync seam): persist the render that REPLACES
         # the agent's response at delivery. Without this, the agent's context
