@@ -191,7 +191,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                           "No tools are available; do not request any.")
                 for i in _sys_idx:
                     msgs[i] = {"role": "system", "content": _frame}
-        payload["tools"] = None  # anchored calls are single-shot advisory; tool schemas are flash-lane
+        payload.pop("tools", None)  # anchored calls are single-shot advisory; tool schemas are flash-lane
         payload.pop("tool_choice", None)
         payload.pop("parallel_tool_calls", None)
 
