@@ -163,6 +163,19 @@ def get_last_seen_hash(session_id: str) -> str:
     return hash_text(msg) if msg else ""
 
 
+def turn_key_for(session_id: str, user_text: str, model: str = "") -> str:
+    """v3.3.0 (F2 turn_key dedupe): stable per-TURN key so a multi-provider-call
+    turn counts ONE struggle signal regardless of how many times dispatch
+    re-runs on the same ingress text. Same (session, user_text, model) inputs
+    as task_id_for — the task unit is the user ask, so a re-fire of the same
+    ask inside one turn hashes identically and dedupes; a genuinely new turn
+    (new user text) hashes differently. Never raises."""
+    try:
+        return "turn:" + hash_text((session_id or "") + "\x00" + (user_text or "").strip()[:4000] + "\x00" + (model or ""))[:24]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
