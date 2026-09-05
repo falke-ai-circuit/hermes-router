@@ -231,6 +231,8 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
 
         client = OpenAI(base_url=endpoint.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
+        logger.error("ANCHOR-DIAG key_prefix=%s key_len=%d base=%s", api_key[:10], len(api_key),
+                     endpoint.base_url)
         try:
             resp = client.chat.completions.create(**payload)
         finally:
