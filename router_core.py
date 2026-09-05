@@ -128,6 +128,28 @@ _SWAP_DONE: Dict[Tuple[str, str], float] = {}
 _SWAP_DONE_TTL = 600.0  # seconds
 _SWAP_DONE_MAX = 128
 
+# v3.3.1 anchor failure backoff: (session_id, task_id) -> ledger record.
+# _SWAP_DONE prevents re-staging INSIDE one turn (TTL 600s), but each NEW
+# user turn on the same stuck ask outlives it -> fresh anchor staging ->
+# fresh failure -> repeat (live 2026-09-05: task ba9ce5849a6f… fired its
+# anchor attempt 27x over 103 min into a failing OpenRouter endpoint; 98
+# anchored_call_failed route_skips across 3 profiles). The ledger remembers
+# the anchor FAILED for this (session, task): a failed attempt enters
+# exponential backoff (base_s doubling per consecutive fail, capped max_s)
+# so the dispatcher stops re-paying full price every turn; a SUCCESS clears
+# the entry. Same TTL-reap + MAX-size discipline as _SWAP_DONE. The key
+# includes session_id — cross-session same-ask never inherits backoff (each
+# session's first consult attempt is legitimate). cap_blocked does NOT
+# count as a failure (spend policy, not anchor health). Fail-open: ledger
+# writes never raise; on any error staging proceeds (v3.3.0 behavior).
+# Static mode / uncensored lane untouched — this only gates complexity-lane
+# anchor staging (zero interaction with renders, caps, canonical events).
+_ANCHOR_FAIL_BACKOFF: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_ANCHOR_BACKOFF_BASE_S = 30.0    # first-fail window
+_ANCHOR_BACKOFF_MAX_S = 1800.0   # window cap (30 min)
+_ANCHOR_BACKOFF_TTL_S = 3600.0   # 1h memory of failure
+_ANCHOR_BACKOFF_MAX = 256
+
 # tool-result envelopes consumed by the consult tool (route_id -> envelope)
 _CONSULT_RESULTS: Dict[str, Dict[str, Any]] = {}
 _CONSULT_RESULTS_MAX = 32
@@ -445,6 +467,147 @@ def adaptive_cfg() -> Dict[str, Any]:
         return {}
 
 
+# ---------------------------------------------------------------------------
+# v3.3.1 — anchor failure backoff config + ledger API
+# ---------------------------------------------------------------------------
+
+
+def anchor_backoff_cfg() -> Dict[str, Any]:
+    """complexity.anchor_backoff block (dual-section reader as existing).
+    Defect-fix defaults LIVE on deploy: enabled=True, base_s=30, max_s=1800,
+    ttl_s=3600. enabled:false restores v3.3.0 behavior exactly (escape
+    hatch). Never raises."""
+    try:
+        block = _complexity_cfg().get("anchor_backoff")
+        cfg = dict(block) if isinstance(block, dict) else {}
+        out: Dict[str, Any] = {
+            "enabled": bool(cfg.get("enabled", True)),
+            "base_s": _ANCHOR_BACKOFF_BASE_S,
+            "max_s": _ANCHOR_BACKOFF_MAX_S,
+            "ttl_s": _ANCHOR_BACKOFF_TTL_S,
+        }
+        for k in ("base_s", "max_s", "ttl_s"):
+            try:
+                v = float(cfg.get(k) or 0)
+                if v > 0:
+                    out[k] = v
+            except (TypeError, ValueError):
+                pass
+        return out
+    except Exception:  # noqa: BLE001
+        return {"enabled": True, "base_s": _ANCHOR_BACKOFF_BASE_S,
+                "max_s": _ANCHOR_BACKOFF_MAX_S, "ttl_s": _ANCHOR_BACKOFF_TTL_S}
+
+
+def anchor_backoff_window(fails: int) -> float:
+    """Exponential backoff window: base_s * 2**(fails-1) capped at max_s.
+    1st fail -> 30s, 2nd -> 60s, 3rd -> 120s … capped 30min. Never raises."""
+    try:
+        cfg = anchor_backoff_cfg()
+        base = float(cfg.get("base_s", _ANCHOR_BACKOFF_BASE_S))
+        cap = float(cfg.get("max_s", _ANCHOR_BACKOFF_MAX_S))
+        n = max(1, int(fails))
+        return min(base * (2 ** (n - 1)), cap)
+    except Exception:  # noqa: BLE001
+        return _ANCHOR_BACKOFF_MAX_S
+
+
+def record_anchor_backoff_failure(session_id: str, task_id: str,
+                                  reason: str = "") -> None:
+    """F1 ledger write from the consumption site (__init__.py route_skipped
+    branch, BEFORE return next_call): increment fails + set last_fail_ts for
+    (session_id, task_id). Same TTL-reap + size-cap discipline as _SWAP_DONE.
+    Never raises (fail-open: on error the ledger write is skipped)."""
+    try:
+        key = (str(session_id or ""), str(task_id or ""))
+        if not key[1]:
+            return
+        now = time.time()
+        with _PENDING_SWAP_LOCK:
+            rec = _ANCHOR_FAIL_BACKOFF.get(key)
+            if rec is None:
+                rec = {"fails": 0, "last_fail_ts": 0.0, "last_reason": ""}
+                _ANCHOR_FAIL_BACKOFF[key] = rec
+            rec["fails"] = int(rec.get("fails", 0)) + 1
+            rec["last_fail_ts"] = now
+            if reason:
+                rec["last_reason"] = str(reason)[:200]
+            # TTL reap + size cap (same discipline as _SWAP_DONE).
+            ttl = float(anchor_backoff_cfg().get("ttl_s", _ANCHOR_BACKOFF_TTL_S))
+            for k in [k for k, v in _ANCHOR_FAIL_BACKOFF.items()
+                      if now - float(v.get("last_fail_ts", 0)) > ttl]:
+                _ANCHOR_FAIL_BACKOFF.pop(k, None)
+            while len(_ANCHOR_FAIL_BACKOFF) > _ANCHOR_BACKOFF_MAX:
+                oldest = min(_ANCHOR_FAIL_BACKOFF,
+                             key=lambda k: _ANCHOR_FAIL_BACKOFF[k].get("last_fail_ts", 0))
+                _ANCHOR_FAIL_BACKOFF.pop(oldest, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def clear_anchor_backoff(session_id: str, task_id: str) -> None:
+    """F1 ledger clear from the consumption site (__init__.py outcome=="done"
+    branch, after envelope delivery): SUCCESS clears the entry — the next
+    stage for this key is allowed immediately. Never raises."""
+    try:
+        key = (str(session_id or ""), str(task_id or ""))
+        with _PENDING_SWAP_LOCK:
+            if _ANCHOR_FAIL_BACKOFF.pop(key, None) is not None:
+                from hermes_router import _log_route  # deferred — import cycle
+
+                _log_route("PRE", event_detail="anchor_backoff_cleared",
+                           task_id=key[1], session_id=key[0])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def anchor_backoff_active(session_id: str, task_id: str,
+                          now: Optional[float] = None) -> bool:
+    """True when (session_id, task_id) sits inside its backoff window (a
+    previous attempt failed recently). disabled config -> always False
+    (v3.3.0 byte-compat). Never raises."""
+    try:
+        if not anchor_backoff_cfg().get("enabled", True):
+            return False
+        key = (str(session_id or ""), str(task_id or ""))
+        with _PENDING_SWAP_LOCK:
+            rec = _ANCHOR_FAIL_BACKOFF.get(key)
+            if rec is None:
+                return False
+            fails = int(rec.get("fails", 0))
+            last = float(rec.get("last_fail_ts", 0))
+        cfg = anchor_backoff_cfg()
+        ttl = float(cfg.get("ttl_s", _ANCHOR_BACKOFF_TTL_S))
+        cur = float(now if now is not None else time.time())
+        if cur - last > ttl:
+            return False
+        return (cur - last) <= anchor_backoff_window(fails)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def anchor_backoff_active_count() -> int:
+    """router_status observability: number of ledger entries currently inside
+    their backoff window (TTL-expired entries don't count). Never raises."""
+    try:
+        if not anchor_backoff_cfg().get("enabled", True):
+            return 0
+        cur = time.time()
+        cfg = anchor_backoff_cfg()
+        ttl = float(cfg.get("ttl_s", _ANCHOR_BACKOFF_TTL_S))
+        with _PENDING_SWAP_LOCK:
+            n = 0
+            for rec in _ANCHOR_FAIL_BACKOFF.values():
+                last = float(rec.get("last_fail_ts", 0))
+                if cur - last > ttl:
+                    continue
+                if (cur - last) <= anchor_backoff_window(int(rec.get("fails", 1))):
+                    n += 1
+        return n
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 # Session-scoped one-time flags (adaptive_not_armed logs ONCE per session).
 _ADAPTIVE_ARM_WARNED: set = set()
 _ADAPTIVE_ARM_WARNED_MAX = 256
@@ -716,6 +879,23 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
             done_ts = _SWAP_DONE.get(key)
             if done_ts is not None and now - done_ts <= _SWAP_DONE_TTL:
                 return None  # swap_already_staged — one consult per turn
+        # v3.3.1 anchor failure backoff: a recent FAILED attempt for this
+        # (session, task) benches the anchor for its exponential window —
+        # no staging, log anchor_backoff_blocked (the would-have-wasted
+        # counter). disabled config -> always False (v3.3.0 behavior).
+        if anchor_backoff_active(key[0], key[1], now=now):
+            try:
+                from hermes_router import _log_route  # deferred — import cycle
+
+                with _PENDING_SWAP_LOCK:
+                    rec = _ANCHOR_FAIL_BACKOFF.get(key) or {}
+                fails = int(rec.get("fails", 0))
+                _log_route("PRE", event_detail="anchor_backoff_blocked",
+                           fails=fails, backoff_s=round(anchor_backoff_window(fails), 1),
+                           task_id=key[1], session_id=key[0])
+            except Exception:  # noqa: BLE001 — logging must never break staging
+                pass
+            return None
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for(role)
         if ep is None:
@@ -829,5 +1009,6 @@ def _test_reset() -> None:
     with _PENDING_SWAP_LOCK:
         _PENDING_SWAP.clear()
         _SWAP_DONE.clear()
+        _ANCHOR_FAIL_BACKOFF.clear()
     with _STRUGGLE_SIGNALS_TURN_LOCK:
         _STRUGGLE_SEEN_TURNS.clear()

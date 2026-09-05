@@ -138,6 +138,7 @@ def router_status() -> str:
             "last_route_skipped_reason": last_skip,
             "decision_head": decision_head.status(),
             "pending_swap": bool(pend),
+            "anchor_backoff_active": router_core.anchor_backoff_active_count(),
             "reload_dirty_flag_ts": reload_requested_at(),
         }
         return json.dumps(payload, ensure_ascii=False, indent=1)

@@ -273,7 +273,8 @@ def classify_events(events: List[Dict[str, Any]],
 def anchor_refire_candidates(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Count anchored_call_failed re-fires per anchor chain identity. Today's
     dominant waste (one ask hammered 29x into failing anchors) — invisible to
-    a struggle-keyed cooldown; candidate Phase 2 suppression feature.
+    a struggle-keyed cooldown; v3.3.1 shipped the failure-backoff ledger as
+    the suppression feature.
 
     Keying (verified against live logs 2026-09-05): route_skipped lines carry
     route_id + session_id but NO task_id; route_id differs per PRE re-fire
@@ -305,6 +306,22 @@ def anchor_refire_candidates(events: List[Dict[str, Any]]) -> List[Dict[str, Any
                          "refires": n})
     rows.sort(key=lambda r: -r["refires"])
     return rows
+
+
+# ---------------------------------------------------------------------------
+# v3.3.1 anchor_backoff_blocked counter (the suppressed re-fire total)
+# ---------------------------------------------------------------------------
+
+
+def anchor_backoff_blocked_count(events: List[Dict[str, Any]]) -> int:
+    """Count anchor_backoff_blocked log lines (v3.3.1 F2): each line is a
+    staging attempt the backoff ledger suppressed — the "would-have-wasted"
+    counter (an anchor attempt + its cap estimate NOT spent). Never raises."""
+    try:
+        return sum(1 for ev in events
+                   if ev.get("event_detail") == "anchor_backoff_blocked")
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +402,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     counts, rows = classify_events(events, diags)
     refires = anchor_refire_candidates(events)
     sdb = state_db_evidence(args.profiles_root, events)
+    backoff_blocked = anchor_backoff_blocked_count(events)
 
     summary = {
         "route_files": len(route_files),
@@ -394,6 +412,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "kinds": dict(counts),
         "anchor_refire_candidates": refires[:20],
         "anchor_refire_total_routes": sum(1 for r in refires),
+        "anchor_backoff_blocked_total": backoff_blocked,
         "state_db_join": sdb,
         "note": ("Phase 1 validates detector feeding (forward-enriched "
                  "struggle_shadow lines), not infra percentages — conductor "

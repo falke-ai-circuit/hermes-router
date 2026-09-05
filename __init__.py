@@ -1084,6 +1084,14 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             return next_call(request)
         if not (isinstance(outcome, tuple) and outcome and outcome[0] == "done"):
             # Anchored call failed or no swap: fail-open to flash, log skip.
+            # v3.3.1: a REAL anchored failure (not cap_blocked — that's spend
+            # policy, not anchor health, and must not count) enters the
+            # failure-backoff ledger so cross-turn re-fires are benched for
+            # the exponential window instead of hammering the endpoint.
+            if rec:
+                router_core.record_anchor_backoff_failure(
+                    session_id, str(rec.get("task_id") or ""),
+                    reason="anchored_call_failed")
             _log_route("PRE", event_detail="route_skipped",
                        lane=router_core.LANE_COMPLEXITY,
                        reason="anchored_call_failed" if rec else "no_swap",
@@ -1110,6 +1118,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                    envelope.get("limitations"), str(envelope.get("answer") or ""))
             )
             msgs.append({"role": "assistant", "content": advisory})
+        # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
+        # (session, task) — after envelope delivery, before next_call.
+        router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))
         _log_route("PRE", event_detail="anchor_route_fired",
                    lane=router_core.LANE_COMPLEXITY, mode=rec.get("mode"),
                    route_id=rec.get("route_id"), task_id=rec.get("task_id"),
