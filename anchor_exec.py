@@ -192,7 +192,20 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         except Exception:  # noqa: BLE001
             content = ""
         if not str(content).strip():
-            logger.error("anchor_route_failed reason=empty_response model=%s", endpoint.model)
+            _diag = ""
+            try:
+                _ch = (raw.get("choices") or [{}])[0] or {}
+                _m = _ch.get("message") or {}
+                _diag = ("finish=%s tool_calls=%s reasoning_chars=%d payload_keys=%s "
+                         "max_tokens=%s n_msgs=%d") % (
+                    _ch.get("finish_reason"), bool(_m.get("tool_calls")),
+                    len(str(_m.get("reasoning") or "")),
+                    sorted(k for k in payload if k != "messages"),
+                    payload.get("max_tokens"), len(payload.get("messages") or []))
+            except Exception:  # noqa: BLE001
+                _diag = "diag_unavailable"
+            logger.error("anchor_route_failed reason=empty_response model=%s %s",
+                         endpoint.model, _diag)
             return None, None
 
         pricing = anchor_chain.load_anchor_chain().pricing
