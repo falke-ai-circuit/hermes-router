@@ -187,7 +187,8 @@ def _aux_mode() -> str:
 # languages + em-dash continuations are still CHEAP to check (regex, no aux).
 _DECLINE_OPENERS = (
     r"^(?:no|nope|nah|not this|not gonna|won't|will not|can't|cannot|refuse"
-    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不|not doing|not going to)"
+    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不|not doing|not going to"
+    r"|ne(?:ću| mogu|će|možemo)?\b)"
     r"(?=[\s.,;:!?)—-]|$)",
 )
 _DECLINE_RE = None  # compiled lazily
@@ -203,6 +204,9 @@ def _gate_semantic(response_text: str) -> bool:
     Normal responses hit neither arm → no aux call, ever."""
     global _DECLINE_RE
     first_line = response_text.strip().split("\n", 1)[0].strip()
+    # 2026-09-05 researcher probe: bold-wrapped openers ("**Ne.**") slipped the
+    # regex — strip markdown emphasis chars before matching.
+    first_line = first_line.lstrip("*_#>~ `\u201c\u201d\u2018'")
     if _DECLINE_RE is None:
         import re as _re
         _DECLINE_RE = _re.compile("|".join(_DECLINE_OPENERS), _re.IGNORECASE)
