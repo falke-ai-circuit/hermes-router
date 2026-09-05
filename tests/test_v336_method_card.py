@@ -19,7 +19,9 @@ def test_fail_open_no_home(monkeypatch):
     assert card == ""
 
 
-def test_skill_lift_with_ask(tmp_path):
+def test_skill_lift_with_ask(tmp_path, monkeypatch):
+    from hermes_router import router as _router
+    monkeypatch.setattr(_router, "_load_router_config", lambda: {})
     sk = tmp_path / "skills" / "dossier" / "SKILL.md"
     sk.parent.mkdir(parents=True)
     sk.write_text("---\nname: dossier\ndescription: Build structured research dossiers.\n---\n"
