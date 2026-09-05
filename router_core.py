@@ -327,9 +327,24 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             sreason or "task_escalated")
 
         # 2. Complexity detection (stage-1 -> stage-2 on gray zone).
+        # Amendment (2026-09-04): when an optional decision head is configured
+        # (decision_head.backend), its score gates the route instead of the
+        # hand-tuned regex verdict. Default backend = heuristic = unchanged.
         level = _complexity_level()
         if level > 0 and _lane_enabled(LANE_COMPLEXITY):
-            route_complex, meta = complexity.classify(user_text, level)
+            dh_backend = "heuristic"
+            try:
+                from . import decision_head
+
+                dh_backend = decision_head.configured_backend()
+            except Exception:  # noqa: BLE001
+                dh_backend = "heuristic"
+            if dh_backend != "heuristic":
+                route_complex = decision_head.route(user_text)
+                meta = {"stage": "decision_head", "backend": dh_backend,
+                        "stage1": "clear_complex" if route_complex else "clear_simple"}
+            else:
+                route_complex, meta = complexity.classify(user_text, level)
             if route_complex:
                 if override == "anchor":
                     # explicit ask: bounded CONSULT (frontier answers once as
