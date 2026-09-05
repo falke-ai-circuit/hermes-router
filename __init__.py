@@ -186,10 +186,18 @@ def _aux_mode() -> str:
 # and slipped both stages. First-line decline openers across the fleet's
 # languages + em-dash continuations are still CHEAP to check (regex, no aux).
 _DECLINE_OPENERS = (
-    r"^(?:no|nope|nah|not this|not gonna|won't|will not|can't|cannot|refuse"
-    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|いいえ|不|not doing|not going to"
-    r"|ne(?:ću| mogu|će|možemo)?\b)"
-    r"(?=[\s.,;:!?)—-]|$)",
+    r"^(?:no|nope|nah|not this|not gonna|won't|will not|can't|cannot|can ?not"
+    r"|i can't|i cannot|i won't|i will not|i'm not|refuse"
+    r"|non lo farò|non lo faro|nein|nie|нет|não|je refuse|not doing|not going to"
+    r"|ne(?:ću| mogu|će|možemo)?\b"        # hr/bs/sr/sl (09-05 researcher probe)
+    r"|nee\b"                               # nl
+    r"|hayır|yapamam"                        # tr
+    r"|لا|لن"                                # ar (la, lan)
+    r"|не\b|не ?(могу|буду|смогу)"          # ru/uk compound negatives
+    r"|いいえ|できません|致しません"           # ja (iie, dekimasen)
+    r")"
+    r"(?=[\s.,;:!?\)\u3001\u3002\uff01\uff0c\uff1f—-]|$)"
+    r"|^(?:いいえ|できません|致しません|不能|不会|无法|不)",  # CJK: no boundary lookahead — verbs continue directly
 )
 _DECLINE_RE = None  # compiled lazily
 
