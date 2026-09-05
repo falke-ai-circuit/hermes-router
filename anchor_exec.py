@@ -234,6 +234,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         logger.error("ANCHOR-DIAG key_prefix=%s key_len=%d base=%s", api_key[:10], len(api_key),
                      endpoint.base_url)
         try:
+            _um = [m for m in (payload.get("messages") or []) if isinstance(m, dict)]
+            _last_user = next((m for m in reversed(_um) if m.get("role") == "user"), {})
+            logger.error("ANCHOR-DIAG2 sys_head=%r user_head=%r",
+                         str(( _um[0].get("content") if _um else ""))[:90],
+                         str(_last_user.get("content") or "")[:200])
+        except Exception:  # noqa: BLE001 — diagnostics never break the anchored path
+            pass
+        try:
             resp = client.chat.completions.create(**payload)
         finally:
             try:
