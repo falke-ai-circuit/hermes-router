@@ -31,6 +31,7 @@ from . import anchor_chain
 from . import anchor_exec
 from . import complexity
 from . import router_core
+from . import router_tools
 
 logger = logging.getLogger(__name__)
 
@@ -523,6 +524,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                        model_target=_decision.model_target, reason=_decision.reason,
                        override_used=_decision.override_used, route_id=_decision.route_id,
                        content_chars=len(content), session_id=session_id)
+            try:
+                router_tools.count("anchor_route_fired")
+            except Exception:  # noqa: BLE001
+                pass
             if _decision.model_target:
                 router_core.stage_model_swap(session_id, _decision)
             return {}  # flash proceeds; the anchored call happens at llm_execution
@@ -854,6 +859,10 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                        task_id=info.get("task_id"), spend=round(float(info.get("spend", 0.0)), 4),
                        cap=round(float(info.get("cap", 0.0)), 2),
                        session_id=session_id)
+            try:
+                router_tools.count("cap_blocked")
+            except Exception:  # noqa: BLE001
+                pass
             return next_call(request)
         if not (isinstance(outcome, tuple) and outcome and outcome[0] == "done"):
             # Anchored call failed or no swap: fail-open to flash, log skip.
@@ -862,6 +871,11 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                        reason="anchored_call_failed" if rec else "no_swap",
                        route_id=rec.get("route_id") if rec else None,
                        session_id=session_id)
+            try:
+                router_tools.count("route_skipped")
+                router_tools.note_skip_reason("anchored_call_failed" if rec else "no_swap")
+            except Exception:  # noqa: BLE001
+                pass
             return next_call(request)
 
         envelope = outcome[1]
