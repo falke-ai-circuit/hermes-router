@@ -1,3 +1,11 @@
+## 3.0.0 — 2026-09-05
+- TWO-LANE GENERIC ROUTER. Lane 1 (uncensored render) keeps v2 mechanics byte-identical. Lane 2 (complexity/struggle): 2-stage detection (regex + aux on gray zone only), 4-mode controller (flash_direct/plan/consult/ownership), router-owned struggle escalation (N>=3 same-failure, tool-loop no-new-content, user struggle phrasing), per-call anchored execution via anchor_chain schemes (openrouter:// + custom providers) with provenance envelopes, daily cap guard ($2 floor, raise-only), router_status + router_control tools behind an atomic config-writer (route logging + loop guard code-owned).
+- csam content gate REMOVED (2026-09-04, Goran-direct reversal: "uncensored should not filter anything when asked"). No code-side filtering remains; boundaries live in the render substrate.
+- Gate post-mortem (one-liner): the 2026-09-01 "hard gate" referenced session_id three lines before its binding — UnboundLocalError swallowed by the outer handler — so PRE silently passed through every turn; it never actually gated.
+- Optional RouteLLM mf decision head (decision_head.py, config-gated, default heuristic; credit lm-sys/RouteLLM, Apache-2.0).
+- Rename: uncensored-router → hermes-router, package hermes_router, canonical config section hermes_router: (uncensored_router: fallback kept, dual-written on control edits).
+- Live smoke: exactly ONE openrouter o4-mini call (max_tokens 64), @pytest.mark.live skip-by-default, OPENROUTER_API_KEY-gated. 240 mock tests green.
+
 ## 2.3.9 — 2026-09-03
 - persona_mode:none support + per-lane env override (UNCENSORED_ROUTER_PERSONA_MODE). Orchestrator lane set to none: even voice-stems continuity made the renderer roleplay the coordinator and refuse. Pure content channel for that lane.
 
