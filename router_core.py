@@ -346,18 +346,22 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             else:
                 route_complex, meta = complexity.classify(user_text, level)
             if route_complex:
+                mode = MODE_PLAN
                 if override == "anchor":
                     # explicit ask: bounded CONSULT (frontier answers once as
                     # a consultant tool result; flash keeps ownership).
-                    return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
-                                "override_anchor", override)
-                mode = MODE_PLAN
-                if meta.get("stage1") == "borderline":
+                    mode = MODE_CONSULT
+                elif meta.get("stage1") == "borderline":
                     mode = MODE_CONSULT
                 return _dec(LANE_COMPLEXITY, mode, _primary_model(),
                             "complexity_" + str(meta.get("stage", "stage1")), override)
+            if override == "anchor":
+                # explicit ask outranks a "clear_simple" verdict at any level:
+                # manual-only semantics (L1) and the inline override contract.
+                return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
+                            "override_anchor", override)
         elif override == "anchor":
-            # L0/L1 with explicit ask: honor the manual anchor.
+            # L0 with explicit ask: honor the manual anchor.
             if _lane_enabled(LANE_COMPLEXITY):
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "override_anchor", override)

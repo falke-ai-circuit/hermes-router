@@ -110,8 +110,25 @@ def _dump_config(data: Dict[str, Any]) -> str:
 
 
 def read_plugin_section() -> Dict[str, Any]:
-    """Read-only view of the plugin section (canonical first). Never raises."""
+    """Read-only view of the plugin section (canonical first). Resolves via
+    hermes_cli.config.load_config when importable (monkeypatch target for
+    tests, honors Hermes profile scoping), falls back to reading the resolved
+    config path directly. Never raises."""
     try:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            if isinstance(cfg, dict):
+                section = cfg.get(CANONICAL_SECTION)
+                if isinstance(section, dict) and section:
+                    return section
+                section = cfg.get(LEGACY_SECTION)
+                if isinstance(section, dict):
+                    return section
+                return {}
+        except ImportError:
+            pass
         data = _read_config(_config_path())
         section = data.get(CANONICAL_SECTION)
         if isinstance(section, dict) and section:
@@ -137,27 +154,47 @@ def write_plugin_section(mutator, *, _path: Optional[str] = None) -> Tuple[bool,
     try:
         with WRITE_LOCK:
             original = _read_config(path)
-            section = original.get(CANONICAL_SECTION)
-            if not (isinstance(section, dict) and section):
-                section = original.get(LEGACY_SECTION)
-            section = dict(section) if isinstance(section, dict) else {}
-            section.pop("_migrated_from", None)
+            canonical = original.get(CANONICAL_SECTION)
+            legacy = original.get(LEGACY_SECTION)
+            canonical = canonical if isinstance(canonical, dict) else None
+            legacy = legacy if isinstance(legacy, dict) else None
+            # Source of truth: canonical when present, else legacy (migration).
+            source = canonical if canonical else (legacy or {})
+            section = dict(source)
 
             result = mutator(section)
             if isinstance(result, dict):
                 section = result
 
-            # Guard: strip forbidden keys the mutator may have sneaked in.
+            # Guard: route-logging + loop-guard keys are CODE-OWNED. A control
+            # action may never introduce or change them. Pre-existing values
+            # (hand-set by the operator in config.yaml) are preserved verbatim:
+            # a MUTATED forbidden key reverts to its original value; a NEW
+            # forbidden key is dropped entirely.
             for k in FORBIDDEN_KEYS:
-                section.pop(k, None)
+                if k not in section:
+                    continue
+                if k not in source or section[k] != source[k]:
+                    if k in source:
+                        section[k] = source[k]  # revert mutation, keep operator value
+                    else:
+                        section.pop(k, None)  # new key — never created
 
             updated = dict(original)
-            # Legacy section migrates forward to canonical on first write.
-            updated.pop(LEGACY_SECTION, None)
             if not section:
                 updated.pop(CANONICAL_SECTION, None)
+                # Legacy section left untouched when the section empties —
+                # the mutator did not ask for deletion.
             else:
                 updated[CANONICAL_SECTION] = section
+                # Dual-write the legacy section (deep copy — never alias, or
+                # yaml dump would emit anchors) so the legacy-fallback readers
+                # (semantic_classifier/router during per-profile migration)
+                # stay coherent with the canonical section.
+                if legacy is not None:
+                    import copy as _copy
+
+                    updated[LEGACY_SECTION] = _copy.deepcopy(section)
 
             new_text = _dump_config(updated)
 

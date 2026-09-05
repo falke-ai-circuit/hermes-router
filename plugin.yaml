@@ -1,20 +1,26 @@
-# hermes-router — portable any-agent Hermes plugin (manifest v2)
+# hermes-router — generic two-lane Hermes router plugin (manifest v2)
 name: hermes-router
-version: 3.0.0a0
+version: 3.0.0
 manifest_version: 2
 api_version: 1
 license: internal
 homepage: https://github.com/falke-ai-circuit/hermes-router
-tags: [middleware, llm, safety-net, routing, any-agent]
+tags: [middleware, llm, routing, any-agent, model-swap]
 author: falke-ai-circuit
 description: >-
-  Portable any-agent Hermes plugin: PRE llm_request middleware rewrites contested asks into
-  substance-frame renders; POST transform_llm_output replaces refusals with uncensored renders
-  from a configurable ordered model chain (primary + fallback). Dynamic persona card built from
-  the loading profile's own DNA at call time — any agent, any profile, no hand-curation.
-  Per-profile config; disabled until enabled. Excluded-class hard gate (csam_underage never
-  routes) is code-side and non-tunable. Fail-open: every failure mode degrades to normal
-  agent pass-through, never crashes a turn.
+  Generic two-lane Hermes router. LANE 1 (uncensored, v2 behavior preserved):
+  PRE llm_request middleware rewrites contested asks into substance-frame renders
+  and POST transform_llm_output replaces refusals with uncensored renders from a
+  configurable ordered model chain, in the loading profile's own DNA-derived
+  persona. LANE 2 (complexity/struggle): single-PRE dispatcher classifies complex
+  asks (2-stage: regex + aux on gray zone) and router-owned struggle signals,
+  then performs ONE per-call anchored call to a configured frontier anchor
+  (openrouter://<model> scheme or custom providers) — frontier output enters as
+  a provenance-stamped advisory envelope, never a user rewrite. Daily cap guard
+  (default $2/day, UP-only) + overflow pass-through. router_status (read-only)
+  and router_control (validated action enum, atomic config-writer, caps raise-only,
+  route logging and loop guard untouchable). Fail-open everywhere: every failure
+  mode degrades to normal agent pass-through, never crashes a turn.
 requires_env:
   - name: VENICE_API_KEY
     description: "API key for an uncensored render endpoint (Venice or OpenAI-compatible)"
@@ -24,26 +30,43 @@ requires_env:
     description: "Aux LLM key for semantic stage-2 classification (optional gate)"
     url: "https://platform.minimax.io"
     secret: true
+  - name: OPENROUTER_API_KEY
+    description: "Key for the complexity-lane anchor endpoint (openrouter:// scheme)"
+    url: "https://openrouter.ai/keys"
+    secret: true
 hooks:
   - transform_llm_output
 middleware:
   - llm_request
+  - llm_execution
 middleware_schema: hermes.middleware.v1
 observer_schema: hermes.observer.v1
+provides_tools:
+  - router_status
+  - router_control
 config_schema:
   endpoint:
     type: dict
-    description: "Single render endpoint (legacy shape; chain supersedes)"
+    description: "Single render endpoint (legacy shape; chain supersedes) — LANE 1"
   chain:
     type: list
-    description: "Ordered uncensored-model chain: [{name,url,model,key_file,key_env,extra_body,timeout,max_tokens,temperature}]"
-  enabled: {type: bool, default: true, description: "Master switch (both stages)"}
+    description: "Ordered uncensored-model chain: [{name,url,model,key_file,key_env,extra_body,timeout,max_tokens,temperature}] — LANE 1"
+  enabled: {type: bool, default: true, description: "LANE 1 master switch (both stages)"}
   dry_run: {type: bool, default: false, description: "Log would-be routes, pass through unchanged"}
   pending_routes_ttl_seconds: {type: int, default: 300}
-  log_path: {type: str, default: "/tmp/hermes-router.log"}
-  log_routes: {type: bool, default: true}
-  log_max_bytes: {type: int, default: 10485760}
+  log_path: {type: str, default: "/tmp/hermes-router.log", description: "Route log path — code-owned, router_control can never alter it"}
+  log_routes: {type: bool, default: true, description: "Route logging — code-owned, router_control can never alter it"}
+  log_max_bytes: {type: int, default: 10485760, description: "Route log rotation — code-owned, router_control can never alter it"}
   substance_frame: {type: str, default: "", description: "Override PRE substance frame text"}
   classification:
     type: dict
     description: "pre_patterns/post_patterns/match_threshold/case_sensitive/pre_classify/post_classify/aux_classify/mode/aux_calls_per_hour/aux_breaker_failures/aux_breaker_cooldown_seconds/aux_endpoint"
+  complexity:
+    type: dict
+    description: "LANE 2: {level: 0-3} — 0 off, 1 manual-only (anchor this), 2 conservative-auto (planning/arch), 3 aggressive-auto (+debug/cross-file/multipart); {enabled: bool}"
+  anchor_chain:
+    type: dict
+    description: "LANE 2 anchor: {primary: <scheme>://<model>, judge: <scheme>://<model>, overflow: pass_through, daily_cap_usd: 2.0, pricing: {<model>: {input_per_1m, output_per_1m}}}"
+  decision_head:
+    type: dict
+    description: "Optional complexity decision head: {backend: heuristic|routellm_mf, threshold: 0.5, weights_path: str} — default heuristic, routellm_mf needs torch + cached weights (RouteLLM mf, Apache-2.0)"
