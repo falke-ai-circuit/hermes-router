@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from typing import List, Optional
 
@@ -121,13 +122,139 @@ def last_unseen_marker() -> Optional[int]:
     return int(ts) if isinstance(ts, (int, float)) else None
 
 # ---------------------------------------------------------------------------
-# Consumption tracking (FIX 1 shim, 2026-09-02): in-process ledger of which
-# POST renders have already been reconciled into model history. Gateway is a
-# single long-lived process — an in-memory set is sufficient; a restart just
-# re-reconciles the latest POST render (idempotent: same content replacement).
+# Consumption tracking (FIX 1 shim, 2026-09-02): ledger of which POST renders
+# have already been reconciled into model history.
+# v3.2.3 (F2 stale-render replay fix): the in-process set was NOT persistent —
+# every gateway restart re-scanned renders.jsonl from the beginning and
+# re-paired OLD POST renders with (already-reconciled or scaffolded) history
+# turns, replaying the same renders turn after turn (conductor live: 410
+# history_reconciled fires for the same two renders). The ledger is now
+# PERSISTENT: a JSON sidecar (hermes-router-reconciled.json, profile hermes
+# home, same family as the renders inbox) keyed (session_id, ts). mark_consumed
+# writes both layers; the reconcile scan consults both. Restart-safe by design:
+# the sidecar is re-read on first access after boot. Bounded: the sidecar load
+# warms the newest _MAX_ENTRIES entries; the file rotates at _MAX_FILE_BYTES.
 # ---------------------------------------------------------------------------
 
-_consumed_post: set = set()  # (session_id, ts) tuples
+_consumed_post: set = set()  # (session_id, ts) tuples — in-process fast path
+
+_RECONCILED_FILENAME = "hermes-router-reconciled.json"
+_MAX_FILE_BYTES = 256 * 1024  # rotate past 256 KB
+_MAX_ENTRIES = 4000  # newest entries kept after rotation / on load
+
+
+def _reconciled_path() -> str:
+    """Profile-scoped reconcile-marker path via hermes_constants
+    (mirrors the renders inbox). Falls back to /tmp with a
+    profile-qualified name."""
+    try:
+        import hermes_constants
+
+        return str(hermes_constants.get_hermes_home() / _RECONCILED_FILENAME)
+    except Exception:  # noqa: BLE001
+        return os.path.join("/tmp", "shadow-" + _RECONCILED_FILENAME)
+
+
+_reconciled_loaded = False
+_RECONCILED_LOCK = threading.Lock()
+
+
+def _load_reconciled_locked() -> None:
+    """Warm the in-process set from the persistent sidecar (caller holds
+    _RECONCILED_LOCK). Tolerates torn/corrupt files (fresh set on error)."""
+    global _reconciled_loaded
+    if _reconciled_loaded:
+        return
+    _reconciled_loaded = True
+    try:
+        path = _reconciled_path()
+        if not os.path.exists(path):
+            return
+        # JSONL of [session_id, ts] pairs (append-only, like the marker write).
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+        for line in lines[-_MAX_ENTRIES:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # torn final line
+            if (isinstance(item, list) and len(item) == 2
+                    and isinstance(item[0], str)):
+                _consumed_post.add((item[0], item[1]))
+    except Exception as exc:  # noqa: BLE001 — marker load must never break routing
+        logger.debug("uncensored-router reconcile-marker load failed: %s", exc)
+
+
+def _is_consumed(session_id: str, ts) -> bool:
+    """True when (session_id, ts) is already marked consumed, consulting the
+    persistent sidecar (lazy warm-up covers the post-restart case)."""
+    try:
+        key = (str(session_id or ""), ts)
+        with _RECONCILED_LOCK:
+            _load_reconciled_locked()
+            return key in _consumed_post
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def mark_consumed(session_id: str, ts) -> None:
+    """Mark a render reconciled — in-process AND persistent (append + rotate).
+    Persistence must never break the hook: all failures are swallowed."""
+    try:
+        key = (str(session_id or ""), ts)
+        with _RECONCILED_LOCK:
+            _load_reconciled_locked()
+            _consumed_post.add(key)
+            path = _reconciled_path()
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            _maybe_rotate_reconciled(path)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(list(key), ensure_ascii=False) + "\n")
+    except Exception as exc:  # noqa: BLE001 — must never break the hook
+        logger.debug("uncensored-router reconcile-marker write failed: %s", exc)
+
+
+def _maybe_rotate_reconciled(path: str) -> None:
+    """Keep the marker file bounded: when over _MAX_FILE_BYTES, rewrite with
+    only the newest _MAX_ENTRIES entries. Caller holds _RECONCILED_LOCK.
+    The file is JSONL of [session_id, ts] pairs (append-friendly rotation:
+    read pairs line-wise, tolerate a torn final line)."""
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > _MAX_FILE_BYTES:
+            pairs = []
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # torn final line
+                    if (isinstance(item, list) and len(item) == 2
+                            and isinstance(item[0], str)):
+                        pairs.append(item)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for item in pairs[-_MAX_ENTRIES:]:
+                    fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+            os.replace(tmp, path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("uncensored-router reconcile-marker rotate failed: %s", exc)
+
+
+def clear_consumed_for_tests() -> None:
+    """Reset BOTH consume layers (tests only). Does NOT delete the sidecar on
+    disk — tests redirect _reconciled_path to tmp (see conftest)."""
+    global _reconciled_loaded
+    with _RECONCILED_LOCK:
+        _consumed_post.clear()
+        _reconciled_loaded = False
 
 
 def peek_unconsumed_post(session_id: str, max_scan: int = 50) -> Optional[dict]:
@@ -139,17 +266,9 @@ def peek_unconsumed_post(session_id: str, max_scan: int = 50) -> Optional[dict]:
                 continue
             if rec.get("session_id") != str(session_id or ""):
                 continue
-            key = (str(session_id or ""), rec.get("ts"))
-            if key in _consumed_post:
+            if _is_consumed(session_id, rec.get("ts")):
                 continue
             return rec
         return None
     except Exception:  # noqa: BLE001
         return None
-
-
-def mark_consumed(session_id: str, ts) -> None:
-    try:
-        _consumed_post.add((str(session_id or ""), ts))
-    except Exception:  # noqa: BLE001
-        pass

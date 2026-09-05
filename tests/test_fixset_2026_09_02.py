@@ -47,9 +47,12 @@ def test_substance_message_carries_router_marker():
 
 def test_render_inbox_record_peek_consume(tmp_path, monkeypatch):
     monkey_path = tmp_path / "renders.jsonl"
-    render_inbox._consumed_post.clear()
+    recon_path = tmp_path / "reconciled.json"
+    render_inbox.clear_consumed_for_tests()
     orig = render_inbox._inbox_path
+    orig_recon = render_inbox._reconciled_path
     render_inbox._inbox_path = lambda: str(monkey_path)
+    render_inbox._reconciled_path = lambda: str(recon_path)
     try:
         render_inbox.record_render("POST", "s-t", 10, "render-xyz")
         rec = render_inbox.peek_unconsumed_post("s-t")
@@ -60,7 +63,8 @@ def test_render_inbox_record_peek_consume(tmp_path, monkeypatch):
         assert render_inbox.peek_unconsumed_post("s-other") is None
     finally:
         render_inbox._inbox_path = orig
-        render_inbox._consumed_post.clear()
+        render_inbox._reconciled_path = orig_recon
+        render_inbox.clear_consumed_for_tests()
 
 
 def test_empty_render_not_recorded():

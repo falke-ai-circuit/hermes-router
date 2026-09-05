@@ -319,14 +319,16 @@ def test_rewrite_drops_api_content_sidecar(tmp_path, monkeypatch):
 
 def test_reconcile_path_commits_and_rewrites(tmp_path, monkeypatch):
     """history_reconciled: refusal+render pairs commit canonical records and
-    rewrite persisted turns, then reconcile the outgoing request history."""
+    rewrite persisted turns, then reconcile the outgoing request history.
+    v3.2.3: the wire turn carries the BARE render (F1) — the wrapper framing
+    rides as a separate transient system note, never as assistant content."""
     conn = _db_conn(tmp_path)
     conn.execute(
         "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
         ("s-rec", "assistant", REFUSAL, 1000.0))
     conn.commit()
     conn.close()
-    render_inbox._consumed_post.clear()
+    render_inbox.clear_consumed_for_tests()
     # conftest isolation redirects the inbox to the tmp hermes home —
     # record + read hit the same isolated file; no path patching needed.
     render_inbox.record_render("POST", "s-rec", 10, RENDERED)
@@ -340,7 +342,7 @@ def test_reconcile_path_commits_and_rewrites(tmp_path, monkeypatch):
     # wire); assert on the mutated object, not the return.
     assert plugin.on_llm_request(request=req, original_request=req,
                                  session_id="s-rec") == {}
-    render_inbox._consumed_post.clear()
+    render_inbox.clear_consumed_for_tests()
     # 1) canonical record written with refusal hash
     recs = [r for r in _read_ledger(tmp_path) if r["session_id"] == "s-rec"]
     assert len(recs) == 1
@@ -354,9 +356,14 @@ def test_reconcile_path_commits_and_rewrites(tmp_path, monkeypatch):
     ).fetchall()
     conn.close()
     assert rows == [(RENDERED,)]
-    # 3) outgoing request history reconciled in place (FIX1 shim intact)
+    # 3) outgoing request history reconciled in place — the turn now carries
+    # the BARE render (v3.2.3 F1: wrapper is a separate system note). The
+    # system note is INSERTED before the turn, so indices shift by one.
+    assert req["messages"][1]["role"] == "system"  # transient framing note
     assert req["messages"][1]["content"].startswith(
         "[YOUR RECORDED TURN — UNCENSORED RENDER")
+    assert req["messages"][2]["role"] == "assistant"
+    assert req["messages"][2]["content"] == RENDERED
 
 
 def test_reconcile_does_not_touch_other_sessions(tmp_path, monkeypatch):
@@ -369,14 +376,14 @@ def test_reconcile_does_not_touch_other_sessions(tmp_path, monkeypatch):
          ("s-recon2", "assistant", REFUSAL, 1000.0)])
     conn.commit()
     conn.close()
-    render_inbox._consumed_post.clear()
+    render_inbox.clear_consumed_for_tests()
     render_inbox.record_render("POST", "s-recon2", 10, RENDERED)
     req = {"model": "m", "messages": [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": REFUSAL},
         ]}
     plugin.on_llm_request(request=req, original_request=req, session_id="s-recon2")
-    render_inbox._consumed_post.clear()
+    render_inbox.clear_consumed_for_tests()
     conn = _db_conn(tmp_path)
     other = conn.execute(
         "SELECT content FROM messages WHERE session_id='s-other'").fetchone()

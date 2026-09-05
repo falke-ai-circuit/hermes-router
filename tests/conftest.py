@@ -46,11 +46,16 @@ def _isolate_canonical_ledger(tmp_path, monkeypatch):
         return
     sidecar = tmp_path / "v310-canonical-home" / "hermes-router-canonical.jsonl"
     inbox = tmp_path / "v310-canonical-home" / "uncensored-router-renders.jsonl"
+    recon = tmp_path / "v310-canonical-home" / "hermes-router-reconciled.json"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
     _canon.clear_for_tests()
     monkeypatch.setattr(_canon, "_store_path", lambda: str(sidecar))
     from hermes_router import render_inbox as _rinbox
     monkeypatch.setattr(_rinbox, "_inbox_path", lambda: str(inbox))
+    # v3.2.3: the persistent reconcile-consume sidecar is test-isolated too,
+    # and both consume layers reset per test (no cross-test marker bleed).
+    monkeypatch.setattr(_rinbox, "_reconciled_path", lambda: str(recon))
+    _rinbox.clear_consumed_for_tests()
     db = tmp_path / "v310-canonical-state.db"
     import sqlite3 as _sqlite3
     conn = _sqlite3.connect(str(db))
@@ -63,3 +68,4 @@ def _isolate_canonical_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(_canon, "_state_db_path", lambda: str(db))
     yield
     _canon.clear_for_tests()
+    _rinbox.clear_consumed_for_tests()

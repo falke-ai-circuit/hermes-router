@@ -222,7 +222,8 @@ def has_refusal_record(session_id: str, original_refusal_hash: str) -> bool:
 def commit_canonical_event(session_id: str, turn_marker: str, content: str,
                            original_refusal_hash: str,
                            producer: str = _PRODUCER,
-                           grounded: bool = False, route_id: str = "") -> bool:
+                           grounded: bool = False, route_id: str = "",
+                           delivery_mode: str = _DELIVERY_MODE) -> bool:
     """Append one canonical-event record (idempotent). Returns True when a NEW
     record was written; False when already canonicalized or on any failure.
     Dedup keys: (session_id, content_hash) [brief key] and
@@ -230,13 +231,23 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
     registered either way so repeat POST fires of the same turn stay skipped.
     v3.1.1: records also carry `grounded` (render grounded in this session's
     canonical conversation) and `route_id` (anchored-lane correlation; "" for
-    plain POST renders)."""
+    plain POST renders).
+    v3.2.3 (F3 grounding gate): `delivery_mode` is caller-selectable — the
+    POST recovery path keeps the default "own_turn"; the PRE history-reconcile
+    path commits ungrounded renders as "advisory_envelope" (no own-turn
+    authority fabricated from a free-associated render; v3.1.1 doctrine).
+    Blank/unknown values fall back to _DELIVERY_MODE (defensive)."""
     if not content or not str(content).strip():
         return False
     sid = str(session_id or "")
     rh = str(original_refusal_hash or "")
     marker = str(turn_marker or "")
     ch = hash_text(content)
+    # v3.2.3: delivery_mode is caller-selectable but validated — only the two
+    # doctrinal modes are honored; anything else falls back to own_turn.
+    dm = str(delivery_mode or _DELIVERY_MODE).strip()
+    if dm not in ("own_turn", "advisory_envelope"):
+        dm = _DELIVERY_MODE
     try:
         with _lock:
             _load_locked()
@@ -250,7 +261,7 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
                     "session_id": sid,
                     "turn_marker": marker,
                     "producer": str(producer or _PRODUCER),
-                    "delivery_mode": _DELIVERY_MODE,
+                    "delivery_mode": dm,
                     "content_hash": ch,
                     "committed_at": round(time.time(), 3),
                     "original_refusal_hash": rh,
