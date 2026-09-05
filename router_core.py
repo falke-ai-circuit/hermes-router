@@ -114,6 +114,19 @@ _TOOLLOOP_STATE: Dict[str, Dict[str, Any]] = {}  # task_id -> {"calls": int, "tu
 _PENDING_SWAP_LOCK = threading.Lock()
 _PENDING_SWAP: Dict[str, Dict[str, Any]] = {}  # session_id -> swap record
 
+# v3.2.0 one-consult-per-turn: (session_id, task_id) -> staged_at ts. In a
+# multi-provider-call turn the PRE dispatcher re-runs on the same ingress text
+# per call, so stage_model_swap re-staged per call and llm_execution executed
+# an anchored consult PER PROVIDER CALL (live: session api_1788601327_0d17f78f,
+# first anchor 19132 chars / $0.028 succeeded, a later re-stage in the SAME
+# turn fired a second anchor attempt -> content_filter fail + wasted cap
+# estimate). task_id already derives from (session, user_text, model), so
+# re-fires of the same ask hit the same key; a NEW ask (different task_id)
+# stages fresh. TTL 10min reap on size (same discipline as _TASK_STATE).
+_SWAP_DONE: Dict[Tuple[str, str], float] = {}
+_SWAP_DONE_TTL = 600.0  # seconds
+_SWAP_DONE_MAX = 128
+
 # tool-result envelopes consumed by the consult tool (route_id -> envelope)
 _CONSULT_RESULTS: Dict[str, Dict[str, Any]] = {}
 _CONSULT_RESULTS_MAX = 32
@@ -131,6 +144,11 @@ def _prune_locked(now: float) -> None:
         _TASK_STATE.pop(oldest, None)
         _TOOL_RESULT_SEEN.pop(oldest, None)
         _TOOLLOOP_STATE.pop(oldest, None)
+    # v3.2.0: one-consult-per-turn marker reaps on the same cycle.
+    with _PENDING_SWAP_LOCK:
+        stale_swaps = [k for k, ts in _SWAP_DONE.items() if now - ts > _SWAP_DONE_TTL]
+        for k in stale_swaps:
+            _SWAP_DONE.pop(k, None)
 
 
 def task_id_for(session_id: str, user_text: str, model: str = "") -> str:
@@ -390,27 +408,47 @@ def _primary_model() -> Optional[str]:
 
 
 def stage_model_swap(session_id: str, decision: RouteDecision,
-                     role: str = "primary") -> None:
+                     role: str = "primary") -> Optional[Dict[str, Any]]:
     """Called by PRE after a COMPLEXITY decision: stage the per-call swap so
     the NEXT llm_execution middleware invocation (same session) performs the
     anchored call. Per-call, never persistent — the record is consumed once.
-    Never raises."""
+
+    v3.2.0 one-consult-per-turn: when a swap for the SAME (session_id,
+    task_id) was already staged within _SWAP_DONE_TTL, this is a re-fire of
+    the same ask inside one multi-provider-call turn — no-op (the already-
+    staged/consumed marker wins). Returns None on skip; a NEW ask (different
+    task_id) stages fresh. Never raises."""
     try:
+        key = (str(session_id or ""), str(decision.task_id or ""))
+        now = time.time()
+        with _PENDING_SWAP_LOCK:
+            done_ts = _SWAP_DONE.get(key)
+            if done_ts is not None and now - done_ts <= _SWAP_DONE_TTL:
+                return None  # swap_already_staged — one consult per turn
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for(role)
         if ep is None:
-            return
+            return None
+        rec = {
+            "route_id": decision.route_id,
+            "task_id": decision.task_id,
+            "mode": decision.mode,
+            "role": role,
+            "endpoint": ep,
+            "staged_at": now,
+        }
         with _PENDING_SWAP_LOCK:
-            _PENDING_SWAP[session_id or ""] = {
-                "route_id": decision.route_id,
-                "task_id": decision.task_id,
-                "mode": decision.mode,
-                "role": role,
-                "endpoint": ep,
-                "staged_at": time.time(),
-            }
+            _PENDING_SWAP[session_id or ""] = rec
+            _SWAP_DONE[key] = now
+            # TTL reap + size cap (same discipline as _TASK_STATE).
+            for k in [k for k, ts in _SWAP_DONE.items() if now - ts > _SWAP_DONE_TTL]:
+                _SWAP_DONE.pop(k, None)
+            while len(_SWAP_DONE) > _SWAP_DONE_MAX:
+                oldest = min(_SWAP_DONE, key=lambda k: _SWAP_DONE[k])
+                _SWAP_DONE.pop(oldest, None)
+        return rec
     except Exception:  # noqa: BLE001
-        pass
+        return None
 
 
 def pending_model_swap(session_id: str) -> Optional[Dict[str, Any]]:
@@ -498,3 +536,4 @@ def _test_reset() -> None:
         _CONSULT_RESULTS.clear()
     with _PENDING_SWAP_LOCK:
         _PENDING_SWAP.clear()
+        _SWAP_DONE.clear()

@@ -557,7 +557,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             except Exception:  # noqa: BLE001
                 pass
             if _decision.model_target:
-                router_core.stage_model_swap(session_id, _decision)
+                _staged = router_core.stage_model_swap(session_id, _decision)
+                if _staged is None:
+                    # v3.2.0 one-consult-per-turn: same (session, task) already
+                    # staged this turn — a re-fire of the same ask inside one
+                    # multi-provider-call turn. Skip silently on the wire;
+                    # flash proceeds, llm_execution sees no pending swap.
+                    _log_route("PRE", event_detail="swap_already_staged",
+                               task_id=_decision.task_id,
+                               session_id=session_id)
             return {}  # flash proceeds; the anchored call happens at llm_execution
         if _decision.override_used:
             _log_route("PRE", event_detail="override_skip",
