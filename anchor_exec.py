@@ -36,12 +36,45 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_PLACEHOLDER_VALUES = {"", "not-needed", "none", "null", "placeholder", "changeme", "your-key-here"}
+
+
+def _profile_env_value(env: str) -> str:
+    """Read `env` from {HERMES_HOME}/.env (profile dotenv). The gateway process env carries the
+    GLOBAL /opt/data/.env values; profile .env files hold the real per-profile credentials.
+    Live-caught 2026-09-05: os.environ held the global placeholder 'not-needed' while the profile
+    .env had the real OpenRouter key — anchored calls 401'd despite the key existing on disk."""
+    try:
+        home = os.environ.get("HERMES_HOME") or ""
+        if not home:
+            return ""
+        path = os.path.join(home, ".env")
+        if not os.path.isfile(path):
+            return ""
+        prefix = f"{env}="
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(prefix) and not line.lstrip().startswith("#"):
+                    return line[len(prefix):].strip().strip('"').strip("'")
+    except Exception:  # noqa: BLE001 — key resolution must never raise
+        return ""
+    return ""
+
+
 def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
     try:
         env = (endpoint.api_key_env or "").strip()
         if env:
             val = os.environ.get(env, "").strip()
-            if val:
+            if val and val.lower() not in _PLACEHOLDER_VALUES:
+                return val
+            # placeholder/missing in process env → read the profile dotenv before giving up
+            pval = _profile_env_value(env)
+            if pval and pval.lower() not in _PLACEHOLDER_VALUES:
+                logger.info("anchor_key_resolved source=profile_dotenv key_env=%s", env)
+                return pval
+            if val:  # keep placeholder only if nothing better exists (caller logs the 401)
                 return val
         return ""
     except Exception:  # noqa: BLE001
