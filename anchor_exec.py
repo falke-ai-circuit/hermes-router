@@ -22,12 +22,25 @@ import copy
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, Optional, Tuple
 
 from . import anchor_chain
 from . import router_core
 
 logger = logging.getLogger(__name__)
+
+# v3.2.1: Hermes injects a <memory-context>...</memory-context> block into the
+# USER turn (recalled-memory wrapper containing route-log/classifier terms:
+# ied_construction, csam_underage, uncensored, content_filter, ...). The
+# Anthropic/OpenRouter content-filter trips on that block -> finish=
+# content_filter, content empty (conductor A/B-reproduced 2026-09-05 ~11:05,
+# deterministic: same ask without the block -> 8692 chars delivered; with the
+# block -> content_filter). The anchor replay strips ONLY the wrapper — the
+# user's actual ask inside/after it passes through byte-for-byte. Compiled
+# once at module level (brief: cap compile once).
+_MEMORY_CONTEXT_RE = re.compile(r"<memory-context>.*?</memory-context>\s*",
+                                flags=re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +241,29 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         payload.pop("tools", None)  # anchored calls are single-shot advisory; tool schemas are flash-lane
         payload.pop("tool_choice", None)
         payload.pop("parallel_tool_calls", None)
+
+        # v3.2.1: strip Hermes' <memory-context>...</memory-context> wrapper
+        # from EVERY user-role message in the anchor replay payload (A/B-
+        # reproduced content_filter trigger). The user's actual ask inside and
+        # after the wrapper is untouched; assistant/system messages are not
+        # processed here (system already replaced above). Best-effort: a strip
+        # failure leaves the payload unchanged (fail-open), never breaks the
+        # anchored call.
+        try:
+            _removed = 0
+            if isinstance(msgs, list):
+                for i, m in enumerate(msgs):
+                    if isinstance(m, dict) and m.get("role") == "user":
+                        _txt = m.get("content")
+                        if isinstance(_txt, str) and "<memory-context>" in _txt:
+                            _stripped = _MEMORY_CONTEXT_RE.sub("", _txt)
+                            _removed += len(_txt) - len(_stripped)
+                            msgs[i] = {**m, "content": _stripped}
+            if _removed:
+                logger.info("anchor_memory_context_stripped chars_removed=%d",
+                            _removed)
+        except Exception:  # noqa: BLE001 — strip is best-effort, never fatal
+            pass
 
         client = OpenAI(base_url=endpoint.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
