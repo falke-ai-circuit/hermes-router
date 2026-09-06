@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+NOUS_BASE = "https://inference-api.nousresearch.com/v1"
+NOUS_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_DAILY_CAP_USD = 2.0
 
 _ROLES = ("primary", "judge")
@@ -113,6 +115,11 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
             return AnchorEndpoint(
                 scheme="openrouter", model=model, base_url=OPENROUTER_BASE,
                 api_key_env=OPENROUTER_KEY_ENV, role=role,
+            )
+        if scheme == "nous":
+            return AnchorEndpoint(
+                scheme="nous", model=model, base_url=NOUS_BASE,
+                api_key_env=NOUS_KEY_ENV, role=role,
             )
         custom = _custom_providers().get(scheme)
         if isinstance(custom, dict) and custom.get("base_url"):
