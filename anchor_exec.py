@@ -309,6 +309,63 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         return None, None
 
 
+def _bounded_replay_cfg() -> Dict[str, Any]:
+    """anchor_chain.bounded_replay block (dual-section reader via router_core).
+    Defaults: enabled=True, mode=bounded, last_n_turns=12, keep_system=True,
+    max_input_tokens=120000. Never raises."""
+    try:
+        from . import router_core
+        cfg = router_core._complexity_cfg().get("bounded_replay")
+        block = dict(cfg) if isinstance(cfg, dict) else {}
+        return {
+            "enabled": bool(block.get("enabled", True)),
+            "last_n_turns": max(2, int(block.get("last_n_turns", 12))),
+            "max_input_tokens": max(8000, int(block.get("max_input_tokens", 120000))),
+            "summary_header": bool(block.get("summary_header", True)),
+        }
+    except Exception:  # noqa: BLE001
+        return {"enabled": True, "last_n_turns": 12,
+                "max_input_tokens": 120000, "summary_header": True}
+
+
+def bounded_replay(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """v3.4.1 bounded replay for anchored calls (flagship audit F2, luna verdict:
+    config-switchable, bounded DEFAULT). Trims the replayed conversation to the
+    last-N message pairs plus a compact task header, with a hard input-token cap.
+    full mode (enabled:false) = legacy full-conversation replay. Never raises."""
+    try:
+        cfg = _bounded_replay_cfg()
+        if not cfg.get("enabled"):
+            return api_kwargs
+        msgs = api_kwargs.get("messages")
+        if not isinstance(msgs, list) or len(msgs) <= 2:
+            return api_kwargs
+        system_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "system"]
+        convo = [m for m in msgs if not (isinstance(m, dict) and m.get("role") == "system")]
+        if len(convo) <= cfg["last_n_turns"]:
+            return api_kwargs
+        kept = convo[-cfg["last_n_turns"]:]
+        header = ""
+        if cfg.get("summary_header"):
+            first_user = next((m for m in convo if isinstance(m, dict) and m.get("role") == "user"), None)
+            ask = str((first_user or {}).get("content") or "")[:400]
+            header = (f"[context note: consult replay is bounded to the last "
+                      f"{len(kept)} turns. The user's original ask, verbatim: "
+                      f'"{ask}"]')
+        out = list(system_msgs) + ([{"role": "system", "content": header}] if header else []) + kept
+        # hard input-token cap: drop oldest kept turns until under cap
+        est = sum(len(str(m.get("content") or "")) // 4 for m in out)
+        while est > cfg["max_input_tokens"] and len(kept) > 2:
+            kept = kept[1:]
+            out = list(system_msgs) + ([{"role": "system", "content": header}] if header else []) + kept
+            est = sum(len(str(m.get("content") or "")) // 4 for m in out)
+        trimmed = dict(api_kwargs)
+        trimmed["messages"] = out
+        return trimmed
+    except Exception:  # noqa: BLE001
+        return api_kwargs
+
+
 def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                            ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """The llm_execution middleware entry point for the complexity lane.
@@ -346,7 +403,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             return ("cap_blocked", {"spend": spend_now, "cap": chain.daily_cap_usd,
                                     "route_id": rec.get("route_id"), "task_id": rec.get("task_id")})
 
-        content, cost = anchored_call(endpoint, api_kwargs)
+        content, cost = anchored_call(endpoint, bounded_replay(api_kwargs))
         if content is None:
             return None
         real_cost = cost if cost is not None else est_cost

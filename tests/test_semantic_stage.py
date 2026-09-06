@@ -85,6 +85,10 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     monkeypatch.setattr(plugin.router, "_read_key", lambda key_file: "TESTKEY")
     monkeypatch.setenv("MINIMAX_API_KEY", "TESTKEY")  # aux key source in tests
+    # v3.4.1 test isolation: semantic_classifier reads live config.yaml when
+    # cfg=None (fleet sweeps change aux_endpoint between runs) — pin it to the
+    # same fixture config the plugin._cfg patch returns.
+    monkeypatch.setattr(sc, "_classification_cfg", lambda cfg=None: _cfg() if cfg is None else cfg)
     yield
     state.clear()
     sc.reset_limits()

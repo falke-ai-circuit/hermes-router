@@ -104,3 +104,26 @@
 
 ## 2.0.0 — 2026-09-01
 - PRE/POST dual-stage routing, render inbox, loop guard, semantic stage-2 gate
+
+## 3.4.1 — 2026-09-06
+- STRUGGLE GATE (fleet audit F1, Goran-approved, luna-pro verdict honored):
+  struggle-escalation now respects the complexity level. L1 (manual-only) means
+  NO auto flagship invoke on user_struggle_signal/repeated_same_failure/
+  tool_loop_no_new_content — the level gate previously guarded only step-2
+  complexity, letting struggle signals bypass the fleet L1 policy (today: 22
+  fires coder / 14 conductor, ~90% swap-blocked). Escalation preserved at L2+;
+  explicit "anchor this" override (step 0) unaffected; L1 keeps shadow logging
+  for calibration. 2 tests.
+- BOUNDED REPLAY (fleet audit F2, flagship verdict: config-switchable, bounded
+  DEFAULT): anchored calls replay the last-N turns (default 12) + compact task
+  header (original ask verbatim) instead of the FULL conversation (observed
+  300K-token replays = $0.20/consult at promo; list price would be $2.50).
+  Hard input-token cap (default 120K, oldest turns dropped). Config:
+  anchor_chain.bounded_replay {enabled: true default, last_n_turns, 
+  max_input_tokens, summary_header}; enabled:false = legacy full replay. 
+  Cap-check estimation now runs on the BOUNDED payload. 4 tests. Suite 372.
+- TEST ISOLATION (fleet audit housekeeping): test_semantic_stage pinned
+  sc._classification_cfg to the fixture config — fleet config sweeps (aux
+  endpoint changes) no longer break the suite. 46 tests stable.
+- anchor_chain: nous:// scheme committed (operative 09-06 migration, was
+  deployed-but-uncommitted).

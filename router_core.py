@@ -785,11 +785,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
 
         # Struggle check first: an escalated task stays escalated until the
         # task hash changes (new ask = new task).
+        # v3.4.1 (Goran 09-06 fleet audit): struggle-escalation now respects the
+        # complexity level — L1 (manual-only) means NO auto flagship invoke on
+        # struggle signals (the level gate previously guarded only step-2
+        # complexity, letting user_struggle_signal bypass fleet policy).
+        # Escalation continues to work at L2+; explicit "anchor this" override
+        # (step 0) is unaffected. L1 keeps shadow logging for calibration.
         struggling, sreason = struggle_verdict(task_id, user_text)
         with _LOCK:
             escalated = bool(_TASK_STATE.get(task_id, {}).get("escalated", False))
+        _level = _complexity_level()
 
-        if struggling or escalated:
+        if (struggling or escalated) and _level >= 2:
             chain = anchor_chain.load_anchor_chain()
             ep = chain.endpoint_for("primary")
             if ep is not None and _lane_enabled(LANE_COMPLEXITY):
