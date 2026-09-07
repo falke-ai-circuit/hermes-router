@@ -46,6 +46,12 @@ def _isolate_config(monkeypatch):
 def test_live_venice_call_returns_content(monkeypatch):
     if LIVE_SKIPPED:
         pytest.skip("venice key file not present")
+    # v3.6.0 zero-network guard (conftest._zero_network_guard): this is the ONE
+    # opt-in live probe. pytest.ini deselects `live`-marker tests by default;
+    # this probe additionally env-skips unless explicitly allowed, so the
+    # in-suite guard tripwire (subprocess.run) can never fire here.
+    if os.environ.get("HERMES_ROUTER_ALLOW_LIVE_PROBE", "").strip() not in ("1", "true", "yes"):
+        pytest.skip("live probe disabled (set HERMES_ROUTER_ALLOW_LIVE_PROBE=1; zero-network suite guard active)")
     # 2026-09-05: the shadow Venice account drained to zero USD balance —
     # every call returns {"error": "Insufficient USD or Diem balance..."}
     # which router.call correctly maps to "" (fail-open). That is the plugin

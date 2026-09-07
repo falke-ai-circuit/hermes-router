@@ -434,11 +434,21 @@ def _record_usage(lane: str, entry: Dict[str, Any], data: Dict[str, Any],
         it, ot = _usage_from_response(data)
         if it is None and ot is None:
             return
+        # v3.6 §10.4-E correlation: monotonic event seq rides every ledger
+        # write so concurrent tool-cycle events never misattribute. task_id
+        # is not reconstructible here (no session→ask context at this seam);
+        # the render-lane banner reads the record by (lane, session_id).
+        try:
+            from . import suggestions as _sg
+
+            _seq = _sg.next_event_seq()
+        except Exception:  # noqa: BLE001
+            _seq = None
         usage_ledger.record_tokens(
             lane, str(entry.get("model") or DEFAULT_MODEL), session_id,
             it, ot,
             usage_ledger.estimate_cost(str(entry.get("model") or DEFAULT_MODEL), it, ot),
-            detail,
+            detail, event_seq=_seq,
         )
     except Exception:  # noqa: BLE001 — observability must never break the route
         pass

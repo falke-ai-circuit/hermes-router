@@ -440,11 +440,19 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             from . import usage_ledger
 
             if pt is not None or ct is not None:
+                # v3.6 §10.4-E correlation: task_id + monotonic event seq.
+                try:
+                    from . import suggestions as _sg
+
+                    _seq = _sg.next_event_seq()
+                except Exception:  # noqa: BLE001
+                    _seq = None
                 usage_ledger.record_tokens(
                     "anchor", endpoint.model, session_id, pt, ct,
                     real_cost if cost is not None else
                     usage_ledger.estimate_cost(endpoint.model, pt, ct),
                     "consult" if (rec.get("mode") or "") == router_core.MODE_CONSULT else "frontier_plan",
+                    task_id=str(rec.get("task_id") or ""), event_seq=_seq,
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
             pass

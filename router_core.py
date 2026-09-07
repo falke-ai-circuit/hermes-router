@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -237,7 +238,13 @@ def record_tool_call(task_id: str, tool_result_text: str, turn_key: str) -> int:
     as last_tool_result_text on the toolloop record, plus the count of DISTINCT
     result hashes seen this turn — the classifier separates transport death
     (zero distinct content) from valid-but-semantically-unchanged results
-    (>=1 distinct content)."""
+    (>=1 distinct content).
+
+    v3.6 P0.3 (write-only): ALSO feeds the §2.3 fail-ring + progress ledger
+    on the task record — every completed tool cycle lands one ring entry
+    (normalized_sig, err_class, out_fp, artifact_fp, ts; text <=240c) and
+    updates the progress marker. NO gate reads them yet (Phases 1+ do; Phase
+    0 is wiring only, zero behavior change)."""
     try:
         from .state import hash_text
 
@@ -261,9 +268,112 @@ def record_tool_call(task_id: str, tool_result_text: str, turn_key: str) -> int:
             seen_max = 64
             if len(seen) > seen_max:
                 _TOOL_RESULT_SEEN[task_id] = set(list(seen)[-seen_max:])
+            # ---- v3.6 P0.3 write path (fail-ring + progress ledger) ----
+            try:
+                task_rec = _TASK_STATE.setdefault(task_id, {"fail_count": 0, "consult_count": 0,
+                                                            "escalated": False, "created_at": now})
+                ring = task_rec.setdefault("fail_ring", deque(maxlen=int(
+                    _complexity_cfg().get("consult", {}).get("mid_ring_size", 8) or 8)))
+                sig = _normalize_call_sig(tool_result_text or "")
+                err_class = _classify_error_text(tool_result_text or "")
+                out_fp = hash_text(str(tool_result_text or "")[:240])[:16]
+                artifact_fp = hash_text(sig + "|" + err_class)[:16]
+                is_err = bool(err_class)
+                if is_err:
+                    ring.append((sig, err_class, out_fp, artifact_fp, now))
+                prog = task_rec.setdefault("progress", {"last_progress_ts": now,
+                                                        "cycles_since_progress": 0,
+                                                        "last_out_fp": "",
+                                                        "last_artifact_fp": ""})
+                is_progress = (not is_err) and (
+                    out_fp not in {e[2] for e in ring} or
+                    _novel_text(tool_result_text or "", prog, seen))
+                if is_progress:
+                    prog["last_progress_ts"] = now
+                    prog["cycles_since_progress"] = 0
+                    prog["last_out_fp"] = out_fp
+                    prog["last_artifact_fp"] = artifact_fp
+                else:
+                    prog["cycles_since_progress"] = int(prog.get("cycles_since_progress", 0)) + 1
+            except Exception:  # noqa: BLE001 — P0.3 write path must never break the tap
+                pass
             return int(rec["calls"])
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _normalize_call_sig(text: str) -> str:
+    """§2.3 normalization: tool name + sorted param keys shape proxy —
+    whitespace-collapsed, case-folded; timestamps/UUIDs/hex>=8ch masked;
+    numbers bucketed by magnitude. Never raises."""
+    try:
+        import re as _re
+
+        t = str(text or "")[:240].casefold()
+        t = _re.sub(r"\s+", " ", t)
+        t = _re.sub(r"\b[0-9a-f]{8,}\b", "<hex>", t)
+        t = _re.sub(r"\b\d{4}-\d{2}-\d{2}[t ][0-9:.-]*z?\b", "<ts>", t, flags=_re.IGNORECASE)
+        t = _re.sub(r"\b(1[0-9]{9}|1[0-9]{12})\b", "<epoch>", t)
+        t = _re.sub(r"\b([0-9]+)\b", lambda m: "<n%02d>" % min(9, len(m.group(1))), t)
+        return t[:240]
+    except Exception:  # noqa: BLE001
+        return str(text or "")[:240]
+
+
+def _classify_error_text(text: str) -> str:
+    """Error-class bucket for ring entries ("" = not an error). Same benign
+    discipline as struggle_class: only unambiguous transport/provider error
+    shapes count. Never raises."""
+    try:
+        t = str(text or "")[:400].casefold()
+        if "timeout" in t or "timed out" in t:
+            return "timeout"
+        if "connection" in t and ("refused" in t or "reset" in t or "error" in t):
+            return "connect"
+        if "http 4" in t or " status_code=4" in t:
+            return "http_4xx"
+        if "http 5" in t or " status_code=5" in t:
+            return "http_5xx"
+        if "permission denied" in t or "access denied" in t:
+            return "denied"
+        if "no such file" in t or "not found" in t:
+            return "not_found"
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _novel_text(tool_result_text: str, prog: Dict[str, Any], seen: set) -> bool:
+    """§2.3 progress rule: the result text contributed >=16 normalized chars
+    of content not seen in the ring's recent fingerprints. Never raises."""
+    try:
+        import re as _re
+
+        norm = _re.sub(r"\s+", " ", str(tool_result_text or ""))[:240].strip()
+        return len(norm) >= 16
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fail_ring_view(task_id: str) -> List[Tuple[str, str, str, str, float]]:
+    """Non-destructive ring read (future MID gate + tests). Never raises."""
+    try:
+        with _LOCK:
+            rec = _TASK_STATE.get(task_id, {})
+            return list(rec.get("fail_ring") or [])
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def progress_view(task_id: str) -> Dict[str, Any]:
+    """Non-destructive progress-ledger read (future MID gate + tests).
+    Never raises."""
+    try:
+        with _LOCK:
+            rec = _TASK_STATE.get(task_id, {})
+            return dict(rec.get("progress") or {})
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def struggle_verdict(task_id: str, user_text: str) -> Tuple[bool, str]:

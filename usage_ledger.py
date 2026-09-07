@@ -73,12 +73,15 @@ def _maybe_rotate_locked(path: str) -> None:
 
 def record_tokens(lane: str, model: str, session_id: str,
                   input_tokens: Optional[int], output_tokens: Optional[int],
-                  est_cost: Optional[float], detail: str = "") -> bool:
+                  est_cost: Optional[float], detail: str = "",
+                  task_id: str = "", event_seq: Optional[int] = None) -> bool:
     """Append one token-usage record. Returns True when written.
 
     Usage-absent calls (input/output None) record NOTHING - honest-absent
-    beats plausible-fake (blueprint D9). Never raises; any failure is a
-    silent no-op (ledger writes must never break routing)."""
+    beats plausible-fake (blueprint D9). v3.6 §10.4-E: records carry
+    correlation task_id + monotonic event seq (suggestions.next_event_seq)
+    so concurrent tool-cycle events never misattribute. Never raises; any
+    failure is a silent no-op (ledger writes must never break routing)."""
     try:
         if lane not in VALID_LANES:
             return False
@@ -96,6 +99,13 @@ def record_tokens(lane: str, model: str, session_id: str,
             "est_cost_usd": round(max(0.0, float(est_cost or 0.0)), 6),
             "detail": str(detail or "")[:60],
         }
+        if task_id:
+            rec["task_id"] = str(task_id)[:40]
+        if event_seq is not None:
+            try:
+                rec["event_seq"] = int(event_seq)
+            except (TypeError, ValueError):
+                pass
         path = _store_path()
         d = os.path.dirname(path)
         if d:

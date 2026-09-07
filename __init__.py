@@ -490,6 +490,90 @@ def _session_id_from_context(**context: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# v3.6 Phase 0 taps (write-only detectors; zero behavior change)
+# ---------------------------------------------------------------------------
+
+
+def _tap_task_identity(session_id: str, model: str) -> "tuple[str, str]":
+    """FF-2 task-identity reconstruction: session -> last-user-text cache ->
+    (task_id, turn_key). Empty strings when the cache is cold (first turn of
+    a session has no last-seen yet — nothing to feed). Never raises."""
+    try:
+        text = state.get_last_seen(session_id) or ""
+        if not text.strip():
+            return "", ""
+        return (router_core.task_id_for(session_id, text, model),
+                state.turn_key_for(session_id, text, model))
+    except Exception:  # noqa: BLE001
+        return "", ""
+
+
+def _tap_feed_tool_results(request: Any, session_id: str, model: str) -> None:
+    """P0.1: surface the newest tool-role result to record_tool_call. Called
+    on every llm_request middleware fire (once per provider call); only
+    feeds when a tool result is actually present, so benign non-tool turns
+    cost one dict lookup. Never raises."""
+    try:
+        if not isinstance(request, dict):
+            return
+        msgs = request.get("messages")
+        if not isinstance(msgs, list):
+            return
+        newest_tool = None
+        for m in reversed(msgs):
+            if isinstance(m, dict) and m.get("role") == "tool":
+                newest_tool = str(m.get("content") or "")
+                break
+        if newest_tool is None or not newest_tool.strip():
+            return
+        task_id, turn_key = _tap_task_identity(session_id, model)
+        if not task_id:
+            return
+        router_core.record_tool_call(task_id, newest_tool, turn_key)
+    except Exception:  # noqa: BLE001 — tap must never break the middleware
+        logger.debug("uncensored-router tool-result tap error", exc_info=True)
+
+
+def _tap_provider_failure(session_id: str, model: str, raw_error: str,
+                          fail_kind: str = "", finish_reason: str = "") -> None:
+    """P0.2: provider-failure tap (4xx/5xx/connect/timeout from anchor +
+    flash providers). Feeds record_provider_failure with the bounded raw text
+    (<=240c, last_fail_text discipline). Fail-open — never raises."""
+    try:
+        task_id, _tk = _tap_task_identity(session_id, model)
+        if not task_id:
+            return
+        text = str(raw_error or "")[:240]
+        if fail_kind:
+            text = ("fail_kind=%s finish_reason=%s " % (fail_kind, finish_reason or "-")) + text
+        router_core.record_provider_failure(task_id, text)
+    except Exception:  # noqa: BLE001 — tap must never break the caller
+        logger.debug("uncensored-router provider-failure tap error", exc_info=True)
+
+
+def _banner_tokens_from_last_write(lane: str, session_id: str) -> "tuple[int, int, float]":
+    """§10.2 banner data: (tokens_in, tokens_out, est_cost) for the LAST
+    tokens-ledger record this call just wrote (in-process v3.5.0 tap values —
+    the write happens in the same lane milliseconds earlier). Bounded tail
+    read of the final line only, NOT a full ledger re-read. Zeroes when the
+    record is missing (usage-absent calls record nothing; banner still emits
+    with zeros). Never raises."""
+    try:
+        from . import usage_ledger as _ul
+
+        recs = _ul.read_records(1)
+        if not recs:
+            return 0, 0, 0.0
+        r = recs[-1]
+        if str(r.get("lane") or "") != lane or str(r.get("session_id") or "") != session_id:
+            return 0, 0, 0.0
+        return (int(r.get("input_tokens") or 0), int(r.get("output_tokens") or 0),
+                float(r.get("est_cost_usd") or 0.0))
+    except Exception:  # noqa: BLE001 — banner data gaps never break delivery
+        return 0, 0, 0.0
+
+
+# ---------------------------------------------------------------------------
 # Pre-router — llm_request middleware (spec §5)
 # ---------------------------------------------------------------------------
 
@@ -535,6 +619,20 @@ def on_llm_request(*, request, original_request, **context) -> dict:
 
         session_id = _session_id_from_context(**context)
         model = str(request.get("model") or "")
+
+        # v3.6 P0.1 (FF-2) — tool-result tap at the agent-loop surfacing point.
+        # The llm_request middleware fires once per provider call; iterations
+        # of the tool loop carry the newest tool result as a tool-role message
+        # in the payload. Task identity is reconstructed via the session ->
+        # last-user-text cache (state.record_last_seen, written earlier this
+        # turn pre-classification) -> router_core.task_id_for + turn_key_for.
+        # Zero call sites for task_id_for existed before this tap (verified
+        # 2026-09-07) — without the cache read the tap would feed dead keys.
+        # Write-only (fail-ring + progress ledger); no gate reads them yet.
+        try:
+            _tap_feed_tool_results(request, session_id, model)
+        except Exception:  # noqa: BLE001 — tap must never break the middleware
+            logger.debug("uncensored-router tool-result tap error", exc_info=True)
 
         # FIX 1 shim (2026-09-02, Goran-approved fixset): the Hermes core
         # persists the transcript BEFORE transform_llm_output fires, so a
@@ -789,6 +887,42 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # inbox/stash/frame/commit so every persisted artifact equals what
         # flash receives (canonical invariant: persisted == delivered).
         rendered = cap_render(rendered, render_max_chars())
+
+        # v3.6 §10.2 debug banner — PRE uncensored render fire point. The
+        # banner rides the DELIVERY representation only (the substance-frame
+        # carries what the user reads); render_inbox/stash keep the CANONICAL
+        # render (§10.4-F: canonical never contains a banner). Failure
+        # isolated: any error -> deliver without banner (append_banner's own
+        # contract), never fails the route.
+        try:
+            from . import debug_banner as _db
+
+            if _db.debug_banner_enabled():
+                _chain_entries_dbg = router._chain_entries()
+                _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
+                _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
+                _banner_text = _db.format_banner(
+                    lane="uncensored-render",
+                    trigger=",".join(matches)[:60],
+                    model=str(_entry_dbg.get("model") or ""),
+                    endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
+                    tokens_in=_ti, tokens_out=_to, est_cost=_cost,
+                    latency_s=0.0, retries=_render_retries)
+                _dbg_task_id = _tap_task_identity(session_id, model)[0]
+                _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
+                if _rendered_dbg != rendered:
+                    _log_route("PRE", event_detail="debug_banner_emitted",
+                               lane="uncensored-render",
+                               **_db.build_banner_record("uncensored-render", _dbg_task_id,
+                                                         trigger=",".join(matches)[:60],
+                                                         model=str(_entry_dbg.get("model") or ""),
+                                                         tokens_in=_ti, tokens_out=_to,
+                                                         est_cost=_cost, latency_s=0.0,
+                                                         retries=_render_retries,
+                                                         session_id=session_id, gate=""))
+                    rendered = _rendered_dbg
+        except Exception:  # noqa: BLE001 — §10.4-H failure isolation
+            logger.debug("uncensored-router debug_banner (PRE render) error", exc_info=True)
 
         # Render inbox (2026-09-02 sync seam): persist the render so the agent
         # can read what was actually injected into its own context. Goran-direct.
@@ -1182,9 +1316,16 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 router_core.record_anchor_backoff_failure(
                     session_id, str(rec.get("task_id") or ""),
                     reason="anchored_call_failed")
+            # v3.6 P0.2: provider-failure tap (anchor provider failed) +
+            # P0.5 route_skipped enrichment (fail_kind + finish_reason).
+            _tap_provider_failure(session_id, str((rec or {}).get("endpoint", {}).get("model", "")
+                                                  if rec else ""), "anchored_call_failed",
+                                  fail_kind="anchor_5xx_or_transport", finish_reason="none")
             _log_route("PRE", event_detail="route_skipped",
                        lane=router_core.LANE_COMPLEXITY,
                        reason="anchored_call_failed" if rec else "no_swap",
+                       fail_kind="anchored_call_failed" if rec else "no_swap",
+                       finish_reason="none",
                        route_id=rec.get("route_id") if rec else None,
                        session_id=session_id)
             try:
@@ -1211,6 +1352,37 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
         # (session, task) — after envelope delivery, before next_call.
         router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))
+        # v3.6 §10.2 debug banner — frontier anchor success fire point. Banner
+        # rides the ADVISORY ENVELOPE (model context) data only; the user-facing
+        # canonical content is untouched here (the anchor result enters as tool
+        # data, not the delivered turn). Data = in-process tap values (no
+        # ledger re-read); narrow boundary — a banner failure changes nothing.
+        try:
+            from . import debug_banner as _db
+
+            if _db.debug_banner_enabled():
+                _ep = rec.get("endpoint") or {}
+                _model = str(_ep.get("model") or "")
+                _host = str(_ep.get("base_url") or "").split("://", 1)[-1].split("/", 1)[0]
+                # tokens: pulled from the last tokens-ledger record written by
+                # this same call (in-process values threaded via record; a
+                # bounded tail read of 1 line — no full ledger re-read).
+                _ti, _to, _cost = _banner_tokens_from_last_write("anchor", session_id)
+                _banner = _db.format_banner(
+                    lane="frontier-anchor", trigger=str(rec.get("mode") or "anchored"),
+                    model=_model, endpoint=_host, tokens_in=_ti, tokens_out=_to,
+                    est_cost=_cost, latency_s=0.0, retries=0)
+                if _banner:
+                    _log_route("PRE", event_detail="debug_banner_emitted",
+                               lane="anchor", route_id=rec.get("route_id"),
+                               **_db.build_banner_record("frontier-anchor", str(rec.get("task_id") or ""),
+                                                         trigger=str(rec.get("mode") or "anchored"),
+                                                         model=_model, tokens_in=_ti, tokens_out=_to,
+                                                         est_cost=_cost, latency_s=0.0, retries=0,
+                                                         route_id=rec.get("route_id"), gate=""),
+                               session_id=session_id)
+        except Exception:  # noqa: BLE001 — §10.4-H failure isolation
+            logger.debug("uncensored-router debug_banner (anchor) error", exc_info=True)
         _log_route("PRE", event_detail="anchor_route_fired",
                    lane=router_core.LANE_COMPLEXITY, mode=rec.get("mode"),
                    route_id=rec.get("route_id"), task_id=rec.get("task_id"),
@@ -1252,6 +1424,16 @@ def register(ctx) -> None:
         router_tools.register(ctx)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: router_tools registration failed: %s", exc)
+    # v3.6 P0 acceptance: startup asserts tap presence — the Phase-0 taps are
+    # wired (record_tool_call feeds fail-ring + progress ledger; the functions
+    # exist and are callable). Logged at startup; router_status surfaces
+    # struggle_feeder: armed.
+    try:
+        assert callable(router_core.record_tool_call) and callable(router_core.record_provider_failure)
+        _log_route("PRE", event_detail="struggle_feeder", state="armed",
+                   tap="record_tool_call+record_provider_failure")
+    except Exception as exc:  # noqa: BLE001 — never block registration
+        logger.error("uncensored-router: struggle_feeder tap assert failed: %s", exc)
     # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated
     # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off), registered in its own
     # try/except so a registration failure NEVER disables the middleware

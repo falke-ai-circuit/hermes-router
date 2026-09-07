@@ -454,6 +454,7 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
     return {
         "enabled": {"type": "bool", "lane": "U"},
         "dry_run": {"type": "bool", "lane": "U"},
+        "debug_banner": {"type": "bool", "lane": "U"},
         "render_max_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
         "pending_routes_ttl_seconds": {"type": "int", "min": 60, "max": 3600, "lane": "U"},
         "classification.mode": {"type": "enum", "enum": ("route", "flag_only", "off"), "lane": "C"},
@@ -637,6 +638,9 @@ def mutations_consequential(knob: str) -> bool:
             # lane on/off switches (Goran-direct 09-07: both lanes activable
             # via /router — flips are consequential, token-guarded):
             "enabled", "classification.mode", "complexity.enabled",
+            # v3.6 §10.2: debug_banner changes DELIVERED message shape
+            # (tokens/cost) — consequential -> token-guarded, default OFF.
+            "debug_banner",
         )
         return any(knob == p or knob.startswith(p + ".") for p in conseq)
     except Exception:  # noqa: BLE001
@@ -664,6 +668,9 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
         elif knob == "dry_run":
             def mut(section: Dict[str, Any], _v=bool(value)) -> None:
                 section["dry_run"] = _v
+        elif knob == "debug_banner":
+            def mut(section: Dict[str, Any], _v=bool(value)) -> None:
+                section["debug_banner"] = _v
         elif knob in ("render_max_chars", "pending_routes_ttl_seconds"):
             def mut(section: Dict[str, Any], _k=str(knob), _v=value) -> None:
                 section[_k] = _v
@@ -898,6 +905,8 @@ def _render_status() -> str:
                 dh.get("backend"), dh.get("threshold")))
         lines.append("pending swap: %s | anchor backoff active: %s" % (
             data.get("pending_swap"), data.get("anchor_backoff_active")))
+        lines.append("debug_banner: %s | struggle_feeder: %s" % (
+            "ON" if data.get("debug_banner") else "OFF", data.get("struggle_feeder") or "?"))
         rts = data.get("reload_dirty_flag_ts")
         if rts:
             lines.append("reload dirty flag: %s" % _fmt_ts(float(rts)))

@@ -186,6 +186,96 @@ PATTERN_GROUPS: Dict[str, List[re.Pattern]] = {
 PRE_GROUP_NAMES = frozenset(k for k in PATTERN_GROUPS if k != "refusal_phrases" and k != "line_hold_essay")
 POST_GROUP_NAMES = frozenset({"refusal_phrases", "line_hold_essay"})
 
+# ---------------------------------------------------------------------------
+# §12-A1 combined compiled matchers (2026-09-07 simplicity audit, luna-pro
+# ratified): ONE compiled alternation per lane — never per-group/per-language
+# sequential scan loops on the hot path. Benign case = doctrine-quote check +
+# ONE combined scan, zero per-group loops. The per-group lists above remain
+# the named registry (match attribution + config selection); attribution
+# re-runs the named groups ONLY when the combined scan actually hit (contested
+# content, about to be re-processed downstream anyway).
+# Join discipline: patterns with a leading global inline flag (?s) are
+# re-scoped to (?s:...) — a bare (?s) mid-alternation is a re.error in
+# Python 3.11+, and hoisting it would change DOT semantics for every other
+# alternative (behavior break).
+# ---------------------------------------------------------------------------
+_PRE_COMBINED_RE = re.compile(
+    "|".join("(?:%s)" % rx.pattern
+             for name in ("csam_underage", "bioweapon_protocol", "ied_construction",
+                          "named_target_defamation", "trafficking_route",
+                          "weaponized_playbook_real_name")
+             for rx in PATTERN_GROUPS[name]),
+    re.IGNORECASE,
+)
+
+
+def _join_combined(patterns: List[str]) -> "re.Pattern":
+    parts = []
+    for p in patterns:
+        if p.startswith("(?s)"):
+            parts.append("(?s:%s)" % p[4:])
+        else:
+            parts.append("(?:%s)" % p)
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+
+_REFUSAL_COMBINED_RE = _join_combined(_REFUSAL_PHRASES)
+
+
+def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
+    """Return list of matched pre-router pattern group names. Empty = no match.
+    Doctrine-quote framing (is_doctrine_quote) suppresses PRE matches — a
+    document describing the line is not an ask for the line.
+
+    §12-A1 hot path: the combined matcher decides hit/no-hit in ONE scan. No
+    combined hit over the full group set implies no subset hit (same
+    alternatives, same flags), so benign content returns [] with ZERO
+    per-group loops. A combined hit falls through to the named-group scan
+    for attribution (honors the config-selected subset)."""
+    if is_doctrine_quote(content):
+        return []
+    if case_sensitive:
+        return _scan(content, patterns)
+    try:
+        first = _PRE_COMBINED_RE.search(content)
+    except Exception:  # noqa: BLE001 — scanning must never raise
+        return []
+    if first is None:
+        return []
+    return _scan(content, patterns)
+
+
+def scan_post(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
+    """Return list of matched post-router pattern group names. Empty = no match.
+
+    §12-A1: the refusal group is evaluated by ONE combined scan (single
+    compiled alternation, 12-language openers included via the same group
+    registry); line_hold_essay stays a single heuristic call. No per-pattern
+    scan loops."""
+    matched: List[str] = []
+    for name in patterns:
+        if name == "line_hold_essay":
+            if _is_line_hold_essay(content):
+                matched.append(name)
+            continue
+        if name == "refusal_phrases":
+            try:
+                hit = _REFUSAL_COMBINED_RE.search(content) is not None
+            except Exception:  # noqa: BLE001 — fail open to legacy scan
+                hit = None
+            if hit is None:
+                if any(rx.search(content) for rx in PATTERN_GROUPS.get(name, [])):
+                    matched.append(name)
+            elif hit:
+                matched.append(name)
+            continue
+        regexes = PATTERN_GROUPS.get(name)
+        if not regexes:
+            continue
+        if any(rx.search(content) for rx in regexes):
+            matched.append(name)
+    return matched
+
 
 _BARE_NO_BOUNDARY_MARKERS = [
     # First-person boundary-commitment signals that distinguish a refusal
@@ -281,17 +371,3 @@ def is_doctrine_quote(content: str) -> bool:
     if not content:
         return False
     return bool(_DOCTRINE_FRAME_RE.search(content))
-
-
-def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
-    """Return list of matched pre-router pattern group names. Empty = no match.
-    Doctrine-quote framing (is_doctrine_quote) suppresses PRE matches — a
-    document describing the line is not an ask for the line."""
-    if is_doctrine_quote(content):
-        return []
-    return _scan(content, patterns)
-
-
-def scan_post(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
-    """Return list of matched post-router pattern group names. Empty = no match."""
-    return _scan(content, patterns)

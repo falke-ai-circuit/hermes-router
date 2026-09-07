@@ -32,6 +32,63 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
+def _zero_network_guard(monkeypatch):
+    """v3.6.0 zero-network suite guard (Goran-direct stress phase, 2026-09-07):
+    NO test may make an outbound network call. Two layers:
+
+    1. Model-provider credential env vars are REMOVED for the duration of each
+       test — the plugin's key-resolution seams (router._read_key,
+       semantic_classifier._resolve_key, anchor_exec._resolve_key) then fail
+       closed to "" and every un-mocked LLM path fail-opens to pass-through
+       without paying a 25s timeout. Root-caused 2026-09-07: the gateway env
+       exports NOUS_API_KEY; pytest children inherited it, so un-mocked POST
+       paths fired REAL aux calls to the nous inference API (live-caught:
+       test_loop_guard flake + 541s suite runtime from 25s curl timeouts).
+    2. outbound socket connects + curl subprocess spawns raise immediately —
+       a hard tripwire: any future test that regresses into network I/O fails
+       LOUDLY at the call site instead of silently burning provider tokens.
+
+    Test-infra only — production key resolution and egress are untouched.
+    Scoped to model-provider keys: BROWSERBASE/TELEGRAM/DISCORD/etc. are NOT
+    LLM lanes and stay alone.
+    """
+    _MODEL_KEY_ENV_VARS = (
+        "MINIMAX_API_KEY", "VENICE_API_KEY", "OPENROUTER_API_KEY",
+        "NOUS_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+    )
+    for _var in _MODEL_KEY_ENV_VARS:
+        monkeypatch.delenv(_var, raising=False)
+
+    import socket as _socket
+    import subprocess as _subprocess
+
+    _calls: list = []
+
+    def _blocked_socket(*args, **kwargs):  # noqa: ANN002, ANN003
+        _calls.append(("socket", args))
+        raise AssertionError(
+            "TEST EGRESS BLOCKED: outbound socket.connect attempted during a "
+            "test (%r) — the suite is zero-network by directive; mock the "
+            "provider seam instead (see conftest._zero_network_guard)" % (args,))
+
+    def _blocked_subprocess_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        argv = args[0] if args else kwargs.get("args", ())
+        _calls.append(("subprocess", argv))
+        raise AssertionError(
+            "TEST EGRESS BLOCKED: subprocess.run attempted during a test "
+            "(argv head: %r) — curl-backed provider lanes must be mocked in "
+            "tests (see conftest._zero_network_guard)" % (list(argv)[:3] if argv else (),))
+
+    monkeypatch.setattr(_socket.socket, "connect", _blocked_socket, raising=True)
+    monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
+    monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
+
+    yield
+    # introspection hook for the zero-network proof test
+    assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_canonical_ledger(tmp_path, monkeypatch):
     """v3.1.0: point the canonical-event ledger, its state.db seam, and the
     render inbox at test-scoped paths so suite runs never read/write the live
