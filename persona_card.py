@@ -240,8 +240,9 @@ def build_continuity_stub(messages: Optional[list], max_chars: int = 1200) -> st
     return _scrub("\n".join(parts))[:max_chars]
 
 
-_THREAD_DIGEST_MAX_CHARS = 1600
+_THREAD_DIGEST_MAX_CHARS = 3000
 _THREAD_ASK_EXCERPT = 220
+_THREAD_ARC_ASKS = 6  # was 4 — Goran-approved digest bump (2026-09-07): long-arc threads stay in-tune
 
 _REFUSAL_HINTS = (
     "i can't", "i can’t", "i won't", "i won’t", "i'm not able", "i refuse",
@@ -293,7 +294,7 @@ def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGES
     budget = int(max_chars)
 
     arc = []
-    for a in asks[-4:]:
+    for a in asks[-_THREAD_ARC_ASKS:]:
         exc = a.replace("\n", " ")[:_THREAD_ASK_EXCERPT]
         if not arc or arc[-1] != exc:
             arc.append(exc)
