@@ -1057,6 +1057,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 try:
                     from . import debug_banner as _dbp
                     _parked = _dbp.consume_parked_banner(session_id)
+                    _log_route("POST", event_detail="anchor_banner_consume",
+                               parked=bool(_parked), session_id=session_id)
                     if _parked:
                         _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
                         if _out != response_text:
@@ -1433,6 +1435,8 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     # DELIVERED turn (one-shot, this session's next delivery).
                     try:
                         _db.park_anchor_banner(session_id, _banner)
+                        _log_route("PRE", event_detail="anchor_banner_parked",
+                                   session_id=session_id)
                     except Exception:
                         pass
                 if _banner:
