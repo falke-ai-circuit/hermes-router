@@ -1321,6 +1321,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
 
 def on_llm_execution(*, request, next_call, **context) -> Any:
+    try:
+        with open("/tmp/dbg_exec_entry.log", "a") as _pf:
+            _pf.write("exec_entry\n")
+    except Exception:  # noqa: BLE001
+        pass
     """LLM EXECUTION middleware for the anchored call. When a model swap was
     staged for this session (PRE dispatcher pass), run the FULL request
     against the anchor endpoint via a per-call client:
