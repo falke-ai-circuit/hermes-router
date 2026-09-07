@@ -47,8 +47,8 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-BANNER_HEAD = "━━ DEBUG ROUTE BANNER ━━"
-BANNER_TAIL = "━━━━━━━━━━━━━━━━━━━━━━"
+BANNER_HEAD = "· router ·"
+BANNER_TAIL = "·"
 MAX_BANNER_CHARS = 400          # oversized diagnostic -> omit entirely
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
                "consult-pre", "consult-mid", "consult-post")
@@ -103,12 +103,11 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
             ep_s = ep_s.split("://", 1)[1].split("/", 1)[0]  # host only
         ep_s = ep_s[:120]
         trig_s = str(trigger or "none")[:120]
+        # compact single-line format (Goran 09-07: make the banner smaller)
         banner = (
-            "%s\n"
-            "lane: %s | trigger: %s | model: %s @ %s\n"
-            "tokens: in=%d out=%d | est_cost: $%.6f | latency: %.1fs | retries: %d\n"
-            "%s" % (BANNER_HEAD, lane, trig_s, model_s, ep_s, ti, to, cost, lat, ret,
-                    BANNER_TAIL)
+            "%s %s | %s | %s @ %s | tok %d/%d | $%.6f%s" % (
+                BANNER_HEAD, lane.split("-", 1)[0], trig_s, model_s, ep_s,
+                ti, to, cost, (" | %ds" % int(lat)) if lat >= 1 else "")
         )
         if len(banner) > MAX_BANNER_CHARS:
             return ""  # oversized diagnostic: omit entirely, never truncate the answer

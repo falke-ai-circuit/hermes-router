@@ -34,10 +34,10 @@ def test_1_enabled_emits_banner(banner_cfg):
     canonical = "ANSWER"
     banner = db.format_banner("uncensored-render", "ied_construction", "qwen",
                               "https://api.venice.ai/v1", 5088, 1255, 0.0004, 41.3, 0)
-    assert "DEBUG ROUTE BANNER" in banner
+    assert "· router ·" in banner
     out = db.append_banner(canonical, banner)
-    assert out.startswith("ANSWER") and "DEBUG ROUTE BANNER" in out
-    assert "tokens: in=5088 out=1255" in out
+    assert out.startswith("ANSWER") and "· router ·" in out
+    assert "tok 5088/1255" in out
 
 
 def test_2_disabled_silent(banner_cfg):
@@ -46,7 +46,7 @@ def test_2_disabled_silent(banner_cfg):
     # ever built; append_banner with empty banner text is a byte no-op.
     assert db.debug_banner_enabled() is False
     text = db.format_banner("uncensored-render", "x", "m", "u", 1, 1, 0.0, 1.0, 0)
-    assert "DEBUG ROUTE BANNER" in text  # formatter itself is knob-independent
+    assert "· router ·" in text  # formatter itself is knob-independent
     out = db.append_banner("ANSWER", "")  # fire point passes "" when disabled
     assert out == "ANSWER"
 
@@ -146,7 +146,7 @@ def test_10_no_duplicate_banner_on_repeat(banner_cfg):
     # canonical head: re-appending yields exactly one additional banner, and
     # the production path never calls append twice on the same delivery.
     twice = db.append_banner(once, text)
-    assert twice.count("DEBUG ROUTE BANNER") == 2  # append is per-call, no dedup lie
+    assert twice.count("· router ·") == 2  # append is per-call, no dedup lie
 
 
 # --- §10.1 invariant pins ---------------------------------------------------
