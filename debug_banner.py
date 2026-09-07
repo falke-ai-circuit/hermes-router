@@ -76,6 +76,14 @@ def _banner_section() -> Dict[str, Any]:
             return section
     except Exception:  # noqa: BLE001
         section = None
+    # Remember the last good section: later calls may run in contexts where
+    # the profile override is lost (thread executors) — reuse the cached one.
+    if isinstance(section, dict) and section:
+        global _LAST_GOOD_SECTION
+        _LAST_GOOD_SECTION = dict(section)
+        return section
+    if _LAST_GOOD_SECTION:
+        return dict(_LAST_GOOD_SECTION)
     # Profile-co-located fallback (one file read; only on misses).
     try:
         import os
@@ -226,6 +234,8 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
         except Exception:  # noqa: BLE001 — even the failure log is best-effort
             pass
         return delivery_text if isinstance(delivery_text, str) else ""
+
+_LAST_GOOD_SECTION: Dict[str, Any] = {}
 
 # --- §10.4 anchor-banner delivery parking (one-shot per session) ---
 _ANCHOR_BANNERS: Dict[str, str] = {}
