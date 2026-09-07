@@ -456,6 +456,8 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
         "dry_run": {"type": "bool", "lane": "U"},
         "debug_banner": {"type": "int", "min": 0, "max": 3, "lane": "U"},
         "render_max_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
+        "thread_digest_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
+        "thread_digest_asks": {"type": "int", "min": 0, "max": 50, "lane": "U"},
         "pending_routes_ttl_seconds": {"type": "int", "min": 60, "max": 3600, "lane": "U"},
         "classification.mode": {"type": "enum", "enum": ("route", "flag_only", "off"), "lane": "C"},
         "classification.aux_classify": {"type": "bool", "lane": "C"},

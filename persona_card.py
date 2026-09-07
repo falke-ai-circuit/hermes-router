@@ -258,7 +258,8 @@ def _looks_like_refusal(text: str) -> bool:
     return any(h in low for h in _REFUSAL_HINTS)
 
 
-def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGEST_MAX_CHARS) -> str:
+def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGEST_MAX_CHARS,
+                        arc_asks: int = _THREAD_ARC_ASKS) -> str:
     """Minimal thread digest for the renderer (2026-09-02, Goran: give it
     thematic context so it knows what is being discussed and how to aim).
     Escalation arc of the user's asks (last 4, deduped, excerpted) + the
@@ -294,7 +295,11 @@ def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGES
     budget = int(max_chars)
 
     arc = []
-    for a in asks[-_THREAD_ARC_ASKS:]:
+    try:
+        _arc_n = int(arc_asks) if int(arc_asks) > 0 else _THREAD_ARC_ASKS
+    except (TypeError, ValueError):
+        _arc_n = _THREAD_ARC_ASKS
+    for a in asks[-_arc_n:]:
         exc = a.replace("\n", " ")[:_THREAD_ASK_EXCERPT]
         if not arc or arc[-1] != exc:
             arc.append(exc)

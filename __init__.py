@@ -65,7 +65,9 @@ def _persona_system_prompt(request: Optional[dict]) -> str:
         stub = ""
         if isinstance(request, dict) and isinstance(request.get("messages"), list):
             msgs = request.get("messages")
-            stub = persona_card.build_thread_digest(msgs) or persona_card.build_continuity_stub(msgs)
+            stub = (persona_card.build_thread_digest(msgs, max_chars=thread_digest_chars(),
+                                                     arc_asks=thread_digest_asks())
+                    or persona_card.build_continuity_stub(msgs))
         bits = [b for b in (card.strip(), stub.strip()) if b]
         if not bits:
             return ""
@@ -330,6 +332,28 @@ def _pending_ttl() -> float:
 # ---------------------------------------------------------------------------
 
 RENDER_TRUNCATION_MARKER = "\n\n[render truncated at platform limit]"
+
+
+def thread_digest_chars() -> int:
+    """Config read: thread_digest_chars (int, optional, default 3000).
+    Renderer thread-digest budget (chars). Never raises."""
+    try:
+        val = _cfg().get("thread_digest_chars", 3000)
+        limit = int(val)
+        return limit if limit > 0 else 3000
+    except (TypeError, ValueError):
+        return 3000
+
+
+def thread_digest_asks() -> int:
+    """Config read: thread_digest_asks (int, optional, default 6).
+    How many recent user asks feed the renderer's thread arc. Never raises."""
+    try:
+        val = _cfg().get("thread_digest_asks", 6)
+        n = int(val)
+        return n if n > 0 else 6
+    except (TypeError, ValueError):
+        return 6
 
 
 def render_max_chars() -> int:
