@@ -38,7 +38,7 @@ def test_live_smoke_single_openrouter_call():
     assert ep.base_url == "https://openrouter.ai/api/v1"
     assert ep.api_key_env == "OPENROUTER_API_KEY"
 
-    content, cost = anchored_call(
+    content, cost, _pt, _ct = anchored_call(
         ep,
         {"messages": [{"role": "user", "content": "Reply with the single word: OK"}],
          "max_tokens": 64, "temperature": 0.0,

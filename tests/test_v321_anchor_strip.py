@@ -93,7 +93,7 @@ def _capture_client(monkeypatch):
 
 
 def _call(endpoint, messages, captured):
-    content, cost = anchor_exec.anchored_call(
+    content, cost, _pt, _ct = anchor_exec.anchored_call(
         endpoint, {"model": "flash-model", "messages": messages,
                    "max_tokens": 100})
     return content, captured["payload"]

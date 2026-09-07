@@ -309,7 +309,7 @@ def _ping() -> str:
 
         payload = {"messages": [{"role": "user", "content": "Reply with the single word: OK"}],
                    "max_tokens": 16, "temperature": 0.0}
-        content, cost = anchored_call(ep, payload, timeout=60)
+        content, cost = anchored_call(ep, payload, timeout=60)[:2]
         if content is None:
             return json.dumps({"ok": False, "error": "anchor_call_failed", "model": ep.model})
         if cost:

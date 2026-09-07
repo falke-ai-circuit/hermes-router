@@ -184,19 +184,39 @@ def usage_cost_from_response(data: Dict[str, Any], pricing: Dict[str, Dict[str, 
         return None
 
 
+def usage_tokens_from_response(data: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """v3.5.0 tokens-ledger tap: extract (prompt_tokens, completion_tokens)
+    from a response usage block. (None, None) when usage absent — callers
+    record nothing rather than estimate (blueprint D9). Never raises."""
+    try:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return None, None
+        pt = usage.get("prompt_tokens")
+        ct = usage.get("completion_tokens")
+        if not isinstance(pt, (int, float)) or not isinstance(ct, (int, float)):
+            return None, None
+        return int(pt), int(ct)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
 # ---------------------------------------------------------------------------
 # The anchored provider call (per-call client; nothing persists)
 # ---------------------------------------------------------------------------
 
 
 def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, Any],
-                  *, timeout: int = 300) -> Tuple[Optional[str], Optional[float]]:
+                  *, timeout: int = 300) -> Tuple[Optional[str], Optional[float],
+                                                  Optional[int], Optional[int]]:
     """Run the FULL provider payload against the anchor endpoint with a
     per-call client.
 
-    Returns (content, cost_usd):
+    Returns (content, cost_usd, prompt_tokens, completion_tokens):
       content None -> failure (caller passes flash through; fail-open)
       cost_usd     -> recorded spend (None when usage absent)
+      tokens       -> real usage from the response when present, else None
+                      (v3.5.0 tokens-ledger tap; previously discarded)
     Never raises. Streaming kwargs are stripped — anchored calls are
     non-streaming single-shot.
 
@@ -215,7 +235,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         if not api_key:
             logger.error("anchor_route_failed reason=key_unavailable key_env=%s",
                          endpoint.api_key_env)
-            return None, None
+            return None, None, None, None
 
         payload = copy.deepcopy(api_kwargs)
         payload.pop("stream", None)
@@ -299,14 +319,17 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                 _diag = "diag_unavailable"
             logger.error("anchor_route_failed reason=empty_response model=%s %s",
                          endpoint.model, _diag)
-            return None, None
+            return None, None, None, None
 
         pricing = anchor_chain.load_anchor_chain().pricing
         cost = usage_cost_from_response(raw, pricing, endpoint.model)
-        return str(content), cost
+        # v3.5.0: pass real usage tokens back with the cost tuple (blueprint
+        # 5.2 tap 2) — tokens were previously extracted then discarded.
+        pt, ct = usage_tokens_from_response(raw)
+        return str(content), cost, pt, ct
     except Exception as exc:  # noqa: BLE001 — anchored lane must never raise
         logger.error("anchor_route_failed reason=exception detail=%.300s", str(exc))
-        return None, None
+        return None, None, None, None
 
 
 def _bounded_replay_cfg() -> Dict[str, Any]:
@@ -403,12 +426,28 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             return ("cap_blocked", {"spend": spend_now, "cap": chain.daily_cap_usd,
                                     "route_id": rec.get("route_id"), "task_id": rec.get("task_id")})
 
-        content, cost = anchored_call(endpoint, bounded_replay(api_kwargs))
+        content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
         if content is None:
             return None
         real_cost = cost if cost is not None else est_cost
         if real_cost > 0:
             anchor_chain.record_spend(real_cost)
+        # v3.5.0 tokens-ledger tap (blueprint 5.2): record the anchor lane's
+        # real usage tokens when the provider supplied them; usage-absent
+        # calls record nothing (never estimate). Strictly fail-open — a
+        # ledger failure must never affect the consult delivery path.
+        try:
+            from . import usage_ledger
+
+            if pt is not None or ct is not None:
+                usage_ledger.record_tokens(
+                    "anchor", endpoint.model, session_id, pt, ct,
+                    real_cost if cost is not None else
+                    usage_ledger.estimate_cost(endpoint.model, pt, ct),
+                    "consult" if (rec.get("mode") or "") == router_core.MODE_CONSULT else "frontier_plan",
+                )
+        except Exception:  # noqa: BLE001 — observability must never break the lane
+            pass
 
         decision_like = router_core.RouteDecision(
             task_id=rec.get("task_id") or "", lane=router_core.LANE_COMPLEXITY,

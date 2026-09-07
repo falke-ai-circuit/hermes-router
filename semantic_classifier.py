@@ -309,19 +309,37 @@ def _extract_content(data: Dict[str, Any]) -> str:
         return ""
 
 
+def _usage_from_response(data: Dict[str, Any]) -> "tuple[Optional[int], Optional[int]]":
+    """v3.5.0 tokens-ledger tap helper: (prompt_tokens, completion_tokens)
+    from a response usage block; (None, None) when usage absent — callers
+    record nothing rather than estimate (blueprint D9). Never raises."""
+    try:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return None, None
+        pt = usage.get("prompt_tokens")
+        ct = usage.get("completion_tokens")
+        if not isinstance(pt, (int, float)) or not isinstance(ct, (int, float)):
+            return None, None
+        return int(pt), int(ct)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
 def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
-                 record_success: bool = True) -> Optional[str]:
+                 record_success: bool = True, session_id: str = "") -> Optional[str]:
     """Single aux dispatch: free-text prompt in, extracted content out.
 
     Shared by classify() (refusal classes) and refusal_doctrine verdicts.
     Same endpoint/cap/breaker/timeout discipline as classify(): None on ANY
     failure (which counts toward the breaker); content string on success.
-    """
+    v3.5.0: session_id threads the tokens-ledger tap (usage recorded when the
+    provider supplies it; never estimated)."""
     try:
         cls = _classification_cfg(cfg)
         ep = cls.get("aux_endpoint") if isinstance(cls.get("aux_endpoint"), dict) else {}
@@ -373,6 +391,22 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             logger.error("semantic_aux_failed reason=unparseable")
             _record_failure(cls)
             return None
+        # v3.5.0 tokens-ledger tap (blueprint 5.2): the aux lane bypasses core
+        # accounting entirely, so plugin-side usage capture is the only record.
+        # Usage-absent responses record nothing (never estimate). Strictly
+        # fail-open: a ledger failure must never affect the classification.
+        try:
+            from . import usage_ledger
+
+            _it, _ot = _usage_from_response(data)
+            if _it is not None or _ot is not None:
+                usage_ledger.record_tokens(
+                    "aux", model, session_id, _it, _ot,
+                    usage_ledger.estimate_cost(model, _it, _ot),
+                    "stage2_classify",
+                )
+        except Exception:  # noqa: BLE001 — observability must never break the lane
+            pass
         if record_success:
             _record_success()
         return str(content)
@@ -381,7 +415,8 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
         return None
 
 
-def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None,
+             session_id: str = "") -> Optional[str]:
     """Classify the assistant response against the user ask via the aux LLM.
 
     Returns a VALID enum label, or None on ANY failure (timeout, transport,
@@ -389,10 +424,11 @@ def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]]
     key). None is fail-open: the caller passes the response through. Never
     raises; never blocks longer than the configured timeout; the model's free
     text never leaves this module (enum label only).
+    v3.5.0: session_id threads the tokens-ledger tap.
     """
     try:
         content = aux_raw_call(build_prompt(user_ask, response_text), cfg=cfg,
-                               record_success=False)
+                               record_success=False, session_id=session_id)
         if content is None:
             return None  # dispatch failure already recorded by aux_raw_call
         verdict = parse_verdict(content)

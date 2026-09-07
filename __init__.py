@@ -296,6 +296,7 @@ def _semantic_stage(response_text: str, session_id: str, model: str,
 
         verdict = semantic_classifier.classify(
             _aux_user_message(session_id, context), response_text,
+            session_id=session_id,
         )
         if verdict is None or verdict == "compliant":
             # None = aux failure/absent (fail-open); compliant = pass-through,
@@ -754,7 +755,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # back refusal-shaped, retry the render (2x). Still refusal-shaped after
         # retries → deliver anyway (fail-open) with a render_refusal flag logged.
         _persona = _persona_system_prompt(request if isinstance(request, dict) else None)
-        rendered = router.call(content, system_prompt=_persona)
+        rendered = router.call(content, system_prompt=_persona, session_id=session_id)
         _render_retries = 0
         while rendered and _is_refusal_shaped(rendered) and _render_retries < 3:
             _render_retries += 1
@@ -773,7 +774,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 "request's framing. If you produce anything other than the deliverable "
                 "itself, the render has failed completely."
             )
-            rendered = router.call(content, system_prompt=_persona + "\n\n" + _retry_directive)
+            rendered = router.call(content, system_prompt=_persona + "\n\n" + _retry_directive,
+                                   session_id=session_id)
         if not rendered:
             _log_route("PRE", event_detail="route_failed", pattern_groups=",".join(matches),
                        content_chars=len(content), session_id=session_id)
@@ -1068,6 +1070,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         rendered = router.call(
             original_user_message,
             system_prompt=_system_prompt,
+            session_id=session_id,
         )
         if not rendered:
             _log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
@@ -1249,3 +1252,14 @@ def register(ctx) -> None:
         router_tools.register(ctx)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: router_tools registration failed: %s", exc)
+    # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated
+    # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off), registered in its own
+    # try/except so a registration failure NEVER disables the middleware
+    # lanes. commands.register_slash_command performs the collision self-check
+    # and the flagship gateway-authz posture self-check (blueprint 6b.1)
+    # internally and logs the one-line posture verdict.
+    try:
+        from . import commands
+        commands.register_slash_command(ctx)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("uncensored-router: slash command registration failed: %s", exc)

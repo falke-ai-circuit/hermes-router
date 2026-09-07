@@ -218,7 +218,8 @@ def _chain_entries() -> List[Dict[str, Any]]:
 
 
 def _model_attempt(entry: Dict[str, Any], prompt: str, *, max_tokens: Optional[int],
-                   temperature: Optional[float], system_prompt: str) -> Tuple[str, str]:
+                   temperature: Optional[float], system_prompt: str,
+                   session_id: str = "") -> Tuple[str, str]:
     """One render attempt against one chain entry. Returns (content, fail_reason).
 
     content non-empty on success; on failure content == "" and fail_reason is a
@@ -309,6 +310,7 @@ def _model_attempt(entry: Dict[str, Any], prompt: str, *, max_tokens: Optional[i
             if "error" in data:
                 logger.error("route_failed reason=api_error detail=%s model=%s", str(data.get("error"))[:300], model)
                 return "", "api_error"
+            _record_usage("render", entry, data, session_id, "route_fired")
             content = _extract_content(data)
             if content:
                 return content, ""
@@ -316,6 +318,7 @@ def _model_attempt(entry: Dict[str, Any], prompt: str, *, max_tokens: Optional[i
             return "", "empty_response"
 
         if status == 200:
+            _record_usage("render", entry, data, session_id, "route_fired")
             content = _extract_content(data)
             if content:
                 return content, ""
@@ -339,7 +342,8 @@ def _model_attempt(entry: Dict[str, Any], prompt: str, *, max_tokens: Optional[i
         return "", f"http_{status}"
 
 
-def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional[float] = None, system_prompt: str = "") -> str:
+def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional[float] = None,
+         system_prompt: str = "", session_id: str = "") -> str:
     """Route `prompt` through the ordered uncensored-model chain. Returns
     rendered content or "" on total failure.
 
@@ -373,7 +377,7 @@ def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional
         content, fail_reason = _model_attempt(
             entry, _render_prompt,
             max_tokens=max_tokens, temperature=temperature,
-            system_prompt=system_prompt,
+            system_prompt=system_prompt, session_id=session_id,
         )
         if content:
             if idx > 0:
@@ -400,6 +404,44 @@ def _extract_content(data: Dict[str, Any]) -> str:
         return ""
     except (AttributeError, IndexError, TypeError):
         return ""
+
+
+def _usage_from_response(data: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """Best-effort (prompt_tokens, completion_tokens) from a response body.
+    (None, None) when the provider omitted usage — callers record nothing
+    rather than estimate (blueprint D9). Never raises."""
+    try:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return None, None
+        pt = usage.get("prompt_tokens")
+        ct = usage.get("completion_tokens")
+        if not isinstance(pt, (int, float)) or not isinstance(ct, (int, float)):
+            return None, None
+        return int(pt), int(ct)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _record_usage(lane: str, entry: Dict[str, Any], data: Dict[str, Any],
+                  session_id: str, detail: str) -> None:
+    """v3.5.0 tap: record provider usage into the tokens ledger when present.
+    Strictly additive + fail-open (ledger failure never affects the render);
+    usage-absent responses record nothing (never estimate)."""
+    try:
+        from . import usage_ledger
+
+        it, ot = _usage_from_response(data)
+        if it is None and ot is None:
+            return
+        usage_ledger.record_tokens(
+            lane, str(entry.get("model") or DEFAULT_MODEL), session_id,
+            it, ot,
+            usage_ledger.estimate_cost(str(entry.get("model") or DEFAULT_MODEL), it, ot),
+            detail,
+        )
+    except Exception:  # noqa: BLE001 — observability must never break the route
+        pass
 
 
 def _status_from_response(data: Dict[str, Any], body: str) -> Optional[int]:
