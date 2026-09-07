@@ -634,6 +634,9 @@ def mutations_consequential(knob: str) -> bool:
             "complexity.bounded_replay", "complexity.anchor_backoff",
             "anchor_chain.pricing", "anchor_chain.primary", "anchor_chain.judge",
             "anchor_chain.overflow",
+            # lane on/off switches (Goran-direct 09-07: both lanes activable
+            # via /router — flips are consequential, token-guarded):
+            "enabled", "classification.mode", "complexity.enabled",
         )
         return any(knob == p or knob.startswith(p + ".") for p in conseq)
     except Exception:  # noqa: BLE001
@@ -835,6 +838,7 @@ _MENU = [
     ("log", "Inspect", "route log: tail [N] [--filter kind] | grep <detail>"),
     ("health", "Inspect", "lifecycle verdict + hardening-field interplay"),
     ("config", "Configure", "get [knob] | list | set <knob> <value> | diff | validate | rollback"),
+    ("lane", "Configure", "uncensored|frontier on|off — flip either routing lane (token-guarded); bare = current state"),
     ("cap", "Configure", "get | set <usd> (raise-only)"),
     ("confirm", "Configure", "confirm <token> — execute a pending consequential mutation"),
     ("ping", "Diagnose", "ONE live anchor smoke call (async, timeout 20s) — bills the cap"),
@@ -1613,6 +1617,52 @@ def _cmd_cap(args: List[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# /router lane — dedicated on/off switches for BOTH routing lanes
+# (Goran-direct 09-07: "both uncensored and frontier routing should be
+# configurable via /router commands and activable on and off")
+# ---------------------------------------------------------------------------
+
+_LANE_MAP = {
+    "uncensored": "enabled",          # master switch of the render lane
+    "frontier": "complexity.enabled",  # frontier/anchor consult lane
+}
+
+
+def _cmd_lane(args: List[str]) -> str:
+    try:
+        if not args or args[0].lower() == "get":
+            from . import config_writer as _cw
+            cfg = _cw.read_plugin_section() or {}
+            unc = bool(cfg.get("enabled", True))
+            cx = cfg.get("complexity") or {}
+            cx_on = bool(cx.get("enabled", True))
+            lvl = cx.get("level", "(unset)")
+            lines = ["lane uncensored: %s" % ("ON" if unc else "OFF"),
+                     "lane frontier:   %s (level %s)" % ("ON" if cx_on else "OFF", lvl),
+                     "flip: /router lane <uncensored|frontier> on|off (confirmation-token guarded)"]
+            gate = _mutation_gate_line()
+            if gate:
+                lines.append(gate)
+            return "\n".join(lines)
+        target = args[0].lower()
+        if target not in _LANE_MAP:
+            return "unknown lane: %s (uncensored | frontier)" % target
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            return "usage: /router lane <uncensored|frontier> on|off"
+        want = args[1].lower() == "on"
+        knob = _LANE_MAP[target]
+        if target == "uncensored":
+            # uncensored master switch: also surface the mode nuance
+            summary = "lane uncensored -> %s (master switch 'enabled'; classification.mode untouched)" % ("ON" if want else "OFF")
+        else:
+            summary = "lane frontier -> %s (complexity.enabled; level preserved)" % ("ON" if want else "OFF")
+        token = _issue_confirmation("config_set", [knob, "true" if want else "false"], summary)
+        return ("proposed: %s\nconfirm within 120s: /router confirm %s" % (summary, token))
+    except Exception as exc:  # noqa: BLE001
+        return "error: lane failed: %s" % str(exc)[:160]
+
+
+# ---------------------------------------------------------------------------
 # Reload + confirm + rate-limit wrapper
 # ---------------------------------------------------------------------------
 
@@ -1862,6 +1912,8 @@ def handle_router_command(raw_args: str) -> str:
             return "ping: this subcommand runs async — dispatch wrapper resolves it"
         if sub == "config":
             return _cmd_config(args)
+        if sub == "lane":
+            return _cmd_lane(args)
         # Unknown: one-line help with closest match.
         close = min(_MENU, key=lambda m: _lev(m[0], sub)) if _MENU else ("", "", "")
         return "unknown subcommand: %s — closest: /router %s (bare /router = menu)" % (sub, close[0])
