@@ -126,11 +126,6 @@ def debug_banner_level() -> int:
 def debug_banner_enabled() -> bool:
     """Kept for the fire-point gate: any level >=1 enables the banner."""
     lvl = debug_banner_level()
-    try:
-        with open("/tmp/dbg_enabled.log", "a") as _fh:
-            _fh.write("enabled_check lvl=%s\n" % lvl)
-    except Exception:  # noqa: BLE001
-        pass
     return lvl >= 1
 
 
@@ -251,11 +246,6 @@ _ANCHOR_BANNER_MAX = 32
 def park_anchor_banner(session_id: str, banner_text: str) -> None:
     """Park an anchor banner for delivery on this session's next turn.
     Bounded map (32 sessions, FIFO eviction). Never raises."""
-    try:
-        with open("/tmp/dbg_park.log", "a") as _fh:
-            _fh.write("park sid=%s len=%d\n" % (session_id, len(banner_text or "")))
-    except Exception:  # noqa: BLE001
-        pass
     try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
