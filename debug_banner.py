@@ -236,6 +236,11 @@ def park_anchor_banner(session_id: str, banner_text: str) -> None:
     """Park an anchor banner for delivery on this session's next turn.
     Bounded map (32 sessions, FIFO eviction). Never raises."""
     try:
+        with open("/tmp/dbg_park.log", "a") as _fh:
+            _fh.write("park sid=%s len=%d\n" % (session_id, len(banner_text or "")))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
         _ANCHOR_BANNERS[str(session_id or "")] = str(banner_text or "")[:MAX_BANNER_CHARS]
