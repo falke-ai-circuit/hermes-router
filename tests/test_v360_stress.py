@@ -192,7 +192,7 @@ def test_debug_banner_knob_whitelisted_and_consequential():
 
     wl = commands._knob_whitelist()
     assert "debug_banner" in wl
-    assert wl["debug_banner"]["type"] == "bool"
+    assert wl["debug_banner"]["type"] == "int" and wl["debug_banner"]["max"] == 3  # 0-3 verbosity
     assert commands.mutations_consequential("debug_banner") is True  # token-guarded
 
 
@@ -206,9 +206,13 @@ def test_debug_banner_apply_config_set(tmp_path, monkeypatch):
     cfg.write_text("hermes_router:\n  enabled: true\n")
     monkeypatch.setattr(config_writer, "_config_path", lambda: str(cfg))
 
-    ok, detail = commands._apply_config_set("debug_banner", True, {})
+    ok, detail = commands._apply_config_set("debug_banner", 2, {})
     assert ok is True, detail
     import yaml
 
     data = yaml.safe_load(cfg.read_text())
-    assert data["hermes_router"]["debug_banner"] is True
+    assert data["hermes_router"]["debug_banner"] == 2
+    ok, detail = commands._apply_config_set("debug_banner", True, {})  # legacy bool
+    assert ok is True and data is not None
+    data = yaml.safe_load(cfg.read_text())
+    assert data["hermes_router"]["debug_banner"] == 1  # true -> L1

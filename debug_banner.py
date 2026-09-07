@@ -57,10 +57,8 @@ VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
 FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
 
 
-def debug_banner_enabled() -> bool:
-    """Config read: debug_banner (bool, default OFF, top-level knob).
-    Read through the plugin's dual-section reader. Never raises. This is the
-    ONLY runtime cost when the feature is off (one config lookup)."""
+def _banner_section() -> Dict[str, Any]:
+    """Dual-section config read (hermes_router preferred). Never raises."""
     try:
         from hermes_cli.config import load_config
 
@@ -70,17 +68,41 @@ def debug_banner_enabled() -> bool:
             section = cfg.get("hermes_router")
             if not (isinstance(section, dict) and section):
                 section = cfg.get("uncensored_router")
-        if isinstance(section, dict):
-            return bool(section.get("debug_banner", False))
-        return False
+        return section if isinstance(section, dict) else {}
     except Exception:  # noqa: BLE001
-        return False
+        return {}
+
+
+def debug_banner_level() -> int:
+    """debug_banner verbosity: 0=off, 1=one-liner, 2=+context, 3=maximum.
+    Legacy bool values: true->1, false->0. One config lookup. Never raises."""
+    try:
+        raw = _banner_section().get("debug_banner", False)
+        if isinstance(raw, bool):
+            return 1 if raw else 0
+        if isinstance(raw, (int, float)):
+            return max(0, min(3, int(raw)))
+        s = str(raw).strip().lower()
+        if s in ("true", "on", "yes"):
+            return 1
+        if s in ("false", "off", "no", ""):
+            return 0
+        return max(0, min(3, int(float(s))))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def debug_banner_enabled() -> bool:
+    """Kept for the fire-point gate: any level >=1 enables the banner."""
+    return debug_banner_level() >= 1
 
 
 def format_banner(lane: str, trigger: str, model: str, endpoint: str,
                   tokens_in: Optional[int], tokens_out: Optional[int],
                   est_cost: Optional[float], latency_s: Optional[float],
-                  retries: int = 0) -> str:
+                  retries: int = 0, level: Optional[int] = None,
+                  task_id: str = "", session_id: str = "", gate: str = "",
+                  route_id: str = "") -> str:
     """Render the banner text. Pure string shaping — no I/O, no state.
     Returns "" when the caller should omit the banner (oversized or invalid
     lane). Never raises."""
@@ -103,12 +125,25 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
             ep_s = ep_s.split("://", 1)[1].split("/", 1)[0]  # host only
         ep_s = ep_s[:120]
         trig_s = str(trigger or "none")[:120]
-        # compact single-line format (Goran 09-07: make the banner smaller)
+        lvl = debug_banner_level() if level is None else max(0, min(3, int(level or 0)))
+        lat_s = (" | %ds" % int(lat)) if lat >= 1 else ""
+        # L1 (default): compact one-liner (Goran 09-07).
         banner = (
             "%s %s | %s | %s @ %s | tok %d/%d | $%.6f%s" % (
                 BANNER_HEAD, lane.split("-", 1)[0], trig_s, model_s, ep_s,
-                ti, to, cost, (" | %ds" % int(lat)) if lat >= 1 else "")
+                ti, to, cost, lat_s)
         )
+        if lvl >= 2:
+            ctx = ("task %s" % str(task_id or "-")[:40]) + (
+                " | sess %s" % str(session_id or "-")[:36] if session_id else "") + (
+                " | gate %s" % str(gate or "-")[:20] if gate else "") + (
+                " | ret %d" % ret if ret else "")
+            banner += "\n" + ctx
+        if lvl >= 3:
+            banner += "\nfull: lane=%s | trigger=%s | model=%s | endpoint=%s | tokens_in=%d tokens_out=%d | est_cost=%.6f | latency=%.2fs | retries=%d%s" % (
+                lane, trig_s, str(model or "?")[:120], str(endpoint or "?")[:120],
+                ti, to, cost, lat, ret,
+                (" | route_id=%s" % str(route_id or "-")[:40]) if route_id else "")
         if len(banner) > MAX_BANNER_CHARS:
             return ""  # oversized diagnostic: omit entirely, never truncate the answer
         return banner

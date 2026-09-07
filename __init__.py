@@ -901,14 +901,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 _chain_entries_dbg = router._chain_entries()
                 _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
                 _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
+                _dbg_task_id = _tap_task_identity(session_id, model)[0]
                 _banner_text = _db.format_banner(
                     lane="uncensored-render",
                     trigger=",".join(matches)[:60],
                     model=str(_entry_dbg.get("model") or ""),
                     endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
                     tokens_in=_ti, tokens_out=_to, est_cost=_cost,
-                    latency_s=0.0, retries=_render_retries)
-                _dbg_task_id = _tap_task_identity(session_id, model)[0]
+                    latency_s=0.0, retries=_render_retries,
+                    task_id=_dbg_task_id, session_id=session_id)
                 _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
                 if _rendered_dbg != rendered:
                     _log_route("PRE", event_detail="debug_banner_emitted",
@@ -1263,13 +1264,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _chain_entries_dbg = router._chain_entries()
                 _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
                 _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
+                _dbg_task_id = _tap_task_identity(session_id, model)[0]
                 _banner_text = _db.format_banner(
                     lane="uncensored-render",
                     trigger=",".join(matches)[:60],
                     model=str(_entry_dbg.get("model") or ""),
                     endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
                     tokens_in=_ti, tokens_out=_to, est_cost=_cost,
-                    latency_s=0.0, retries=0)
+                    latency_s=0.0, retries=0,
+                    task_id=_dbg_task_id, session_id=session_id)
                 _dbg_task_id = _tap_task_identity(session_id, model)[0]
                 _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
                 if _rendered_dbg != rendered:
@@ -1402,7 +1405,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 _banner = _db.format_banner(
                     lane="frontier-anchor", trigger=str(rec.get("mode") or "anchored"),
                     model=_model, endpoint=_host, tokens_in=_ti, tokens_out=_to,
-                    est_cost=_cost, latency_s=0.0, retries=0)
+                    est_cost=_cost, latency_s=0.0, retries=0,
+                    task_id=str(rec.get("task_id") or ""), session_id=session_id,
+                    route_id=str(rec.get("route_id") or ""))
                 if _banner:
                     _log_route("PRE", event_detail="debug_banner_emitted",
                                lane="anchor", route_id=rec.get("route_id"),

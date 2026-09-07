@@ -454,7 +454,7 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
     return {
         "enabled": {"type": "bool", "lane": "U"},
         "dry_run": {"type": "bool", "lane": "U"},
-        "debug_banner": {"type": "bool", "lane": "U"},
+        "debug_banner": {"type": "int", "min": 0, "max": 3, "lane": "U"},
         "render_max_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
         "pending_routes_ttl_seconds": {"type": "int", "min": 60, "max": 3600, "lane": "U"},
         "classification.mode": {"type": "enum", "enum": ("route", "flag_only", "off"), "lane": "C"},
@@ -534,6 +534,16 @@ def _parse_bool(raw: str) -> Optional[bool]:
     if v in ("false", "0", "off", "no", "disable"):
         return False
     return None
+
+
+def _parse_value_debug_banner_fallback(spec: Dict[str, object], raw: str) -> Tuple[bool, str, object]:
+    """debug_banner accepts legacy true/false/on/off as 1/0 on top of 0-3."""
+    low = str(raw or "").strip().lower()
+    if low in ("true", "on", "yes"):
+        return True, "", 1
+    if low in ("false", "off", "no"):
+        return True, "", 0
+    return False, "expected 0-3", None
 
 
 def _parse_value(spec: Dict[str, object], raw: str) -> Tuple[bool, str, object]:
@@ -669,8 +679,13 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
             def mut(section: Dict[str, Any], _v=bool(value)) -> None:
                 section["dry_run"] = _v
         elif knob == "debug_banner":
-            def mut(section: Dict[str, Any], _v=bool(value)) -> None:
-                section["debug_banner"] = _v
+            def mut(section: Dict[str, Any], _v=value) -> None:
+                # 0-3 verbosity; legacy true/false normalize via int(bool)
+                try:
+                    _iv = int(_v)
+                except (TypeError, ValueError):
+                    _iv = 1 if str(_v).strip().lower() in ("true", "on", "yes") else 0
+                section["debug_banner"] = max(0, min(3, _iv))
         elif knob in ("render_max_chars", "pending_routes_ttl_seconds"):
             def mut(section: Dict[str, Any], _k=str(knob), _v=value) -> None:
                 section[_k] = _v
@@ -1380,6 +1395,8 @@ def _config_set(rest: List[str]) -> str:
             knob, "venice-qwen-xhigh" if knob.startswith("chain.") else "openai/gpt-5.6-luna-pro")
 
     ok, why, parsed = _parse_value(spec, raw_value)
+    if not ok and knob == "debug_banner":
+        ok, why, parsed = _parse_value_debug_banner_fallback(spec, raw_value)
     if not ok:
         return "rejected: %s — %s" % (knob, why)
 
@@ -1766,6 +1783,8 @@ def _execute_confirmed_config_set(args_l: List[str]) -> str:
         if spec is None or spec.get("gate") or knob in _NOT_WRITABLE:
             return "config set aborted: knob %r no longer valid" % knob
         ok, why, parsed = _parse_value(spec, raw_value)
+        if not ok and knob == "debug_banner":
+            ok, why, parsed = _parse_value_debug_banner_fallback(spec, raw_value)
         if not ok:
             return "config set aborted: %s — %s" % (knob, why)
         before = config_writer.read_plugin_section()

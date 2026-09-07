@@ -131,7 +131,7 @@ def router_status() -> str:
                                    3: "aggressive"}.get(max(0, min(3, level)), "off"),
                 },
             },
-            "debug_banner": bool(section.get("debug_banner", False)),
+            "debug_banner": int(section.get("debug_banner", 0)) if not isinstance(section.get("debug_banner"), bool) else (1 if section.get("debug_banner") else 0),
             "struggle_feeder": "armed",
             "anchor_chain": ac_masked,
             "daily_cap_usd": chain.daily_cap_usd,
@@ -141,7 +141,7 @@ def router_status() -> str:
             "decision_head": decision_head.status(),
             "pending_swap": bool(pend),
             "anchor_backoff_active": router_core.anchor_backoff_active_count(),
-            "debug_banner": bool(section.get("debug_banner", False)),
+            "debug_banner": int(section.get("debug_banner", 0)) if not isinstance(section.get("debug_banner"), bool) else (1 if section.get("debug_banner") else 0),
             "struggle_feeder": "armed",
             "reload_dirty_flag_ts": reload_requested_at(),
         }
