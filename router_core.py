@@ -532,16 +532,18 @@ def maybe_shadow_log(user_text: str, task_id: str, session_id: str, model: str,
 def _complexity_cfg() -> Dict[str, Any]:
     """Read the complexity block from the plugin config (hermes_router
     canonical first, legacy uncensored_router fallback — same dual-section
-    discipline as _complexity_level). {} on miss. Never raises."""
-    try:
-        from hermes_cli.config import load_config
+    discipline as _complexity_level). {} on miss. Never raises.
 
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
+    Fix (2026-09-07, live-caught): load_config() in profile gateways resolves
+    to the GLOBAL home config (no router section) → complexity was pinned at
+    L0 no matter what the profile config said, while debug_banner/persona
+    reads (which have the profile-co-located fallback) kept working. Reuse
+    debug_banner._banner_section() — same dual-section read + profile
+    co-located fallback + last-good cache."""
+    try:
+        from . import debug_banner as _dbg
+
+        section = _dbg._banner_section()
         block = (section or {}).get("complexity") if isinstance(section, dict) else None
         return dict(block) if isinstance(block, dict) else {}
     except Exception:  # noqa: BLE001
@@ -805,39 +807,23 @@ def _infra_cooldown_skip(task_id: str, session_id: str) -> Tuple[bool, str]:
 
 
 def _complexity_level() -> int:
-    """Read intensity from config: complexity.level (0-3). Never raises."""
-    try:
-        from hermes_cli.config import load_config
-
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-        block = (section or {}).get("complexity") if isinstance(section, dict) else None
-        if isinstance(block, dict):
-            return complexity.normalize_level(block.get("level", 0))
-        return 0
-    except Exception:  # noqa: BLE001
-        return 0
+    """Read intensity from config: complexity.level (0-3). Never raises.
+    Reads via _complexity_cfg() (dual-section + profile-co-located fallback,
+    fix 2026-09-07) so profile gateways see their own complexity level."""
+    block = _complexity_cfg()
+    if isinstance(block, dict):
+        return complexity.normalize_level(block.get("level", 0))
+    return 0
 
 
 def _lane_enabled(lane: str) -> bool:
     """Per-lane enable switch (complexity.enabled, default True at L>0).
-    Uncensored lane keeps its own _enabled() in __init__. Never raises."""
+    Uncensored lane keeps its own _enabled() in __init__. Never raises.
+    Reads via _complexity_cfg() (profile-co-located fallback, fix 2026-09-07)."""
     try:
         if lane != LANE_COMPLEXITY:
             return True
-        from hermes_cli.config import load_config
-
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-        block = (section or {}).get("complexity") if isinstance(section, dict) else None
+        block = _complexity_cfg()
         if isinstance(block, dict) and block.get("enabled") is False:
             return False
         return True
