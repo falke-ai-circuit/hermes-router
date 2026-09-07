@@ -58,7 +58,11 @@ FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
 
 
 def _banner_section() -> Dict[str, Any]:
-    """Dual-section config read (hermes_router preferred). Never raises."""
+    """Dual-section config read (hermes_router preferred). Never raises.
+    Fallback: when the process-level load_config() yields no router section
+    (e.g. HERMES_HOME resolves to the global home while the plugin runs from
+    a profile tree), read the profile config.yaml co-located with this plugin
+    instance: <profile_root>/config.yaml."""
     try:
         from hermes_cli.config import load_config
 
@@ -68,9 +72,28 @@ def _banner_section() -> Dict[str, Any]:
             section = cfg.get("hermes_router")
             if not (isinstance(section, dict) and section):
                 section = cfg.get("uncensored_router")
-        return section if isinstance(section, dict) else {}
+        if isinstance(section, dict) and section:
+            return section
     except Exception:  # noqa: BLE001
-        return {}
+        section = None
+    # Profile-co-located fallback (one file read; only on misses).
+    try:
+        import os
+        import yaml
+
+        here = os.path.dirname(os.path.abspath(__file__))          # .../plugins/hermes_router
+        profile_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))  # .../<profile>
+        p = os.path.join(profile_root, "config.yaml")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as fh:
+                cfg2 = yaml.safe_load(fh) or {}
+            for key in ("hermes_router", "uncensored_router"):
+                sec2 = cfg2.get(key)
+                if isinstance(sec2, dict) and sec2:
+                    return sec2
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def debug_banner_level() -> int:
@@ -126,11 +149,6 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         ep_s = ep_s[:120]
         trig_s = str(trigger or "none")[:120]
         lvl = debug_banner_level() if level is None else max(0, min(3, int(level or 0)))
-        try:
-            with open("/tmp/dbg_format_banner.log", "a") as _fh:
-                _fh.write("enter lane=%s lvl=%s ret=%d\n" % (lane, lvl, ret))
-        except Exception:
-            pass
         lat_s = (" | %ds" % int(lat)) if lat >= 1 else ""
         # L1 (default): compact one-liner (Goran 09-07).
         banner = (
