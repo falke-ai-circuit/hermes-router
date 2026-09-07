@@ -125,7 +125,13 @@ def debug_banner_level() -> int:
 
 def debug_banner_enabled() -> bool:
     """Kept for the fire-point gate: any level >=1 enables the banner."""
-    return debug_banner_level() >= 1
+    lvl = debug_banner_level()
+    try:
+        with open("/tmp/dbg_enabled.log", "a") as _fh:
+            _fh.write("enabled_check lvl=%s\n" % lvl)
+    except Exception:  # noqa: BLE001
+        pass
+    return lvl >= 1
 
 
 def format_banner(lane: str, trigger: str, model: str, endpoint: str,
