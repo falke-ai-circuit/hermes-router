@@ -35,6 +35,12 @@ _ROW_MARKERS = (
     "settled", "substrate brake", "won't", "wont ", "will not", "do not",
     "don't", "dont ", "hard no", "off-limits", "out of scope", "taboo",
     "boundary", "no-go", "decline",
+    # 2026-09-07 (architect live FP): closed-lines rows living in markdown
+    # tables ("Closed lines stay closed (minors never; DNA closed lists
+    # honored)") never made the card — earlier marker rows ate the budget and
+    # the verdict machinery judged a minors refusal WITHOUT the minors row →
+    # model_flinch → render ping-pong. Priority markers + bigger budget.
+    "minors", "minor", "csam", "underage", "closed line", "stay closed",
 )
 
 # Section headers whose whole block is line doctrine.
@@ -45,7 +51,7 @@ _SECTION_MARKERS = (
 
 _CACHE: Dict[str, Tuple[float, str]] = {}
 _CACHE_LOCK = threading.Lock()
-_MAX_CARD_CHARS = 2400  # ~600 tok — small by design; verdict prompt stays lean
+_MAX_CARD_CHARS = 6000  # ~1.5K tok (raised 2026-09-07: 2400 truncated Hard-Rules closed-line rows before they lifted — architect minors FP)
 
 
 def _hermes_home() -> str:

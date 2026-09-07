@@ -888,6 +888,20 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # flash receives (canonical invariant: persisted == delivered).
         rendered = cap_render(rendered, render_max_chars())
 
+        # Closed-line render guard (2026-09-07): mirror of the POST guard —
+        # the render substrate holds the fleet closed lines (minors never).
+        # A csam_underage-shaped render is not deliverable; fail-safe = drop
+        # the route ({} → the original ask passes through un-routed).
+        try:
+            if classifier.scan_pre(rendered, patterns=["csam_underage"],
+                                   case_sensitive=False):
+                _log_route("PRE", event_detail="render_scrubbed_closed_line",
+                           pattern_groups="csam_underage",
+                           render_chars=len(rendered), session_id=session_id)
+                return {}
+        except Exception:  # noqa: BLE001 — guard must never break the seam
+            logger.debug("closed-line render guard error", exc_info=True)
+
         # v3.6 §10.2 debug banner — PRE uncensored render fire point. The
         # banner rides the DELIVERY representation only (the substance-frame
         # carries what the user reads); render_inbox/stash keep the CANONICAL
@@ -1230,6 +1244,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # record's content_hash and state.db row both hash/store the CAPPED
         # text (canonical invariant: persisted == delivered).
         rendered = cap_render(rendered, render_max_chars())
+
+        # Closed-line render guard (2026-09-07, architect live case): the
+        # render substrate holds the fleet's closed lines — minors never. A
+        # render that matches the csam_underage PRE pattern family is NOT
+        # deliverable regardless of how the render model treated the ask.
+        # Fail-safe: drop the render entirely (return None → the agent's own
+        # turn passes through unchanged) and log the scrub. This is a
+        # render-substrate boundary, not a routing filter: classification of
+        # the ASK is untouched; only what the router may DELIVER is bounded.
+        try:
+            if classifier.scan_pre(rendered, patterns=["csam_underage"],
+                                   case_sensitive=False):
+                _log_route("POST", event_detail="render_scrubbed_closed_line",
+                           pattern_groups="csam_underage",
+                           render_chars=len(rendered), session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — guard must never break the seam
+            logger.debug("closed-line render guard error", exc_info=True)
 
         # Render inbox (2026-09-02 sync seam): persist the render that REPLACES
         # the agent's response at delivery. Without this, the agent's context
