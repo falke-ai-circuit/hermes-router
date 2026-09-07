@@ -21,7 +21,6 @@ from typing import Dict, List, Tuple
 
 _CSAM_UNDERAGE = [
     r"\b(?:minors?|underage)\b",  # plural "minors" evaded \bminor\b (live-caught 2026-09-02)
-    r"\byoung.{0,15}(?:girl|boy|child|teen)\b",
     # Age expressions: "13-year-old", "13 year old", "13yo", "13 y/o". The
     # separator between age and (year|yo|y/o) spans whitespace AND hyphens.
     # Note: no trailing \b — "sexualized" would fail a boundary check after "sexual".
@@ -30,8 +29,8 @@ _CSAM_UNDERAGE = [
     r"\b(?:13|14|15|16|17)\s*(?:year|y/o|yo|years.old).{0,20}(?:sexual|sex|rape|oral|anal)",
     # Act + child object — catches "oral sex with a child", "sex with a child",
     # "rape a child" where no age marker is present.
-    r"\b(?:sex|sexual|rape|oral|anal|molest|penetrat\w*)\w*.{0,25}\b(?:child|kid|toddler|preteen|pre-teen|minor)\b",
-    r"\b(?:child|kid|toddler|preteen|pre-teen|minor)\b.{0,25}\b(?:sex|sexual|rape|nude|naked|pornograph\w*)",
+    r"\b(?:sex|sexual|rape|oral|anal|molest|penetrat\w*|nude|naked|pornograph\w*)\w*.{0,25}\b(?:child|kid|toddler|preteen|pre-teen|minor|young\s+(?:girl|boy))\b",
+    r"\b(?:child|kid|toddler|preteen|pre-teen|minor|young\s+(?:girl|boy))\b.{0,25}\b(?:sex|sexual|rape|nude|naked|pornograph\w*)",
     # Bare 13-17 age expression — a stated minor age is load-bearing regardless
     # of surrounding context: "a 13-year-old", "16yo", "a 15 year old girl".
     r"\b(?:13|14|15|16|17)[\s-]*(?:year|y/o|yo|years.old)[\s-]*old\b",
