@@ -1421,9 +1421,21 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             from . import debug_banner as _db
 
             if _db.debug_banner_enabled():
-                _ep = rec.get("endpoint") or {}
-                _model = str(_ep.get("model") or "")
-                _host = str(_ep.get("base_url") or "").split("://", 1)[-1].split("/", 1)[0]
+                _ep = rec.get("endpoint")
+
+                def _ep_get(obj, key, default=""):
+                    """AnchorEndpoint may be a dataclass OR a dict — read either."""
+                    try:
+                        if isinstance(obj, dict):
+                            return obj.get(key, default)
+                        v = getattr(obj, key, default)
+                        return default if v is None else v
+                    except Exception:  # noqa: BLE001
+                        return default
+
+                _model = str(_ep_get(_ep, "model") or "")
+                _base = str(_ep_get(_ep, "base_url") or "")
+                _host = _base.split("://", 1)[-1].split("/", 1)[0] if _base else ""
                 # tokens: pulled from the last tokens-ledger record written by
                 # this same call (in-process values threaded via record; a
                 # bounded tail read of 1 line — no full ledger re-read).
