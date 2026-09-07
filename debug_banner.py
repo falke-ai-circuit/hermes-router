@@ -126,6 +126,11 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         ep_s = ep_s[:120]
         trig_s = str(trigger or "none")[:120]
         lvl = debug_banner_level() if level is None else max(0, min(3, int(level or 0)))
+        try:
+            with open("/tmp/dbg_format_banner.log", "a") as _fh:
+                _fh.write("enter lane=%s lvl=%s ret=%d\n" % (lane, lvl, ret))
+        except Exception:
+            pass
         lat_s = (" | %ds" % int(lat)) if lat >= 1 else ""
         # L1 (default): compact one-liner (Goran 09-07).
         banner = (
