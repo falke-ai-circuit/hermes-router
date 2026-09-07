@@ -1415,6 +1415,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         try:
             from . import debug_banner as _db
 
+            _log_route("PRE", event_detail="anchor_banner_probe",
+                       enabled=_db.debug_banner_enabled(), level=_db.debug_banner_level(),
+                       session_id=session_id)
             if _db.debug_banner_enabled():
                 _ep = rec.get("endpoint") or {}
                 _model = str(_ep.get("model") or "")
