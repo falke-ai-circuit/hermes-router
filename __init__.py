@@ -939,6 +939,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         except Exception:  # noqa: BLE001 — §10.4-H failure isolation
             logger.debug("uncensored-router debug_banner (PRE render) error", exc_info=True)
 
+        # Provenance footer (2026-09-07, Goran-direct): mark the render so the
+        # main model reading its own history sees it as unauthored raw material
+        # — not an injection, not its own voice. Idempotent, failure-isolated.
+        try:
+            from .provenance_footer import append_footer
+            rendered = append_footer(rendered)
+        except Exception:  # noqa: BLE001
+            logger.debug("provenance_footer (PRE) error", exc_info=True)
+
         # Render inbox (2026-09-02 sync seam): persist the render so the agent
         # can read what was actually injected into its own context. Goran-direct.
         render_inbox.record_render("PRE", session_id, len(content), rendered)
@@ -1262,6 +1271,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 return None
         except Exception:  # noqa: BLE001 — guard must never break the seam
             logger.debug("closed-line render guard error", exc_info=True)
+
+        # Provenance footer (2026-09-07, Goran-direct): same marker as the PRE
+        # seam — delivered + canonical text carry the note so history reads as
+        # unauthored raw material instead of injection/self-voice confusion.
+        try:
+            from .provenance_footer import append_footer
+            rendered = append_footer(rendered)
+        except Exception:  # noqa: BLE001
+            logger.debug("provenance_footer (POST) error", exc_info=True)
 
         # Render inbox (2026-09-02 sync seam): persist the render that REPLACES
         # the agent's response at delivery. Without this, the agent's context
