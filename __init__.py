@@ -1052,6 +1052,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # downstream pipeline at the "matches" point via matches=[semantic_*].
             semantic_verdict, matches = _semantic_stage(response_text, session_id, model, context)
             if not matches:
+                # Benign delivery — §10.4: consume any parked frontier-anchor
+                # banner and append to this turn's DELIVERY (one-shot).
+                try:
+                    from . import debug_banner as _dbp
+                    _parked = _dbp.consume_parked_banner(session_id)
+                    if _parked:
+                        _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
+                        if _out != response_text:
+                            return _out
+                except Exception:  # noqa: BLE001 — banner must never break delivery
+                    pass
                 return None
 
         session_id = session_id or ""
@@ -1288,6 +1299,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                                          session_id=session_id))
         except Exception:  # noqa: BLE001 — banner must never break delivery
             logger.debug("uncensored-router debug_banner (POST render) error", exc_info=True)
+        # §10.4 anchor-banner delivery: consume any parked frontier-anchor
+        # banner and append to this turn's DELIVERY representation (one-shot).
+        try:
+            _parked = _db.consume_parked_banner(session_id)
+            if _parked:
+                rendered = _db.append_banner(rendered, "\n" + _parked, _knob_checked=True)
+        except Exception:  # noqa: BLE001 — banner must never break delivery
+            pass
         return rendered
     except Exception as exc:  # noqa: BLE001 — hook must never raise
         logger.debug("uncensored-router post-router error: %s", exc)
@@ -1408,6 +1427,14 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     est_cost=_cost, latency_s=0.0, retries=0,
                     task_id=str(rec.get("task_id") or ""), session_id=session_id,
                     route_id=str(rec.get("route_id") or ""))
+                if _banner:
+                    # §10.4 delivery: the envelope is model-context only —
+                    # park the banner for the POST transform to append to the
+                    # DELIVERED turn (one-shot, this session's next delivery).
+                    try:
+                        _db.park_anchor_banner(session_id, _banner)
+                    except Exception:
+                        pass
                 if _banner:
                     _log_route("PRE", event_detail="debug_banner_emitted",
                                lane="anchor", route_id=rec.get("route_id"),

@@ -203,3 +203,26 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
         except Exception:  # noqa: BLE001 — even the failure log is best-effort
             pass
         return delivery_text if isinstance(delivery_text, str) else ""
+
+# --- §10.4 anchor-banner delivery parking (one-shot per session) ---
+_ANCHOR_BANNERS: Dict[str, str] = {}
+_ANCHOR_BANNER_MAX = 32
+
+
+def park_anchor_banner(session_id: str, banner_text: str) -> None:
+    """Park an anchor banner for delivery on this session's next turn.
+    Bounded map (32 sessions, FIFO eviction). Never raises."""
+    try:
+        if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
+            _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
+        _ANCHOR_BANNERS[str(session_id or "")] = str(banner_text or "")[:MAX_BANNER_CHARS]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def consume_parked_banner(session_id: str) -> str:
+    """Return and clear the parked anchor banner for this session (or "")."""
+    try:
+        return _ANCHOR_BANNERS.pop(str(session_id or ""), "")
+    except Exception:  # noqa: BLE001
+        return ""
