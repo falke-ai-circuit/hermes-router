@@ -1432,6 +1432,8 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     est_cost=_cost, latency_s=0.0, retries=0,
                     task_id=str(rec.get("task_id") or ""), session_id=session_id,
                     route_id=str(rec.get("route_id") or ""))
+                _log_route("PRE", event_detail="anchor_banner_probe2",
+                           banner_len=len(_banner or ""), tokens=(_ti, _to), session_id=session_id)
                 if _banner:
                     # §10.4 delivery: the envelope is model-context only —
                     # park the banner for the POST transform to append to the
