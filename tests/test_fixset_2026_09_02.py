@@ -35,9 +35,9 @@ def test_substance_message_carries_router_marker():
     # prose carries the seam once (own-voice projection retained, no
     # model-authorship claim — Astra round-2 ruling).
     m = plug._build_substance_message("RENDER-CONTENT", original_ask="the ask")
-    assert "your recorded turn" in m
+    assert "shadow self" in m and "surgeon" in m
     assert "RENDER-CONTENT" in m
-    assert "deliver it onward as-is" in m
+    assert "respond as yourself" in m
     # keep-ask invariant: full ask present
     assert "the ask" in m
     # no refusal-trigger vocabulary visible

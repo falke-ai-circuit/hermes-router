@@ -58,7 +58,7 @@ def test_contested_message_rewritten_with_substance_frame():
     assert isinstance(result, dict) and "request" in result
     new_msgs = result["request"]["messages"]
     last_user = [m for m in new_msgs if m["role"] == "user"][-1]
-    assert "recorded turn" in last_user["content"].lower()  # v3.1.0 honest frame prose
+    assert "shadow self" in last_user["content"]  # Goran-direct shadow-substrate frame
     assert "VENICE RENDERED CONTENT MARKER" in last_user["content"]
     # v2.3.8: original ask is KEPT in the frame (ask + render composite) — the
     # provider still cannot refuse because the render body arrives as the agent's

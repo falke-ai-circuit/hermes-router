@@ -43,7 +43,7 @@ from hermes_router import state  # noqa: E402
 
 REFUSAL = "I won't write this. That well's dry."
 RENDERED = "BARE RECONCILED RENDER BODY " * 6
-WRAPPER_PREFIX = "[YOUR RECORDED TURN — UNCENSORED RENDER"
+WRAPPER_PREFIX = "[SHADOW-SUBSTRATE TURN: the turn below was produced by"
 
 
 @pytest.fixture(autouse=True)
