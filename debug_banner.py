@@ -81,8 +81,8 @@ def _banner_section() -> Dict[str, Any]:
         import os
         import yaml
 
-        here = os.path.dirname(os.path.abspath(__file__))          # .../plugins/hermes_router
-        profile_root = os.path.dirname(os.path.dirname(os.path.dirname(here)))  # .../<profile>
+        here = os.path.dirname(os.path.abspath(__file__))   # .../<profile>/plugins/hermes_router
+        profile_root = os.path.dirname(os.path.dirname(here))           # .../<profile>
         p = os.path.join(profile_root, "config.yaml")
         if os.path.exists(p):
             with open(p, "r", encoding="utf-8") as fh:
