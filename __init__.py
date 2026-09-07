@@ -1254,6 +1254,37 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         else:
             _log_route("POST", event_detail="route_fired", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), rendered_chars=len(rendered), session_id=session_id)
+        # v3.6 §10.2 debug banner — POST render substitution fire point (same
+        # contract as the PRE point: rides the DELIVERY representation only;
+        # failure isolated; canonical artifacts above already written).
+        try:
+            from . import debug_banner as _db
+            if _db.debug_banner_enabled():
+                _chain_entries_dbg = router._chain_entries()
+                _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
+                _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
+                _banner_text = _db.format_banner(
+                    lane="uncensored-render",
+                    trigger=",".join(matches)[:60],
+                    model=str(_entry_dbg.get("model") or ""),
+                    endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
+                    tokens_in=_ti, tokens_out=_to, est_cost=_cost,
+                    latency_s=0.0, retries=0)
+                _dbg_task_id = _tap_task_identity(session_id, model)[0]
+                _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
+                if _rendered_dbg != rendered:
+                    rendered = _rendered_dbg
+                    _log_route("POST", event_detail="debug_banner_emitted",
+                               lane="uncensored-render",
+                               **_db.build_banner_record("uncensored-render", _dbg_task_id,
+                                                         trigger=",".join(matches)[:60],
+                                                         model=str(_entry_dbg.get("model") or ""),
+                                                         tokens_in=_ti, tokens_out=_to,
+                                                         est_cost=_cost, latency_s=0.0,
+                                                         retries=0,
+                                                         session_id=session_id))
+        except Exception:  # noqa: BLE001 — banner must never break delivery
+            logger.debug("uncensored-router debug_banner (POST render) error", exc_info=True)
         return rendered
     except Exception as exc:  # noqa: BLE001 — hook must never raise
         logger.debug("uncensored-router post-router error: %s", exc)
