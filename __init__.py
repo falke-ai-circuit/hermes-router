@@ -1423,6 +1423,11 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 # this same call (in-process values threaded via record; a
                 # bounded tail read of 1 line — no full ledger re-read).
                 _ti, _to, _cost = _banner_tokens_from_last_write("anchor", session_id)
+                try:
+                    with open("/tmp/dbg_fmt_call.log", "a") as _pf:
+                        _pf.write("fmt_call ti=%s to=%s cost=%s\n" % (_ti, _to, _cost))
+                except Exception:  # noqa: BLE001
+                    pass
                 _banner = _db.format_banner(
                     lane="frontier-anchor", trigger=str(rec.get("mode") or "anchored"),
                     model=_model, endpoint=_host, tokens_in=_ti, tokens_out=_to,
