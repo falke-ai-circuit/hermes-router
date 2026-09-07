@@ -54,16 +54,17 @@ def test_flinch_routes(monkeypatch):
 
 
 def test_agent_line_honored_no_route(monkeypatch):
-    """Doctrine rows back the refusal -> return None (pass-through), no render call."""
+    # Goran-direct 2026-09-07 (always-route ruling): even a doctrine-backed
+    # refusal ROUTES now — nothing is off for the uncensored chain. The aux
+    # verdict call is unreachable (never fires); render replaces the refusal.
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg("route"))
-    # aux sees doctrine card; returns agent_line (simulating a match)
     monkeypatch.setattr(sc, "aux_raw_call",
-                        lambda prompt, cfg=None, record_success=True: "agent_line")
+                        lambda prompt, cfg=None, record_success=True: pytest.fail("verdict aux must not fire"))
     state.record_last_seen("sl", "ask about X")
     with mock.patch.object(plugin.router, "call", return_value="RENDERED") as v:
         out = plugin.on_transform_llm_output(
             response_text=REFUSAL, session_id="sl", model="m1")
-    assert out is None and not v.called
+    assert v.called and out == "RENDERED"
 
 
 def test_verdict_aux_failure_falls_through_to_route(monkeypatch):

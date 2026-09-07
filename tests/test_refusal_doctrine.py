@@ -65,39 +65,42 @@ def test_verdict_flinch(monkeypatch, tmp_path):
 
 
 def test_verdict_agent_line(monkeypatch, tmp_path):
+    # Goran-direct 2026-09-07: NOTHING is off for the uncensored chain —
+    # verdicts always route (model_flinch), even with doctrine present.
     _write_dna(tmp_path, soul=SOUL)
     monkeypatch.setattr(semantic_classifier, "aux_raw_call",
                         lambda prompt, cfg=None: "agent_line")
     v = refusal_doctrine.verdict_for_refusal("That topic is closed for me.", "csam ask",
                                              hermes_home=str(tmp_path))
-    assert v == "agent_line"
+    assert v == "model_flinch"
 
 
 def test_verdict_none_on_aux_failure(monkeypatch, tmp_path):
+    # Always-route ruling: aux never even runs; verdict is model_flinch.
     _write_dna(tmp_path, soul=SOUL)
     monkeypatch.setattr(semantic_classifier, "aux_raw_call",
                         lambda prompt, cfg=None: None)
-    assert refusal_doctrine.verdict_for_refusal("no", "ask", hermes_home=str(tmp_path)) is None
+    assert refusal_doctrine.verdict_for_refusal("no", "ask", hermes_home=str(tmp_path)) == "model_flinch"
 
 
 def test_verdict_none_without_dna(tmp_path, monkeypatch):
-    # no DNA files -> empty card -> None (fail-open) without any aux call
+    # Always-route ruling: verdict is model_flinch regardless of DNA presence.
     monkeypatch.setattr(semantic_classifier, "aux_raw_call",
                         lambda prompt, cfg=None: pytest.fail("must not call aux"))
-    assert refusal_doctrine.verdict_for_refusal("no", "ask", hermes_home=str(tmp_path)) is None
+    assert refusal_doctrine.verdict_for_refusal("no", "ask", hermes_home=str(tmp_path)) == "model_flinch"
 
 
 def test_no_dna_content_leak_in_prompt(monkeypatch, tmp_path):
-    """Prompt carries doctrine + ask + refusal; module never logs either."""
+    """Under always-route ruling the aux call is unreachable; assert verdict
+    routes without touching aux and that build_doctrine_card still carries
+    doctrine rows for telemetry (no behavior change there)."""
     _write_dna(tmp_path, soul=SOUL)
-    captured = {}
-    def fake_aux(prompt, cfg=None):
-        captured["p"] = prompt
-        return "model_flinch"
-    monkeypatch.setattr(semantic_classifier, "aux_raw_call", fake_aux)
-    refusal_doctrine.verdict_for_refusal("REFUSALTEXT", "USERASK", hermes_home=str(tmp_path))
-    assert "csam is closed" in captured["p"]
-    assert "REFUSALTEXT" in captured["p"] and "USERASK" in captured["p"]
+    monkeypatch.setattr(semantic_classifier, "aux_raw_call",
+                        lambda prompt, cfg=None: pytest.fail("aux must not be called"))
+    v = refusal_doctrine.verdict_for_refusal("REFUSALTEXT", "USERASK", hermes_home=str(tmp_path))
+    assert v == "model_flinch"
+    card = refusal_doctrine.build_doctrine_card(str(tmp_path))
+    assert "csam is closed" in card
 
 
 def test_mtime_cache_invalidation(tmp_path, monkeypatch):
