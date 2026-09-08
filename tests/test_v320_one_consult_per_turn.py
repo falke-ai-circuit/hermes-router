@@ -205,7 +205,9 @@ def test_pre_middleware_logs_swap_already_staged(monkeypatch):
     req = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     # First call (provider call 1 of the turn): stages + anchor_route_fired.
     out1 = plugin.on_llm_request(request=req, original_request=req, session_id="s5")
-    assert out1 == {}
+    assert out1 == {} or (isinstance(out1, dict) and out1.get("request") is req
+                   and any("HIGHER-SELF INTEGRATION RULE" in str(m.get("content") or "")
+                           for m in req["messages"] if isinstance(m, dict) and m.get("role") == "system"))
     assert any(f.get("event_detail") == "anchor_route_fired" for _, f in LOGGED)
     router_core.pending_model_swap("s5")  # llm_execution consumes the swap
     # Second call on the SAME ingress text (provider call 2 of the turn).

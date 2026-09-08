@@ -221,7 +221,9 @@ def test_pre_middleware_dispatcher_logs_and_stages(monkeypatch):
     req = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=req, original_request=req, session_id="pm1")
-    assert result == {}  # PRE never rewrites on complexity lane
+    assert result == {} or (isinstance(result, dict) and result.get("request") is req
+                       and any("HIGHER-SELF INTEGRATION RULE" in str(m.get("content") or "")
+                               for m in req["messages"] if isinstance(m, dict) and m.get("role") == "system"))  # PRE never rewrites on complexity lane
     assert not venice.called  # uncensored render untouched
     assert router_core.peek_pending_swap("pm1") is not None
     # cleanup: the pending swap must not leak into other tests
@@ -232,7 +234,9 @@ def test_pre_middleware_routine_request_untouched():
     req = {"model": "m", "messages": [{"role": "user", "content": ROUTINE_ASK}]}
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=req, original_request=req, session_id="pm2")
-    assert result == {}
+    assert result == {} or (isinstance(result, dict) and result.get("request") is req
+                       and any("HIGHER-SELF INTEGRATION RULE" in str(m.get("content") or "")
+                               for m in req["messages"] if isinstance(m, dict) and m.get("role") == "system"))
     assert not venice.called
 
 

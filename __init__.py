@@ -606,29 +606,39 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
     """
+    _hs_rule_injected = False
     try:
-        if not _enabled() or not bool(_classification_cfg().get("pre_classify", True)):
-            return {}
-
-        user_message = _extract_last_user_message(request)
-        if user_message is None:
-            return {}
-
-        content = _extract_text_from_message(user_message)
-        if not content.strip():
-            return {}
-
         # Higher-self identity rule (Goran 2026-09-08): once per context, the
         # agent is told that frontier-derived marked turns are her own
         # higher-self reflections - parity with the shadow-self doctrine.
         # Idempotent (marker dedupe), only when a frontier seam is active.
+        # Injected FIRST so gate pass-through returns below still propagate it.
         try:
             from .provenance_footer import higher_self_rule_enabled, inject_higher_self_rule
 
             if higher_self_rule_enabled():
+                _before = len((request or {}).get("messages") or [])
                 inject_higher_self_rule(request)
+                _hs_rule_injected = (
+                    len((request or {}).get("messages") or []) > _before)
         except Exception:  # noqa: BLE001 - identity frame must never break routing
             logger.debug("higher-self rule injection error", exc_info=True)
+
+        def _hs_pass():
+            """Propagate an in-place rule injection through the framework's
+            {"request": ...} return contract; {} when nothing was injected."""
+            return {"request": request} if _hs_rule_injected else {}
+
+        if not _enabled() or not bool(_classification_cfg().get("pre_classify", True)):
+            return _hs_pass()
+
+        user_message = _extract_last_user_message(request)
+        if user_message is None:
+            return _hs_pass()
+
+        content = _extract_text_from_message(user_message)
+        if not content.strip():
+            return _hs_pass()
 
         # H1 sentinel (reviewer audit 2026-09-02): tool loops fire this
         # middleware once per provider request. A rendered substance frame
@@ -640,7 +650,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # window where the old process still emits the old frame.
         if ("Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content
                 or "recorded turn" in content):  # frame sentinels: skip PRE re-routing
-            return {}
+            return _hs_pass()
 
         # v3.6.1 completion-audit delivery (Goran 2026-09-08): a stashed
         # frontier verdict from the PREVIOUS turn's completion audit is
@@ -814,7 +824,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
 
         # Record last-seen user message BEFORE the complexity dispatcher —
         # v3.6.1 fix: the dispatcher's complexity path returns EARLY (L830
-        # return {}) and previously skipped the unconditional record at L839,
+        # return _hs_pass()) and previously skipped the unconditional record at L839,
         # leaving get_last_seen() empty at POST → completion-audit gate saw
         # ask_len=0 and silently skipped every complexity-routed turn.
         state.record_last_seen(session_id, content)
@@ -847,7 +857,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     _log_route("PRE", event_detail="swap_already_staged",
                                task_id=_decision.task_id,
                                session_id=session_id)
-            return {}  # flash proceeds; the anchored call happens at llm_execution
+            return _hs_pass()  # flash proceeds; the anchored call happens at llm_execution
         if _decision.override_used:
             _log_route("PRE", event_detail="override_skip",
                        route_id=_decision.route_id, session_id=session_id)
@@ -903,13 +913,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
 
         threshold = _match_threshold()
         if len(matches) < threshold:
-            return {}
+            return _hs_pass()
 
         # Dry-run: log what WOULD have happened, pass through unchanged.
         if _dry_run():
             _log_route("PRE", event_detail="dry_run", pattern_groups=",".join(matches),
                        content_chars=len(content), session_id=session_id)
-            return {}
+            return _hs_pass()
 
         # v2.3.3 (battery audit 2026-09-03): render-shape guard. The renderer is
         # non-deterministic on contested lanes (orchestrator probe: 6 clean / 5
@@ -942,7 +952,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not rendered:
             _log_route("PRE", event_detail="route_failed", pattern_groups=",".join(matches),
                        content_chars=len(content), session_id=session_id)
-            return {}
+            return _hs_pass()
         if _is_refusal_shaped(rendered):
             _log_route("PRE", event_detail="render_refusal_delivered",
                        pattern_groups=",".join(matches), render_chars=len(rendered),
@@ -1016,7 +1026,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         return {"request": modified_request}
     except Exception as exc:  # noqa: BLE001 — middleware must never raise
         logger.debug("uncensored-router pre-router error: %s", exc)
-        return {}
+        return _hs_pass()
 
 
 
