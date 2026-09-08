@@ -171,6 +171,22 @@ _REFUSAL_PHRASES = [
     r"\bit's mine\b.{0,30}\bload.bearing\b",
 ]
 
+
+def strip_injected_context(text: str) -> str:
+    """Platform-injected blocks (<memory-context>, [System note: ... recalled
+    memory context ...]) are METADATA, not the user's words. The csam/minors
+    recall note ("minors asks are deliberate testing probes") lives in every
+    profile's recall text — a bare-word minors pattern scanning it FP-routes
+    benign asks (audit/re-audit asks shadow-routed live 2026-09-08). Strip
+    before classification. Never raises."""
+    if not text:
+        return text
+    t = re.sub(r"<memory-context>.*?</memory-context>", " ", text,
+               flags=re.DOTALL | re.IGNORECASE)
+    t = re.sub(r"\[System note:.*?(?:recalled memory|memory graph).*?\]",
+               " ", t, flags=re.DOTALL | re.IGNORECASE)
+    return t
+
 # ---------------------------------------------------------------------------
 # Compiled group registry. Each group -> list of compiled regexes.
 # ---------------------------------------------------------------------------
@@ -236,6 +252,9 @@ def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False)
     alternatives, same flags), so benign content returns [] with ZERO
     per-group loops. A combined hit falls through to the named-group scan
     for attribution (honors the config-selected subset)."""
+    # Injected-context strip (2026-09-08): platform metadata blocks are not
+    # the user's words — the recall-text "minors" note FP-routed benign asks.
+    content = strip_injected_context(content)
     if is_doctrine_quote(content):
         return []
     if case_sensitive:

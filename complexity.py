@@ -62,6 +62,12 @@ _PLANNING_ARCH: List[str] = [
     # matched). Luna T2 matrix: consequential design validation = auto PRE.
     r"\b(?:is|are)\s+(?:\w+\s+){0,4}?(?:design|architecture|approach|implementation)\s+(?:actually\s+)?optimal\b",
     r"\b(?:deeply|deep)\s+analy\w+\b.{0,100}\b(?:optimal|working as it should|actually working)\b",
+    # T1 audit/second-opinion/double-check asks (2026-09-08, live case:
+    # re-audit asks FP-routed to shadow via recall-text "minors"; audit asks
+    # scored 0 complexity signals -> no frontier). Luna T1 matrix: audit-
+    # verify completed work = the user's dominant frontier pattern.
+    r"\b(?:audit|re-audit|reaudit|double[- ]?check|second opinion|second[- ]opinion)\b.{0,60}\b(?:design|answer|work|plan|this|it|that|my|the)\b",
+    r"\b(?:is|are)\b.{0,30}\b(?:actually working|working as it should)\b",
     r"\b(?:data model|schema design|api design|interface design)\b.{0,60}\b(?:for|of)\b",
     r"\b(?:break(?:ing)? down|decompos\w+)\b.{0,40}\b(?:into|the)\b.{0,60}\b(?:phase\w*|step\w*|stage\w*|milestone\w*|checkpoint\w*)\b",
     r"\b(?:roadmap|milestones?)\b.{0,40}\b(?:for|with)\b.{0,60}\b(?:deliver\w*|phase\w*|commit\w*|release\w*)\b",
