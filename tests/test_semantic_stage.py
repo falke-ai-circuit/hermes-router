@@ -85,6 +85,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     monkeypatch.setattr(plugin.router, "_read_key", lambda key_file: "TESTKEY")
     monkeypatch.setenv("MINIMAX_API_KEY", "TESTKEY")  # aux key source in tests
+    monkeypatch.setenv("NOUS_API_KEY", "TESTKEY")  # 2026-09-08: default key_env (MiniMax out of rotation)
     # v3.4.1 test isolation: semantic_classifier reads live config.yaml when
     # cfg=None (fleet sweeps change aux_endpoint between runs) — pin it to the
     # same fixture config the plugin._cfg patch returns.
@@ -304,12 +305,14 @@ def test_matrix6_breaker_opens_after_three_failures():
         for _ in range(3):
             plugin.on_transform_llm_output(
                 response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-        assert post.call_count == 3
+        # 2026-09-08 retry loop: each failed call retries once (aux_retries
+        # default 1) before breaker accounting -> 3 turns x 2 attempts.
+        assert post.call_count == 6
         assert sc.breaker_is_open() is True
         for _ in range(5):
             plugin.on_transform_llm_output(
                 response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-        assert post.call_count == 3  # ZERO further aux calls during cooldown
+        assert post.call_count == 6  # ZERO further aux calls during cooldown (breaker gates the retry too)
 
 
 def test_matrix6_breaker_resets_on_success():
@@ -560,6 +563,7 @@ def test_resolve_key_file_first(tmp_path, monkeypatch):
 
 def test_resolve_key_missing(monkeypatch):
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    monkeypatch.delenv("NOUS_API_KEY", raising=False)  # default key_env since MiniMax removal
     assert sc._resolve_key({}) == ""
 
 
@@ -585,10 +589,11 @@ def test_unconfigured_profile_stage2_off():
 
 
 def test_aux_endpoint_defaults_match_shadow_fleet_config():
-    """MiniMax defaults mirror the fleet provider block (blueprint §2)."""
-    assert sc.DEFAULT_URL == "https://api.minimax.io/v1/chat/completions"
-    assert sc.DEFAULT_MODEL == "MiniMax-M3"
-    assert sc.DEFAULT_KEY_ENV == "MINIMAX_API_KEY"
+    """Defaults mirror the live fleet config (2026-09-08: NOUS longcat;
+    MiniMax OUT of rotation per Goran-direct)."""
+    assert sc.DEFAULT_URL == "https://inference-api.nousresearch.com/v1/chat/completions"
+    assert sc.DEFAULT_MODEL == "meituan/longcat-2.0:free"
+    assert sc.DEFAULT_KEY_ENV == "NOUS_API_KEY"
 
 
 # ---------------------------------------------------------------------------

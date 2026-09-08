@@ -52,9 +52,12 @@ logger = logging.getLogger(__name__)
 # Defaults (spec §2 config block)
 # ---------------------------------------------------------------------------
 
-DEFAULT_URL = "https://api.minimax.io/v1/chat/completions"
-DEFAULT_MODEL = "MiniMax-M3"
-DEFAULT_KEY_ENV = "MINIMAX_API_KEY"
+# Defaults aligned with the live fleet config (2026-09-08): NOUS longcat
+# free tier. MiniMax is OUT of rotation (Goran-direct) — stale MiniMax
+# defaults here made unconfigured profiles silently call a dead provider.
+DEFAULT_URL = "https://inference-api.nousresearch.com/v1/chat/completions"
+DEFAULT_MODEL = "meituan/longcat-2.0:free"
+DEFAULT_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_MAX_TOKENS = 2000  # M3 inline <think> reasoning eats budget; answer comes after
 DEFAULT_TIMEOUT_SECONDS = 25  # M3 reasoning + answer needs more than 8s
 
@@ -372,7 +375,20 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             "max_tokens": max_tokens,
             "temperature": 0.0,
         }
+        # Retry loop (2026-09-08, Goran: keep longcat free but raise
+        # timeout/retries): transport/timeout failures get ONE extra attempt
+        # before breaker accounting — free-tier latency spikes were burning
+        # the call into fail-open. Breaker still governs: an open breaker
+        # short-circuits the retry too. aux_retries config, default 1.
+        _retries = max(0, _as_int(cls.get("aux_retries"), 1))
         body = _post_chat(url, api_key, json.dumps(payload), timeout)
+        _attempt = 0
+        while body is None and _attempt < _retries:
+            _attempt += 1
+            if breaker_is_open():
+                break
+            time.sleep(min(2 * _attempt, 5))
+            body = _post_chat(url, api_key, json.dumps(payload), timeout)
         if body is None:
             _record_failure(cls)
             return None
