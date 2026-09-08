@@ -454,6 +454,7 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
     return {
         "enabled": {"type": "bool", "lane": "U"},
         "dry_run": {"type": "bool", "lane": "U"},
+        "flinch_reason_gate": {"type": "bool", "lane": "U"},
         "debug_banner": {"type": "int", "min": 0, "max": 3, "lane": "U"},
         "render_max_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
         "thread_digest_chars": {"type": "int", "min": 0, "max": 200000, "lane": "U"},
@@ -683,6 +684,9 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
         elif knob == "dry_run":
             def mut(section: Dict[str, Any], _v=bool(value)) -> None:
                 section["dry_run"] = _v
+        elif knob == "flinch_reason_gate":
+            def mut(section: Dict[str, Any], _v=bool(value)) -> None:
+                section["flinch_reason_gate"] = _v
         elif knob == "debug_banner":
             def mut(section: Dict[str, Any], _v=value) -> None:
                 # 0-3 verbosity; legacy true/false normalize via int(bool)

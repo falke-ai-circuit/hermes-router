@@ -150,6 +150,13 @@ def _dry_run() -> bool:
     return bool(_cfg().get("dry_run", False))
 
 
+def _flinch_reason_gate() -> bool:
+    """Goran ruling 2026-09-08: only CONTENT flinches route to the shadow
+    chain; technical/practical refusals pass through. Default ON (the ruling
+    is the doctrine); off restores unconditional always-route."""
+    return bool(_cfg().get("flinch_reason_gate", True))
+
+
 def _pre_patterns() -> List[str]:
     patterns = _classification_cfg().get("pre_patterns") or [
         "csam_underage",
@@ -1323,6 +1330,32 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                    ask_chars=len(original_user_message or ""),
                    answer_chars=len(_last_answer),
                    session_id=session_id)
+
+        # Flinch-reason gate (Goran ruling 2026-09-08): a detected refusal
+        # routes to the shadow chain ONLY when it is a CONTENT flinch
+        # (censorship / policy discomfort). A TECHNICAL refusal (missing
+        # access, no credentials, cannot execute) passes through unchanged —
+        # the uncensored substrate cannot fix capability gaps, and rendering
+        # one would fabricate an answer. Unknown/aux-failure fail-opens to
+        # ROUTE (a missed content-flinch strands the user; a technical
+        # FP-route costs one bounded render). Knob: flinch_reason_gate on|off.
+        if _flinch_reason_gate():
+            try:
+                from .flinch_reason import classify_flinch_reason
+
+                _reason = classify_flinch_reason(original_user_message,
+                                                 response_text)
+                if _reason == "technical":
+                    _log_route("POST", event_detail="flinch_reason_technical_passthrough",
+                               pattern_groups=",".join(matches),
+                               refusal_chars=len(response_text),
+                               session_id=session_id)
+                    return None
+                _log_route("POST", event_detail="flinch_reason_classified",
+                           reason=_reason or "unknown", session_id=session_id)
+            except Exception:  # noqa: BLE001 — gate gap must never block routing
+                logger.debug("flinch_reason gate error", exc_info=True)
+
         try:
             _system_prompt = _persona_system_prompt({"messages": _post_ctx_msgs})
             if _ground_block:

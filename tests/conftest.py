@@ -126,3 +126,18 @@ def _isolate_canonical_ledger(tmp_path, monkeypatch):
     yield
     _canon.clear_for_tests()
     _rinbox.clear_consumed_for_tests()
+
+@pytest.fixture(autouse=True)
+def _flinch_reason_no_aux(monkeypatch):
+    """Goran ruling 2026-09-08 gate: default tests to fail-open (route).
+    The reason classifier is an AUX lane - tests that exercise the POST
+    route path must not pay aux latency or egress. Tests of the gate itself
+    override this patch explicitly (see test_flinch_reason_gate.py)."""
+    try:
+        import hermes_router.flinch_reason as _fr
+
+        monkeypatch.setattr(_fr, "classify_flinch_reason",
+                            lambda ask, ref: None)
+    except ImportError:
+        pass
+    yield
