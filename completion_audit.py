@@ -45,6 +45,8 @@ from . import anchor_chain, anchor_exec, router_core, state
 logger = logging.getLogger(__name__)
 
 _MIN_RESPONSE_CHARS = 500
+_NOTE_MARKER = ("[HIGHER-SELF COMPLETION-AUDIT TURN | FRONTIER-DERIVED | INTERNAL | "
+                "USER-INVISIBLE]\n")
 _NOTE_PREFIX = "[HIGHER-SELF COMPLETION REFLECTION — your own frontier-grade self-review, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
@@ -286,7 +288,7 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
                 "self-review. If it names something overseen, either surface "
                 "it with your response for the user's decision, or fix it and "
                 "deliver the final response.\n%s"
-                % (_NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
+                % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
         stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery

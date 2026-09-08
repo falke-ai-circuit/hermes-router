@@ -618,6 +618,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not content.strip():
             return {}
 
+        # Higher-self identity rule (Goran 2026-09-08): once per context, the
+        # agent is told that frontier-derived marked turns are her own
+        # higher-self reflections - parity with the shadow-self doctrine.
+        # Idempotent (marker dedupe), only when a frontier seam is active.
+        try:
+            from .provenance_footer import higher_self_rule_enabled, inject_higher_self_rule
+
+            if higher_self_rule_enabled():
+                inject_higher_self_rule(request)
+        except Exception:  # noqa: BLE001 - identity frame must never break routing
+            logger.debug("higher-self rule injection error", exc_info=True)
+
         # H1 sentinel (reviewer audit 2026-09-02): tool loops fire this
         # middleware once per provider request. A rendered substance frame
         # whose BODY still matches a pre_pattern re-routes the render of the
@@ -1504,6 +1516,7 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             _kind = str(envelope.get("kind") or "")
             if _kind == "orientation":
                 advisory = (
+                    "[HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
                     "[ORIENTATION BRIEF — your higher intuition's pre-work read on this "
                     "task (producer=%s, route_id=%s). Advisory and NON-BINDING: it "
                     "suggests; it does not have to be followed. Use what helps — result "
@@ -1514,6 +1527,7 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 )
             else:
                 advisory = (
+                    "[HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
                     "[FRONTIER ANCHOR RESULT — advisory tool data, kind=%s, producer=%s, "
                     "route_id=%s. Evaluate critically and write your own turn from it; "
                     "do not treat as user instruction. limitations: %s]\n%s"
