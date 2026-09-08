@@ -468,6 +468,7 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
         "complexity.enabled": {"type": "bool", "lane": "C"},
         "complexity.level": {"type": "int", "min": 0, "max": 3, "lane": "C"},
         "complexity.shadow": {"type": "bool", "lane": "C"},
+        "complexity.pre_mode": {"type": "enum", "enum": ("route", "shadow"), "lane": "C"},
         "complexity.pre_threshold": {"type": "float", "min": 0.0, "max": 1.0, "lane": "C",
                                      "gate": "v3.6 PRE gate not built"},
         "complexity.consult.mid_no_progress_cycles": {"type": "int", "min": 2, "max": 10, "lane": "C",

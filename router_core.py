@@ -902,6 +902,11 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             sreason or "task_escalated")
 
         # 2. Complexity detection (stage-1 -> stage-2 on gray zone).
+        # pre_mode (Goran 2026-09-08 ruling): "route" = legacy PRE consult on
+        # stage-1 regex hit (v3.5 behavior); "shadow" = log-only telemetry —
+        # NO PRE consult fires, frontier consults live at MID (struggle) and
+        # on COMPLETED OUTPUT per the completion-audit arm. Manual "anchor
+        # this" override unaffected (explicit ask = consult now).
         # Amendment (2026-09-04): when an optional decision head is configured
         # (decision_head.backend), its score gates the route instead of the
         # hand-tuned regex verdict. Default backend = heuristic = unchanged.
@@ -914,12 +919,22 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 dh_backend = decision_head.configured_backend()
             except Exception:  # noqa: BLE001
                 dh_backend = "heuristic"
+            _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "route").strip().lower()
             if dh_backend != "heuristic":
                 route_complex = decision_head.route(user_text)
                 meta = {"stage": "decision_head", "backend": dh_backend,
                         "stage1": "clear_complex" if route_complex else "clear_simple"}
             else:
                 route_complex, meta = complexity.classify(user_text, level)
+            if _pre_mode == "shadow" and route_complex and override != "anchor":
+                # Shadow: would-fire telemetry only. Frontier consults belong
+                # at completion-audit / struggle, not at task start (Goran
+                # 09-08: "I always ask consultance at the finished job").
+                _log_route("PRE", session_id=session_id,
+                           event_detail="complexity_pre_shadow",
+                           stage1=str(meta.get("stage1")),
+                           task_id=task_id, level=_level)
+                route_complex = False
             if route_complex:
                 mode = MODE_PLAN
                 if override == "anchor":
