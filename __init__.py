@@ -637,7 +637,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # finding for user decision or fixes and delivers. One-shot consume.
         try:
             from . import completion_audit as _ca
-            _verdict = _ca.consume_verdict(session_id)
+            # session_id binds only at L675 (below) — derive it locally here
+            # (same trap as the 2026-09-01 H3 gate UnboundLocalError).
+            _sid = context.get("session_id") or ""
+            _verdict = _ca.consume_verdict(_sid)
             if _verdict:
                 modified_req = copy.deepcopy(request) if isinstance(request, dict) else {}
                 msgs2 = modified_req.get("messages")
@@ -645,7 +648,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     msgs2.append({"role": "assistant", "content": _verdict})
                     modified_req["messages"] = msgs2
                     _log_route("PRE", event_detail="completion_audit_delivered",
-                               chars=len(_verdict), session_id=session_id)
+                               chars=len(_verdict), session_id=_sid)
                     return {"request": modified_req}
         except Exception:  # noqa: BLE001 — verdict delivery must never break routing
             logger.debug("completion audit delivery error", exc_info=True)
@@ -797,6 +800,12 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         except Exception:  # noqa: BLE001 — reconciliation must never break routing
             logger.debug("uncensored-router history reconciliation failed", exc_info=True)
 
+        # Record last-seen user message BEFORE the complexity dispatcher —
+        # v3.6.1 fix: the dispatcher's complexity path returns EARLY (L830
+        # return {}) and previously skipped the unconditional record at L839,
+        # leaving get_last_seen() empty at POST → completion-audit gate saw
+        # ask_len=0 and silently skipped every complexity-routed turn.
+        state.record_last_seen(session_id, content)
         # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
         # ingress text. Runs BEFORE the uncensored classification; uncensored
         # matching still happens below and stays byte-identical. When the
