@@ -43,6 +43,7 @@ VALID_ROLES = ("primary", "judge")
 VALID_CONTROL_ACTIONS = (
     "enable_lane", "disable_lane", "set_level", "set_endpoint",
     "set_cap", "reload", "ping", "set_decision_head",
+    "set_pre_mode", "set_audit_mode",
 )
 
 
@@ -227,6 +228,34 @@ def router_control(action: str = "", lane: str = "", level: Any = None,
                 section["complexity"] = cx
             ok, detail = config_writer.write_plugin_section(mut)
             return json.dumps({"ok": ok, "action": action, "level": lvl, "detail": detail})
+
+        if action == "set_pre_mode":
+            _mode = str(level or "").strip().lower()
+            if _mode not in ("route", "shadow", "off"):
+                return json.dumps({"ok": False,
+                                   "error": "pre_mode must be route|shadow|off"})
+
+            def mut(section: Dict[str, Any], _m: str = _mode):
+                cx = section.get("complexity")
+                cx = dict(cx) if isinstance(cx, dict) else {}
+                cx["pre_mode"] = _m
+                section["complexity"] = cx
+            ok, detail = config_writer.write_plugin_section(mut)
+            return json.dumps({"ok": ok, "action": action, "pre_mode": _mode, "detail": detail})
+
+        if action == "set_audit_mode":
+            _mode = str(level or "").strip().lower()
+            if _mode not in ("off", "complex", "always"):
+                return json.dumps({"ok": False,
+                                   "error": "audit_mode must be off|complex|always"})
+
+            def mut(section: Dict[str, Any], _m: str = _mode):
+                cx = section.get("complexity")
+                cx = dict(cx) if isinstance(cx, dict) else {}
+                cx["audit_mode"] = _m
+                section["complexity"] = cx
+            ok, detail = config_writer.write_plugin_section(mut)
+            return json.dumps({"ok": ok, "action": action, "audit_mode": _mode, "detail": detail})
 
         if action == "set_endpoint":
             if role not in VALID_ROLES:
