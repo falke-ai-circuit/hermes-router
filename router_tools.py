@@ -377,19 +377,21 @@ CONTROL_SCHEMA = {
         "(0-3 complexity intensity), set_endpoint (lane=anchor role=primary|judge "
         "model=<scheme>://<model>), set_cap (raise only), reload (dirty-flag "
         "config re-read, NO gateway bounce), ping (ONE cheap live smoke call, "
-        "max_tokens<=64), set_decision_head (heuristic|routellm_mf). Guards: "
-        "config edits go through the atomic config-writer; caps are UP-only; "
-        "route logging and the loop guard are never alterable from here."
+        "max_tokens<=64), set_decision_head (heuristic|routellm_mf), "
+        "set_pre_mode (route|shadow|off — frontier orientation brief on/off), "
+        "set_audit_mode (off|complex|always — frontier higher-self audit on/off). "
+        "Guards: config edits go through the atomic config-writer; caps are "
+        "UP-only; route logging and the loop guard are never alterable from here."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: enable_lane, disable_lane, set_level, set_endpoint, set_cap, reload, ping, set_decision_head.",
+                "description": "One of: enable_lane, disable_lane, set_level, set_endpoint, set_cap, reload, ping, set_decision_head, set_pre_mode, set_audit_mode.",
             },
             "lane": {"type": "string", "description": "For lane actions: uncensored | complexity. set_endpoint uses lane=anchor."},
-            "level": {"type": "integer", "description": "For set_level: 0-3 (0 off, 1 manual-only, 2 conservative-auto, 3 aggressive-auto)."},
+            "level": {"type": ["integer", "string"], "description": "For set_level: 0-3 int. For set_pre_mode: route|shadow|off. For set_audit_mode: off|complex|always."},
             "role": {"type": "string", "description": "For set_endpoint: primary | judge."},
             "model": {"type": "string", "description": "For set_endpoint: <scheme>://<model>, e.g. openrouter://openai/o4-mini."},
             "cap": {"type": "number", "description": "For set_cap: new daily cap in USD (raise only)."},
