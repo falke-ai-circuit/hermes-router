@@ -254,7 +254,10 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
             return
         max_chars = audit_max_chars()
         msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text, max_chars)
-        api_kwargs = {"messages": msgs, "max_tokens": 700, "temperature": 0.2}
+        # luna-pro is a reasoning model: low max_tokens gets eaten by
+        # reasoning tokens (finish=length, 0 visible content → empty_response).
+        # 2500 leaves room for thinking + the 5-question reflection.
+        api_kwargs = {"messages": msgs, "max_tokens": 2500, "temperature": 0.2}
         # cap check mirrors the PRE lane; consult is small but respects spend
         est_in, est_out = anchor_exec.estimate_tokens_from_payload(api_kwargs)
         est_cost = anchor_chain.estimate_call_cost(ep, est_in, est_out, chain.pricing)
