@@ -334,6 +334,67 @@ def _usage_from_response(data: Dict[str, Any]) -> "tuple[Optional[int], Optional
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# Hermes-core aux resolution (2026-09-08, Goran-direct: "cant plugin use
+# whatever aux is defined in hermes as?"). Single source of truth: the
+# profile's own `auxiliary:` config via agent.auxiliary_client. Knob:
+# classification.aux_source: hermes (default) | legacy. hermes = resolve
+# provider/model/key from Hermes auxiliary config (task "router", falling
+# back to the profile's default text aux); legacy = the plugin's own
+# aux_endpoint curl seam. Never raises.
+# ---------------------------------------------------------------------------
+
+
+def _aux_source(cfg: Optional[Dict[str, Any]] = None) -> str:
+    try:
+        cls = _classification_cfg(cfg)
+        return str(cls.get("aux_source") or "legacy").strip().lower()
+    except Exception:  # noqa: BLE001
+        return "hermes"
+
+
+def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
+    """Resolve the aux call through Hermes-core auxiliary machinery (the
+    profile's `auxiliary:` config — provider/model/key/fallbacks all live
+    there; the plugin maintains none). Returns raw OpenAI-shape JSON (same
+    contract as _post_chat) or None on failure. Never raises."""
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+
+        client, model = get_text_auxiliary_client("router")
+        if client is None:
+            logger.error("hermes_aux_failed reason=no_client")
+            return None
+        payload = json.loads(payload_json)
+        kwargs: Dict[str, Any] = {
+            "messages": payload.get("messages"),
+            "max_tokens": payload.get("max_tokens", 2000),
+            "temperature": 0.0,
+        }
+        if model:
+            kwargs["model"] = model
+        try:
+            resp = client.chat.completions.create(timeout=timeout, **kwargs)
+        except TypeError:
+            resp = client.chat.completions.create(**kwargs)
+        content = None
+        if resp and getattr(resp, "choices", None):
+            content = getattr(resp.choices[0].message, "content", None)
+        if not content or not str(content).strip():
+            logger.error("hermes_aux_failed reason=empty_content")
+            return None
+        body: Dict[str, Any] = {"choices": [{"message": {"content": content}}]}
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            body["usage"] = {"prompt_tokens": getattr(usage, "prompt_tokens", None),
+                             "completion_tokens": getattr(usage, "completion_tokens", None)}
+        return json.dumps(body)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("hermes_aux_failed reason=exception detail=%s", str(exc)[:160])
+        return None
+
 def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
                  record_success: bool = True, session_id: str = "") -> Optional[str]:
     """Single aux dispatch: free-text prompt in, extracted content out.
@@ -345,6 +406,7 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     provider supplies it; never estimated)."""
     try:
         cls = _classification_cfg(cfg)
+        _use_hermes = _aux_source(cls) == "hermes"
         ep = cls.get("aux_endpoint") if isinstance(cls.get("aux_endpoint"), dict) else {}
         url = str(ep.get("url") or DEFAULT_URL)
         model = str(ep.get("model") or DEFAULT_MODEL)
@@ -361,6 +423,54 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
                                                   DEFAULT_CALLS_PER_HOUR)):
                 return None
             _CALL_TIMES.append(now)
+
+        # Hermes aux source (2026-09-08, Goran-direct): provider/model/key
+        # live in the profile's `auxiliary:` config (agent.auxiliary_client
+        # resolution, task "router") — the plugin maintains none. Same
+        # breaker/cap/retry/ledger discipline as the legacy curl path.
+        if _use_hermes:
+            payload = {
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0.0,
+            }
+            body = _hermes_aux_call(json.dumps(payload), timeout)
+            _attempt = 0
+            while body is None and _attempt < max(0, _as_int(cls.get("aux_retries"), 1)):
+                _attempt += 1
+                if breaker_is_open():
+                    break
+                time.sleep(min(2 * _attempt, 5))
+                body = _hermes_aux_call(json.dumps(payload), timeout)
+            if body is None:
+                _record_failure(cls)
+                return None
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                logger.error("semantic_aux_failed reason=invalid_json body_bytes=%d", len(body))
+                _record_failure(cls)
+                return None
+            content = _extract_content(data)
+            if not content or not str(content).strip():
+                logger.error("semantic_aux_failed reason=unparseable")
+                _record_failure(cls)
+                return None
+            try:
+                from . import usage_ledger
+
+                _it, _ot = _usage_from_response(data)
+                if _it is not None or _ot is not None:
+                    usage_ledger.record_tokens(
+                        "aux", model, session_id, _it, _ot,
+                        usage_ledger.estimate_cost(model, _it, _ot),
+                        "stage2_classify",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            if record_success:
+                _record_success()
+            return str(content)
 
         api_key = _resolve_key(ep)
         if not api_key:

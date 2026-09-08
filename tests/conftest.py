@@ -141,3 +141,29 @@ def _flinch_reason_no_aux(monkeypatch):
     except ImportError:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _hermes_aux_no_network(monkeypatch):
+    """aux_source=hermes (live configs since 2026-09-08) resolves through
+    agent.auxiliary_client — which reads the REAL profile config and would
+    dial the real provider. Default tests to a no-client stub (fail-open);
+    tests of the hermes path override explicitly."""
+    try:
+        import agent.auxiliary_client as _ac
+
+        monkeypatch.setattr(_ac, "get_text_auxiliary_client",
+                            lambda task="": (None, None), raising=False)
+    except ImportError:
+        pass
+    # cfg-less aux reads default to legacy in tests (live config may say
+    # aux_source: hermes) - legacy-seam tests then behave as authored.
+    try:
+        import hermes_router.semantic_classifier as _sc
+
+        monkeypatch.setattr(_sc, "_classification_cfg",
+                            lambda cfg=None: cfg if cfg is not None else {"aux_source": "legacy"},
+                            raising=False)
+    except ImportError:
+        pass
+    yield
