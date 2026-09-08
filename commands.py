@@ -926,8 +926,9 @@ def _render_status() -> str:
                 dh.get("backend"), dh.get("threshold")))
         lines.append("pending swap: %s | anchor backoff active: %s" % (
             data.get("pending_swap"), data.get("anchor_backoff_active")))
-        lines.append("debug_banner: %s | struggle_feeder: %s" % (
-            "ON" if data.get("debug_banner") else "OFF", data.get("struggle_feeder") or "?"))
+        lines.append("debug_banner: %s | frontier: pre=%s post=%s" % (
+            "ON" if data.get("debug_banner") else "OFF",
+            data.get("pre_mode") or "?", data.get("audit_mode") or "?"))
         rts = data.get("reload_dirty_flag_ts")
         if rts:
             lines.append("reload dirty flag: %s" % _fmt_ts(float(rts)))

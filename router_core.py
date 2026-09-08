@@ -9,19 +9,11 @@ returns a RouteDecision dataclass; __init__ applies it:
   Lane COMPLEXITY (new):
       2-stage detection -> 4-mode controller -> anchor-chain model swap.
 
-4-MODE CONTROLLER (task-scoped, NOT start-anchor/end-judge):
+3-MODE CONTROLLER (task-scoped; MID/struggle/ownership REMOVED 2026-09-08):
   FLASH_DIRECT  default pass-through
-  PLAN          frontier plans + checkpoints, flash executes
-  CONSULT       frontier as bounded consultant on explicit ask
-  OWNERSHIP     router escalates whole task segment to frontier on struggle
-
-STRUGGLE DETECTION (router-owned — flash cannot self-report being lost):
-  (a) repeated same-failure: N>=3 refusals/failures on same task-hash
-      (reuses state.py loop-guard keyed patterns)
-  (b) tool-loop: >=5 provider calls in one turn with no new tool-result
-      content (hash dedup of tool-result text)
-  (c) explicit user struggle signal ("still broken", "not working",
-      3rd correction of same ask in the session window).
+  CONSULT       frontier orientation brief at task start (pre_mode=route)
+  COMPLETION AUDIT  frontier higher-self reflection on completed output
+                    (audit_mode=complex|always), delivered next turn
 
 MODEL SWAP MECHANISM: dispatch never mutates the provider payload itself.
 __init__'s llm_execution middleware receives the decision via
@@ -586,11 +578,11 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
     """SINGLE PRE classification. Order of authority:
 
       0. inline overrides (skip > anchor) — trusted-origin, checked first
-      1. struggle escalation (task-scoped) -> OWNERSHIP (model_target=primary)
-      2. complexity detection -> PLAN (frontier plans, flash executes)
-      3. uncensored PRE match -> existing render lane (caller applies it;
+      1. complexity detection -> orientation consult at task start
+         (pre_mode=route; frontier as NON-binding orientation brief)
+      2. uncensored PRE match -> existing render lane (caller applies it;
          decision here only records the lane for the route log)
-      4. default FLASH_DIRECT pass-through
+      3. default FLASH_DIRECT pass-through
 
     The uncensored lane stays byte-identical: when uncensored_matched is True
     the caller runs its EXISTING rewrite path — this dispatcher never rewrites
@@ -621,11 +613,10 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # to v3.2.3 (zero-behavior-change invariant; suppressed struggles would
         # still be re-classified + logged to avoid survivorship bias).
         # 2. Complexity detection (stage-1 -> stage-2 on gray zone).
-        # pre_mode (Goran 2026-09-08 ruling): "route" = legacy PRE consult on
-        # stage-1 regex hit (v3.5 behavior); "shadow" = log-only telemetry —
-        # NO PRE consult fires, frontier consults live at MID (struggle) and
-        # on COMPLETED OUTPUT per the completion-audit arm. Manual "anchor
-        # this" override unaffected (explicit ask = consult now).
+        # pre_mode (Goran 2026-09-08 ruling): "route" = PRE orientation consult
+        # on stage-1 regex hit; "shadow" = log-only telemetry — NO PRE consult
+        # fires, frontier consults live ONLY on COMPLETED OUTPUT per the
+        # completion-audit arm. Manual "anchor this" override unaffected.
         # Amendment (2026-09-04): when an optional decision head is configured
         # (decision_head.backend), its score gates the route instead of the
         # hand-tuned regex verdict. Default backend = heuristic = unchanged.

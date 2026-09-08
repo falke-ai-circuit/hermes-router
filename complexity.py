@@ -1,4 +1,4 @@
-"""Complexity/struggle detection for the hermes-router complexity lane (v3.0.0).
+"""Complexity detection for the hermes-router complexity lane (v3.0.0; struggle machinery removed 2026-09-08).
 
 Lane 2 stage-1 (free/local regex) — classifies IMMUTABLE ingress user text into
 complexity signal buckets. Stage-2 (semantic aux) reuses the existing
@@ -196,7 +196,6 @@ def detect_override(text: str) -> Optional[str]:
 # Struggle signals (router-owned; flash cannot self-report being lost)
 # ---------------------------------------------------------------------------
 
-# Explicit user struggle phrasing (c) — repeated corrections / still-broken.
 # ---------------------------------------------------------------------------
 # Stage-2 semantic aux (gray zone only) — reuses existing aux machinery
 # ---------------------------------------------------------------------------
