@@ -56,6 +56,12 @@ _PLANNING_ARCH: List[str] = [
     # CALLS the task complex and asks for a plan, trust them — no noun-regex
     # gymnastics needed. Catches "plan this complex task please".
     r"\b(?:plan|design|architect)\s+(?:this|the|a|an)\s+\w*\s*(?:complex|complicated|hard|difficult|multi[- ](?:part|step|phase|stage)|ambitious|large[- ]scale)\b",
+    # Self-audit / design-validation asks (2026-09-08, live case: "deeply
+    # analyze the router frontier part... is design optimal" - flash flinched,
+    # POST safety net caught it, but no PRE orientation fired because no bucket
+    # matched). Luna T2 matrix: consequential design validation = auto PRE.
+    r"\b(?:is|are)\s+(?:\w+\s+){0,4}?(?:design|architecture|approach|implementation)\s+(?:actually\s+)?optimal\b",
+    r"\b(?:deeply|deep)\s+analy\w+\b.{0,100}\b(?:optimal|working as it should|actually working)\b",
     r"\b(?:data model|schema design|api design|interface design)\b.{0,60}\b(?:for|of)\b",
     r"\b(?:break(?:ing)? down|decompos\w+)\b.{0,40}\b(?:into|the)\b.{0,60}\b(?:phase\w*|step\w*|stage\w*|milestone\w*|checkpoint\w*)\b",
     r"\b(?:roadmap|milestones?)\b.{0,40}\b(?:for|with)\b.{0,60}\b(?:deliver\w*|phase\w*|commit\w*|release\w*)\b",
