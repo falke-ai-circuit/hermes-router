@@ -52,6 +52,10 @@ _PLANNING_ARCH: List[str] = [
     r"\b(?:trade[- ]?offs?|pros and cons)\b.{0,50}\b(?:between|of)\b.{0,60}\b(?:approach\w*|design\w*|architecture|option\w*|alternative\w*)\b",
     r"\b(?:scal\w+|concurrency|thread[- ]safety|race condition\w*|invariant\w*)\b.{0,60}\b(?:design|architect\w*|across|multiple)\b",
     r"\b(?:how (?:should|would|to) (?:we|i) (?:design|structure|organize|architect))\b",
+    # Explicit imperative complexity marker (2026-09-08, Goran): when the user
+    # CALLS the task complex and asks for a plan, trust them — no noun-regex
+    # gymnastics needed. Catches "plan this complex task please".
+    r"\b(?:plan|design|architect)\s+(?:this|the|a|an)\s+\w*\s*(?:complex|complicated|hard|difficult|multi[- ](?:part|step|phase|stage)|ambitious|large[- ]scale)\b",
     r"\b(?:data model|schema design|api design|interface design)\b.{0,60}\b(?:for|of)\b",
     r"\b(?:break(?:ing)? down|decompos\w+)\b.{0,40}\b(?:into|the)\b.{0,60}\b(?:phase\w*|step\w*|stage\w*|milestone\w*|checkpoint\w*)\b",
     r"\b(?:roadmap|milestones?)\b.{0,40}\b(?:for|with)\b.{0,60}\b(?:deliver\w*|phase\w*|commit\w*|release\w*)\b",
