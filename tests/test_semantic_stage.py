@@ -549,24 +549,6 @@ def test_probe_is_non_destructive():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_key_env(monkeypatch):
-    monkeypatch.setenv("MINIMAX_API_KEY", "envkey123")
-    assert sc._resolve_key({"key_env": "MINIMAX_API_KEY"}) == "envkey123"
-
-
-def test_resolve_key_file_first(tmp_path, monkeypatch):
-    kf = tmp_path / "k"
-    kf.write_text("filekey456\n")
-    monkeypatch.setenv("MINIMAX_API_KEY", "envkey123")
-    assert sc._resolve_key({"key_file": str(kf)}) == "filekey456"
-
-
-def test_resolve_key_missing(monkeypatch):
-    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
-    monkeypatch.delenv("NOUS_API_KEY", raising=False)  # default key_env since MiniMax removal
-    assert sc._resolve_key({}) == ""
-
-
 def test_per_hour_cap():
     state.record_last_seen("s1", ASK)
     cfg = _cfg()
@@ -589,11 +571,10 @@ def test_unconfigured_profile_stage2_off():
 
 
 def test_aux_endpoint_defaults_match_shadow_fleet_config():
-    """Defaults mirror the live fleet config (2026-09-08: NOUS longcat;
-    MiniMax OUT of rotation per Goran-direct)."""
-    assert sc.DEFAULT_URL == "https://inference-api.nousresearch.com/v1/chat/completions"
-    assert sc.DEFAULT_MODEL == "meituan/longcat-2.0:free"
-    assert sc.DEFAULT_KEY_ENV == "NOUS_API_KEY"
+    """Hermes-only aux (2026-09-08): no legacy endpoint/key defaults exist.
+    The aux lane resolves through the profile's auxiliary: config."""
+    assert not hasattr(sc, "DEFAULT_URL")
+    assert not hasattr(sc, "DEFAULT_KEY_ENV")
 
 
 # ---------------------------------------------------------------------------

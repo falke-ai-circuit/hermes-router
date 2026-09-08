@@ -317,8 +317,7 @@ def test_aux_tap_records_usage(monkeypatch):
         stderr = ""
         returncode = 0
 
-    monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _Completed())
-    monkeypatch.setattr(sc, "_resolve_key", lambda ep: "fake-key")
+    monkeypatch.setattr(sc, "_post_chat", lambda *a, **kw: body)
     verdict = sc.classify("ask", "response text", session_id="api_aux1")
     assert verdict == "refusal"
     recs = usage_ledger.read_records()
@@ -339,8 +338,7 @@ def test_aux_tap_usage_absent_records_nothing(monkeypatch):
         stderr = ""
         returncode = 0
 
-    monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _Completed())
-    monkeypatch.setattr(sc, "_resolve_key", lambda ep: "fake-key")
+    monkeypatch.setattr(sc, "_post_chat", lambda *a, **kw: body)
     verdict = sc.classify("ask", "response text", session_id="api_aux2")
     assert verdict is not None
     assert usage_ledger.read_records() == []
@@ -359,8 +357,7 @@ def test_aux_tap_ledger_failure_does_not_break_classify(monkeypatch):
         stderr = ""
         returncode = 0
 
-    monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _Completed())
-    monkeypatch.setattr(sc, "_resolve_key", lambda ep: "fake-key")
+    monkeypatch.setattr(sc, "_post_chat", lambda *a, **kw: body)
 
     def _boom(*a, **kw):
         raise RuntimeError("ledger gone")

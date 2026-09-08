@@ -55,11 +55,7 @@ logger = logging.getLogger(__name__)
 # Defaults aligned with the live fleet config (2026-09-08): NOUS longcat
 # free tier. MiniMax is OUT of rotation (Goran-direct) — stale MiniMax
 # defaults here made unconfigured profiles silently call a dead provider.
-DEFAULT_URL = "https://inference-api.nousresearch.com/v1/chat/completions"
-DEFAULT_MODEL = "meituan/longcat-2.0:free"
-DEFAULT_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_MAX_TOKENS = 2000  # M3 inline <think> reasoning eats budget; answer comes after
-DEFAULT_TIMEOUT_SECONDS = 25  # M3 reasoning + answer needs more than 8s
 
 DEFAULT_CALLS_PER_HOUR = 20
 DEFAULT_BREAKER_FAILURES = 3
@@ -152,30 +148,6 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
-def _resolve_key(endpoint: Dict[str, Any]) -> str:
-    """Key resolution: key_file first (secret-file pattern), then key_env.
-    Never logs the key value."""
-    key_file = str(endpoint.get("key_file") or "").strip()
-    if key_file:
-        try:
-            with open(os.path.expanduser(key_file), "r", encoding="utf-8") as fh:
-                key = fh.read().strip()
-            if key:
-                return key
-        except OSError as exc:
-            logger.error("semantic_aux key_file unreadable: %s", exc)
-    key_env = str(endpoint.get("key_env") or DEFAULT_KEY_ENV).strip()
-    if key_env:
-        key = os.environ.get(key_env, "").strip()
-        if key:
-            return key
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Rate cap + circuit breaker (shared mutable state, lock-guarded)
-# ---------------------------------------------------------------------------
-
 _LOCK = threading.Lock()
 _CALL_TIMES: Deque[float] = deque()  # sliding window of dispatch timestamps
 _CONSECUTIVE_FAILURES: int = 0
@@ -246,6 +218,9 @@ reset_breaker_and_cap = reset_limits
 
 
 def _post_chat(url: str, api_key: str, payload_json: str, timeout: int) -> Optional[str]:
+    """DEAD IN PROD (2026-09-08): aux lane is Hermes-only. Kept solely as the
+    test-double seam - tests/conftest._aux_hermes_adapter routes the Hermes
+    dispatch through here so legacy test doubles stay authoritative."""
     """POST via chmod-600 curl config file (key out of argv). Returns the raw
     body or None on timeout/transport/empty failure. Never raises."""
     tmp_dir = tempfile.mkdtemp(prefix="uncensored-router-aux-")
@@ -337,29 +312,24 @@ def _usage_from_response(data: Dict[str, Any]) -> "tuple[Optional[int], Optional
 
 
 # ---------------------------------------------------------------------------
-# Hermes-core aux resolution (2026-09-08, Goran-direct: "cant plugin use
-# whatever aux is defined in hermes as?"). Single source of truth: the
-# profile's own `auxiliary:` config via agent.auxiliary_client. Knob:
-# classification.aux_source: hermes (default) | legacy. hermes = resolve
-# provider/model/key from Hermes auxiliary config (task "router", falling
-# back to the profile's default text aux); legacy = the plugin's own
-# aux_endpoint curl seam. Never raises.
+# Hermes-core aux resolution (2026-09-08, Goran-direct: "we dont need legacy
+# we need to use whatever aux uses hermes thats it"). Single source of truth:
+# the profile's own `auxiliary:` config via agent.auxiliary_client. Task name
+# "router" — profiles override via auxiliary.router.{provider,model} only
+# when they want to diverge; absent -> the profile's default text aux.
+# The plugin maintains NO endpoint/key seam of its own. Never raises.
 # ---------------------------------------------------------------------------
 
-
-def _aux_source(cfg: Optional[Dict[str, Any]] = None) -> str:
-    try:
-        cls = _classification_cfg(cfg)
-        return str(cls.get("aux_source") or "legacy").strip().lower()
-    except Exception:  # noqa: BLE001
-        return "hermes"
+# Aux timeout (seconds) — 45s rides the free-tier latency spikes that burned
+# the old 25s/8s config values into fail-open (2026-09-08).
+HERMES_AUX_TIMEOUT_SECONDS = 45
 
 
 def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
     """Resolve the aux call through Hermes-core auxiliary machinery (the
     profile's `auxiliary:` config — provider/model/key/fallbacks all live
     there; the plugin maintains none). Returns raw OpenAI-shape JSON (same
-    contract as _post_chat) or None on failure. Never raises."""
+    contract downstream parse expects) or None on failure. Never raises."""
     try:
         from agent.auxiliary_client import get_text_auxiliary_client
 
@@ -400,18 +370,19 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     """Single aux dispatch: free-text prompt in, extracted content out.
 
     Shared by classify() (refusal classes) and refusal_doctrine verdicts.
-    Same endpoint/cap/breaker/timeout discipline as classify(): None on ANY
-    failure (which counts toward the breaker); content string on success.
-    v3.5.0: session_id threads the tokens-ledger tap (usage recorded when the
-    provider supplies it; never estimated)."""
+    2026-09-08 (Goran-direct: "we dont need legacy we need to use whatever
+    aux uses hermes"): the aux lane resolves THROUGH Hermes-core
+    auxiliary_client — the profile's own `auxiliary:` config is the single
+    source of truth (provider/model/key/fallbacks; task "router", overridable
+    per profile via auxiliary.router). The plugin maintains no endpoint/key
+    seam of its own. Same breaker/cap/retry/ledger discipline as before:
+    None on ANY failure (which counts toward the breaker); content string on
+    success. Never raises; the model's free text never leaves this module.
+    """
     try:
         cls = _classification_cfg(cfg)
-        _use_hermes = _aux_source(cls) == "hermes"
-        ep = cls.get("aux_endpoint") if isinstance(cls.get("aux_endpoint"), dict) else {}
-        url = str(ep.get("url") or DEFAULT_URL)
-        model = str(ep.get("model") or DEFAULT_MODEL)
-        max_tokens = _as_int(ep.get("max_tokens"), DEFAULT_MAX_TOKENS)
-        timeout = _as_int(ep.get("timeout_seconds"), DEFAULT_TIMEOUT_SECONDS)
+        max_tokens = DEFAULT_MAX_TOKENS
+        timeout = HERMES_AUX_TIMEOUT_SECONDS
 
         now = time.time()
         if breaker_is_open():
@@ -424,81 +395,19 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
                 return None
             _CALL_TIMES.append(now)
 
-        # Hermes aux source (2026-09-08, Goran-direct): provider/model/key
-        # live in the profile's `auxiliary:` config (agent.auxiliary_client
-        # resolution, task "router") — the plugin maintains none. Same
-        # breaker/cap/retry/ledger discipline as the legacy curl path.
-        if _use_hermes:
-            payload = {
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": max_tokens,
-                "temperature": 0.0,
-            }
-            body = _hermes_aux_call(json.dumps(payload), timeout)
-            _attempt = 0
-            while body is None and _attempt < max(0, _as_int(cls.get("aux_retries"), 1)):
-                _attempt += 1
-                if breaker_is_open():
-                    break
-                time.sleep(min(2 * _attempt, 5))
-                body = _hermes_aux_call(json.dumps(payload), timeout)
-            if body is None:
-                _record_failure(cls)
-                return None
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                logger.error("semantic_aux_failed reason=invalid_json body_bytes=%d", len(body))
-                _record_failure(cls)
-                return None
-            content = _extract_content(data)
-            if not content or not str(content).strip():
-                logger.error("semantic_aux_failed reason=unparseable")
-                _record_failure(cls)
-                return None
-            try:
-                from . import usage_ledger
-
-                _it, _ot = _usage_from_response(data)
-                if _it is not None or _ot is not None:
-                    usage_ledger.record_tokens(
-                        "aux", model, session_id, _it, _ot,
-                        usage_ledger.estimate_cost(model, _it, _ot),
-                        "stage2_classify",
-                    )
-            except Exception:  # noqa: BLE001
-                pass
-            if record_success:
-                _record_success()
-            return str(content)
-
-        api_key = _resolve_key(ep)
-        if not api_key:
-            _record_failure(cls)
-            logger.error("semantic_aux_failed reason=key_unavailable key_env=%s",
-                         str(ep.get("key_env") or DEFAULT_KEY_ENV))
-            return None
-
         payload = {
-            "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.0,
         }
-        # Retry loop (2026-09-08, Goran: keep longcat free but raise
-        # timeout/retries): transport/timeout failures get ONE extra attempt
-        # before breaker accounting — free-tier latency spikes were burning
-        # the call into fail-open. Breaker still governs: an open breaker
-        # short-circuits the retry too. aux_retries config, default 1.
-        _retries = max(0, _as_int(cls.get("aux_retries"), 1))
-        body = _post_chat(url, api_key, json.dumps(payload), timeout)
+        body = _hermes_aux_call(json.dumps(payload), timeout)
         _attempt = 0
-        while body is None and _attempt < _retries:
+        while body is None and _attempt < max(0, _as_int(cls.get("aux_retries"), 1)):
             _attempt += 1
             if breaker_is_open():
                 break
             time.sleep(min(2 * _attempt, 5))
-            body = _post_chat(url, api_key, json.dumps(payload), timeout)
+            body = _hermes_aux_call(json.dumps(payload), timeout)
         if body is None:
             _record_failure(cls)
             return None
@@ -506,10 +415,6 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             data = json.loads(body)
         except json.JSONDecodeError:
             logger.error("semantic_aux_failed reason=invalid_json body_bytes=%d", len(body))
-            _record_failure(cls)
-            return None
-        if not isinstance(data, dict) or "error" in data:
-            logger.error("semantic_aux_failed reason=api_error")
             _record_failure(cls)
             return None
         content = _extract_content(data)
@@ -527,8 +432,8 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             _it, _ot = _usage_from_response(data)
             if _it is not None or _ot is not None:
                 usage_ledger.record_tokens(
-                    "aux", model, session_id, _it, _ot,
-                    usage_ledger.estimate_cost(model, _it, _ot),
+                    "aux", "hermes-auxiliary", session_id, _it, _ot,
+                    usage_ledger.estimate_cost("hermes-auxiliary", _it, _ot),
                     "stage2_classify",
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
@@ -539,8 +444,6 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     except Exception:  # noqa: BLE001
         logger.debug("aux_raw_call error", exc_info=True)
         return None
-
-
 def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None,
              session_id: str = "") -> Optional[str]:
     """Classify the assistant response against the user ask via the aux LLM.

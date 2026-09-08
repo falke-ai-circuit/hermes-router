@@ -167,3 +167,26 @@ def _hermes_aux_no_network(monkeypatch):
     except ImportError:
         pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _aux_hermes_adapter(monkeypatch):
+    """2026-09-08: the aux lane is Hermes-only (no legacy curl seam). Tests
+    that patch sc._post_chat / sc.subprocess.run to simulate the aux
+    transport keep working: route the Hermes dispatch through _post_chat so
+    existing test doubles stay authoritative."""
+    import hermes_router.semantic_classifier as _sc
+
+    if not hasattr(_sc, "_original_hermes_aux"):
+        _sc._original_hermes_aux = _sc._hermes_aux_call
+    _prod_post_chat = _sc._post_chat
+
+    def _dispatch(payload_json, timeout):
+        # Only route through _post_chat when the TEST has overridden the
+        # transport seam (sc._post_chat). Otherwise fail-open, no egress.
+        if _sc._post_chat is _prod_post_chat:
+            return None
+        return _sc._post_chat("", "", payload_json, timeout)
+
+    monkeypatch.setattr(_sc, "_hermes_aux_call", _dispatch, raising=True)
+    yield
