@@ -1117,24 +1117,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # downstream pipeline at the "matches" point via matches=[semantic_*].
             semantic_verdict, matches = _semantic_stage(response_text, session_id, model, context)
             if not matches:
-                # Benign delivery — §10.4: consume any parked frontier-anchor
-                # banner and append to this turn's DELIVERY (one-shot).
-                try:
-                    from . import debug_banner as _dbp
-                    _parked = _dbp.consume_parked_banner(session_id)
-                    _log_route("POST", event_detail="anchor_banner_consume",
-                               parked=bool(_parked), session_id=session_id)
-                    if _parked:
-                        _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
-                        if _out != response_text:
-                            return _out
-                except Exception:  # noqa: BLE001 — banner must never break delivery
-                    pass
                 # v3.6.1 completion-audit arm (Goran 2026-09-08 ruling): the
-                # ONLY automatic frontier touchpoint. On a benign FINAL
-                # response, consult frontier ONCE per task on (ask + work +
-                # response); verdict stashed for the NEXT turn. Async — this
-                # delivery is never delayed. Modes: off | complex | always.
+                # ONLY automatic frontier touchpoint at completion. Fires on
+                # every benign FINAL response (before the banner early-return
+                # so banner turns still audit). Async — delivery never delays.
                 try:
                     from . import completion_audit as _ca
                     if _ca.audit_enabled() and response_text and len(response_text.strip()) >= 500:
@@ -1153,6 +1139,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                                          model)
                 except Exception:  # noqa: BLE001 — audit must never break delivery
                     logger.debug("completion audit gate error", exc_info=True)
+                # Benign delivery — §10.4: consume any parked frontier-anchor
+                # banner and append to this turn's DELIVERY (one-shot).
+                try:
+                    from . import debug_banner as _dbp
+                    _parked = _dbp.consume_parked_banner(session_id)
+                    _log_route("POST", event_detail="anchor_banner_consume",
+                               parked=bool(_parked), session_id=session_id)
+                    if _parked:
+                        _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
+                        if _out != response_text:
+                            return _out
+                except Exception:  # noqa: BLE001 — banner must never break delivery
+                    pass
                 return None
 
         session_id = session_id or ""
