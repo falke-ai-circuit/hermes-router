@@ -69,7 +69,9 @@ def _test_anchor_chain():
 def test_routing_table_complex_ask_routes_to_plan():
     d = router_core.dispatch(PLAN_ASK, session_id="s1", model="m")
     assert d.lane == router_core.LANE_COMPLEXITY
-    assert d.mode == router_core.MODE_PLAN
+    # v3.6.1: PRE hit = orientation consult (advisory), not whole-task plan
+    assert d.mode == router_core.MODE_CONSULT
+    assert d.orientation is True
     assert d.model_target == "test/anchor-primary"
     assert d.reason.startswith("complexity_")
 

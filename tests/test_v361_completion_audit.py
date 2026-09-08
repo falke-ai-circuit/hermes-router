@@ -136,3 +136,52 @@ def test_audit_frame_higher_self_questions(monkeypatch):
         assert q in user_txt
     sys_txt = msgs[0]["content"]
     assert "higher" in sys_txt.lower()
+
+
+def test_pre_route_now_orientation_not_plan(monkeypatch):
+    """Revised 09-08 ruling: PRE complexity hit = orientation consult (advisory
+    envelope), NOT whole-task plan/ownership."""
+    rc._test_reset()
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(rc, "_complexity_level", lambda: 2)
+    monkey.setattr(rc, "_complexity_cfg", lambda: {"pre_mode": "route", "mid_mode": "off"})
+    chain = anchor_chain.AnchorChainCfg(
+        primary=anchor_chain.parse_anchor_uri("nous://openai/gpt-5.6-luna-pro", "primary"),
+        judge=None, overflow="pass_through", daily_cap_usd=2.0, pricing={})
+    monkey.setattr(rc.anchor_chain, "load_anchor_chain", lambda: chain)
+    d = rc.dispatch(PLAN_ASK, session_id="s5", model="m")
+    assert d.lane == rc.LANE_COMPLEXITY
+    assert d.mode == rc.MODE_CONSULT
+    assert d.orientation is True
+    assert d.reason == "complexity_orientation"
+    monkey.undo()
+
+
+def test_orientation_frame_in_payload():
+    """Orientation swaps rewrite the last user message with the brief frame."""
+    from hermes_router import anchor_exec as ax
+    rec = {"orientation": True, "mode": "consult", "task_id": "t", "route_id": "r"}
+    kw = {"messages": [{"role": "user", "content": "the ask"}], "model": "m"}
+    monkey = pytest.MonkeyPatch()
+    called = {}
+    def fake_call(endpoint, payload, timeout=300):
+        called["msgs"] = payload["messages"]
+        return ("BRIEF", 0.01, 10, 5)
+    monkey.setattr(ax, "anchored_call", fake_call)
+    monkey.setattr(ax, "bounded_replay", lambda x: x)
+    rec = {**rec, "endpoint": mock.Mock(model="m", base_url="u", api_key_env="K")}
+    monkey.setattr(rc, "pending_model_swap", lambda sid: rec)
+    monkey.setattr(ax, "_resolve_key", lambda e: "test-key")
+    monkey.setattr(ax.anchor_chain, "load_anchor_chain", lambda: mock.Mock(
+        endpoint_for=lambda role: rec["endpoint"],
+        pricing={}, daily_cap_usd=2.0))
+    monkey.setattr(ax.anchor_chain, "cap_check", lambda c, e: (True, 0.0, 0.01))
+    monkey.setattr(ax, "estimate_tokens_from_payload", lambda p: (10, 10))
+    monkey.setattr(ax, "_resolve_key", lambda endpoint: "test-key")
+    monkey.setattr(ax.anchor_chain, "estimate_call_cost", lambda *a, **k: 0.01)
+    monkey.setattr(ax, "usage_ledger", mock.Mock(), raising=False)
+    out = ax.maybe_execute_anchored("sx", kw)
+    assert out and out[0] == "done"
+    txt = called["msgs"][-1]["content"]
+    assert "ORIENTATION BRIEF" in txt and "failure" in txt and "the ask" in txt.lower()
+    monkey.undo()

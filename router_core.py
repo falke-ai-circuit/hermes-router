@@ -88,6 +88,7 @@ class RouteDecision:
     ts: float = field(default_factory=time.time)
     override_used: Optional[str] = None   # "anchor" | "skip" | None
     route_id: str = ""
+    orientation: bool = False   # v3.6.1 PRE-orientation brief (Goran 09-08)
 
     def log_fields(self) -> Dict[str, Any]:
         return {
@@ -850,11 +851,12 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
     now = time.time()
 
     def _dec(lane: str, mode: str, target: Optional[str], reason: str,
-             override: Optional[str] = None) -> RouteDecision:
+             override: Optional[str] = None, orientation: bool = False) -> RouteDecision:
         rd = RouteDecision(task_id=task_id, lane=lane, mode=mode,
                            model_target=target, reason=reason, ts=now,
                            override_used=override,
-                           route_id=task_id[:12] + "-" + str(int(now)))
+                           route_id=task_id[:12] + "-" + str(int(now)),
+                           orientation=orientation)
         return rd
 
     try:
@@ -943,15 +945,20 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                            task_id=task_id, level=_level)
                 route_complex = False
             if route_complex:
-                mode = MODE_PLAN
+                # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no
+                # longer plans the task — it delivers an ORIENTATION BRIEF:
+                # what the result should look like, what to watch for,
+                # common pitfalls + known good solutions, what to avoid,
+                # what failure looks like. Advisory, non-binding ("suggests
+                # but doesn't have to be followed"). Manual anchor override
+                # keeps direct-consult semantics (frontier answers the ask).
                 if override == "anchor":
-                    # explicit ask: bounded CONSULT (frontier answers once as
-                    # a consultant tool result; flash keeps ownership).
-                    mode = MODE_CONSULT
-                elif meta.get("stage1") == "borderline":
-                    mode = MODE_CONSULT
-                return _dec(LANE_COMPLEXITY, mode, _primary_model(),
-                            "complexity_" + str(meta.get("stage", "stage1")), override)
+                    return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
+                                "complexity_" + str(meta.get("stage", "stage1")),
+                                override, orientation=False)
+                return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
+                            "complexity_orientation",
+                            orientation=True)
             if override == "anchor":
                 # explicit ask outranks a "clear_simple" verdict at any level:
                 # manual-only semantics (L1) and the inline override contract.
@@ -1029,6 +1036,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
             "route_id": decision.route_id,
             "task_id": decision.task_id,
             "mode": decision.mode,
+            "orientation": bool(getattr(decision, "orientation", False)),
             "role": role,
             "endpoint": ep,
             "staged_at": now,

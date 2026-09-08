@@ -426,6 +426,36 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             return ("cap_blocked", {"spend": spend_now, "cap": chain.daily_cap_usd,
                                     "route_id": rec.get("route_id"), "task_id": rec.get("task_id")})
 
+        # v3.6.1 PRE-orientation (Goran 09-08): when the swap carries the
+        # orientation flag, frontier does NOT solve the task — it answers the
+        # orientation questions (result shape, watch-fors, pitfalls + known
+        # good solutions, avoid-list, failure shape). Advisory only.
+        if bool(rec.get("orientation")):
+            try:
+                _msgs = api_kwargs.get("messages")
+                if isinstance(_msgs, list) and _msgs:
+                    _last_user = None
+                    for _i in range(len(_msgs) - 1, -1, -1):
+                        if isinstance(_msgs[_i], dict) and _msgs[_i].get("role") == "user":
+                            _last_user = _i
+                            break
+                    if _last_user is not None:
+                        _orig = str(_msgs[_last_user].get("content") or "")
+                        _frame = (
+                            "You are the agent's higher intuition at task START. "
+                            "Do NOT solve the task. Given the ask below, produce a terse "
+                            "ORIENTATION BRIEF (max 8 bullets total):\n"
+                            "1. What the end result SHOULD look like (success shape).\n"
+                            "2. What to be careful of during the process.\n"
+                            "3. Common pitfalls and known good solutions.\n"
+                            "4. What to avoid.\n"
+                            "5. How failure would look like (early-warning signs).\n"
+                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n" + _orig[:4000]
+                        )
+                        _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
+                        api_kwargs["messages"] = _msgs
+            except Exception:  # noqa: BLE001 — orientation frame is best-effort
+                pass
         content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
         if content is None:
             return None
@@ -463,7 +493,8 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             model_target=endpoint.model, reason="anchored_call",
             route_id=rec.get("route_id") or "",
         )
-        kind = "consultation" if decision_like.mode == router_core.MODE_CONSULT else "frontier_plan"
+        kind = ("orientation" if bool(rec.get("orientation"))
+                else ("consultation" if decision_like.mode == router_core.MODE_CONSULT else "frontier_plan"))
         envelope = router_core.build_frontier_envelope(
             kind, endpoint.model, decision_like, content,
             limitations="single-shot anchored call; no tool access",
