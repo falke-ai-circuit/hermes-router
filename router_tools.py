@@ -13,6 +13,8 @@ Two tools registered via ctx.register_tool (spotify plugin pattern):
       reload     (dirty-flag config re-read — NO gateway bounce)
       ping       (live smoke: ONE call, cheap model, max_tokens<=64)
       set_decision_head (amendment: heuristic|routellm_mf, no other effects)
+      set_pre_mode (route|shadow|off — frontier orientation brief on/off)
+      set_audit_mode (off|complex|always — frontier higher-self audit on/off)
 
 Security posture (Astra review §5 carried in): status is read-only and
 agent-accessible; control actions only touch the plugin's own config section
