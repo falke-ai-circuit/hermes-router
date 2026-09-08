@@ -1620,16 +1620,6 @@ def register(ctx) -> None:
         router_tools.register(ctx)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: router_tools registration failed: %s", exc)
-    # v3.6 P0 acceptance: startup asserts tap presence — the Phase-0 taps are
-    # wired (record_tool_call feeds fail-ring + progress ledger; the functions
-    # exist and are callable). Logged at startup; router_status surfaces
-    # struggle_feeder: armed.
-    try:
-        assert callable(router_core.record_tool_call) and callable(router_core.record_provider_failure)
-        _log_route("PRE", event_detail="struggle_feeder", state="armed",
-                   tap="record_tool_call+record_provider_failure")
-    except Exception as exc:  # noqa: BLE001 — never block registration
-        logger.error("uncensored-router: struggle_feeder tap assert failed: %s", exc)
     # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated
     # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off), registered in its own
     # try/except so a registration failure NEVER disables the middleware

@@ -58,9 +58,8 @@ LANE_COMPLEXITY = "complexity"
 MODE_FLASH_DIRECT = "flash_direct"
 MODE_PLAN = "plan"
 MODE_CONSULT = "consult"
-MODE_OWNERSHIP = "ownership"
 
-VALID_MODES = (MODE_FLASH_DIRECT, MODE_PLAN, MODE_CONSULT, MODE_OWNERSHIP)
+VALID_MODES = (MODE_FLASH_DIRECT, MODE_PLAN, MODE_CONSULT)
 
 # Struggle thresholds (locked v3.0.0 subset)
 SAME_FAILURE_ESCALATE_N = 3      # (a) refusals/failures on same task-hash
@@ -356,175 +355,6 @@ def _novel_text(tool_result_text: str, prog: Dict[str, Any], seen: set) -> bool:
         return False
 
 
-def fail_ring_view(task_id: str) -> List[Tuple[str, str, str, str, float]]:
-    """Non-destructive ring read (future MID gate + tests). Never raises."""
-    try:
-        with _LOCK:
-            rec = _TASK_STATE.get(task_id, {})
-            return list(rec.get("fail_ring") or [])
-    except Exception:  # noqa: BLE001
-        return []
-
-
-def progress_view(task_id: str) -> Dict[str, Any]:
-    """Non-destructive progress-ledger read (future MID gate + tests).
-    Never raises."""
-    try:
-        with _LOCK:
-            rec = _TASK_STATE.get(task_id, {})
-            return dict(rec.get("progress") or {})
-    except Exception:  # noqa: BLE001
-        return {}
-
-
-def struggle_verdict(task_id: str, user_text: str) -> Tuple[bool, str]:
-    """Router-owned struggle check across (a)/(b)/(c).
-
-    Returns (struggling, reason_code). reason in:
-      repeated_same_failure | tool_loop_no_new_content | user_struggle_signal | ""
-    Never raises. This is OBSERVATION ONLY — dispatch consumes it.
-    """
-    try:
-        with _LOCK:
-            rec = _TASK_STATE.get(task_id, {})
-            fails = int(rec.get("fail_count", 0))
-            loops = int(_TOOLLOOP_STATE.get(task_id, {}).get("calls", 0))
-        if fails >= SAME_FAILURE_ESCALATE_N:
-            return True, "repeated_same_failure"
-        if loops >= TOOLLOOP_CALLS_N:
-            return True, "tool_loop_no_new_content"
-        if complexity.explicit_user_struggle(user_text or ""):
-            return True, "user_struggle_signal"
-        return False, ""
-    except Exception:  # noqa: BLE001
-        return False, ""
-
-
-# ---------------------------------------------------------------------------
-# v3.3.0 F2 — shadow mode (log-only escalation evaluation)
-# ---------------------------------------------------------------------------
-# Phase 1 product: when struggle fires and shadow is on, log what the adaptive
-# policy WOULD do (would_step, consult_would_fire) and change NOTHING. Static
-# mode dispatch behavior stays byte-identical to v3.2.3; shadow only adds logs.
-
-_STRUGGLE_SIGNALS_TURN_LOCK = threading.Lock()
-# turn_key dedupe: {(task_id, turn_key)} — multi-call turns re-run dispatch per
-# provider call (v3.2.0 incident, router_core.py:117-127); without dedupe one
-# turn inflates would_step and biases ladder calibration high.
-_STRUGGLE_SEEN_TURNS: Dict[Tuple[str, str], float] = {}
-_STRUGGLE_SEEN_TURNS_MAX = 256
-
-
-def record_struggle_signal(task_id: str, turn_key: str) -> int:
-    """Count ONE struggle signal per (task_id, turn_key) — record_tool_call's
-    turn_key discipline. Returns the per-task signal count AFTER this signal
-    (deduped re-fires return the count unchanged). Never raises."""
-    try:
-        key = (task_id or "", turn_key or "")
-        now = time.time()
-        with _LOCK:
-            rec = _TASK_STATE.setdefault(task_id, {"fail_count": 0, "consult_count": 0,
-                                                   "escalated": False, "created_at": now})
-            with _STRUGGLE_SIGNALS_TURN_LOCK:
-                first_this_turn = key not in _STRUGGLE_SEEN_TURNS
-                if first_this_turn:
-                    _STRUGGLE_SEEN_TURNS[key] = now
-                    # TTL reap + size cap (same discipline as _TASK_STATE).
-                    stale = [k for k, ts in _STRUGGLE_SEEN_TURNS.items() if now - ts > 600.0]
-                    for k in stale:
-                        _STRUGGLE_SEEN_TURNS.pop(k, None)
-                    while len(_STRUGGLE_SEEN_TURNS) > _STRUGGLE_SEEN_TURNS_MAX:
-                        oldest = min(_STRUGGLE_SEEN_TURNS, key=lambda k: _STRUGGLE_SEEN_TURNS[k])
-                        _STRUGGLE_SEEN_TURNS.pop(oldest, None)
-                if first_this_turn:
-                    rec["struggle_signals"] = int(rec.get("struggle_signals", 0)) + 1
-            return int(rec.get("struggle_signals", 0))
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def struggle_signal_count(task_id: str) -> int:
-    """Non-destructive read of the per-task deduped signal count. Never raises."""
-    try:
-        with _LOCK:
-            return int(_TASK_STATE.get(task_id, {}).get("struggle_signals", 0))
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def would_step_for(signal_count: int) -> int:
-    """Ladder-step mapping: first signal -> 1, second -> 2, third+ -> 3."""
-    try:
-        n = int(signal_count)
-    except (TypeError, ValueError):
-        n = 0
-    if n <= 0:
-        return 1
-    return min(n, 3)
-
-
-def log_struggle_shadow(task_id: str, session_id: str, reason: str, turn_key: str = "",
-                        user_text: str = "") -> None:
-    """Emit ONE struggle_shadow log line (the Phase 1 product). Log-only:
-    nothing staged, nothing delivered, no state mutated beyond the deduped
-    signal counter. Never raises.
-
-    Line shape (spec F2):
-      struggle_shadow reason=<reason> kind=<infra|reasoning|ambiguous>
-      task_id=<...> session_id=<...> would_step=<1|2|3> consult_would_fire=<bool>
-      [+ confirm_only=true | suppressed=infra]
-    """
-    try:
-        from . import struggle_class as _sc
-        from hermes_router import _log_route  # deferred — avoids import cycle
-
-        kind, detail = _sc.classify_struggle(task_id, reason)
-        # Deduped per-(task, turn_key) signal count drives would_step.
-        count = record_struggle_signal(task_id, turn_key)
-        would_step = would_step_for(count)
-
-        fields: Dict[str, Any] = {
-            "reason": reason or "unknown",
-            "kind": kind,
-            "task_id": task_id or "",
-            "session_id": session_id or "",
-            "would_step": would_step,
-            "consult_would_fire": True,
-        }
-        if reason == "user_struggle_signal":
-            # Astra: user phrasing is a confirming signal, never sole —
-            # logged as would_step but consult never fires on it alone.
-            fields["consult_would_fire"] = False
-            fields["confirm_only"] = True
-        if kind == _sc.KIND_INFRA:
-            # Infra-classified struggle: consult would never help — log the
-            # suppression counterfactual (F3 will act on this in Phase 2).
-            fields["consult_would_fire"] = False
-            fields["suppressed"] = "infra"
-        if detail:
-            fields["detail"] = detail
-        _log_route("PRE", event_detail="struggle_shadow", **fields)
-    except Exception:  # noqa: BLE001 — shadow logging must never raise
-        return
-
-
-def maybe_shadow_log(user_text: str, task_id: str, session_id: str, model: str,
-                     turn_key: str = "") -> None:
-    """F2 entry point for dispatch: when the static struggle detector fires and
-    shadow mode is on, log the shadow line. LOG-ONLY — never raises, returns
-    nothing, changes no dispatch decision."""
-    try:
-        struggling, sreason = struggle_verdict(task_id, user_text)
-        if not struggling:
-            return
-        if not shadow_enabled():
-            return
-        log_struggle_shadow(task_id, session_id, sreason, turn_key=turn_key,
-                            user_text=user_text)
-    except Exception:  # noqa: BLE001
-        return
-
-
 # ---------------------------------------------------------------------------
 # Complexity-mode + shadow config (v3.3.0 F2 — dual-section reader as existing)
 # ---------------------------------------------------------------------------
@@ -721,87 +551,6 @@ def anchor_backoff_active_count() -> int:
         return 0
 
 
-# Session-scoped one-time flags (adaptive_not_armed logs ONCE per session).
-_ADAPTIVE_ARM_WARNED: set = set()
-_ADAPTIVE_ARM_WARNED_MAX = 256
-
-
-def _log_adaptive_not_armed_once(session_id: str) -> None:
-    """Emit the adaptive_not_armed marker once per session (Phase 1 arm
-    protection: mode:adaptive in Phase 1 behaves as static). Never raises."""
-    try:
-        if session_id in _ADAPTIVE_ARM_WARNED:
-            return
-        with _LOCK:
-            if session_id in _ADAPTIVE_ARM_WARNED:
-                return
-            if len(_ADAPTIVE_ARM_WARNED) >= _ADAPTIVE_ARM_WARNED_MAX:
-                _ADAPTIVE_ARM_WARNED.clear()
-            _ADAPTIVE_ARM_WARNED.add(session_id)
-
-        from hermes_router import _log_route  # deferred — avoids import cycle
-
-        _log_route("PRE", event_detail="adaptive_not_armed", phase=1,
-                   session_id=session_id or "")
-    except Exception:  # noqa: BLE001
-        pass
-
-
-# ---------------------------------------------------------------------------
-# v3.3.0 F3 — infra suppression plumbing (INERT in Phase 1)
-# ---------------------------------------------------------------------------
-# The guard BODY ships dormant so Phase 2 arms it by config alone. dispatch()
-# only reaches it when complexity.mode == "adaptive"; in Phase 1 dispatch logs
-# adaptive_not_armed + behaves as static instead (arm protection), so this
-# function is unreachable in production Phase 1 and the skip never fires.
-
-
-def record_infra_cooldown(task_id: str, ts: Optional[float] = None) -> None:
-    """Record an infra classification timestamp on the task record (Phase 2
-    will consult it via _infra_cooldown_skip). Never raises."""
-    try:
-        _bump_task(task_id, infra_kind_ts=float(ts if ts is not None else time.time()))
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def infra_cooldown_active(task_id: str, now: Optional[float] = None) -> bool:
-    """True when an infra classification is FRESH (inside adaptive.infra_cooldown_s,
-    default 90s). Never raises."""
-    try:
-        try:
-            cd = float(adaptive_cfg().get("infra_cooldown_s", 90))
-        except (TypeError, ValueError):
-            cd = 90.0
-        rec = task_state(task_id)
-        ts = float(rec.get("infra_kind_ts", 0) or 0)
-        if ts <= 0:
-            return False
-        cur = float(now if now is not None else time.time())
-        return (cur - ts) <= cd
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _infra_cooldown_skip(task_id: str, session_id: str) -> Tuple[bool, str]:
-    """F3 guard body — Phase-2-only (adaptive mode): when an infra cooldown is
-    fresh, the struggle-escalation branch is skipped this turn (suppressed
-    struggles are still re-classified + shadow-logged by callers to avoid a
-    calibration blind spot). Returns (skip, reason). In static mode this is
-    NEVER called by dispatch (inert — zero behavior change in Phase 1).
-    Never raises."""
-    try:
-        if not infra_cooldown_active(task_id):
-            return False, ""
-        from hermes_router import _log_route
-
-        _log_route("PRE", event_detail="struggle_suppressed_would_skip",
-                   kind="infra", task_id=task_id or "", session_id=session_id or "")
-        return True, "infra_cooldown_skip"
-    except Exception:  # noqa: BLE001
-        return False, ""
-
-
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -871,44 +620,6 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # INERT in Phase 1: dispatch behavior in static mode is byte-identical
         # to v3.2.3 (zero-behavior-change invariant; suppressed struggles would
         # still be re-classified + logged to avoid survivorship bias).
-        if complexity_mode() == "adaptive":
-            # Phase 1 arm protection: adaptive in Phase 1 behaves AS STATIC and
-            # logs the not-armed marker once per session (no accidental arm).
-            _log_adaptive_not_armed_once(session_id)
-        else:
-            # v3.3.0 F2 — shadow mode: when the static struggle detector fires,
-            # log what adaptive WOULD do (log-only; default shadow=true).
-            turn_key = state.turn_key_for(session_id, user_text, model)
-            maybe_shadow_log(user_text, task_id, session_id, model, turn_key=turn_key)
-
-        # Struggle check first: an escalated task stays escalated until the
-        # task hash changes (new ask = new task).
-        # v3.4.1 (Goran 09-06 fleet audit): struggle-escalation now respects the
-        # complexity level — L1 (manual-only) means NO auto flagship invoke on
-        # struggle signals (the level gate previously guarded only step-2
-        # complexity, letting user_struggle_signal bypass fleet policy).
-        # Escalation continues to work at L2+; explicit "anchor this" override
-        # (step 0) is unaffected. L1 keeps shadow logging for calibration.
-        # mid_mode (Goran 2026-09-08 ruling): struggle/ownership escalation
-        # REMOVED from the default path ("remove completely pre and mid").
-        # Re-enable per-profile with complexity.mid_mode: route (legacy L2+
-        # behavior). Manual "anchor this" stays the explicit mid-job escape.
-        _mid_mode = str((_complexity_cfg() or {}).get("mid_mode") or "off").strip().lower()
-
-        struggling, sreason = struggle_verdict(task_id, user_text)
-        with _LOCK:
-            escalated = bool(_TASK_STATE.get(task_id, {}).get("escalated", False))
-        _level = _complexity_level()
-
-        if _mid_mode == "route" and (struggling or escalated) and _level >= 2:
-            chain = anchor_chain.load_anchor_chain()
-            ep = chain.endpoint_for("primary")
-            if ep is not None and _lane_enabled(LANE_COMPLEXITY):
-                if struggling:
-                    _bump_task(task_id, escalated=True)
-                return _dec(LANE_COMPLEXITY, MODE_OWNERSHIP, ep.model,
-                            sreason or "task_escalated")
-
         # 2. Complexity detection (stage-1 -> stage-2 on gray zone).
         # pre_mode (Goran 2026-09-08 ruling): "route" = legacy PRE consult on
         # stage-1 regex hit (v3.5 behavior); "shadow" = log-only telemetry —
@@ -1089,7 +800,7 @@ def build_frontier_envelope(kind: str, producer: str, decision: RouteDecision,
                             answer: str, evidence_refs: Optional[List[str]] = None,
                             limitations: Optional[str] = None) -> Dict[str, Any]:
     """Provenance envelope for frontier outputs entering as TOOL RESULTS
-    (never rewrites the user message). kind: frontier_plan|consultation|
+    (never rewrites the user message). kind: consultation|
     verification. Never raises."""
     try:
         return {
@@ -1138,10 +849,7 @@ def _test_reset() -> None:
         _TOOL_RESULT_SEEN.clear()
         _TOOLLOOP_STATE.clear()
         _CONSULT_RESULTS.clear()
-        _ADAPTIVE_ARM_WARNED.clear()
     with _PENDING_SWAP_LOCK:
         _PENDING_SWAP.clear()
         _SWAP_DONE.clear()
         _ANCHOR_FAIL_BACKOFF.clear()
-    with _STRUGGLE_SIGNALS_TURN_LOCK:
-        _STRUGGLE_SEEN_TURNS.clear()

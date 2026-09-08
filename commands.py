@@ -469,7 +469,6 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
         "complexity.level": {"type": "int", "min": 0, "max": 3, "lane": "C"},
         "complexity.shadow": {"type": "bool", "lane": "C"},
         "complexity.pre_mode": {"type": "enum", "enum": ("route", "shadow", "off"), "lane": "C"},
-        "complexity.mid_mode": {"type": "enum", "enum": ("off", "route"), "lane": "C"},
         "complexity.audit_mode": {"type": "enum", "enum": ("off", "complex", "always"), "lane": "C"},
         "complexity.audit_max_chars": {"type": "int", "min": 400, "max": 16000, "lane": "C"},
         "complexity.pre_threshold": {"type": "float", "min": 0.0, "max": 1.0, "lane": "C",
@@ -867,6 +866,7 @@ _MENU = [
     ("health", "Inspect", "lifecycle verdict + hardening-field interplay"),
     ("config", "Configure", "get [knob] | list | set <knob> <value> | diff | validate | rollback"),
     ("lane", "Configure", "uncensored|frontier on|off — flip either routing lane (token-guarded); bare = current state"),
+    ("frontier", "Configure", "frontier pre on|off / post on|off|always / state (orientation + higher-self audit)"),
     ("cap", "Configure", "get | set <usd> (raise-only)"),
     ("confirm", "Configure", "confirm <token> — execute a pending consequential mutation"),
     ("ping", "Diagnose", "ONE live anchor smoke call (async, timeout 20s) — bills the cap"),
@@ -1904,6 +1904,47 @@ def _rate_admit(kind: str) -> Optional[str]:
     return _rate_check(kind)
 
 
+
+def _cmd_frontier(args: List[str]) -> str:
+    """Friendly toggle surface (Goran 2026-09-08): frontier pre/post on|off|state.
+    Maps: pre on→pre_mode=route, pre off→pre_mode=off;
+          post on→audit_mode=complex, post always→audit_mode=always, post off→audit_mode=off.
+    Reads work without the mutation gate; sets go through _config_set (token-guarded
+    for consequential flips per the existing discipline)."""
+    try:
+        if not args:
+            return ("usage: /router frontier pre on|off | post on|off|always | state")
+        what = args[0].lower().lstrip("/")
+        if what == "state" or (len(args) < 2 and what in ("pre", "post")):
+            from .router_core import _complexity_cfg
+
+            comp = _complexity_cfg() or {}
+            return ("frontier pre=%s post=%s   (pre: route|shadow|off; post: off|complex|always)"
+                    % (comp.get("pre_mode") or "off", comp.get("audit_mode") or "off"))
+        val = args[1].lower()
+        if what == "pre":
+            if val == "on":
+                return _config_set(["complexity.pre_mode", "route"])
+            if val == "off":
+                return _config_set(["complexity.pre_mode", "off"])
+            if val == "state":
+                return _config_get(["complexity.pre_mode"])
+            return "pre: on | off | state"
+        if what == "post":
+            if val == "on":
+                return _config_set(["complexity.audit_mode", "complex"])
+            if val == "always":
+                return _config_set(["complexity.audit_mode", "always"])
+            if val == "off":
+                return _config_set(["complexity.audit_mode", "off"])
+            if val == "state":
+                return _config_get(["complexity.audit_mode"])
+            return "post: on | always | off | state"
+        return "usage: /router frontier pre on|off | post on|off|always | state"
+    except Exception as exc:  # noqa: BLE001
+        return "error: frontier toggle failed: %s" % str(exc)[:160]
+
+
 def handle_router_command(raw_args: str) -> str:
     """The /router entry point. Returns a string ALWAYS (never raises, never
     returns None) — the gateway renders exactly this back to the platform."""
@@ -1948,6 +1989,8 @@ def handle_router_command(raw_args: str) -> str:
             return _cmd_config(args)
         if sub == "lane":
             return _cmd_lane(args)
+        if sub == "frontier":
+            return _cmd_frontier(args)
         # Unknown: one-line help with closest match.
         close = min(_MENU, key=lambda m: _lev(m[0], sub)) if _MENU else ("", "", "")
         return "unknown subcommand: %s — closest: /router %s (bare /router = menu)" % (sub, close[0])

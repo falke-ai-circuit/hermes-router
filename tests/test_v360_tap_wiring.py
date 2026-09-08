@@ -46,25 +46,6 @@ def test_ff2_task_identity_via_last_seen_cache():
     assert turn_key == router_state.turn_key_for("sess-ff2", "build the thing", "m")
 
 
-def test_tool_result_tap_feeds_ring_and_progress():
-    """P0.1 + P0.3: the middleware tap surfaces the newest tool result into
-    record_tool_call -> fail-ring + progress ledger (write-only)."""
-    sid = "sess-tap1"
-    router_state.record_last_seen(sid, "original ask")
-    request = _fake_request("HTTP 502 upstream error")
-    plugin._tap_feed_tool_results(request, sid, "m")
-    task_id = router_core.task_id_for(sid, "original ask", "m")
-    ring = router_core.fail_ring_view(task_id)
-    assert len(ring) == 1 and ring[0][1] == "http_5xx"
-    prog = router_core.progress_view(task_id)
-    assert prog.get("cycles_since_progress") == 1  # error cycle = no progress
-    # a success cycle flips progress
-    plugin._tap_feed_tool_results(_fake_request("build succeeded: 42 tests passed"), sid, "m")
-    prog2 = router_core.progress_view(task_id)
-    assert prog2.get("cycles_since_progress") == 0
-    assert prog2.get("last_out_fp")
-
-
 def test_tool_tap_cold_cache_noop():
     """Cold last-seen cache -> no task identity -> nothing fed (no crash)."""
     plugin._tap_feed_tool_results(_fake_request("some result"), "sess-cold", "m")

@@ -39,18 +39,6 @@ def test_pre_route_still_available_optin():
     monkey.undo()
 
 
-def test_mid_default_off_struggle_does_not_escalate():
-    """MID struggle escalation removed by default."""
-    rc._test_reset()
-    monkey = pytest.MonkeyPatch()
-    monkey.setattr(rc, "_complexity_level", lambda: 3)
-    monkey.setattr(rc, "_complexity_cfg", lambda: {"pre_mode": "off", "mid_mode": "off"})
-    monkey.setattr(rc, "struggle_verdict", lambda t, u: (True, "user_struggle_signal"))
-    d = rc.dispatch("still broken", session_id="s3", model="m")
-    assert d.mode != rc.MODE_OWNERSHIP
-    monkey.undo()
-
-
 def test_anchor_override_survives_pre_off():
     """Manual 'anchor this' works regardless of pre_mode."""
     rc._test_reset()

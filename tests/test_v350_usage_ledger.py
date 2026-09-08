@@ -266,7 +266,7 @@ def test_anchor_route_records_tokens_when_present(monkeypatch):
     assert recs[0]["lane"] == "anchor"
     assert (recs[0]["input_tokens"], recs[0]["output_tokens"]) == (333, 444)
     assert recs[0]["session_id"] == "api_sY"
-    assert recs[0]["detail"] == "frontier_plan"
+    assert recs[0]["detail"] == "consult"
 
 
 def test_anchor_route_usage_absent_records_nothing(monkeypatch):

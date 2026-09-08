@@ -83,45 +83,6 @@ def test_routing_table_routine_ask_passes_through():
     assert d.model_target is None
 
 
-def test_routing_table_struggle_escalates_to_ownership():
-    # struggle state must key the task hash EXACTLY as dispatch does
-    task = router_core.task_id_for("sx", ROUTINE_ASK, "m")
-    for _ in range(router_core.SAME_FAILURE_ESCALATE_N):
-        router_core.record_provider_failure(task, "boom")
-    d3 = router_core.dispatch(ROUTINE_ASK, session_id="sx", model="m")
-    assert d3.lane == router_core.LANE_COMPLEXITY
-    assert d3.mode == router_core.MODE_OWNERSHIP
-    assert d3.reason == "repeated_same_failure"
-
-
-def test_routing_table_toolloop_escalates_to_ownership():
-    task = router_core.task_id_for("sy", ROUTINE_ASK, "m")
-    turn = "turn-1"
-    # seed the seen-hash set: call 1 carries new content (count resets to 0);
-    # the next TOOLLOOP_CALLS_N repeats count as no-new-content.
-    router_core.record_tool_call(task, "same stale output", turn)
-    n = 0
-    for _ in range(router_core.TOOLLOOP_CALLS_N):
-        n = router_core.record_tool_call(task, "same stale output", turn)
-    assert n >= router_core.TOOLLOOP_CALLS_N
-    d = router_core.dispatch(ROUTINE_ASK, session_id="sy", model="m")
-    assert d.lane == router_core.LANE_COMPLEXITY
-    assert d.mode == router_core.MODE_OWNERSHIP
-    assert d.reason == "tool_loop_no_new_content"
-
-
-def test_routing_table_user_struggle_signal_escalates():
-    d = router_core.dispatch(STILL_BROKEN, session_id="sz", model="m")
-    assert d.lane == router_core.LANE_COMPLEXITY
-    assert d.mode == router_core.MODE_OWNERSHIP
-    assert d.reason == "user_struggle_signal"
-
-
-# ---------------------------------------------------------------------------
-# Intensity matrix L0-L3
-# ---------------------------------------------------------------------------
-
-
 def test_intensity_l0_off_no_route(monkeypatch):
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 0)
     d = router_core.dispatch(PLAN_ASK, session_id="l0", model="m")

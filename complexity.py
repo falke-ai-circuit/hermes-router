@@ -197,27 +197,6 @@ def detect_override(text: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 # Explicit user struggle phrasing (c) — repeated corrections / still-broken.
-_USER_STRUGGLE: List[str] = [
-    r"\bstill (?:broken|failing|not working|doesn't work|doesnt work|won't work|wont work|wrong|erroring)\b",
-    r"\bnot working\b",
-    r"\b(?:same|identical) (?:error|failure|problem|issue|bug|crash)\b.{0,40}\b(?:again|still|repeated)\b",
-    r"\b(?:you (?:keep|repeatedly|again)|still) (?:break|fail\w*|miss\w*|get(?:ting)? (?:it|this) wrong|mess\w* (?:it|this) up)\b",
-    r"\bthird time\b|\bthird attempt\b|\btold you (?:already|twice|three times)\b",
-    r"\b(?:it's|its) still (?:broken|failing|wrong|not fixed)\b",
-    r"\btry (?:again|another|different)\b.{0,40}\b(?:still|again|failed)\b",
-]
-
-
-def explicit_user_struggle(text: str) -> bool:
-    """True when the user message itself carries struggle phrasing. Never raises."""
-    try:
-        if not isinstance(text, str) or not text.strip():
-            return False
-        return any(re.search(p, text, re.IGNORECASE) for p in _USER_STRUGGLE)
-    except Exception:  # noqa: BLE001
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Stage-2 semantic aux (gray zone only) — reuses existing aux machinery
 # ---------------------------------------------------------------------------

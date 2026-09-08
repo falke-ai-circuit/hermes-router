@@ -167,23 +167,6 @@ def test_render_events_never_consume_consult_budget():
     assert ok is True and reason == ""
 
 
-def test_render_retries_never_feed_fail_ring():
-    """§10.1-4: the render-retry loop (≤3x CRITICAL RETRY OVERRIDE) is
-    router-internal — it must never feed the fail-ring. Ring entries come
-    from TOOL cycles (record_tool_call) only; render retries go through
-    router.call which never touches record_tool_call."""
-    from hermes_router import router_core
-
-    router_core._test_reset()
-    # simulate render retries: no tool-result tap fires
-    task_id = router_core.task_id_for("s1", "ask", "m")
-    router_core.record_struggle_signal(task_id, "turn-key-1")  # unrelated signal
-    assert router_core.fail_ring_view(task_id) == []
-    # a tool cycle DOES feed it
-    router_core.record_tool_call(task_id, "HTTP 502 upstream", "turn-key-1")
-    assert len(router_core.fail_ring_view(task_id)) == 1
-
-
 def test_post_re_entry_guard_provenance_fields():
     """§10.4-A: rendered turns carry immutable provenance; one render decision
     per turn via idempotence key (turn_id, lane, trigger_family). Pinned via

@@ -481,7 +481,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                     "anchor", endpoint.model, session_id, pt, ct,
                     real_cost if cost is not None else
                     usage_ledger.estimate_cost(endpoint.model, pt, ct),
-                    "consult" if (rec.get("mode") or "") == router_core.MODE_CONSULT else "frontier_plan",
+                    "consult",
                     task_id=str(rec.get("task_id") or ""), event_seq=_seq,
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
@@ -489,12 +489,11 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
 
         decision_like = router_core.RouteDecision(
             task_id=rec.get("task_id") or "", lane=router_core.LANE_COMPLEXITY,
-            mode=rec.get("mode") or router_core.MODE_PLAN,
+            mode=rec.get("mode") or router_core.MODE_CONSULT,
             model_target=endpoint.model, reason="anchored_call",
             route_id=rec.get("route_id") or "",
         )
-        kind = ("orientation" if bool(rec.get("orientation"))
-                else ("consultation" if decision_like.mode == router_core.MODE_CONSULT else "frontier_plan"))
+        kind = "orientation" if bool(rec.get("orientation")) else "consultation"
         envelope = router_core.build_frontier_envelope(
             kind, endpoint.model, decision_like, content,
             limitations="single-shot anchored call; no tool access",
