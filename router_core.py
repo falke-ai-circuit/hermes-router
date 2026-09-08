@@ -887,12 +887,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # complexity, letting user_struggle_signal bypass fleet policy).
         # Escalation continues to work at L2+; explicit "anchor this" override
         # (step 0) is unaffected. L1 keeps shadow logging for calibration.
+        # mid_mode (Goran 2026-09-08 ruling): struggle/ownership escalation
+        # REMOVED from the default path ("remove completely pre and mid").
+        # Re-enable per-profile with complexity.mid_mode: route (legacy L2+
+        # behavior). Manual "anchor this" stays the explicit mid-job escape.
+        _mid_mode = str((_complexity_cfg() or {}).get("mid_mode") or "off").strip().lower()
+
         struggling, sreason = struggle_verdict(task_id, user_text)
         with _LOCK:
             escalated = bool(_TASK_STATE.get(task_id, {}).get("escalated", False))
         _level = _complexity_level()
 
-        if (struggling or escalated) and _level >= 2:
+        if _mid_mode == "route" and (struggling or escalated) and _level >= 2:
             chain = anchor_chain.load_anchor_chain()
             ep = chain.endpoint_for("primary")
             if ep is not None and _lane_enabled(LANE_COMPLEXITY):
@@ -919,19 +925,20 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 dh_backend = decision_head.configured_backend()
             except Exception:  # noqa: BLE001
                 dh_backend = "heuristic"
-            _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "route").strip().lower()
+            _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "off").strip().lower()
             if dh_backend != "heuristic":
                 route_complex = decision_head.route(user_text)
                 meta = {"stage": "decision_head", "backend": dh_backend,
                         "stage1": "clear_complex" if route_complex else "clear_simple"}
             else:
                 route_complex, meta = complexity.classify(user_text, level)
-            if _pre_mode == "shadow" and route_complex and override != "anchor":
-                # Shadow: would-fire telemetry only. Frontier consults belong
-                # at completion-audit / struggle, not at task start (Goran
-                # 09-08: "I always ask consultance at the finished job").
+            if _pre_mode in ("shadow", "off") and route_complex and override != "anchor":
+                # Shadow/off (Goran 09-08 ruling): frontier consults belong at
+                # the completion audit, never at task start. 'shadow' keeps
+                # would-fire telemetry; 'off' is fully silent.
                 _log_route("PRE", session_id=session_id,
-                           event_detail="complexity_pre_shadow",
+                           event_detail=("complexity_pre_shadow" if _pre_mode == "shadow"
+                                         else "complexity_pre_off"),
                            stage1=str(meta.get("stage1")),
                            task_id=task_id, level=_level)
                 route_complex = False

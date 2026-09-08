@@ -630,6 +630,26 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 or "recorded turn" in content):  # frame sentinels: skip PRE re-routing
             return {}
 
+        # v3.6.1 completion-audit delivery (Goran 2026-09-08): a stashed
+        # frontier verdict from the PREVIOUS turn's completion audit is
+        # injected HERE as an advisory assistant-role envelope — the agent
+        # reads it before composing her next turn and either surfaces the
+        # finding for user decision or fixes and delivers. One-shot consume.
+        try:
+            from . import completion_audit as _ca
+            _verdict = _ca.consume_verdict(session_id)
+            if _verdict:
+                modified_req = copy.deepcopy(request) if isinstance(request, dict) else {}
+                msgs2 = modified_req.get("messages")
+                if isinstance(msgs2, list):
+                    msgs2.append({"role": "assistant", "content": _verdict})
+                    modified_req["messages"] = msgs2
+                    _log_route("PRE", event_detail="completion_audit_delivered",
+                               chars=len(_verdict), session_id=session_id)
+                    return {"request": modified_req}
+        except Exception:  # noqa: BLE001 — verdict delivery must never break routing
+            logger.debug("completion audit delivery error", exc_info=True)
+
         # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
         # blocking, uncensored should not filter anything when asked"). The
         # 2026-09-01 gate ("i dont want explicit minors") never actually fired
@@ -1110,6 +1130,29 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             return _out
                 except Exception:  # noqa: BLE001 — banner must never break delivery
                     pass
+                # v3.6.1 completion-audit arm (Goran 2026-09-08 ruling): the
+                # ONLY automatic frontier touchpoint. On a benign FINAL
+                # response, consult frontier ONCE per task on (ask + work +
+                # response); verdict stashed for the NEXT turn. Async — this
+                # delivery is never delayed. Modes: off | complex | always.
+                try:
+                    from . import completion_audit as _ca
+                    if _ca.audit_enabled() and response_text and len(response_text.strip()) >= 500:
+                        _ask = (context.get("user_message")
+                                if isinstance(context, dict) else None) \
+                            or state.get_last_seen(session_id) or ""
+                        if _ask.strip():
+                            _ok, _why = _ca.eligible(session_id, _ask, response_text, model)
+                            _log_route("POST", event_detail="completion_audit_gate",
+                                       ok=_ok, reason=_why, session_id=session_id)
+                            if _ok:
+                                _ca.run_completion_audit(session_id, _ask,
+                                                         response_text,
+                                                         context.get("request")
+                                                         if isinstance(context, dict) else None,
+                                                         model)
+                except Exception:  # noqa: BLE001 — audit must never break delivery
+                    logger.debug("completion audit gate error", exc_info=True)
                 return None
 
         session_id = session_id or ""

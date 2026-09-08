@@ -20,6 +20,7 @@ def test_struggle_no_auto_flagship_at_l1(monkeypatch):
 
 def test_struggle_auto_flagship_at_l2(monkeypatch):
     monkeypatch.setattr(rc, "_complexity_level", lambda: 2)
+    monkeypatch.setattr(rc, "_complexity_cfg", lambda: {"mid_mode": "route"})
     monkeypatch.setattr(rc, "struggle_verdict", lambda t, u: (True, "user_struggle_signal"))
     monkeypatch.setattr(rc, "_lane_enabled", lambda lane: True)
     ep = mock.Mock()

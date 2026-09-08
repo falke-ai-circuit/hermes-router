@@ -65,6 +65,9 @@ def _reset(monkeypatch):
         "log_routes": False,
     }, raising=False)
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 3)
+    # legacy pre/mid route semantics (v3.6.1 defaults moved to off)
+    monkeypatch.setattr(router_core, "_complexity_cfg",
+                        lambda: {"pre_mode": "route", "mid_mode": "route"})
     _chain = _test_anchor_chain()
     monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain", lambda: _chain)
     yield
@@ -239,7 +242,8 @@ def test_infra_cooldown_static_mode_inert(monkeypatch):
 def test_adaptive_phase1_behaves_static_and_logs(monkeypatch):
     log_lines = []
     monkeypatch.setattr(router_core, "_complexity_cfg",
-                        lambda: {"mode": "adaptive", "shadow": True})
+                        lambda: {"mode": "adaptive", "shadow": True,
+                                 "pre_mode": "route", "mid_mode": "route"})
     monkeypatch.setattr(plugin, "_log_route",
                         lambda event, **fields: log_lines.append((event, fields)))
 

@@ -37,6 +37,11 @@ def _reset(monkeypatch):
         "log_routes": False,
     }, raising=False)
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 3)
+    # legacy-route semantics for the pre/mid gates (defaults moved to off in
+    # v3.6.1 per Goran's completion-audit ruling; these tests encode the
+    # legacy routing table and opt into it explicitly).
+    monkeypatch.setattr(router_core, "_complexity_cfg",
+                        lambda: {"pre_mode": "route", "mid_mode": "route"})
     _chain = _test_anchor_chain()
     monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain", lambda: _chain)
     yield
