@@ -662,9 +662,13 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             except Exception:  # noqa: BLE001
                 dh_backend = "heuristic"
             if _is_system_injected_turn(user_text):
-                _log_route("PRE", session_id=session_id,
-                           event_detail="complexity_pre_skip_system_injected",
-                           task_id=task_id, level=_level)
+                try:
+                    from hermes_router import _log_route as _lr  # deferred - import cycle
+                    _lr("PRE", session_id=session_id,
+                        event_detail="complexity_pre_skip_system_injected",
+                        task_id=task_id, level=level)
+                except Exception:  # noqa: BLE001
+                    pass
                 route_complex = False
             _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "off").strip().lower()
             if dh_backend != "heuristic":
