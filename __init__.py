@@ -1564,7 +1564,12 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     "task (producer=%s, route_id=%s). Advisory and NON-BINDING: it "
                     "suggests; it does not have to be followed. Use what helps — result "
                     "shape, watch-fors, pitfalls, known good solutions, failure signs. "
-                    "Then write your own turn.]\n%s"
+                    "Then write your own turn.\n"
+                    "INTEGRATION CONTRACT: the user asked a question and awaits THE ANSWER. "
+                    "Do NOT reproduce, summarize, reformat, or acknowledge this brief in "
+                    "your reply - quoting it back is a contract violation. Your next turn "
+                    "must answer the user's actual ask, doing any tool work it needs; the "
+                    "brief is silent guidance only.]\n%s"
                     % (envelope.get("producer"), envelope.get("route_id"),
                        str(envelope.get("answer") or ""))
                 )
