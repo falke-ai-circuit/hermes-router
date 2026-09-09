@@ -249,7 +249,17 @@ def park_anchor_banner(session_id: str, banner_text: str) -> None:
     try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
-        _ANCHOR_BANNERS[str(session_id or "")] = str(banner_text or "")[:MAX_BANNER_CHARS]
+        sid = str(session_id or "")
+        txt = str(banner_text or "")[:MAX_BANNER_CHARS]
+        # Spend visibility (Goran 2026-09-09): multiple frontier/uncensored
+        # calls in ONE turn must ALL be visible — accumulate with separator
+        # (bounded 3x) instead of overwriting the parked banner.
+        prev = _ANCHOR_BANNERS.get(sid, "")
+        if prev and txt and txt not in prev:
+            combined = (prev + chr(10) + txt)[:MAX_BANNER_CHARS * 3]
+            _ANCHOR_BANNERS[sid] = combined
+        else:
+            _ANCHOR_BANNERS[sid] = txt
     except Exception:  # noqa: BLE001
         pass
 

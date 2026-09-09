@@ -295,6 +295,24 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
                 % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
         stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)
+        # Spend visibility (Goran 2026-09-09): EVERY frontier call must emit a
+        # banner so call loops / burn are user-visible. Park one for this
+        # session's next delivery (same one-shot path as anchor banners).
+        try:
+            from . import debug_banner as _dbg
+
+            if _dbg.debug_banner_enabled():
+                _base = str(getattr(ep, "base_url", "") or "")
+                _host = _base.split("://", 1)[-1].split("/", 1)[0] if _base else ""
+                _banner = _dbg.format_banner(
+                    lane="frontier-anchor", trigger="completion_audit",
+                    model=str(getattr(ep, "model", "") or ""), endpoint=_host,
+                    tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
+                    retries=0, task_id="", session_id=session_id)
+                if _banner:
+                    _dbg.park_anchor_banner(session_id, _banner)
+        except Exception:  # noqa: BLE001 — banner must never break audit
+            pass
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))
     finally:
