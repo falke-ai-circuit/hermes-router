@@ -28,6 +28,7 @@ pass-through. Never raises into middleware.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -352,6 +353,87 @@ def _novel_text(tool_result_text: str, prog: Dict[str, Any], seen: set) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _int_knob(name: str, default: int) -> int:
+    """Top-level router-section int knob via config_access (live-read,
+    dual-section hermes_router -> uncensored_router). Never raises."""
+    try:
+        from . import config_access
+        return int((config_access.router_section() or {}).get(name, default))
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def pre_cooldown_seconds() -> int:
+    """pre_cooldown_seconds (int, default 600, 0=off). Never raises."""
+    try:
+        return max(0, _int_knob("pre_cooldown_seconds", 600))
+    except Exception:  # noqa: BLE001
+        return 600
+
+
+def post_audit_min_turns() -> int:
+    """post_audit_min_turns (int, default 3, 1 = current behavior). Never raises."""
+    try:
+        return max(1, _int_knob("post_audit_min_turns", 3))
+    except Exception:  # noqa: BLE001
+        return 3
+
+
+# ---------------------------------------------------------------------------
+# Router tuning A1 (2026-09-09, Goran: "consults must be periodic, not
+# per-turn") — VERIFY-CLASS EXEMPT: short imperative confirm/status asks skip
+# PRE orientation entirely. Override ("anchor this") beats the exempt.
+# ---------------------------------------------------------------------------
+
+_VERIFY_CLASS_MAX_CHARS = 60
+# imperative-confirm shape
+_VERIFY_IMPERATIVE_RE = re.compile(
+    r"^(?:can you\s+)?(?:confirm|check|verify|is\s+|what\s+is\b|status\b|put\s+all\s+on\b|set\s+)"
+    r"|^(?:can you confirm\b)"
+    r"|\bis\s+.{0,40}?\b(?:ok|on|active|enabled)\b",
+    re.IGNORECASE,
+)
+# absence of analysis dims — any hit disqualifies the exempt
+_VERIFY_ANALYSIS_DIMS_RE = re.compile(
+    r"\b(?:why|how|design|compare|analyz\w+|analyse\w+|explain|tradeoffs?|better|deep|approach|think|help me)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_verify_class_exempt(user_text: str) -> bool:
+    """True when the ask is a short imperative confirm/status check that must
+    skip PRE orientation. Pure text-in/bool-out; fail-open False (=> consult
+    fires = current behavior). Never raises."""
+    try:
+        t = str(user_text or "").strip()
+        if not t or len(t) >= _VERIFY_CLASS_MAX_CHARS:
+            return False
+        if _VERIFY_ANALYSIS_DIMS_RE.search(t):
+            return False
+        return bool(_VERIFY_IMPERATIVE_RE.search(t))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pre_cooldown_active(session_id: str, task_id: str = "") -> bool:
+    """True when a real staged orientation consult fired for this session
+    within the cooldown window. Fail-open False (missing/unreadable state =>
+    consult fires). Same task_id is exempt (one-consult-per-turn dedup
+    semantics preserved); cooldown never applies to override_anchor."""
+    try:
+        window = pre_cooldown_seconds()
+        if window <= 0:
+            return False
+        ts, staged_task = state.last_staged_consult(session_id)
+        if ts is None:
+            return False
+        if task_id and staged_task and task_id == staged_task:
+            return False  # same (session, task) re-fire — dedup path owns it
+        return (time.time() - ts) < window
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _complexity_cfg() -> Dict[str, Any]:
     """Read the complexity block from the plugin config (hermes_router
     canonical first, legacy uncensored_router fallback — same dual-section
@@ -638,6 +720,20 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         if override == "skip":
             return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None, "override_skip", override)
 
+        # Router tuning A2 (2026-09-09): PRE cooldown — after step-0 override
+        # handling (override beats cooldown, per dispatch brief).
+        if _pre_cooldown_active(session_id, task_id) and override != "anchor":
+            try:
+                from hermes_router import _log_route as _lr  # deferred - import cycle
+                _cool_ts, _ = state.last_staged_consult(session_id)
+                _since = int(time.time() - _cool_ts) if _cool_ts else -1
+                _lr("PRE", session_id=session_id,
+                    event_detail="pre_cooldown_active", since=_since,
+                    task_id=task_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None, "pre_cooldown_skip")
+
         # v3.3.0 F3 — infra suppression guard, AFTER step-0 override handling
         # (an explicit "anchor this" must never be swallowed by a cooldown).
         # The guard body lives in _infra_cooldown_skip() — Phase-2 plumbing,
@@ -667,6 +763,20 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     _lr("PRE", session_id=session_id,
                         event_detail="complexity_pre_skip_system_injected",
                         task_id=task_id, level=level)
+                except Exception:  # noqa: BLE001
+                    pass
+                route_complex = False
+            # Router tuning A1 (2026-09-09): verify-class exempt — short
+            # imperative confirm/status asks skip PRE orientation entirely.
+            # Override ("anchor this") beats the exempt (checked at step 0,
+            # and re-guarded here so an exempt-class text carrying an explicit
+            # override line still anchors).
+            elif (_is_verify_class_exempt(user_text) and override != "anchor"):
+                try:
+                    from hermes_router import _log_route as _lr  # deferred - import cycle
+                    _lr("PRE", session_id=session_id,
+                        event_detail="verify_class_exempt",
+                        pattern_groups="clear_simple", task_id=task_id)
                 except Exception:  # noqa: BLE001
                     pass
                 route_complex = False

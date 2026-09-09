@@ -851,6 +851,17 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                            model_target=_decision.model_target, reason=_decision.reason,
                            override_used=_decision.override_used, route_id=_decision.route_id,
                            content_chars=len(content), session_id=session_id)
+                # Router tuning A2 (2026-09-09): record the last real staged
+                # orientation consult per session for the PRE cooldown gate.
+                # Cooldown never applies to override_anchor / shadow lanes
+                # (only complexity_orientation consults set the timestamp).
+                if _decision.reason == "complexity_orientation":
+                    try:
+                        from . import state as _state
+                        _state.record_staged_consult(session_id, _decision.ts,
+                                                     task_id=_decision.task_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                 try:
                     router_tools.count("anchor_route_fired")
                 except Exception:  # noqa: BLE001
@@ -1167,15 +1178,56 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 if isinstance(context, dict) else None) \
                             or state.get_last_seen(session_id) or ""
                         if _ask.strip():
-                            _ok, _why = _ca.eligible(session_id, _ask, response_text, model)
-                            _log_route("POST", event_detail="completion_audit_gate",
-                                       ok=_ok, reason=_why, session_id=session_id)
-                            if _ok:
-                                _ca.run_completion_audit(session_id, _ask,
-                                                         response_text,
-                                                         context.get("request")
-                                                         if isinstance(context, dict) else None,
-                                                         model)
+                            # Router tuning A3 (2026-09-09): POST every-N gate.
+                            # Counter increments on each gate evaluation where
+                            # the response passes the >=500-char threshold.
+                            # Audit fires when counter % N == 0, or when the
+                            # turn involved >= 3 tool calls (cheap count only).
+                            # N=1 => current behavior. Fail-open: any problem
+                            # => fire (current behavior).
+                            try:
+                                from . import router_core as _rc
+                                _min_turns = _rc.post_audit_min_turns()
+                            except Exception:  # noqa: BLE001
+                                _min_turns = 3
+                            _turn_n = 0
+                            try:
+                                _turn_n = state.bump_substantive_turn(session_id)
+                            except Exception:  # noqa: BLE001
+                                _turn_n = 0
+                            _fire_by_count = bool(
+                                _min_turns <= 1 or
+                                (_turn_n > 0 and _turn_n % _min_turns == 0))
+                            if not _fire_by_count:
+                                try:
+                                    _req_ctx = context.get("request") \
+                                        if isinstance(context, dict) else None
+                                    _tool_calls = 0
+                                    if isinstance(_req_ctx, dict):
+                                        _msgs_ctx = _req_ctx.get("messages")
+                                        if isinstance(_msgs_ctx, list):
+                                            _tool_calls = sum(
+                                                1 for _m in _msgs_ctx
+                                                if isinstance(_m, dict)
+                                                and _m.get("role") == "tool")
+                                except Exception:  # noqa: BLE001
+                                    _tool_calls = 0
+                                _fire_by_count = _tool_calls >= 3
+                            if _fire_by_count:
+                                _ok, _why = _ca.eligible(session_id, _ask, response_text, model)
+                                _log_route("POST", event_detail="completion_audit_gate",
+                                           ok=_ok, reason=_why, session_id=session_id,
+                                           turn=_turn_n, of=_min_turns)
+                                if _ok:
+                                    _ca.run_completion_audit(session_id, _ask,
+                                                             response_text,
+                                                             context.get("request")
+                                                             if isinstance(context, dict) else None,
+                                                             model)
+                            else:
+                                _log_route("POST", event_detail="audit_gate_skip",
+                                           turn=_turn_n, of=_min_turns,
+                                           session_id=session_id)
                 except Exception:  # noqa: BLE001 — audit must never break delivery
                     logger.debug("completion audit gate error", exc_info=True)
                 # Benign delivery — §10.4: consume any parked frontier-anchor

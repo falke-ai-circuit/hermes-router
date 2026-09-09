@@ -23,7 +23,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("hermes_router.persona")
 
@@ -43,7 +43,7 @@ _SOUL_ROW_MARKERS = (
 _SOUL_SECTION_MARKERS = ("character", "voice", "line", "doctrine", "closed")
 
 _memo: Dict[str, Tuple[float, str]] = {}   # path -> (loaded_mtime, content)
-_card_cache: Dict[str, Tuple[float, str]] = {}  # "" -> (built_at, card)
+_card_cache: Dict[Any, Tuple[float, str]] = {}  # key -> (built_at, card)
 
 
 def _hermes_home() -> str:
@@ -127,8 +127,94 @@ def _scrub(text: str) -> str:
     return text
 
 
-def build_persona_context() -> str:
-    """Compact persona card for the routing renderer. Empty string = no card."""
+def _strip_md_headers(text: str) -> str:
+    """Strip markdown header markers from a text slice (B1: identity head).
+    Never raises."""
+    try:
+        lines = []
+        for line in str(text or "").split("\n"):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                stripped = stripped.lstrip("#").strip()
+            lines.append(stripped)
+        return "\n".join(lines).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def persona_card_chars_budget() -> int:
+    """persona_card_chars (int, default 2500; 0 = legacy compact card).
+    Enriched-card budget. Reads via config_access (live-read, dual-section).
+    Never raises."""
+    try:
+        from . import config_access
+        return int((config_access.router_section() or {}).get("persona_card_chars", 2500))
+    except Exception:  # noqa: BLE001
+        return 2500
+
+
+def _build_enriched_persona_context(budget: int, messages: Optional[list] = None) -> str:
+    """Enriched persona card (B1, 2026-09-09): compact card + role line from
+    profile IDENTITY.md head (first 1200 chars, markdown headers stripped) +
+    current-task line (thread digest head). Budget-bounded, TTL-cached like
+    the compact card. Fail-open: any read problem => falls back to the
+    compact card. Never raises."""
+    try:
+        home = _hermes_home()
+        key = (home, budget, bool(messages))
+        now = time.time()
+        cached = _card_cache.get(key)
+        if cached and now - cached[0] < PERSONA_CACHE_TTL:
+            return cached[1]
+        card = _build_compact_persona_context()
+        if budget <= 0:
+            return card
+        ident_head = _strip_md_headers(_read_slice(
+            os.path.join(home, "IDENTITY.md"), 1200)) if home else ""
+        task_line = ""
+        if isinstance(messages, list):
+            try:
+                digest = build_thread_digest(messages, max_chars=600)
+                if digest:
+                    task_line = digest.strip().split("\n")[0][:600]
+            except Exception:  # noqa: BLE001
+                task_line = ""
+
+        parts = [card.strip()] if card.strip() else []
+        if ident_head:
+            parts.append("=== ROLE ===\n" + ident_head)
+        if task_line:
+            parts.append("=== CURRENT TASK ===\n" + task_line)
+        enriched = "\n\n".join(parts)
+        if len(enriched) > budget:
+            enriched = enriched[:budget] + "\n[card truncated]"
+        enriched = _scrub(enriched)
+        logger.info("persona_card_enriched chars=%d budget=%d", len(enriched), budget)
+        _card_cache[key] = (now, enriched)
+        return enriched
+    except Exception:  # noqa: BLE001
+        return build_persona_context()
+
+
+def build_persona_context(messages: Optional[list] = None) -> str:
+    """Persona card for the routing renderer. Empty string = no card.
+    B1 (2026-09-09): when persona_card_chars > 0, returns the ENRICHED card
+    (compact + identity head + current-task line) bounded by the knob;
+    persona_card_chars=0 => legacy compact behavior. Never raises."""
+    try:
+        budget = persona_card_chars_budget()
+    except Exception:  # noqa: BLE001
+        budget = 0
+    if budget > 0:
+        try:
+            return _build_enriched_persona_context(budget, messages)
+        except Exception:  # noqa: BLE001
+            pass
+    return _build_compact_persona_context()
+
+
+def _build_compact_persona_context() -> str:
+    """Compact persona card (legacy 634c behavior, persona_card_chars=0)."""
     home = _hermes_home()
     key = home
     now = time.time()

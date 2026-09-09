@@ -222,6 +222,11 @@ def test_pre_middleware_logs_consult_deduped(monkeypatch):
 
 def test_pre_middleware_second_new_ask_routes_normally(monkeypatch):
     """A different ask in the same session is NOT blocked by the marker."""
+    # Router tuning 2026-09-09: this test asserts the DEDUP marker contract,
+    # not cooldown semantics — pin the cooldown off so the new default-on
+    # knob doesn't suppress the second ask before dedup is exercised
+    # (cooldown behavior is covered by test_router_tuning.py).
+    monkeypatch.setattr(router_core, "pre_cooldown_seconds", lambda: 0)
     req1 = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     plugin.on_llm_request(request=req1, original_request=req1, session_id="s6")
     router_core.pending_model_swap("s6")

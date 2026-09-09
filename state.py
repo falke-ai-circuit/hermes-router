@@ -23,7 +23,7 @@ import hashlib
 import threading
 import time
 from collections import deque
-from typing import Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Optional, Tuple
 
 PendingKey = Tuple[str, str]
 LoopGuardKey = Tuple[str, str, str]
@@ -191,3 +191,85 @@ def clear() -> None:
         _LAST_USER_MSG.clear()
     with _LAST_SEEN_LOCK:
         _LAST_SEEN.clear()
+    # Router-tuning 2026-09-09: per-session gated-consult state
+    with _SESSION_STATE_LOCK:
+        _SESSION_STATE.clear()
+    with _TURN_COUNTER_LOCK:
+        _TURN_COUNTERS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Router tuning (2026-09-09, Goran-approved dispatch): per-session state for
+# frequency gating — PRE cooldown timestamps + POST audit substantive-turn
+# counters. In-process, fail-open everywhere (missing/unreadable state =>
+# consult/audit fires = current behavior).
+# ---------------------------------------------------------------------------
+
+_SESSION_STATE_LOCK = threading.Lock()
+_SESSION_STATE: Dict[str, Dict[str, Any]] = {}  # session_id -> {"last_staged_ts": float, ...}
+_SESSION_STATE_MAX = 512
+
+_TURN_COUNTER_LOCK = threading.Lock()
+_TURN_COUNTERS: Dict[str, int] = {}  # session_id -> substantive-turn count
+
+
+def _session_state(session_id: str) -> Dict[str, Any]:
+    """Get-or-create the per-session state dict. Never raises."""
+    try:
+        sid = session_id or ""
+        with _SESSION_STATE_LOCK:
+            entry = _SESSION_STATE.get(sid)
+            if entry is None:
+                entry = {}
+                _SESSION_STATE[sid] = entry
+                # bounded: drop oldest beyond cap
+                if len(_SESSION_STATE) > _SESSION_STATE_MAX:
+                    for k in list(_SESSION_STATE)[: len(_SESSION_STATE) - _SESSION_STATE_MAX]:
+                        _SESSION_STATE.pop(k, None)
+            return entry
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def record_staged_consult(session_id: str, ts: Optional[float] = None,
+                          task_id: str = "") -> None:
+    """Record when a real staged PRE consult last fired for this session.
+    Never raises. No-op when state is unusable (fail-open => consult fires)."""
+    try:
+        entry = _session_state(session_id)
+        entry["last_staged_ts"] = float(ts if ts is not None else time.time())
+        entry["last_staged_task_id"] = str(task_id or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def last_staged_consult(session_id: str) -> Tuple[Optional[float], str]:
+    """(timestamp, task_id) of the last staged PRE consult for this session.
+    (None, "") also on missing/unreadable state (fail-open)."""
+    try:
+        entry = _session_state(session_id)
+        ts = entry.get("last_staged_ts")
+        return ((float(ts) if ts is not None else None),
+                str(entry.get("last_staged_task_id") or ""))
+    except Exception:  # noqa: BLE001
+        return None, ""
+
+
+def bump_substantive_turn(session_id: str) -> int:
+    """Increment + return the substantive-turn counter for this session.
+    Never raises; 0 on any problem (fail-open)."""
+    try:
+        sid = session_id or ""
+        with _TURN_COUNTER_LOCK:
+            _TURN_COUNTERS[sid] = _TURN_COUNTERS.get(sid, 0) + 1
+            return _TURN_COUNTERS[sid]
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def substantive_turn_count(session_id: str) -> int:
+    """Current substantive-turn counter (no increment). Never raises."""
+    try:
+        return int(_TURN_COUNTERS.get(session_id or "", 0))
+    except Exception:  # noqa: BLE001
+        return 0

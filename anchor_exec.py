@@ -245,6 +245,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         payload.pop("_moa_prepared_request", None)
         payload.pop("timeout", None)
         payload["model"] = endpoint.model
+        # Goran 09-09: anchor thinking effort from config (anchor_chain.reasoning_effort)
+        try:
+            from . import config_access as _ca
+            _eff = (_ca.sub_block("anchor_chain") or {}).get("reasoning_effort")
+            if isinstance(_eff, str) and _eff.strip():
+                payload["reasoning_effort"] = _eff.strip()
+        except Exception:  # noqa: BLE001 — config read must never break anchor
+            pass
 
         # System sanitization: frontier anchor gets a neutral task frame, never
         # the flash profile's DNA-persona system prompt (content-filter bait).
@@ -332,9 +340,22 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         return None, None, None, None
 
 
+def orientation_ask_cap() -> int:
+    """orientation_ask_cap (int, default 4000 = SUBSTANCE_FRAME_ASK_CAP).
+    Char cap on the verbatim ask inside the orientation-brief frame.
+    Reads via config_access (live-read, dual-section). Never raises."""
+    try:
+        from . import config_access
+        v = int((config_access.router_section() or {}).get("orientation_ask_cap", 4000))
+        return v if v > 0 else 4000
+    except Exception:  # noqa: BLE001
+        return 4000
+
+
 def _bounded_replay_cfg() -> Dict[str, Any]:
     """anchor_chain.bounded_replay block (dual-section reader via router_core).
-    Defaults: enabled=True, mode=bounded, last_n_turns=12, keep_system=True,
+    Defaults: enabled=True, mode=bounded, last_n_turns=24 (2026-09-09 bump
+    from 12, Goran dispatch B3), keep_system=True,
     max_input_tokens=120000. Never raises."""
     try:
         from . import router_core
@@ -342,12 +363,12 @@ def _bounded_replay_cfg() -> Dict[str, Any]:
         block = dict(cfg) if isinstance(cfg, dict) else {}
         return {
             "enabled": bool(block.get("enabled", True)),
-            "last_n_turns": max(2, int(block.get("last_n_turns", 12))),
+            "last_n_turns": max(2, int(block.get("last_n_turns", 24))),
             "max_input_tokens": max(8000, int(block.get("max_input_tokens", 120000))),
             "summary_header": bool(block.get("summary_header", True)),
         }
     except Exception:  # noqa: BLE001
-        return {"enabled": True, "last_n_turns": 12,
+        return {"enabled": True, "last_n_turns": 24,
                 "max_input_tokens": 120000, "summary_header": True}
 
 
@@ -450,7 +471,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             "3. Common pitfalls and known good solutions.\n"
                             "4. What to avoid.\n"
                             "5. How failure would look like (early-warning signs).\n"
-                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n" + _orig[:4000]
+                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n" + _orig[:orientation_ask_cap()]
                         )
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         api_kwargs["messages"] = _msgs

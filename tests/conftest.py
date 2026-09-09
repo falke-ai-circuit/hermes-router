@@ -201,6 +201,7 @@ def _isolate_router_config(monkeypatch, request):
     from hermes_router import debug_banner as _dbg
     from hermes_router import provenance_footer as _pf
     from hermes_router import router_core as _rc
+    from hermes_router import persona_card as _pcard
 
     marker = request.node.get_closest_marker("live_router_config")
     if marker:
@@ -214,5 +215,14 @@ def _isolate_router_config(monkeypatch, request):
     monkeypatch.setattr(_dbg, "_LAST_GOOD_SECTION", {}, raising=False)
     monkeypatch.setattr(_rc, "_complexity_cfg", lambda: {}, raising=True)
     monkeypatch.setattr(_pf, "higher_self_rule_enabled", lambda: False, raising=True)
+    # 2026-09-09 leak fix: fleet config sets provenance_footer: true, which
+    # appended live footers to every exact-delivery assertion (45 failures).
+    # Same isolation class as the debug_banner/higher-self pins above.
+    monkeypatch.setattr(_pf, "provenance_footer_enabled", lambda: False, raising=True)
+    # 2026-09-09 router-tuning knobs: pin to legacy behavior unless the test
+    # enables them explicitly (same isolation class as the pins above).
+    monkeypatch.setattr(_pcard, "persona_card_chars_budget", lambda: 0, raising=True)
+    monkeypatch.setattr(_rc, "pre_cooldown_seconds", lambda: 0, raising=True)
+    monkeypatch.setattr(_rc, "post_audit_min_turns", lambda: 1, raising=True)
     yield
     _dbg._LAST_GOOD_SECTION.clear()
