@@ -836,23 +836,33 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             content, session_id=session_id, model=model, uncensored_matched=False,
         )
         if _decision.lane == router_core.LANE_COMPLEXITY:
-            _log_route("PRE", event_detail="anchor_route_fired",
-                       lane=_decision.lane, mode=_decision.mode,
-                       model_target=_decision.model_target, reason=_decision.reason,
-                       override_used=_decision.override_used, route_id=_decision.route_id,
-                       content_chars=len(content), session_id=session_id)
-            try:
-                router_tools.count("anchor_route_fired")
-            except Exception:  # noqa: BLE001
-                pass
-            if _decision.model_target:
-                _staged = router_core.stage_model_swap(session_id, _decision)
-                if _staged is None:
+            # Goran 09-09: the consult event is logged ONLY for a fire that
+            # actually stages (→ calls luna). Deduped re-fires log
+            # consult_deduped below instead. router_tools.count tracks the
+            # same condition so spend metrics match log events.
+            # Goran 09-09: log consult ONLY when it actually stages (the
+            # luna call happens at llm_execution). Deduped re-fires (stage
+            # returns None) log the quiet consult_deduped event instead -
+            # never a second consult-looking anchor_route_fired.
+            _staged = router_core.stage_model_swap(session_id, _decision) if _decision.model_target else None
+            if _staged is not None:
+                _log_route("PRE", event_detail="anchor_route_fired",
+                           lane=_decision.lane, mode=_decision.mode,
+                           model_target=_decision.model_target, reason=_decision.reason,
+                           override_used=_decision.override_used, route_id=_decision.route_id,
+                           content_chars=len(content), session_id=session_id)
+                try:
+                    router_tools.count("anchor_route_fired")
+                except Exception:  # noqa: BLE001
+                    pass
+            if _staged is None:
                     # v3.2.0 one-consult-per-turn: same (session, task) already
                     # staged this turn — a re-fire of the same ask inside one
-                    # multi-provider-call turn. Skip silently on the wire;
-                    # flash proceeds, llm_execution sees no pending swap.
-                    _log_route("PRE", event_detail="swap_already_staged",
+                    # multi-provider-call turn. Goran 09-09: consults are
+                    # logged/bannered ONLY when they actually call the LLM —
+                    # deduped re-fires log a quiet dedicated event, not a
+                    # consult-looking anchor_route_fired.
+                    _log_route("PRE", event_detail="consult_deduped",
                                task_id=_decision.task_id,
                                session_id=session_id)
             return _hs_pass()  # flash proceeds; the anchored call happens at llm_execution

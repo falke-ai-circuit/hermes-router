@@ -197,11 +197,12 @@ def test_swap_done_size_cap():
 
 
 # ---------------------------------------------------------------------------
-# Wiring: PRE logs swap_already_staged on the re-fire
+# Wiring: PRE logs consult_deduped on the re-fire (Goran 09-09: deduped
+# re-fires must not log consult-looking anchor_route_fired events)
 # ---------------------------------------------------------------------------
 
 
-def test_pre_middleware_logs_swap_already_staged(monkeypatch):
+def test_pre_middleware_logs_consult_deduped(monkeypatch):
     req = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     # First call (provider call 1 of the turn): stages + anchor_route_fired.
     out1 = plugin.on_llm_request(request=req, original_request=req, session_id="s5")
@@ -213,7 +214,7 @@ def test_pre_middleware_logs_swap_already_staged(monkeypatch):
     # Second call on the SAME ingress text (provider call 2 of the turn).
     out2 = plugin.on_llm_request(request=req, original_request=req, session_id="s5")
     assert out2 == {}  # flash proceeds normally (fail-open)
-    skips = [f for _, f in LOGGED if f.get("event_detail") == "swap_already_staged"]
+    skips = [f for _, f in LOGGED if f.get("event_detail") == "consult_deduped"]
     assert len(skips) == 1
     assert skips[0]["session_id"] == "s5"
     assert skips[0]["task_id"] == router_core.task_id_for("s5", PLAN_ASK, "m")
@@ -228,7 +229,7 @@ def test_pre_middleware_second_new_ask_routes_normally(monkeypatch):
     plugin.on_llm_request(request=req2, original_request=req2, session_id="s6")
     fires = [f for _, f in LOGGED if f.get("event_detail") == "anchor_route_fired"]
     assert len(fires) == 2  # both asks fired (second not suppressed)
-    skips = [f for _, f in LOGGED if f.get("event_detail") == "swap_already_staged"]
+    skips = [f for _, f in LOGGED if f.get("event_detail") == "consult_deduped"]
     assert skips == []
     assert router_core.peek_pending_swap("s6") is not None
     router_core.pending_model_swap("s6")

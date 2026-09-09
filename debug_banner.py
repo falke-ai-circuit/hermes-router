@@ -126,10 +126,20 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         lvl = debug_banner_level() if level is None else max(0, min(3, int(level or 0)))
         lat_s = (" | %ds" % int(lat)) if lat >= 1 else ""
         # L1 (default): compact one-liner (Goran 09-07).
+        # Goran 09-09 ruling: banners show REAL consumption. Providers whose
+        # model is absent from the pricing table (abliteration.ai, venice)
+        # record tokens but cost 0.0 — render "$0.0000*" so zero is never
+        # presented as a true price. Priced calls render the real figure.
+        if cost > 0.0:
+            cost_s = "$%.6f" % cost
+        elif ti > 0 or to > 0:
+            cost_s = "$0.0000*"
+        else:
+            cost_s = "$0.0000"
         banner = (
-            "%s %s | %s | %s @ %s | tok %d/%d | $%.6f%s" % (
+            "%s %s | %s | %s @ %s | tok %d/%d | %s%s" % (
                 BANNER_HEAD, lane.split("-", 1)[0], trig_s, model_s, ep_s,
-                ti, to, cost, lat_s)
+                ti, to, cost_s, lat_s)
         )
         if lvl >= 2:
             ctx = ("task %s" % str(task_id or "-")[:40]) + (

@@ -124,6 +124,15 @@ def record_tokens(lane: str, model: str, session_id: str,
         return False
 
 
+# Public-reference price estimates (USD per 1M tokens) for render-lane
+# models that lack user-configured pricing. OpenRouter/list rates 2026-09;
+# override via config anchor_chain.pricing when the operator knows better.
+_RENDER_PRICE_ESTIMATES: Dict[str, Dict[str, float]] = {
+    "qwen-3-8-27b": {"input_per_1m": 0.18, "output_per_1m": 2.22},
+    "abliterated-model-large-v2": {"input_per_1m": 0.20, "output_per_1m": 0.80},
+}
+
+
 def estimate_cost(model: str, input_tokens: Optional[int],
                   output_tokens: Optional[int]) -> float:
     """Estimate cost from the anchor_chain pricing table (the plugin's only
@@ -135,7 +144,17 @@ def estimate_cost(model: str, input_tokens: Optional[int],
         pricing = anchor_chain.load_anchor_chain().pricing
         prices = pricing.get(str(model or "")) if isinstance(pricing, dict) else None
         if not isinstance(prices, dict):
-            return 0.0
+            # Goran 09-09: render-lane models (abliteration.ai, venice) have
+            # no user-configured pricing — use the public-reference ESTIMATE
+            # table below so banners show real consumption instead of fake
+            # $0.0000. These are public list prices, marked approximate in
+            # the banner via the ledger detail; config anchor_chain.pricing
+            # overrides any entry.
+            ref = _RENDER_PRICE_ESTIMATES.get(str(model or ""))
+            if isinstance(ref, dict):
+                prices = ref
+            else:
+                return 0.0
         it = max(0, int(input_tokens or 0))
         ot = max(0, int(output_tokens or 0))
         cost = (it / 1_000_000.0) * float(prices.get("input_per_1m", 0.0) or 0.0)
