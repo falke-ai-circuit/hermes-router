@@ -385,12 +385,16 @@ def post_audit_min_turns() -> int:
 # PRE orientation entirely. Override ("anchor this") beats the exempt.
 # ---------------------------------------------------------------------------
 
-_VERIFY_CLASS_MAX_CHARS = 60
+_VERIFY_CLASS_MAX_CHARS = 120
 # imperative-confirm shape
 _VERIFY_IMPERATIVE_RE = re.compile(
     r"^(?:can you\s+)?(?:confirm|check|verify|is\s+|what\s+is\b|status\b|put\s+all\s+on\b|set\s+)"
     r"|^(?:can you confirm\b)"
-    r"|\bis\s+.{0,40}?\b(?:ok|on|active|enabled)\b",
+    r"|\bis\s+.{0,40}?\b(?:ok|on|active|enabled)\b"
+    r"|\bconfirm\b.{0,50}?\b(?:please|working|right|now)\b"
+    r"|\b(?:are|is)\s+.{0,30}?\b(?:working|up|fine|good)\b"
+    r"|\bcan youn?confirm\b|\bcan you\s+confirm\b"
+    r"|\bcan y(?:ou|u)\s+(?:confi|confi?r?m|conf[oō]r)[a-z]*\b",
     re.IGNORECASE,
 )
 # absence of analysis dims — any hit disqualifies the exempt
