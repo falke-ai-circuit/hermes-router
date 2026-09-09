@@ -15,6 +15,7 @@ def test_rule_disabled_when_both_off(monkeypatch):
     assert pf.higher_self_rule_enabled() is False
 
 
+@pytest.mark.live_router_config
 def test_rule_enabled_when_either_on(monkeypatch):
     import hermes_router.router_core as rc
 

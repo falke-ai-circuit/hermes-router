@@ -29,6 +29,7 @@ def banner_cfg(monkeypatch):
 # --- the 10-case matrix ----------------------------------------------------
 
 
+@pytest.mark.live_router_config
 def test_1_enabled_emits_banner(banner_cfg):
     banner_cfg["on"] = True
     canonical = "ANSWER"
@@ -62,6 +63,7 @@ def test_3_default_off(banner_cfg, monkeypatch):
     assert db.debug_banner_enabled() is False
 
 
+@pytest.mark.live_router_config
 def test_4_token_budget_enforced(banner_cfg):
     """Knob OFF = zero token cost (no banner); knob ON = banner appended but
     the ANSWER body is never truncated to make room."""
@@ -136,6 +138,7 @@ def test_9_primary_response_unchanged(banner_cfg):
     assert canonical == "The deliverable body.\n\nSecond paragraph."
 
 
+@pytest.mark.live_router_config
 def test_10_no_duplicate_banner_on_repeat(banner_cfg):
     banner_cfg["on"] = True
     text = db.format_banner("uncensored-render", "t", "m", "u", 1, 1, 0.0, 1.0, 0)

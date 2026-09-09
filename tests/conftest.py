@@ -190,3 +190,29 @@ def _aux_hermes_adapter(monkeypatch):
 
     monkeypatch.setattr(_sc, "_hermes_aux_call", _dispatch, raising=True)
     yield
+
+@pytest.fixture(autouse=True)
+def _isolate_router_config(monkeypatch, request):
+    """Pin router config knobs to defaults (banner OFF, higher-self OFF,
+    empty complexity) unless the test requests live-config via the
+    `live_router_config` marker. Root cause fixed (2026-09-09): fleet config
+    (debug_banner:2, pre_mode/audit_mode enabled) leaked into unit tests via
+    _banner_section()/load_config + the _LAST_GOOD_SECTION cache."""
+    from hermes_router import debug_banner as _dbg
+    from hermes_router import provenance_footer as _pf
+    from hermes_router import router_core as _rc
+
+    marker = request.node.get_closest_marker("live_router_config")
+    if marker:
+        yield
+        return
+
+    def _empty_section():
+        return {}
+
+    monkeypatch.setattr(_dbg, "_banner_section", _empty_section, raising=True)
+    monkeypatch.setattr(_dbg, "_LAST_GOOD_SECTION", {}, raising=False)
+    monkeypatch.setattr(_rc, "_complexity_cfg", lambda: {}, raising=True)
+    monkeypatch.setattr(_pf, "higher_self_rule_enabled", lambda: False, raising=True)
+    yield
+    _dbg._LAST_GOOD_SECTION.clear()
