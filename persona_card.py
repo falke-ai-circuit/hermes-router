@@ -147,8 +147,9 @@ def build_persona_context() -> str:
     # refusal-renders even under explicit render mandate). Voice comes from the
     # identity anchor; boundaries belong to the agent, not the uncensored channel.
     try:
-        from hermes_cli.config import load_config as _lc
-        _cfgp = (load_config() or {}).get("hermes_router", {}) if callable(load_config) else {}
+        from . import config_access
+
+        _cfgp = config_access.router_section()
         persona_mode = str(_cfgp.get("persona_mode", os.environ.get("HERMES_ROUTER_PERSONA_MODE", "voice_stems")))
     except Exception:
         persona_mode = os.environ.get("HERMES_ROUTER_PERSONA_MODE", "voice_stems")

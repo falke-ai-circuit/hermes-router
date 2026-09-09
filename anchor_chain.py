@@ -95,12 +95,9 @@ def _custom_providers() -> Dict[str, Dict[str, Any]]:
     """Read providers: {custom: {<name>: {base_url, key_env?, api_key?}}} from
     config — the existing Hermes custom-provider block. {} on any failure."""
     try:
-        from hermes_cli.config import load_config
+        from . import config_access
 
-        cfg = load_config()
-        providers = (cfg or {}).get("providers") if isinstance(cfg, dict) else None
-        custom = (providers or {}).get("custom") if isinstance(providers, dict) else None
-        return custom if isinstance(custom, dict) else {}
+        return config_access.providers_custom()
     except Exception:  # noqa: BLE001
         return {}
 
@@ -155,15 +152,9 @@ def load_anchor_chain() -> AnchorChainCfg:
     legacy uncensored_router fallback — same rule as __init__._cfg). Never
     raises; missing/empty blocks give an empty chain (lane inert)."""
     try:
-        from hermes_cli.config import load_config
+        from . import config_access
 
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-        block = (section or {}).get("anchor_chain") if isinstance(section, dict) else None
+        block = config_access.sub_block("anchor_chain")
         if not isinstance(block, dict):
             return AnchorChainCfg(None, None)
         cap = block.get("daily_cap_usd", DEFAULT_DAILY_CAP_USD)

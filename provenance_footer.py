@@ -115,45 +115,19 @@ def inject_higher_self_rule(request: dict) -> None:
 
 _LAST_GOOD_SECTION: Dict[str, Any] = {}
 
+_LAST_GOOD_SECTION: Dict[str, Any] = {}  # compat shim (was the old cache)
+
 
 def _config_section() -> Dict[str, Any]:
-    """Same dual-read as debug_banner._banner_section (load_config -> profile
-    co-located yaml fallback -> last-good cache). Never raises."""
-    section: Dict[str, Any] = {}
+    """Delegates to config_access.router_section() (v3.8 step-2 consolidation;
+    the old .update() cache merged stale keys across profiles — removed).
+    Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from . import config_access
 
-        cfg = load_config()
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-            if isinstance(section, dict) and section:
-                _LAST_GOOD_SECTION.update(section)
-                return section
+        return config_access.router_section()
     except Exception:  # noqa: BLE001
-        pass
-    if _LAST_GOOD_SECTION:
-        return dict(_LAST_GOOD_SECTION)
-    # Profile-co-located yaml fallback (mirrors debug_banner two-dirname fix)
-    try:
-        import os
-
-        here = os.path.dirname(os.path.abspath(__file__))
-        profile_root = os.path.dirname(os.path.dirname(here))
-        import yaml  # type: ignore
-
-        with open(os.path.join(profile_root, "config.yaml"), "r") as fh:
-            cfg = yaml.safe_load(fh) or {}
-        for key in ("hermes_router", "uncensored_router"):
-            section = cfg.get(key)
-            if isinstance(section, dict) and section:
-                _LAST_GOOD_SECTION.update(section)
-                return section
-    except Exception:  # noqa: BLE001
-        pass
-    return {}
-
+        return {}
 
 def provenance_footer_enabled() -> bool:
     """Knob read: hermes_router.provenance_footer (opt-IN, default FALSE so

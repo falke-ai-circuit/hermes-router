@@ -58,67 +58,33 @@ FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
 
 
 def _banner_section() -> Dict[str, Any]:
-    """Dual-section config read (hermes_router preferred). Never raises.
-    Fallback: when the process-level load_config() yields no router section
-    (e.g. HERMES_HOME resolves to the global home while the plugin runs from
-    a profile tree), read the profile config.yaml co-located with this plugin
-    instance: <profile_root>/config.yaml."""
+    """Dual-section config read — delegates to config_access.router_section()
+    (v3.8 step-2 consolidation). Kept as an alias: router_core imports this
+    name directly. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from . import config_access
 
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-        if isinstance(section, dict) and section:
-            return section
+        return config_access.router_section()
     except Exception:  # noqa: BLE001
-        section = None
-    # Remember the last good section: later calls may run in contexts where
-    # the profile override is lost (thread executors) — reuse the cached one.
-    if isinstance(section, dict) and section:
-        global _LAST_GOOD_SECTION
-        _LAST_GOOD_SECTION = dict(section)
-        return section
-    if _LAST_GOOD_SECTION:
-        return dict(_LAST_GOOD_SECTION)
-    # Profile-co-located fallback (one file read; only on misses).
-    try:
-        import os
-        import yaml
-
-        here = os.path.dirname(os.path.abspath(__file__))   # .../<profile>/plugins/hermes_router
-        profile_root = os.path.dirname(os.path.dirname(here))           # .../<profile>
-        p = os.path.join(profile_root, "config.yaml")
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as fh:
-                cfg2 = yaml.safe_load(fh) or {}
-            for key in ("hermes_router", "uncensored_router"):
-                sec2 = cfg2.get(key)
-                if isinstance(sec2, dict) and sec2:
-                    return sec2
-    except Exception:  # noqa: BLE001
-        pass
-    return {}
+        return {}
 
 
 def debug_banner_level() -> int:
     """debug_banner verbosity: 0=off, 1=one-liner, 2=+context, 3=maximum.
-    Legacy bool values: true->1, false->0. One config lookup. Never raises."""
+    Legacy bool values: true->1, false->0. One config lookup (via
+    config_access). Never raises."""
     try:
         raw = _banner_section().get("debug_banner", False)
         if isinstance(raw, bool):
             return 1 if raw else 0
         if isinstance(raw, (int, float)):
             return max(0, min(3, int(raw)))
-        s = str(raw).strip().lower()
-        if s in ("true", "on", "yes"):
+        sv = str(raw).strip().lower()
+        if sv in ("true", "on", "yes"):
             return 1
-        if s in ("false", "off", "no", ""):
+        if sv in ("false", "off", "no", ""):
             return 0
-        return max(0, min(3, int(float(s))))
+        return max(0, min(3, int(float(sv))))
     except Exception:  # noqa: BLE001
         return 0
 
@@ -236,7 +202,6 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
             pass
         return delivery_text if isinstance(delivery_text, str) else ""
 
-_LAST_GOOD_SECTION: Dict[str, Any] = {}
 
 # --- §10.4 anchor-banner delivery parking (one-shot per session) ---
 _ANCHOR_BANNERS: Dict[str, str] = {}

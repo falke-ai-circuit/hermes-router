@@ -53,19 +53,12 @@ _LAST_SCORES_MAX = 10
 
 
 def _decision_head_cfg() -> Dict[str, Any]:
-    """Read decision_head block from the plugin config (hermes_router first,
-    legacy uncensored_router fallback). {} on miss. Never raises."""
+    """decision_head block via config_access.sub_block (v3.8 consolidation —
+    adds the profile co-located fallback this reader previously lacked)."""
     try:
-        from hermes_cli.config import load_config
+        from . import config_access
 
-        cfg = load_config()
-        section = None
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = cfg.get("uncensored_router")
-        block = (section or {}).get("decision_head") if isinstance(section, dict) else None
-        return block if isinstance(block, dict) else {}
+        return config_access.sub_block("decision_head")
     except Exception:  # noqa: BLE001
         return {}
 
