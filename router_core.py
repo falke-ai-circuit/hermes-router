@@ -410,6 +410,11 @@ def _is_verify_class_exempt(user_text: str) -> bool:
     fires = current behavior). Never raises."""
     try:
         t = str(user_text or "").strip()
+        # platform appends <memory-context>...</memory-context> (recalled graph
+        # facts) to the user message — routing verdicts must see the ASK only.
+        _mc = t.find("<memory-context>")
+        if _mc != -1:
+            t = t[:_mc].strip()
         if not t or len(t) >= _VERIFY_CLASS_MAX_CHARS:
             return False
         if _VERIFY_ANALYSIS_DIMS_RE.search(t):

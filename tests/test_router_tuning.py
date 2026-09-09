@@ -249,3 +249,15 @@ def test_per_profile_config_values_honored(tmp_path, monkeypatch):
     assert config_access.router_section()["thread_digest_chars"] == 8888
     assert config_access.router_section()["thread_digest_asks"] == 9
     config_access.reset_cache()
+
+
+def test_verify_exempt_strips_memory_context():
+    """Platform appends <memory-context> to user messages; exempt must judge the ask only."""
+    from hermes_router import router_core
+    ask = "Can you confirm your tools are working right now? Just say yes."
+    wrapped = ask + "\n\n<memory-context>\n[System note: recalled facts]\n- IS: something long\n</memory-context>"
+    assert router_core._is_verify_class_exempt(wrapped) is True
+    # and the ingress strip in __init__ path: complex analysis ask with memory noise still routes complex
+    cplx = "dig deeper into the walk weights and help me think through the design"
+    wrapped2 = cplx + "\n\n<memory-context>\nnoise\n</memory-context>"
+    assert router_core._is_verify_class_exempt(wrapped2) is False

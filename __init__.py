@@ -826,6 +826,16 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # leaving get_last_seen() empty at POST → completion-audit gate saw
         # ask_len=0 and silently skipped every complexity-routed turn.
         state.record_last_seen(session_id, content)
+        # Router tuning (2026-09-09): the platform appends a <memory-context>
+        # block (recalled graph facts) to the user message. Routing decisions
+        # (task_id hashing, complexity classify, verify-exempt) must judge the
+        # ASK, not ask+memory-noise. Strip once at ingress; DB rows untouched.
+        try:
+            _mc = content.find("<memory-context>")
+            if _mc != -1:
+                content = content[:_mc].rstrip()
+        except Exception:
+            pass
         # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
         # ingress text. Runs BEFORE the uncensored classification; uncensored
         # matching still happens below and stays byte-identical. When the
