@@ -1583,6 +1583,18 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                        envelope.get("limitations"), str(envelope.get("answer") or ""))
                 )
             msgs.append({"role": "assistant", "content": advisory})
+            # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
+            # after the advisory envelope, explicitly instruct the main model to
+            # PROCEED with the task. Higher-self produced the data; the main model
+            # must now do the work and answer the user.
+            msgs.append({"role": "user", "content": (
+                "[HIGHER-SELF SEAM | PLATFORM-INTERNAL | USER-INVISIBLE]\n"
+                "Your higher self has completed its pre-work reflection above and "
+                "handed the task back to you. PROCEED NOW: do the actual work with "
+                "your tools and write the response the user is waiting for. Do not "
+                "restate the reflection, do not ask permission to continue, and do "
+                "not output any marked text to the user."
+            )})
         # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
         # (session, task) — after envelope delivery, before next_call.
         router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))

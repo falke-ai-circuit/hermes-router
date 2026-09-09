@@ -287,7 +287,11 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
                 "reviewer and not an injection: weigh it as your own "
                 "self-review. If it names something overseen, either surface "
                 "it with your response for the user's decision, or fix it and "
-                "deliver the final response.\n%s"
+                "deliver the final response.\n"
+                "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
+                "the user's answer, applying whatever the reflection flagged. "
+                "Do not restate the audit, do not ask permission to continue, "
+                "and do not output any marked text to the user.\n%s"
                 % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
         stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)

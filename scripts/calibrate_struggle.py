@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """calibrate_struggle.py — F4 retro-calibration harness (v3.3.0 Phase 1).
 
-Replays route-log events through the F1 struggle classifier to produce
+Replays route-log events to produce
 per-profile infra/reasoning/ambiguous counts. READ-ONLY: never writes
 config, never imports the gateway stack (pure log parser + classifier).
 
@@ -230,45 +230,6 @@ def _evidence_to_reason_code(ev: Dict[str, Any], fields: Dict[str, str]) -> str:
     return "user_struggle_signal"
 
 
-def classify_events(events: List[Dict[str, Any]],
-                    diags: List[Dict[str, Any]]) -> Tuple[Counter, List[Dict[str, Any]]]:
-    """Replay each struggle-relevant route event through classify_struggle.
-    Returns (kind counts, replay rows)."""
-    from hermes_router import struggle_class
-
-    joined = _join_evidence(events, diags)
-    counts: Counter = Counter()
-    rows: List[Dict[str, Any]] = []
-    for idx, ev in enumerate(events):
-        fields = ev["fields"]
-        detail = ev["event_detail"]
-        task_id = fields.get("task_id", "")
-        if detail == "struggle_shadow":
-            # Forward product: classification already computed at emit time.
-            kind = fields.get("kind", "") or "ambiguous"
-            counts[kind] += 1
-            rows.append({"event": detail, "kind": kind, "forward": True,
-                         "ts": ev["ts_raw"], "source": ev["source"]})
-            continue
-        if detail in ("route_skipped", "cap_blocked") and task_id:
-            evidence = joined.get(idx, {})
-            reason_code = _evidence_to_reason_code(evidence, fields)
-            fake_task = "cal:" + (task_id or "anon")
-            kind, _detail_label = struggle_class.classify_struggle(fake_task, reason_code)
-            counts[kind] += 1
-            rows.append({"event": detail, "kind": kind, "forward": False,
-                         "evidence": evidence or {},
-                         "ts": ev["ts_raw"], "source": ev["source"]})
-            continue
-        # struggle never fired for this event — counted, not classified
-        counts["no_struggle_event"] += 1
-    return counts, rows
-
-
-# ---------------------------------------------------------------------------
-# Anchor re-fire suppression candidates (log-only counter, reviewer scope fix)
-# ---------------------------------------------------------------------------
-
 
 def anchor_refire_candidates(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Count anchored_call_failed re-fires per anchor chain identity. Today's
@@ -399,7 +360,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         events = [e for e in events if e.get("ts") is not None and e["ts"] < cutoff]
         diags = [d for d in diags if d.get("ts") is not None and d["ts"] < cutoff]
 
-    counts, rows = classify_events(events, diags)
     refires = anchor_refire_candidates(events)
     sdb = state_db_evidence(args.profiles_root, events)
     backoff_blocked = anchor_backoff_blocked_count(events)
@@ -409,7 +369,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "agent_files": len(agent_files),
         "route_events": len(events),
         "diag_lines": len(diags),
-        "kinds": dict(counts),
+        "kinds": {},  # struggle classifier purged v3.7 — retro-classify removed
         "anchor_refire_candidates": refires[:20],
         "anchor_refire_total_routes": sum(1 for r in refires),
         "anchor_backoff_blocked_total": backoff_blocked,
