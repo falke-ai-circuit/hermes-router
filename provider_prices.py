@@ -78,17 +78,22 @@ def _chain_models_urls() -> Dict[str, str]:
             chain = router_section().get("chain")
         except Exception:  # noqa: BLE001
             chain = None
-        if not isinstance(chain, list):
-            return out
-        for e in chain:
-            if not isinstance(e, dict):
-                continue
-            model = str(e.get("model") or "")
-            chat_url = str(e.get("url") or "")
-            if model and chat_url:
-                out[model] = chat_url.rsplit("/chat/completions", 1)[0] + "/models"
+        if isinstance(chain, list):
+            for e in chain:
+                if not isinstance(e, dict):
+                    continue
+                model = str(e.get("model") or "")
+                chat_url = str(e.get("url") or "")
+                if model and chat_url:
+                    out[model] = chat_url.rsplit("/chat/completions", 1)[0] + "/models"
     except Exception:  # noqa: BLE001
         pass
+    # Nous catalog (Goran 09-09: cost FROM THE PROVIDER). Main workhorse +
+    # flagship lanes bill through nous; its /v1/models carries per-model
+    # pricing. Register the known nous-served models explicitly.
+    nous_models_url = "https://inference-api.nousresearch.com/v1/models"
+    for m in ("z-ai/glm-5.3-flash", "glm-5.3-flash", "openai/gpt-5.6-luna-pro"):
+        out.setdefault(m, nous_models_url)
     return out
 
 
@@ -138,6 +143,15 @@ def _normalize(model: str, data: Dict[str, Any]) -> Optional[Dict[str, float]]:
                 if isinstance(ip, (int, float, str)) and isinstance(cp, (int, float, str)):
                     return {"input_per_1m": float(ip) * 1_000_000.0,
                             "output_per_1m": float(cp) * 1_000_000.0}
+            # nous shape (per-token USD strings, e.g. "0.0000002000")
+            if isinstance(ap, dict) and ("prompt" in ap or "completion" in ap):
+                try:
+                    ip2 = ap.get("prompt", 0)
+                    cp2 = ap.get("completion", 0)
+                    return {"input_per_1m": float(ip2) * 1_000_000.0,
+                            "output_per_1m": float(cp2) * 1_000_000.0}
+                except (TypeError, ValueError):
+                    pass
     except Exception:  # noqa: BLE001
         pass
     return None

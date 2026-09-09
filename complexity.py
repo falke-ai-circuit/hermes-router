@@ -62,6 +62,20 @@ _PLANNING_ARCH: List[str] = [
     # matched). Luna T2 matrix: consequential design validation = auto PRE.
     r"\b(?:is|are)\s+(?:\w+\s+){0,4}?(?:design|architecture|approach|implementation)\s+(?:actually\s+)?optimal\b",
     r"\b(?:deeply|deep)\s+analy\w+\b.{0,100}\b(?:optimal|working as it should|actually working)\b",
+    # Depth/struggle-escalation asks (2026-09-09, Goran live case: analyst
+    # struggling on VANTA - "can you dig deeper", "go on depth and explain" -
+    # never fired frontier; stage-1 only matched architect-verb shapes).
+    # User explicitly asking for depth = consequential thinking request.
+    # Charitable typo coverage per fleet comms doctrine.
+    r"\bdig\s+(?:deeper|deep)\b",
+    r"\bgo\s+(?:on|in|to)\s+depth\b",
+    r"\bgo\s+deeper\b",
+    r"\bmore\s+depth\b",
+    r"\b(?:think|drill)\s+deeper\b",
+    r"\bdeeper\s+(?:dive|analysis|explanation|explain)\b",
+    r"\bhelp\s+(?:me\s+)?think\s+through\b",
+    r"\bhelp\s+(?:me\s+)?evaluate\b",
+    r"\bwhich\s+(?:approach|option|design)\s+(?:is\s+)?better\b",
     # T1 audit/second-opinion/double-check asks (2026-09-08, live case:
     # re-audit asks FP-routed to shadow via recall-text "minors"; audit asks
     # scored 0 complexity signals -> no frontier). Luna T1 matrix: audit-
