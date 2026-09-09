@@ -573,6 +573,38 @@ def _lane_enabled(lane: str) -> bool:
         return True
 
 
+
+
+# ---------------------------------------------------------------------------
+# System-injected-only turns (2026-09-09): platform payloads (async batch
+# results, task-list reminders, context summaries) are NOT user asks. PRE
+# orientation on them produced a brief with nothing to do -> the main model
+# answered the seam itself and the brief leaked to the user (live incident,
+# conductor session 20260909). Skip PRE orientation on these; POST audit
+# and manual anchor remain unaffected.
+
+_SYSTEM_INJECTED_PREFIXES = (
+    "[ASYNC DELEGATION BATCH COMPLETE",
+    "[Your active task list",
+    "[Depth-3 Summary",
+    "[Depth-2 Summary",
+    "[Recent Summary",
+    "[Session Arc Summary",
+    "[Durable Summary",
+    "[OUT-OF-BAND USER MESSAGE",
+    "[System note:",
+)
+
+
+def _is_system_injected_turn(user_text: str) -> bool:
+    """True when the turn input is a platform/system-injected payload.
+    Conservative: checks the leading marker only. Never raises."""
+    try:
+        t = str(user_text or "").lstrip()
+        return any(t.startswith(p) for p in _SYSTEM_INJECTED_PREFIXES)
+    except Exception:  # noqa: BLE001
+        return False
+
 def dispatch(user_text: str, *, session_id: str, model: str = "",
              uncensored_matched: bool = False) -> RouteDecision:
     """SINGLE PRE classification. Order of authority:
@@ -629,6 +661,11 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 dh_backend = decision_head.configured_backend()
             except Exception:  # noqa: BLE001
                 dh_backend = "heuristic"
+            if _is_system_injected_turn(user_text):
+                _log_route("PRE", session_id=session_id,
+                           event_detail="complexity_pre_skip_system_injected",
+                           task_id=task_id, level=_level)
+                route_complex = False
             _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "off").strip().lower()
             if dh_backend != "heuristic":
                 route_complex = decision_head.route(user_text)
