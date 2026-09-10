@@ -119,8 +119,8 @@ def test_audit_frame_higher_self_questions(monkeypatch):
     _reset_audit(monkeypatch)
     msgs = ca._audit_payload("the ask", "work digest", "the response", 2400)
     user_txt = msgs[-1]["content"]
-    for q in ("Unexplored angles", "optimal", "good/bad",
-              "feel", "Soundness"):
+    for q in ("Unexplored angles", "Genuinely good", "better",
+              "feel", "requested"):
         assert q in user_txt
     sys_txt = msgs[0]["content"]
     assert "higher" in sys_txt.lower()

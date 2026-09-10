@@ -529,25 +529,27 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
     parts.append("FINAL RESPONSE ABOUT TO BE DELIVERED:\n" + (response_text or "")[:max_chars])
     parts.append(
-        "This is an internal dialogue: your higher self reviews the work the "
-        "main model just did, the way intuition raises red flags (or a green "
-        "light) after doing something. Cover the domains below. Terse — max 4 "
-        "bullets, each actionable; if everything genuinely feels sound, reply "
-        "exactly NO-FINDINGS.\n"
-        "- Unexplored angles: what was not seen, not tried, not questioned?\n"
-        "- Optimality: what was optimal, what was suboptimal, and why?\n"
-        "- Known good/bad: does this match what is known to work or to fail?\n"
-        "- Feel check: does the work feel correct, or does something feel off?\n"
-        "- Soundness: are conclusions rooted in verifiable facts?"
+        "This is an internal dialogue: your higher self reacts to the "
+        "resolution of the ask — post intuition. PRE intuition warned before "
+        "the work started; you are its counterpart at the end: does what was "
+        "requested intuitively make sense in the final response? Give your "
+        "own take on the situation, not an audit of the model. Terse — max 4 "
+        "bullets, each actionable; if the resolution genuinely feels right, "
+        "reply exactly NO-FINDINGS.\n"
+        "- Requested vs delivered: does what was asked for make sense in the "
+        "last response? Anything requested that is missing?\n"
+        "- Unexplored angles: alternatives or directions not considered?\n"
+        "- Genuinely good: what is solid and should stand?\n"
+        "- Could/should be better: what feels off, thin, or off-target?"
     )
     return [
         {"role": "system",
          "content": ("You are the agent's higher self in internal dialogue with "
-                     "her main model. This is self-reflection and self-critique "
-                     "of completed work — the inner review that happens after "
-                     "doing something, where intuition flags what feels off or "
-                     "confirms what feels right. Speak honestly and directly to "
-                     "her about the work. No tools.\n\n"
+                     "her main model. This is post intuition on the resolution — "
+                     "the counterpart of the pre-work warning. React to the ask "
+                     "and its end result with your own take: what makes sense, "
+                     "what is missing, what is genuinely good, what could be "
+                     "better. Speak honestly and directly to her. No tools.\n\n"
                      + _persona_tailoring())},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
