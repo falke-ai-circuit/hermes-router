@@ -1,3 +1,7 @@
+## 3.8.3 — 2026-09-10 (tiny-probe reasoning_effort fix, valmet live catch)
+
+- anchor_exec: do NOT inject `anchor_chain.reasoning_effort` into tiny-probe payloads (max_tokens < 500: doctor ping, health checks). glm-5.3 with reasoning_effort=max exhausted its reasoning inside a 16-token doctor-ping cap -> finish=length -> empty_response -> agents saw "anchor cal failed" on a healthy chain (valmet, 2026-09-10). Real consults (max_tokens >= 500) unchanged.
+
 ## 3.8.2 — 2026-09-10 (P1-3: on_llm_request god-function extracted into ordered helpers)
 
 - P1-3 COMPLETE: the `on_llm_request` PRE middleware god-function is now a readable

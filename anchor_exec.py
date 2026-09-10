@@ -246,10 +246,17 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         payload.pop("timeout", None)
         payload["model"] = endpoint.model
         # Goran 09-09: anchor thinking effort from config (anchor_chain.reasoning_effort)
+        # v3.8.3 fix (valmet live catch): reasoning_effort is NOT injected for
+        # tiny-payload probes (max_tokens < 500 — doctor ping, health checks).
+        # glm-5.3 with reasoning_effort=max burns its whole budget on reasoning
+        # inside a 16-token cap -> finish=length -> empty_response -> the agent
+        # sees "anchor cal failed" on a perfectly healthy chain.
         try:
             from . import config_access as _ca
             _eff = (_ca.sub_block("anchor_chain") or {}).get("reasoning_effort")
-            if isinstance(_eff, str) and _eff.strip():
+            _mt = payload.get("max_tokens")
+            _tiny_probe = isinstance(_mt, int) and _mt < 500
+            if isinstance(_eff, str) and _eff.strip() and not _tiny_probe:
                 payload["reasoning_effort"] = _eff.strip()
         except Exception:  # noqa: BLE001 — config read must never break anchor
             pass
