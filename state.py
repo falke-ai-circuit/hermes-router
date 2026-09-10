@@ -243,6 +243,67 @@ def record_staged_consult(session_id: str, ts: Optional[float] = None,
         pass
 
 
+# Goran 2026-09-10 deep-consult finding (PRE+POST latency stacking): a single
+# turn must never incur BOTH a PRE frontier consult AND a POST completion
+# audit. Per-turn mutual-exclusion flags (in-memory; a gateway restart
+# naturally clears them — the worst case is one stacked turn, not a leak).
+_PRE_FIRED_TURN: Dict[str, float] = {}
+_POST_AUDITED_TURN: Dict[str, float] = {}
+_TURN_FLAG_TTL = 600.0
+_TURN_FLAG_LOCK = threading.Lock()
+
+
+def _prune_turn_flags(now: float) -> None:
+    for store in (_PRE_FIRED_TURN, _POST_AUDITED_TURN):
+        stale = [k for k, ts in store.items() if now - ts > _TURN_FLAG_TTL]
+        for k in stale:
+            store.pop(k, None)
+
+
+def mark_pre_fired(session_id: str) -> None:
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            _prune_turn_flags(now)
+            _PRE_FIRED_TURN[session_id or ""] = now
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def pre_fired_this_turn(session_id: str, window_s: float = 120.0) -> bool:
+    """True when a PRE consult staged for this session within the last
+    `window_s` seconds — the POST audit stands down (mutual exclusion)."""
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            ts = _PRE_FIRED_TURN.get(session_id or "")
+        return bool(ts and now - ts <= window_s)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def mark_post_audited(session_id: str) -> None:
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            _prune_turn_flags(now)
+            _POST_AUDITED_TURN[session_id or ""] = now
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def post_audited_this_turn(session_id: str, window_s: float = 120.0) -> bool:
+    """True when a POST completion audit ran for this session recently —
+    the PRE lane stands down on the NEXT turn of the same exchange."""
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            ts = _POST_AUDITED_TURN.get(session_id or "")
+        return bool(ts and now - ts <= window_s)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def last_staged_consult(session_id: str) -> Tuple[Optional[float], str]:
     """(timestamp, task_id) of the last staged PRE consult for this session.
     (None, "") also on missing/unreadable state (fail-open)."""

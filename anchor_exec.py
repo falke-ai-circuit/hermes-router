@@ -295,6 +295,17 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
 
         client = OpenAI(base_url=endpoint.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
+        # deep-consult fix (f6): timeout must actually CANCEL the provider
+        # call, not just abandon the wait — otherwise timed-out consults
+        # still bill for full generation. httpx per-request timeout is
+        # enforced by the transport (socket-level), so the underlying
+        # request is torn down when it fires; openai's max_retries=0
+        # prevents silent re-fires. Defensive: fake clients in tests have
+        # no _client — skip silently (fail-open to normal timeout).
+        try:
+            client._client.timeout = httpx.Timeout(float(timeout), connect=10.0)
+        except Exception:  # noqa: BLE001
+            pass
         try:
             resp = client.chat.completions.create(**payload)
         except Exception as _400:

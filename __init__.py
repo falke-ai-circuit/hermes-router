@@ -866,6 +866,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                            model_target=_decision.model_target, reason=_decision.reason,
                            override_used=_decision.override_used, route_id=_decision.route_id,
                            content_chars=len(content), session_id=session_id)
+                # Deep-consult fix (Goran 09-10): PRE+POST mutual exclusion —
+                # mark the PRE fire so the POST completion audit stands down
+                # for this exchange (no double frontier call on one turn).
+                try:
+                    state.mark_pre_fired(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
                 # Goran 2026-09-10: a frontier consult marks a task boundary —
                 # reset the POST every-N audit counter so the cadence counts
                 # turns BETWEEN consults, not absolute turns (interruption-
@@ -1218,6 +1225,22 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 _turn_n = state.bump_substantive_turn(session_id)
                             except Exception:  # noqa: BLE001
                                 _turn_n = 0
+                            # deep-consult fix (audit-of-audit recursion): a
+                            # response that carries router audit artifacts
+                            # (prior verdict envelope / spend banner) is
+                            # router OUTPUT, not agent work — it must not
+                            # count as a substantive turn toward the audit
+                            # cadence, and its text must never enter a
+                            # consult payload.
+                            try:
+                                if _ca._is_audit_artifact(response_text or ""):
+                                    try:
+                                        state.reset_substantive_turn(session_id)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    _turn_n = 0
+                            except Exception:  # noqa: BLE001
+                                pass
                             _fire_by_count = bool(
                                 _min_turns <= 1 or
                                 (_turn_n > 0 and _turn_n % _min_turns == 0))
@@ -1273,11 +1296,34 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                             _meta = None
                                         if _meta and isinstance(_meta, dict):
                                             _note = str(_meta.get("note") or "")
+                                            # In-hook revision pass (Goran-approved
+                                            # 09-10 deep-consult): the verdict must be
+                                            # SEEN AND ACTED ON before delivery — one
+                                            # bounded flash re-call produces the revised
+                                            # response. Fail-open to the draft.
+                                            _delivered = response_text
+                                            _rev_budget = _ca.audit_revision_seconds()
+                                            if _rev_budget > 0 and _note:
+                                                try:
+                                                    _revised = _ca.revise_with_verdict(
+                                                        session_id, _ask, response_text,
+                                                        _note, timeout_s=_rev_budget)
+                                                    if _revised:
+                                                        _delivered = _revised
+                                                except Exception:  # noqa: BLE001
+                                                    pass
                                             _log_route("POST",
                                                        event_detail="completion_audit_sync_applied",
                                                        chars=len(_note),
                                                        budget_s=_sync_budget,
+                                                       revised=(_delivered != response_text),
                                                        session_id=session_id)
+                                            # mark POST audited — PRE stands down
+                                            # next turn (mutual exclusion)
+                                            try:
+                                                state.mark_post_audited(session_id)
+                                            except Exception:  # noqa: BLE001
+                                                pass
                                             # Banner for this consult (Goran: every
                                             # frontier call user-visible) — append
                                             # inline, no park/consume roundtrip.
@@ -1298,7 +1344,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                                         session_id=session_id) or ""
                                             except Exception:  # noqa: BLE001
                                                 _btext = ""
-                                            _out_sync = response_text
+                                            _out_sync = _delivered
                                             if _btext:
                                                 try:
                                                     _out_sync = _dbg.append_banner(
@@ -1306,10 +1352,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                                         _knob_checked=True)
                                                 except Exception:  # noqa: BLE001
                                                     pass
-                                            # Deliver the response WITH the audit
-                                            # verdict as a higher-self envelope the
-                                            # model processes next context-build
-                                            # (advisory; user never sees marker).
                                             return _out_sync
                                     if _topology == "async" or _sync_budget <= 0:
                                         _ca.run_completion_audit(session_id, _ask,

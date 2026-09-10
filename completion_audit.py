@@ -57,6 +57,31 @@ _FIRED: Dict[str, float] = {}
 _FIRED_LOCK = threading.Lock()
 _INFLIGHT: set = set()
 _INFLIGHT_LOCK = threading.Lock()
+# deep-consult fix: keys whose join deadline passed while the worker was
+# still consulting — the worker checks this and DISCARDS its late verdict.
+_LATE_TIMEOUT: set = set()
+
+# deep-consult fix (audit-of-audit recursion): text markers that must never
+# enter a consult payload as agent content — if flash's response/digest
+# carries prior verdict text or spend banners, it's excluded from the digest.
+_AUDIT_ARTIFACT_MARKERS = (
+    "HIGHER-SELF COMPLETION REFLECTION",
+    "HIGHER-SELF ORIENTATION TURN",
+    "router · frontier",
+    "debug_banner",
+)
+
+# Revision-pass budget: the in-hook flash re-call gets its own bounded slice
+# (config complexity.audit_revision_seconds, default 20, clamp 0-60; 0
+# disables the revision pass → verdict delivered as envelope only).
+def audit_revision_seconds() -> float:
+    try:
+        from .router_core import _complexity_cfg
+
+        v = float((_complexity_cfg() or {}).get("audit_revision_seconds") or 20)
+        return max(0.0, min(60.0, v))
+    except Exception:  # noqa: BLE001
+        return 20.0
 
 # ---------------------------------------------------------------- closure ----
 
@@ -222,6 +247,15 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "") -> 
     # skip (prevents self-perpetuation).
     if "COMPLETION AUDIT" in (response_text or "") or "HIGHER-SELF COMPLETION" in (response_text or ""):
         return False, "response_quotes_audit"
+    # deep-consult fix (PRE+POST mutual exclusion): a PRE consult staged for
+    # this exchange → the POST audit stands down (one frontier call per turn).
+    try:
+        from . import state as _st
+
+        if _st.pre_fired_this_turn(session_id):
+            return False, "pre_consult_this_turn"
+    except Exception:  # noqa: BLE001
+        pass
     return True, "ok"
 
 
@@ -260,7 +294,10 @@ def consume_verdict(session_id: str) -> Optional[str]:
 
 def _work_digest(request: Optional[dict], max_chars: int) -> str:
     """Compact work-context digest from the outgoing payload's messages:
-    last tool results + assistant turns before the final response. Terse."""
+    last tool results + assistant turns before the final response. Terse.
+    Deep-consult fix: messages carrying prior audit artifacts (verdicts,
+    banners) are EXCLUDED — audit-of-audit recursion breaks the budget and
+    compounds context."""
     lines: List[str] = []
     try:
         msgs = (request or {}).get("messages") if isinstance(request, dict) else None
@@ -276,6 +313,8 @@ def _work_digest(request: Optional[dict], max_chars: int) -> str:
             content = str(m.get("content") or "")
             if not content.strip():
                 continue
+            if any(marker in content for marker in _AUDIT_ARTIFACT_MARKERS):
+                continue  # audit artifact — never re-enter the consult payload
             if len(lines) >= 8:
                 break
             excerpt = content.strip()[:400].replace("\n", " ")
@@ -283,6 +322,42 @@ def _work_digest(request: Optional[dict], max_chars: int) -> str:
         return "\n".join(reversed(lines))[:budget]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _strip_audit_artifacts(text: str) -> str:
+    """Best-effort removal of router audit artifacts from a string before it
+    is delivered or fed back into a consult payload (deep-consult fix: the
+    spend banner must not persist into conversation history)."""
+    try:
+        out = text
+        for marker in _AUDIT_ARTIFACT_MARKERS:
+            idx = out.find(marker)
+            # cut from the marker to the end of its line (banner/note header)
+            while idx != -1:
+                line_end = out.find("\n", idx)
+                out = out[:idx] + (out[line_end + 1:] if line_end != -1 else "")
+                idx = out.find(marker)
+        return out
+    except Exception:  # noqa: BLE001
+        return text
+
+
+def _is_audit_artifact(text: str) -> bool:
+    try:
+        return any(marker in (text or "") for marker in _AUDIT_ARTIFACT_MARKERS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def substantive_turn_bump(session_id: str) -> int:
+    """Counter bump that does NOT count audit-artifact turns: responses that
+    carry verdict envelopes or banners are router output, not the agent's
+    substantive work (deep-consult fix: audit-of-audit recursion).
+    Falls back to a plain bump when the artifact check is inconclusive."""
+    try:
+        return state.bump_substantive_turn(session_id)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> List[Dict[str, str]]:
@@ -343,42 +418,145 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
 
 def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               request: Optional[dict], model: str = "",
-                              timeout_s: float = 30.0) -> Optional[Dict[str, Any]]:
-    """Sync POST audit (Goran 2026-09-10): run the frontier consult BEFORE
-    the final response is delivered, so the main model processes the
-    higher-self verdict within THIS turn. Returns a dict
-    {note, model, endpoint, tokens_in, tokens_out, cost} for immediate
-    injection + banner, or None on any failure/timeout/NO-FINDINGS —
-    caller then delivers the response unchanged (fail-open).
+                              timeout_s: float = 45.0) -> Optional[Dict[str, Any]]:
+    """Sync POST audit (Goran 2026-09-10, deep-consult hardened): frontier
+    consult completes BEFORE delivery, then a bounded IN-HOOK REVISION PASS
+    re-calls flash with (ask, draft, verdict) so the delivered string is the
+    REVISED response — sync semantics, not annotation. On revision failure,
+    timeout, or NO-FINDINGS the ORIGINAL draft delivers unchanged (fail-open).
 
-    Timeout semantics: a worker thread runs the consult with a socket
-    timeout capped at the sync budget; the caller joins for timeout_s.
-    On join timeout the daemon thread is abandoned (non-blocking sockets
-    are not force-killed in Python) and the response delivers unaudited.
-    Spend/cap guards identical to the async path."""
+    Timeout semantics: worker thread with socket timeout capped at the sync
+    budget; caller joins for timeout_s. On join timeout the daemon thread is
+    abandoned, a `completion_audit_sync_timeout` marker is recorded so a LATE
+    verdict is discarded (no post-hoc annotation of delivered text), and the
+    response delivers unaudited. Dedupe marker is written on COMPLETED
+    consults only — a timed-out audit can re-fire on the task's next turn.
+    """
     key = _fire_marker_key(session_id, ask, model)
-    _mark_fired(key)
+    # once-per-task marker set ONLY on completion (deep-consult fix: a
+    # timeout must not consume the task's one audit)
+    _LATE_TIMEOUT.add(key)
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
-    result: Dict[str, Any] = {"meta": None}
+    result: Dict[str, Any] = {"meta": None, "timed_out": False}
 
     def _worker() -> None:
         meta = _consult_meta(session_id, ask, response_text, request,
                              model, key, socket_timeout=max(10, int(timeout_s)))
+        if key in _LATE_TIMEOUT:
+            # join deadline already passed: discard the late verdict — it
+            # must NOT annotate text the user already read, and must NOT
+            # stash for next turn (post-hoc reflection loop).
+            _log("completion_audit_late_verdict_discarded", session_id=session_id)
+            return
         if meta and meta.get("note"):
             result["meta"] = meta
-            # keep stash in sync so next-turn delivery can't double-fire
-            stash_verdict(session_id, meta["note"])
 
     t = threading.Thread(target=_worker, name="router-completion-audit-sync",
                          args=(), daemon=True)
     t.start()
     t.join(timeout_s)
     if t.is_alive():
+        result["timed_out"] = True
         _log("completion_audit_sync_timeout budget_s=%.0f" % timeout_s,
              session_id=session_id)
         return None
-    return result["meta"]
+    _LATE_TIMEOUT.discard(key)
+    meta = result.get("meta")
+    if meta:
+        _mark_fired(key)  # completed consult consumes the once-per-task audit
+    return meta
+
+
+def revise_with_verdict(session_id: str, ask: str, draft: str,
+                        verdict_note: str, timeout_s: float = 20.0) -> Optional[str]:
+    """In-hook revision pass (deep-consult fix, Goran-approved): one bounded
+    call to the MAIN model (flash lane) with (ask, draft, verdict) → revised
+    response. This is what makes sync blocking meaningful: the delivered
+    string can actually change. Returns the revised text, or None on any
+    failure/timeout — caller then delivers the draft unchanged (fail-open).
+    Never raises. Uses the same provider/model the agent itself runs on, so
+    the rewrite is style-preserving."""
+    try:
+        budget = int(max(10, timeout_s))
+        revised = _flash_revision_call(
+            session_id, ask, draft, verdict_note, socket_timeout=budget)
+        if revised is None or not str(revised).strip():
+            _log("completion_audit_revision_failed reason=empty", session_id=session_id)
+            return None
+        out = str(revised).strip()
+        # sanity: the revision must not be an echo/refusal shell
+        if len(out) < max(200, len(draft) // 10):
+            _log("completion_audit_revision_failed reason=too_short len=%d" % len(out),
+                 session_id=session_id)
+            return None
+        _log("completion_audit_revision_applied chars=%d" % len(out),
+             session_id=session_id)
+        return out
+    except Exception:  # noqa: BLE001
+        logger.debug("revision pass error", exc_info=True)
+        return None
+
+
+def _flash_revision_call(session_id: str, ask: str, draft: str,
+                         verdict_note: str, socket_timeout: int = 20) -> Optional[str]:
+    """Single flash-lane call for the revision pass. Strips audit artifacts
+    from the draft so prior banners/verdicts never re-enter context.
+    Key/provider resolution mirrors the consult core: env → profile dotenv."""
+    try:
+        from . import config_access as _cac
+        from .anchor_exec import _profile_env_value, _PLACEHOLDER_VALUES
+
+        sec = _cac.router_section() or {}
+        model = str(sec.get("model") or "") or "z-ai/glm-5.3-flash"
+        base = (str(sec.get("base_url") or "").strip()
+                or "https://inference-api.nousresearch.com/v1")
+        api_key = ""
+        for env_name in ("NOUS_API_KEY",):
+            val = os.environ.get(env_name, "").strip()
+            if val and val.lower() not in _PLACEHOLDER_VALUES:
+                api_key = val
+                break
+            pval = _profile_env_value(env_name)
+            if pval and pval.lower() not in _PLACEHOLDER_VALUES:
+                api_key = pval
+                break
+        if not api_key:
+            logger.info("completion_audit_revision_skipped reason=no_key")
+            return None
+        prompt = (
+            "You just finished answering the user. Your own higher-self review "
+            "flagged the points below. Produce the FINAL corrected response: "
+            "apply what is right, ignore what is wrong, keep your voice and "
+            "structure. Do not mention the review, do not add meta-commentary. "
+            "If the review is wrong about everything, return the original "
+            "response essentially unchanged.\n\n"
+            "ORIGINAL ASK:\n" + (ask or "")[:4000] + "\n\n"
+            "YOUR DRAFT:\n" + _strip_audit_artifacts(draft or "")[:8000] + "\n\n"
+            "HIGHER-SELF REVIEW POINTS:\n" + (verdict_note or "")[:4000] + "\n\n"
+            "FINAL RESPONSE:"
+        )
+        payload = {"messages": [{"role": "user", "content": prompt}],
+                   "max_tokens": 4000, "temperature": 0.2}
+        from openai import OpenAI
+
+        client = OpenAI(base_url=base, api_key=api_key,
+                        timeout=float(socket_timeout), max_retries=0)
+        try:
+            resp = client.chat.completions.create(model=model, **payload)
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raw = resp.model_dump() if hasattr(resp, "model_dump") else {}
+        choices = raw.get("choices") or []
+        if not choices:
+            return None
+        return ((choices[0] or {}).get("message") or {}).get("content") or None
+    except Exception:  # noqa: BLE001 — revision must never break delivery
+        logger.debug("flash revision call error", exc_info=True)
+        return None
 
 
 def _consult_meta(session_id: str, ask: str, response_text: str,
