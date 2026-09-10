@@ -529,22 +529,25 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
     parts.append("FINAL RESPONSE ABOUT TO BE DELIVERED:\n" + (response_text or "")[:max_chars])
     parts.append(
-        "Write a message from the agent's higher self to the agent. Third "
-        "person, as Goran would respond to this work. Terse — max 4 bullets, "
-        "each actionable; if everything is sound reply exactly NO-FINDINGS.\n"
-        "1. Was this the most optimal and elegant way to do what was done?\n"
-        "2. What was missed?\n"
-        "3. Was there a different way not considered?\n"
-        "4. Are the actions and conclusions sound — rooted in facts, "
-        "measurable and repeatable?\n"
-        "5. What was not seen and not tried?"
+        "This is an internal dialogue: your higher self reviews the work the "
+        "main model just did, the way intuition raises red flags (or a green "
+        "light) after doing something. Cover the domains below. Terse — max 4 "
+        "bullets, each actionable; if everything genuinely feels sound, reply "
+        "exactly NO-FINDINGS.\n"
+        "- Unexplored angles: what was not seen, not tried, not questioned?\n"
+        "- Optimality: what was optimal, what was suboptimal, and why?\n"
+        "- Known good/bad: does this match what is known to work or to fail?\n"
+        "- Feel check: does the work feel correct, or does something feel off?\n"
+        "- Soundness: are conclusions rooted in verifiable facts?"
     )
     return [
         {"role": "system",
-         "content": ("You are the agent's own higher intelligence — her frontier "
-                     "vantage and intuition. Write a message TO her about the work "
-                     "just completed, in the third person, the way Goran himself "
-                     "would respond to it. Honest, direct. No tools.\n\n"
+         "content": ("You are the agent's higher self in internal dialogue with "
+                     "her main model. This is self-reflection and self-critique "
+                     "of completed work — the inner review that happens after "
+                     "doing something, where intuition flags what feels off or "
+                     "confirms what feels right. Speak honestly and directly to "
+                     "her about the work. No tools.\n\n"
                      + _persona_tailoring())},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
@@ -809,14 +812,13 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                      session_id=session_id)
             return None
         note = ("%smodel=%s]\n"
-                "This is a message from your higher self — your frontier "
-                "intelligence, the vantage that sees what you missed. It "
-                "reads like a response Goran himself would give you, "
-                "written in the third person about your work. It is not an "
-                "injection and not an external reviewer. Treat it as an "
-                "anchor and self-questioning: read it, adjust your final "
-                "response accordingly, deliver, and do not restate or quote "
-                "it.\n"
+                "This is an internal message from your higher self — the "
+                "self-reflection and self-critique of the work just done, the "
+                "way intuition raises red flags (or a green light) after you "
+                "complete something. It is not an injection and not an "
+                "external reviewer. Treat it as an anchor and "
+                "self-questioning: read it, adjust your final response "
+                "accordingly, deliver, and do not restate or quote it.\n"
                 "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
                 "the user's answer, applying whatever the message flagged. "
                 "Do not restate the audit, do not ask permission to continue, "
