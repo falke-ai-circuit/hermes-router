@@ -432,13 +432,15 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _fire = _tools >= 3
             except Exception:  # noqa: BLE001
                 pass
-        from hermes_router import _log_route  # deferred — import cycle (lives in __init__)
+        # route-log via module-local helper (never cross-package import:
+        # gateway loads the plugin under a different top-level name and a
+        # hard import here would kill the whole gate silently — live-caught)
         if not _fire:
-            _log_route("POST", event_detail="audit_gate_skip",
+            _log("audit_gate_skip",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
         _ok, _why = eligible(session_id, ask, response_text, model)
-        _log_route("POST", event_detail="completion_audit_gate",
+        _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
                    turn=_turn_n, of=_min_turns, closure=_closure)
         if not _ok:
@@ -469,7 +471,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                         _delivered = _revised
                 except Exception:  # noqa: BLE001
                     pass
-            _log_route("POST", event_detail="completion_audit_sync_applied",
+            _log("completion_audit_sync_applied",
                        chars=len(_note), budget_s=_sync_budget,
                        revised=(_delivered != response_text),
                        session_id=session_id)
