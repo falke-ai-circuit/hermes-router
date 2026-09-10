@@ -1,3 +1,15 @@
+## 3.8.1 — 2026-09-10 (P1 maintenance: refusal_doctrine knob, backoff ledger persistence)
+
+- REFUSAL_DOCTRINE KNOB: the hardcoded always-route ruling (Goran-direct 2026-09-07) is
+  now knob-gated via the router config section `refusal_doctrine`. `always_route`
+  (default) preserves current behavior exactly — all refusals route, the doctrine
+  machinery never runs, aux is never called. `doctrine` re-activates the dead doctrine
+  verdict path: refusals backed by a specific row in the agent's own SOUL/IDENTITY
+  doctrine card are HONORED (pass-through, no route); everything else still routes.
+  `off` is an explicit alias of `always_route`. Fail-open: missing/broken config reads
+  as `always_route`. Existing tests unchanged (default behavior identical).
+- (P1-2) Backoff ledger JSON sidecar persistence — see later entry.
+
 ## 3.6.0-a1 — 2026-09-07 (Phase 0 + debug banner, BLUEPRINT-hermes-router-consult-gates-2026-09-06.md §10/§11 + §12 simplicity amendment)
 ## 3.8.0 — 2026-09-10 (unified audit gate, sync POST audit, higher-self doctrine, mental-model alignment)
 

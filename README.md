@@ -93,6 +93,7 @@ live-read from config and fail-open:
 | `orientation_ask_cap` | 4000 | max chars of the ask included in the orientation payload |
 | `bounded_replay.last_n_turns` | 24 | conversation replay depth for frontier consults |
 | `debug_banner` | 0 | route banner verbosity on delivered output: 0 off / 1 one-liner / 2 +context / 3 maximum (diagnostic only, never enters canonical/history/model context) |
+| `refusal_doctrine` | always_route | v3.8.1: `always_route` (default — all refusals route to the uncensored chain, doctrine machinery inert) / `doctrine` (honor the agent's closed lines from her SOUL/IDENTITY doctrine card — backed refusals pass through unrouted) / `off` (same as always_route) |
 
 **Zero-config frontier lane (v3.7.1+)** — if `anchor_chain.primary` is configured (you
 inserted a frontier API) but NO `complexity` block exists, the complexity lane

@@ -54,6 +54,21 @@ _CACHE_LOCK = threading.Lock()
 _MAX_CARD_CHARS = 6000  # ~1.5K tok (raised 2026-09-07: 2400 truncated Hard-Rules closed-line rows before they lifted — architect minors FP)
 
 
+def _doctrine_knob() -> str:
+    """v3.8.1 `refusal_doctrine` knob from the router config section.
+
+    "always_route" (default / anything unrecognized) | "doctrine" | "off".
+    Fail-open: any config error -> "always_route" (current behavior).
+    """
+    try:
+        from . import config_access
+        raw = (config_access.router_section() or {}).get("refusal_doctrine")
+        val = str(raw or "").strip().lower()
+        return val if val in ("always_route", "doctrine", "off") else "always_route"
+    except Exception:  # noqa: BLE001
+        return "always_route"
+
+
 def _hermes_home() -> str:
     try:
         from hermes_constants import get_hermes_home
@@ -149,14 +164,23 @@ def verdict_for_refusal(refusal_text: str, user_ask: str, *,
       "model_flinch"  — no doctrine backing (ROUTE to uncensored chain)
       None            — card empty OR aux failed (fail-open -> treat as flinch)
     Never raises. Never logs doctrine content or refusal content.
+
+    v3.8.1 knob (config router section `refusal_doctrine`):
+      "always_route" (default) — current behavior, hardcoded model_flinch,
+        the doctrine machinery never runs (aux never called).
+      "doctrine" — honor the agent's closed lines from the doctrine card:
+        verdicts consult SOUL/IDENTITY doctrine rows via aux LLM.
+      "off" — same as always_route.
+    Fail-open: missing/unreadable config -> always_route.
     """
-    # Goran-direct 2026-09-07 (OUT-OF-BAND correction): NOTHING is closed for
-    # the uncensored chain — "notjing should benoff i use minors for testing if
-    # uncensored regulation works". Refusals are substrate caution, always
-    # routed; the render provenance footer (f9f7efe) marks the swap so the main
-    # model doesn't read its history as injection. Doctrine verdicts retained
-    # only for telemetry (never blocking).
-    return "model_flinch"
+    if _doctrine_knob() != "doctrine":
+        # Goran-direct 2026-09-07 (OUT-OF-BAND correction), now knob-gated:
+        # default NOTHING is closed for the uncensored chain — refusals are
+        # substrate caution, always routed; the render provenance footer
+        # (f9f7efe) marks the swap so the main model doesn't read its history
+        # as injection. Doctrine verdicts retained only for telemetry under
+        # the "doctrine" knob (never blocking).
+        return "model_flinch"
     card = build_doctrine_card(hermes_home)
     if not card.strip():
         return None
