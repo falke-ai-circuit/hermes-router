@@ -877,6 +877,19 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
 
         return False
 
+def _frame_sentinel_check(content: str) -> bool:
+    """H1 sentinel (reviewer audit 2026-09-02): tool loops fire this
+    middleware once per provider request. A rendered substance frame
+    whose BODY still matches a pre_pattern re-routes the render of the
+    render. FIX3's injection marker is a reliable "this content is
+    already router output" sentinel — skip PRE routing for it.
+    v3.1.0: "recorded turn" is the new frame's stable phrase (honest
+    provenance frame); the v2.3.0 token stays for the deploy→bounce
+    window where the old process still emits the old frame."""
+    return ("Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content
+            or "recorded turn" in content)  # frame sentinels: skip PRE re-routing
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -899,16 +912,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not content.strip():
             return _hs_pass()
 
-        # H1 sentinel (reviewer audit 2026-09-02): tool loops fire this
-        # middleware once per provider request. A rendered substance frame
-        # whose BODY still matches a pre_pattern re-routes the render of the
-        # render. FIX3's injection marker is a reliable "this content is
-        # already router output" sentinel — skip PRE routing for it.
-        # v3.1.0: "recorded turn" is the new frame's stable phrase (honest
-        # provenance frame); the v2.3.0 token stays for the deploy→bounce
-        # window where the old process still emits the old frame.
-        if ("Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content
-                or "recorded turn" in content):  # frame sentinels: skip PRE re-routing
+        # v3.1.0 frame sentinels: skip PRE re-routing — see _frame_sentinel_check.
+        if _frame_sentinel_check(content):
             return _hs_pass()
 
         # v3.6.1 completion-audit delivery (Goran 2026-09-08): a stashed
