@@ -59,6 +59,8 @@ _INFLIGHT: set = set()
 _INFLIGHT_LOCK = threading.Lock()
 # deep-consult fix: keys whose join deadline passed while the worker was
 # still consulting — the worker checks this and DISCARDS its late verdict.
+# (retired 2026-09-10 — Goran: slow is NOT failed; timed-out sync consults now
+# downgrade to async next-turn delivery instead of being discarded)
 _LATE_TIMEOUT: set = set()
 
 # deep-consult fix (audit-of-audit recursion): text markers that must never
@@ -593,9 +595,6 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     key = _fire_marker_key(session_id, ask, model)
     # once-per-task marker set ONLY on completion (deep-consult fix: a
     # timeout must not consume the task's one audit).
-    # _LATE_TIMEOUT is added ONLY after a join timeout (battery-caught race:
-    # adding it at start made fast workers discard their own healthy verdict
-    # before the parent's post-join discard ran).
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
     result: Dict[str, Any] = {"meta": None, "timed_out": False}
@@ -603,11 +602,29 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     def _worker() -> None:
         meta = _consult_meta(session_id, ask, response_text, request,
                              model, key, socket_timeout=max(10, int(timeout_s)))
-        if key in _LATE_TIMEOUT:
-            # join deadline already passed: discard the late verdict — it
-            # must NOT annotate text the user already read, and must NOT
-            # stash for next turn (post-hoc reflection loop).
-            _log("completion_audit_late_verdict_discarded", session_id=session_id)
+        if result.get("timed_out"):
+            # Goran 2026-09-10: slow is NOT failed. The sync window closed but
+            # the consult kept running — deliver its verdict ASYNC (next turn)
+            # instead of discarding it. Only a provider ERROR wastes the call.
+            if meta and meta.get("note"):
+                stash_verdict(session_id, meta["note"])
+                try:
+                    from . import debug_banner as _dbg
+                    if _dbg.debug_banner_enabled():
+                        _btext = _dbg.format_banner(
+                            lane="frontier-anchor", trigger="completion_audit",
+                            model=str(meta.get("model") or ""),
+                            endpoint=str(meta.get("endpoint") or ""),
+                            tokens_in=meta.get("tokens_in"),
+                            tokens_out=meta.get("tokens_out"),
+                            est_cost=meta.get("cost"), latency_s=timeout_s,
+                            retries=0, task_id="", session_id=session_id) or ""
+                        if _btext:
+                            _dbg.park_anchor_banner(session_id, _btext)
+                except Exception:  # noqa: BLE001
+                    pass
+                _log("completion_audit_downgraded_async delivered=next_turn",
+                     session_id=session_id)
             return
         if meta and meta.get("note"):
             result["meta"] = meta
@@ -618,9 +635,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     t.join(timeout_s)
     if t.is_alive():
         result["timed_out"] = True
-        _LATE_TIMEOUT.add(key)  # late-finishing worker will discard its verdict
-        _log("completion_audit_sync_timeout budget_s=%.0f" % timeout_s,
-             session_id=session_id)
+        _log("completion_audit_sync_timeout budget_s=%.0f downgraded=async"
+             % timeout_s, session_id=session_id)
         return None
     meta = result.get("meta")
     if meta:
@@ -668,7 +684,12 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         from .anchor_exec import _profile_env_value, _PLACEHOLDER_VALUES
 
         sec = _cac.router_section() or {}
-        model = str(sec.get("model") or "") or "z-ai/glm-5.3-flash"
+        # Revision model: the agent's FAST main lane (flash), never the
+        # consult model — the router section's `model` is the frontier
+        # consult target (glm-5.3, reasoning-heavy), which burns the token
+        # budget on thinking and returns content=null → revision_failed
+        # reason=empty (live-caught sid17). Pin flash explicitly.
+        model = "z-ai/glm-5.3-flash"
         base = (str(sec.get("base_url") or "").strip()
                 or "https://inference-api.nousresearch.com/v1")
         api_key = ""
@@ -714,8 +735,19 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         raw = resp.model_dump() if hasattr(resp, "model_dump") else {}
         choices = raw.get("choices") or []
         if not choices:
+            logger.info("completion_audit_revision_failed reason=no_choices")
             return None
-        return ((choices[0] or {}).get("message") or {}).get("content") or None
+        msg0 = (choices[0] or {}).get("message") or {}
+        content = msg0.get("content")
+        if not content or not str(content).strip():
+            # diagnostic: thinking-model starvation (finish=length with only
+            # reasoning output) vs genuine empty — visible in gateway log
+            fr = (choices[0] or {}).get("finish_reason") or "unknown"
+            rc = len(str(msg0.get("reasoning_content") or ""))
+            logger.info("completion_audit_revision_failed reason=empty "
+                        "finish=%s reasoning_chars=%d", fr, rc)
+            return None
+        return content
     except Exception:  # noqa: BLE001 — revision must never break delivery
         logger.debug("flash revision call error", exc_info=True)
         return None
