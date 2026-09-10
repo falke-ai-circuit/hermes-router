@@ -1,4 +1,20 @@
-## 3.8.1 — 2026-09-10 (P1 maintenance: refusal_doctrine knob, backoff ledger persistence)
+## 3.8.2 — 2026-09-10 (P1-3: on_llm_request god-function extracted into ordered helpers)
+
+- P1-3 COMPLETE: the `on_llm_request` PRE middleware god-function is now a readable
+  sequence of 11 ordered module-level helper passes, one commit per block (66a5db4,
+  6f4c3f4, a9e0e50, e213be6, 76cfba2, 1a15a47, 057e3df, f0653de, 40c8a02, d5327b8):
+  1 `_hs_inject_pass` (higher-self rule injection), 2 `_frame_sentinel_check`,
+  3 `_audit_delivery_pass`, 4 `_tap_feed_tool_results` (tool taps), 5
+  `_history_reconcile_pass`, 6 `_strip_memory_context` + `_dispatch_pass`,
+  7 `_clarify_intent_scan`, 8 `_render_with_retry_ladder`, 9 `_debug_banner_pass`,
+  10 `_provenance_footer_pass`, 11 `_deliver_render_pass` (render inbox / stash /
+  substance frame / last-user-message swap / route log). Refactor only: explicit
+  state passing, order and guards preserved, relative imports only, deferred
+  imports deferred, try/except boundaries unchanged. No behavior change — suite
+  holds at 533 passed / 5 pre-existing failures in tests/test_v321_anchor_strip.py /
+  1 skipped before and after.
+
+
 
 - REFUSAL_DOCTRINE KNOB: the hardcoded always-route ruling (Goran-direct 2026-09-07) is
   now knob-gated via the router config section `refusal_doctrine`. `always_route`
