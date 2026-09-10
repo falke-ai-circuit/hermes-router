@@ -74,16 +74,18 @@ _AUDIT_ARTIFACT_MARKERS = (
 )
 
 # Revision-pass budget: the in-hook flash re-call gets its own bounded slice
-# (config complexity.audit_revision_seconds, default 20, clamp 0-60; 0
+# (config complexity.audit_revision_seconds, default 30, clamp 0-60; 0
 # disables the revision pass → verdict delivered as envelope only).
+# Default raised 20→30 (live-caught sid18: flash revision call needs >20s on
+# real payloads — the 20s socket timeout masqueraded as reason=empty).
 def audit_revision_seconds() -> float:
     try:
         from .router_core import _complexity_cfg
 
-        v = float((_complexity_cfg() or {}).get("audit_revision_seconds") or 20)
+        v = float((_complexity_cfg() or {}).get("audit_revision_seconds") or 30)
         return max(0.0, min(60.0, v))
     except Exception:  # noqa: BLE001
-        return 20.0
+        return 30.0
 
 # ---------------------------------------------------------------- closure ----
 
@@ -645,7 +647,7 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
 
 
 def revise_with_verdict(session_id: str, ask: str, draft: str,
-                        verdict_note: str, timeout_s: float = 20.0) -> Optional[str]:
+                        verdict_note: str, timeout_s: float = 30.0) -> Optional[str]:
     """In-hook revision pass (deep-consult fix, Goran-approved): one bounded
     call to the MAIN model (flash lane) with (ask, draft, verdict) → revised
     response. This is what makes sync blocking meaningful: the delivered
@@ -748,8 +750,11 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
                         "finish=%s reasoning_chars=%d", fr, rc)
             return None
         return content
-    except Exception:  # noqa: BLE001 — revision must never break delivery
-        logger.debug("flash revision call error", exc_info=True)
+    except Exception as _e:  # noqa: BLE001 — revision must never break delivery
+        # INFO, not debug: timeout/auth errors were surfacing as the parent's
+        # "reason=empty" (live-caught sid18 — 20s socket timeout masqueraded
+        # as an empty revision)
+        logger.info("completion_audit_revision_error detail=%.200s", _e)
         return None
 
 
