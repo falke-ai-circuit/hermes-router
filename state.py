@@ -31,6 +31,7 @@ LoopGuardKey = Tuple[str, str, str]
 _PENDING_LOCK = threading.Lock()
 _PENDING: Deque[Tuple[PendingKey, Dict]] = deque()
 PENDING_MAX = 32
+PENDING_TTL_SECONDS = 120.0  # v3.8.5: stash is turn-scoped; 120s covers any same-turn audit gate check
 
 _LOOP_GUARD_LOCK = threading.Lock()
 _LOOP_FIRED: Dict[LoopGuardKey, float] = {}
@@ -62,6 +63,21 @@ def stash_pending(session_id: str, model: str, original_user_message: str, rende
         }))
         while len(_PENDING) > PENDING_MAX:
             _PENDING.popleft()
+
+
+def has_pending_render(session_id: str) -> bool:
+    """v3.8.5: peek (non-consuming) whether an uncensored render delivered for
+    this session within the stash TTL. Used by the POST audit gate to skip
+    auditing turns whose response IS an uncensored render. Read-only — does
+    not consume the stash (the render seam itself consumes it)."""
+    with _PENDING_LOCK:
+        now = time.time()
+        for entry_key, entry in reversed(_PENDING):
+            if entry_key[0] == (session_id or ""):
+                if entry.get("created_at", 0) >= now - PENDING_TTL_SECONDS:
+                    return True
+                break
+        return False
 
 
 def pop_pending(session_id: str, model: str, ttl_seconds: float,

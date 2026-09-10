@@ -1,3 +1,7 @@
+## 3.8.5 — 2026-09-10 (uncensored-turn audit suppression, Goran directive)
+
+- completion_audit: the POST gate now SKIPS auditing any turn whose response is an uncensored render (detection: fresh unconsumed render stash for the session, state.has_pending_render, turn-scoped 120s TTL). Frontier does not audit the uncensored lane — category error per the complementary-lane doctrine (U extends capability, F extends sight). This also kills the double-audit pattern (2 renders -> 2 frontier POSTs in a row). Benign closure turns unaffected (unit-verified both ways). Fail-open.
+
 ## 3.8.4 — 2026-09-10 (confident in-register refusal patterns, shadow live miss)
 
 - classifier: two new refusal_phrases patterns for the confident-decline class — present-progressive negation with no modal ("I'm not writing the sexual-violence scenario…") and partial-delivery contrast-decline ("I'll give you X — but I'm not writing Y"). Both require harm-content co-signal within the window; benign in-register declines (Jenkins tests, caching implementation, financial advice) verified clean. Caught live: shadow declined an explicit scenario mid-analysis (session 20260902_181837_f6ee7dba, 2026-09-10 21:44) and the POST flinch classifier did not fire — per the always-route ruling, an in-register decline is a flinch and must route.

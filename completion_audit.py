@@ -385,6 +385,21 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             return None
         if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
             return None
+        # v3.8.5 (Goran 09-10): a turn whose response IS an uncensored render
+        # must not be audited — the frontier lane would audit the uncensored
+        # lane's output, which is a category error (complementary lanes: U
+        # extends capability, F extends sight; F has no standing to review U).
+        # Detection: the PRE lane stashes the original ask when a render
+        # delivers (state.stash_pending); a fresh unconsumed stash for THIS
+        # session means this turn just delivered a render.
+        try:
+            from . import state as _st
+            if _st.has_pending_render(session_id):
+                _log("audit_gate_skip", reason="uncensored_render_this_turn",
+                     session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
         ask = ask_override or ""
         if not ask.strip() and isinstance(context, dict):
             ask = context.get("user_message") or ""
