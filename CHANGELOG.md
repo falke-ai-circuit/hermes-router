@@ -1,4 +1,20 @@
 ## 3.6.0-a1 — 2026-09-07 (Phase 0 + debug banner, BLUEPRINT-hermes-router-consult-gates-2026-09-06.md §10/§11 + §12 simplicity amendment)
+## 3.7.1 — 2026-09-10 (zero-config defaults: /router ships ON, frontier auto-activates with API)
+
+- ZERO-CONFIG FRONTIER LANE (Goran 09-10): when anchor_chain.primary is configured
+  (user inserted their frontier API) but NO complexity block exists, the complexity
+  lane auto-defaults to level 2 (conservative-auto). Explicit config always wins:
+  complexity.enabled: false keeps it off; an explicit level is honored as-is.
+- /router SLASH COMMAND SHIPS ON: HERMES_ROUTER_ENABLE_SLASH_COMMAND now defaults
+  to enabled — only an explicit "0/false/no" disables. Previously opt-in via env
+  flag, which made /router silently unavailable on fresh installs.
+- Out-of-box contract (Goran): insert your uncensored-chain API key + optional
+  frontier API in config → both lanes work; knobs only if you want non-defaults.
+  Verified: fresh-config simulation — persona cards derive from profile DNA with
+  zero config, contested-class fail-open verified, chain 400/auth fail-open
+  passthrough verified.
+- Suite: 536 passed, 1 skipped, 1 deselected.
+
 - PHASE 0 TAPS (zero behavior change, zero spend): tool-result tap at the llm_request surfacing point (FF-2 task identity via state.get_last_seen -> task_id_for/turn_key_for — zero prior call sites, dead keys otherwise) feeds router_core.record_tool_call, which now ALSO writes the §2.3 fail-ring (deque maxlen=8, entries (normalized_sig, err_class, out_fp, artifact_fp, ts), text <=240c) + progress ledger (last_progress_ts/cycles_since_progress/last_out_fp/last_artifact_fp) — WRITE-ONLY, no gate reads until Phases 1+. Provider-failure tap (P0.2) feeds record_provider_failure from the anchored-failure path. route_skipped enriched with fail_kind + finish_reason (P0.5). Startup asserts tap presence (struggle_feeder: armed, route log + router_status).
 - BUDGET LEDGER (suggestions.py, wired but inert): budget.jsonl (canonical.py discipline: append-only, 0600, corrupt-line skipped fail-open toward availability NEVER toward double-charge). Events sugg_fired/sugg_delivered/sugg_skipped/turn_committed/turn_abandoned. Commit on delivered terminal (delivered-only), abandon on interrupt (fired-only), 3-cap would_spend reads replayed state. next_event_seq() = §10.4-E shared monotonic correlation (tokens ledger records now carry task_id + event_seq).
 - DEBUG BANNER (debug_banner.py, §10.2 + §10.4 F/G/H): knob debug_banner (top-level, default OFF, consequential -> token-guarded, in mutations_consequential + knob whitelist + /router config list + router_status). ONE formatter all lanes; delivery_content = canonical + banner at the transport edge ONLY (§10.4-F two representations — canonical/history/model context NEVER carry a banner); ~400c cap (oversized -> omit entirely, never truncate the answer); redacted by construction (enums/model ids/hosts/ints only); failure isolation = narrow boundary around the build (any error -> canonical delivered, debug_banner_failed logged, never fails a request). Fire points: PRE uncensored render success (delivery edge), frontier anchor success (advisory envelope lane), v3.6 consult envelopes wired-but-inert. NEVER banner: aux stage-2, flash main model, cap_blocked/skipped. Ten-case banner suite (§10.4-I) + P0.6 §10.1 invariant pins (render events never consume consult budget; render retries never feed fail-ring; POST re-entry guard provenance fields; POST brief two-field separation; consult output never render input).

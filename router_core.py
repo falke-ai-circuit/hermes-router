@@ -642,10 +642,31 @@ def anchor_backoff_active_count() -> int:
 def _complexity_level() -> int:
     """Read intensity from config: complexity.level (0-3). Never raises.
     Reads via _complexity_cfg() (dual-section + profile-co-located fallback,
-    fix 2026-09-07) so profile gateways see their own complexity level."""
+    fix 2026-09-07) so profile gateways see their own complexity level.
+
+    Zero-config default (Goran 2026-09-10): when the user configured an
+    anchor_chain (inserted their frontier API) but set NO complexity block at
+    all, default to level 2 (conservative-auto) — the frontier lane works out
+    of the box once the API is in config. Explicit config always wins:
+    complexity.enabled: false keeps the lane off; an explicit level is honored
+    as-is (including 0)."""
     block = _complexity_cfg()
-    if isinstance(block, dict):
-        return complexity.normalize_level(block.get("level", 0))
+    if isinstance(block, dict) and block:
+        if block.get("enabled") is False:
+            return 0
+        if "level" in block:
+            return complexity.normalize_level(block.get("level"))
+        # block present but no level key: treat as explicit enable at default 2
+        return 2
+    # No complexity block anywhere: auto-enable IFF an anchor chain is configured
+    try:
+        from . import anchor_chain as _ac
+
+        chain = _ac.load_anchor_chain()
+        if chain is not None and getattr(chain, "primary", None):
+            return 2
+    except Exception:  # noqa: BLE001 — fail-open to off
+        pass
     return 0
 
 

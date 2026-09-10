@@ -252,10 +252,10 @@ def test_authz_env_detection():
 
 
 def test_perform_register_selfcheck_branches(monkeypatch):
-    monkeypatch.delenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", raising=False)
+    monkeypatch.setenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "0")
     ok, line = commands.perform_register_selfcheck()
     assert ok is False and "disabled" in line.lower() and "HERMES_ROUTER_ENABLE_SLASH_COMMAND" in line
-    monkeypatch.setenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "1")
+    monkeypatch.delenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", raising=False)
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "1")
     ok, line = commands.perform_register_selfcheck()
     assert ok is True and "armed" in line
@@ -305,13 +305,21 @@ class _FakeCtx:
                                                 "args_hint": args_hint}
 
 
-def test_registration_gate_off(monkeypatch):
+def test_registration_gate_on_by_default(monkeypatch):
+    """v3.7.1 zero-config default (Goran 09-10): /router ships ON — absent env
+    var means enabled. Only explicit 0/false/no disables."""
     monkeypatch.delenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", raising=False)
     ctx = _FakeCtx()
     ok, line = commands.register_slash_command(ctx)
-    assert ok is False
-    assert "router" not in ctx._manager._plugin_commands
-    assert "disabled" in line
+    assert ok is True
+    assert "router" in ctx._manager._plugin_commands
+
+    monkeypatch.setenv("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "0")
+    ctx2 = _FakeCtx()
+    ok2, line2 = commands.register_slash_command(ctx2)
+    assert ok2 is False
+    assert "router" not in ctx2._manager._plugin_commands
+    assert "disabled" in line2
 
 
 def test_registration_no_register_command_attr(monkeypatch):

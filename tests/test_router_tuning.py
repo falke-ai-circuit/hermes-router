@@ -278,3 +278,23 @@ def test_post_audit_is_agent_tailored():
     assert callable(getattr(completion_audit, "_persona_tailoring", None))
     t = completion_audit._persona_tailoring()
     assert "profile card" in t
+
+
+def test_zero_config_frontier_default_activates_with_anchor_chain():
+    """Goran 09-10: frontier lane works out-of-box once anchor_chain API is in
+    config — no complexity block needed. Explicit complexity config always wins."""
+    with mock.patch.object(plugin.config_access, "router_section",
+                           return_value={"anchor_chain": {"primary": "nous://z-ai/glm-5.3"}}), \
+         mock.patch.object(plugin.router_core, "_complexity_cfg", return_value={}):
+        assert plugin.router_core._complexity_level() == 2
+    # no anchor chain -> stays off
+    with mock.patch.object(plugin.config_access, "router_section", return_value={}), \
+         mock.patch.object(plugin.router_core, "_complexity_cfg", return_value={}):
+        assert plugin.router_core._complexity_level() == 0
+    # explicit level wins (including 0)
+    with mock.patch.object(plugin.router_core, "_complexity_cfg",
+                           return_value={"enabled": True, "level": 0}):
+        assert plugin.router_core._complexity_level() == 0
+    with mock.patch.object(plugin.router_core, "_complexity_cfg",
+                           return_value={"enabled": False, "level": 2}):
+        assert plugin.router_core._complexity_level() == 0

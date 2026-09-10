@@ -217,9 +217,12 @@ def perform_register_selfcheck() -> Tuple[bool, str]:
     at register time. Returns (mutations_enabled, startup_log_line).
     Read-only env inspection — no identity parsing, no network calls."""
     try:
-        env_gate_on = os.environ.get("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "").strip() in ("1", "true", "yes")
+        env_gate_raw = os.environ.get("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "")
+        # v3.7.1 zero-config default (Goran 2026-09-10): /router ships ON. Only
+        # an explicit "0/false/no" disables it — absent/unset means enabled.
+        env_gate_on = not (env_gate_raw.strip().lower() in ("0", "false", "no"))
         if not env_gate_on:
-            return False, "router slash commands registration disabled (set HERMES_ROUTER_ENABLE_SLASH_COMMAND=1 to enable /router)"
+            return False, "router slash commands registration disabled (HERMES_ROUTER_ENABLE_SLASH_COMMAND=0)"
         if verify_gateway_authz():
             _MUTATIONS_ARMED["armed"] = True
             _MUTATIONS_ARMED["reason"] = "authz-verified"
@@ -2055,11 +2058,13 @@ def register_slash_command(ctx) -> Tuple[bool, str]:
     too (belt and suspenders; a chat-command bug can never take down lanes)."""
     try:
         register_command = getattr(ctx, "register_command", None)
-        env_gate_on = os.environ.get("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "").strip() in ("1", "true", "yes")
+        env_gate_raw = os.environ.get("HERMES_ROUTER_ENABLE_SLASH_COMMAND", "")
+        # v3.7.1 zero-config default: /router ships ON; explicit 0/false/no disables.
+        env_gate_on = not (env_gate_raw.strip().lower() in ("0", "false", "no"))
         if not callable(register_command):
             return False, "router slash command registration unavailable on this Hermes host; continuing without /router"
         if not env_gate_on:
-            return False, "router slash command registration disabled (set HERMES_ROUTER_ENABLE_SLASH_COMMAND=1 to enable /router)"
+            return False, "router slash command registration disabled (HERMES_ROUTER_ENABLE_SLASH_COMMAND=0)"
         # Plugin-vs-plugin collision is SILENT last-writer-wins upstream —
         # make it LOUD here (blueprint 0: ~3 LOC self-check).
         try:
