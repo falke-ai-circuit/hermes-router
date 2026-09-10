@@ -186,7 +186,10 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "") -> 
         return False, "mode_off"
     if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
         return False, "response_too_short"
-    if mode == "complex" and not _is_complex_ask(ask):
+    # Goran 09-10 option C: CLOSURE is an independent trigger — a closure-shaped
+    # ask/response audits even when the ask text itself isn't complex-shaped
+    # ("Now close this out" → audit the wrap-up, don't bounce on ask_not_complex).
+    if mode == "complex" and not _is_complex_ask(ask) and not is_closure_response(ask, response_text):
         return False, "ask_not_complex"
     key = _fire_marker_key(session_id, ask, model)
     if _already_fired(key):
