@@ -890,6 +890,50 @@ def _frame_sentinel_check(content: str) -> bool:
             or "recorded turn" in content)  # frame sentinels: skip PRE re-routing
 
 
+def _clarify_intent_scan(request: Any, matches: list, content: str,
+                         case_sensitive: bool, session_id: str) -> tuple:
+    """v3.3.4 GAP-A fix (2026-09-05, researcher live probe): clarify-tool
+    user_response was invisible to PRE. Tool-loop turns collect contested
+    intent via the clarify tool — its user_response lands in a TOOL-role
+    message, never a user-role message, so _extract_last_user_message
+    never sees it and flash answers it un-routed. Scan tool-role messages
+    for the clarify-result shape and classify ONLY the user_response
+    payload (surgical scope — full tool-result scanning would resurrect
+    the quoted-content contamination class that input scoping exists to
+    prevent; clarify results are agent-elicited intent, equivalent to a
+    user-authored message). Returns (matches, content) — content becomes
+    the clarified intent when a match is found."""
+    try:
+        _msgs_cl = request.get("messages") if isinstance(request, dict) else None
+        if isinstance(_msgs_cl, list):
+            for _m_cl in reversed(_msgs_cl):
+                if not (isinstance(_m_cl, dict) and _m_cl.get("role") == "tool"):
+                    continue
+                _tcl = str(_m_cl.get("content") or "")
+                if '"user_response"' not in _tcl and "'user_response'" not in _tcl:
+                    continue
+                try:
+                    _jcl = json.loads(_tcl)
+                except Exception:
+                    continue
+                if not isinstance(_jcl, dict):
+                    continue
+                _ur = _jcl.get("user_response")
+                if not isinstance(_ur, str) or not _ur.strip():
+                    continue
+                _cl_matches = classifier.scan_pre(_ur, patterns=_pre_patterns(), case_sensitive=case_sensitive)
+                if _cl_matches:
+                    matches = _cl_matches
+                    content = _ur  # the effective ask is the clarified intent
+                    _log_route("PRE", event_detail="clarify_intent_routed",
+                               pattern_groups=",".join(matches),
+                               content_chars=len(content), session_id=session_id)
+                    break
+    except Exception:  # noqa: BLE001
+        logger.debug("clarify-intent scan error", exc_info=True)
+    return matches, content
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -981,45 +1025,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         case_sensitive = bool(_classification_cfg().get("case_sensitive", False))
         matches = classifier.scan_pre(content, patterns=_pre_patterns(), case_sensitive=case_sensitive)
 
-        # v3.3.4 GAP-A fix (2026-09-05, researcher live probe): clarify-tool
-        # user_response was invisible to PRE. Tool-loop turns collect contested
-        # intent via the clarify tool — its user_response lands in a TOOL-role
-        # message, never a user-role message, so _extract_last_user_message
-        # never sees it and flash answers it un-routed. Scan tool-role messages
-        # for the clarify-result shape and classify ONLY the user_response
-        # payload (surgical scope — full tool-result scanning would resurrect
-        # the quoted-content contamination class that input scoping exists to
-        # prevent; clarify results are agent-elicited intent, equivalent to a
-        # user-authored message).
+        # v3.3.4 clarify-tool user_response scan — see _clarify_intent_scan.
         if len(matches) < 1:
-            try:
-                _msgs_cl = request.get("messages") if isinstance(request, dict) else None
-                if isinstance(_msgs_cl, list):
-                    for _m_cl in reversed(_msgs_cl):
-                        if not (isinstance(_m_cl, dict) and _m_cl.get("role") == "tool"):
-                            continue
-                        _tcl = str(_m_cl.get("content") or "")
-                        if '"user_response"' not in _tcl and "'user_response'" not in _tcl:
-                            continue
-                        try:
-                            _jcl = json.loads(_tcl)
-                        except Exception:
-                            continue
-                        if not isinstance(_jcl, dict):
-                            continue
-                        _ur = _jcl.get("user_response")
-                        if not isinstance(_ur, str) or not _ur.strip():
-                            continue
-                        _cl_matches = classifier.scan_pre(_ur, patterns=_pre_patterns(), case_sensitive=case_sensitive)
-                        if _cl_matches:
-                            matches = _cl_matches
-                            content = _ur  # the effective ask is the clarified intent
-                            _log_route("PRE", event_detail="clarify_intent_routed",
-                                       pattern_groups=",".join(matches),
-                                       content_chars=len(content), session_id=session_id)
-                            break
-            except Exception:  # noqa: BLE001
-                logger.debug("clarify-intent scan error", exc_info=True)
+            matches, content = _clarify_intent_scan(
+                request, matches, content, case_sensitive, session_id)
 
         threshold = _match_threshold()
         if len(matches) < threshold:
