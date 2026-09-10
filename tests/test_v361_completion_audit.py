@@ -96,7 +96,7 @@ def test_audit_once_across_fx_retries(monkeypatch):
     _reset_audit(monkeypatch)
     monkeypatch.setattr(ca, "_has_pending", lambda sid: False)
     calls = []
-    monkeypatch.setattr(ca, "_audit_thread", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(ca, "_consult_meta", lambda *a, **k: calls.append(a))
     ASK2 = "Plan this complex task please: rebuild the deployment pipeline."
     ca.run_completion_audit("s", ASK2, "r" * 600, None, "m")
     ca.run_completion_audit("s", ASK2, "r2" * 300, None, "m")

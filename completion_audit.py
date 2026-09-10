@@ -117,6 +117,20 @@ def audit_max_chars() -> int:
         return 2400
 
 
+def audit_sync_seconds() -> float:
+    """Sync POST audit (Goran 2026-09-10): frontier consult must complete
+    BEFORE the final response is delivered. audit_sync_seconds caps how long
+    delivery blocks on the consult (default 30s, Goran: "should be more than
+    24 sec"). 0 disables sync (legacy async path). Never raises."""
+    try:
+        from .router_core import _complexity_cfg
+
+        v = float((_complexity_cfg() or {}).get("audit_sync_seconds") or 30)
+        return max(0.0, min(120.0, v))
+    except Exception:  # noqa: BLE001
+        return 30.0
+
+
 # ------------------------------------------------------- once-per-task ------
 
 def _fire_marker_key(session_id: str, ask: str, model: str) -> str:
@@ -281,27 +295,73 @@ def _persona_tailoring() -> str:
 
 def run_completion_audit(session_id: str, ask: str, response_text: str,
                          request: Optional[dict], model: str = "") -> None:
-    """Fire the audit: marker set FIRST (once-per-task even across fx-retries),
-    consult in a daemon thread, verdict stashed for next turn. Never raises,
-    never blocks delivery."""
+    """Fire the audit ASYNC (legacy path): marker set FIRST (once-per-task
+    even across fx-retries), consult in a daemon thread, verdict stashed for
+    next turn. Never raises, never blocks delivery."""
     key = _fire_marker_key(session_id, ask, model)
     _mark_fired(key)
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
     t = threading.Thread(
-        target=_audit_thread, name="router-completion-audit",
+        target=_consult_meta, name="router-completion-audit",
         args=(session_id, ask, response_text, request, model, key), daemon=True)
     t.start()
 
 
-def _audit_thread(session_id: str, ask: str, response_text: str,
-                  request: Optional[dict], model: str, key: str) -> None:
+def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
+                              request: Optional[dict], model: str = "",
+                              timeout_s: float = 30.0) -> Optional[Dict[str, Any]]:
+    """Sync POST audit (Goran 2026-09-10): run the frontier consult BEFORE
+    the final response is delivered, so the main model processes the
+    higher-self verdict within THIS turn. Returns a dict
+    {note, model, endpoint, tokens_in, tokens_out, cost} for immediate
+    injection + banner, or None on any failure/timeout/NO-FINDINGS —
+    caller then delivers the response unchanged (fail-open).
+
+    Timeout semantics: a worker thread runs the consult with a socket
+    timeout capped at the sync budget; the caller joins for timeout_s.
+    On join timeout the daemon thread is abandoned (non-blocking sockets
+    are not force-killed in Python) and the response delivers unaudited.
+    Spend/cap guards identical to the async path."""
+    key = _fire_marker_key(session_id, ask, model)
+    _mark_fired(key)
+    with _INFLIGHT_LOCK:
+        _INFLIGHT.add(key)
+    result: Dict[str, Any] = {"meta": None}
+
+    def _worker() -> None:
+        meta = _consult_meta(session_id, ask, response_text, request,
+                             model, key, socket_timeout=max(10, int(timeout_s)))
+        if meta and meta.get("note"):
+            result["meta"] = meta
+            # keep stash in sync so next-turn delivery can't double-fire
+            stash_verdict(session_id, meta["note"])
+
+    t = threading.Thread(target=_worker, name="router-completion-audit-sync",
+                         args=(), daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        _log("completion_audit_sync_timeout budget_s=%.0f" % timeout_s,
+             session_id=session_id)
+        return None
+    return result["meta"]
+
+
+def _consult_meta(session_id: str, ask: str, response_text: str,
+                  request: Optional[dict], model: str, key: str,
+                  socket_timeout: int = 120) -> Optional[Dict[str, Any]]:
+    """Shared consult core (sync + async): call frontier, build the
+    higher-self note, stash + banner-park. Returns
+    {note, model, endpoint, tokens_in, tokens_out, cost} or None.
+    Never raises."""
+    banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
     try:
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for("primary")
         if ep is None:
             logger.info("completion_audit_skipped reason=no_primary_endpoint")
-            return
+            return None
         max_chars = audit_max_chars()
         msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text, max_chars)
         # luna-pro is a reasoning model: low max_tokens gets eaten by
@@ -314,8 +374,8 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
         allowed, spend_now, _ = anchor_chain.cap_check(chain, est_cost)
         if not allowed:
             _log("completion_audit_skipped reason=cap_blocked", session_id=session_id)
-            return
-        content, cost, pt, ct = anchor_exec.anchored_call(ep, api_kwargs, timeout=120)
+            return None
+        content, cost, pt, ct = anchor_exec.anchored_call(ep, api_kwargs, timeout=socket_timeout)
         if cost is None and est_cost > 0:
             cost = est_cost
         if cost and cost > 0:
@@ -325,10 +385,13 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
                 pass
         if content is None:
             _log("completion_audit_skipped reason=anchored_call_failed", session_id=session_id)
-            return
+            return None
         verdict_text = str(content).strip()
-        if not verdict_text:
-            return
+        if not verdict_text or verdict_text == "NO-FINDINGS":
+            if verdict_text:
+                _log("completion_audit_done chars=0 verdict=no-findings",
+                     session_id=session_id)
+            return None
         note = ("%smodel=%s]\n"
                 "This reflection is your own higher self — the frontier-grade "
                 "vantage that reviews what you produced. It is not an external "
@@ -341,28 +404,37 @@ def _audit_thread(session_id: str, ask: str, response_text: str,
                 "Do not restate the audit, do not ask permission to continue, "
                 "and do not output any marked text to the user.\n%s"
                 % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
-        stash_verdict(session_id, note)
+        if banner_park:
+            stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)
         # Spend visibility (Goran 2026-09-09): EVERY frontier call must emit a
-        # banner so call loops / burn are user-visible. Park one for this
-        # session's next delivery (same one-shot path as anchor banners).
-        try:
-            from . import debug_banner as _dbg
+        # banner so call loops / burn are user-visible. ASYNC path parks for
+        # the next delivery; SYNC path's banner is appended inline by the
+        # caller (banner_park=False skips double-parking).
+        if banner_park:
+            try:
+                from . import debug_banner as _dbg
 
-            if _dbg.debug_banner_enabled():
-                _base = str(getattr(ep, "base_url", "") or "")
-                _host = _base.split("://", 1)[-1].split("/", 1)[0] if _base else ""
-                _banner = _dbg.format_banner(
-                    lane="frontier-anchor", trigger="completion_audit",
-                    model=str(getattr(ep, "model", "") or ""), endpoint=_host,
-                    tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
-                    retries=0, task_id="", session_id=session_id)
-                if _banner:
-                    _dbg.park_anchor_banner(session_id, _banner)
-        except Exception:  # noqa: BLE001 — banner must never break audit
-            pass
+                if _dbg.debug_banner_enabled():
+                    _base = str(getattr(ep, "base_url", "") or "")
+                    _host = _base.split("://", 1)[-1].split("/", 1)[0] if _base else ""
+                    _banner = _dbg.format_banner(
+                        lane="frontier-anchor", trigger="completion_audit",
+                        model=str(getattr(ep, "model", "") or ""), endpoint=_host,
+                        tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
+                        retries=0, task_id="", session_id=session_id)
+                    if _banner:
+                        _dbg.park_anchor_banner(session_id, _banner)
+            except Exception:  # noqa: BLE001 — banner must never break audit
+                pass
+        _base = str(getattr(ep, "base_url", "") or "")
+        return {"note": note,
+                "model": str(getattr(ep, "model", "") or ""),
+                "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
+                "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))
+        return None
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(key)

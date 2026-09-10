@@ -1254,11 +1254,68 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                            turn=_turn_n, of=_min_turns,
                                            closure=_closure)
                                 if _ok:
-                                    _ca.run_completion_audit(session_id, _ask,
-                                                             response_text,
-                                                             context.get("request")
-                                                             if isinstance(context, dict) else None,
-                                                             model)
+                                    # Sync POST (Goran 2026-09-10): the frontier
+                                    # consult completes BEFORE delivery so the main
+                                    # model processes the verdict within THIS turn.
+                                    # Fail-open: timeout / failure / NO-FINDINGS =>
+                                    # deliver unchanged.
+                                    _sync_budget = _ca.audit_sync_seconds()
+                                    _meta = None
+                                    if _sync_budget > 0:
+                                        try:
+                                            _meta = _ca.run_completion_audit_sync(
+                                                session_id, _ask, response_text,
+                                                context.get("request")
+                                                if isinstance(context, dict) else None,
+                                                model, timeout_s=_sync_budget)
+                                        except Exception:  # noqa: BLE001
+                                            _meta = None
+                                        if _meta and isinstance(_meta, dict):
+                                            _note = str(_meta.get("note") or "")
+                                            _log_route("POST",
+                                                       event_detail="completion_audit_sync_applied",
+                                                       chars=len(_note),
+                                                       budget_s=_sync_budget,
+                                                       session_id=session_id)
+                                            # Banner for this consult (Goran: every
+                                            # frontier call user-visible) — append
+                                            # inline, no park/consume roundtrip.
+                                            _btext = ""
+                                            try:
+                                                from . import debug_banner as _dbg
+                                                if _dbg.debug_banner_enabled():
+                                                    _btext = _dbg.format_banner(
+                                                        lane="frontier-anchor",
+                                                        trigger="completion_audit",
+                                                        model=str(_meta.get("model") or ""),
+                                                        endpoint=str(_meta.get("endpoint") or ""),
+                                                        tokens_in=_meta.get("tokens_in"),
+                                                        tokens_out=_meta.get("tokens_out"),
+                                                        est_cost=_meta.get("cost"),
+                                                        latency_s=_sync_budget,
+                                                        retries=0, task_id="",
+                                                        session_id=session_id) or ""
+                                            except Exception:  # noqa: BLE001
+                                                _btext = ""
+                                            _out_sync = response_text
+                                            if _btext:
+                                                try:
+                                                    _out_sync = _dbg.append_banner(
+                                                        _out_sync, "\n" + _btext,
+                                                        _knob_checked=True)
+                                                except Exception:  # noqa: BLE001
+                                                    pass
+                                            # Deliver the response WITH the audit
+                                            # verdict as a higher-self envelope the
+                                            # model processes next context-build
+                                            # (advisory; user never sees marker).
+                                            return _out_sync
+                                    else:
+                                        _ca.run_completion_audit(session_id, _ask,
+                                                                 response_text,
+                                                                 context.get("request")
+                                                                 if isinstance(context, dict) else None,
+                                                                 model)
                             else:
                                 _log_route("POST", event_detail="audit_gate_skip",
                                            turn=_turn_n, of=_min_turns,
