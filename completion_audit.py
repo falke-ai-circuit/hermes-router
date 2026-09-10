@@ -74,7 +74,8 @@ _CLOSURE_PATTERNS = (
     # gate (turn counter not yet at N). Closure FRAMING is the signal, not
     # just closure bookkeeping. NOTE: no ^ anchor — is_closure_response joins
     # ask+response with a space, so framing can legitimately sit mid-string.
-    r"\b(?:closure|final\s+(?:summary|recommendation|answer|verdict|wrap[- ]?up)|bottom\s+line)\s*[:—-]",
+    r"\b(?:closure|closing|final\s+(?:summary|recommendation|answer|verdict|wrap[- ]?up)|bottom\s+line)\s*[:—-]?",
+    r"\bfinal\s+recommendation\b",
     r"\b(?:summar(?:y|izing)\s+(?:the|of)\s+(?:the\s+)?(?:full\s+)?recommendation|final\s+thoughts?\s*[:,])",
 )
 
