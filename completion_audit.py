@@ -74,18 +74,19 @@ _AUDIT_ARTIFACT_MARKERS = (
 )
 
 # Revision-pass budget: the in-hook flash re-call gets its own bounded slice
-# (config complexity.audit_revision_seconds, default 30, clamp 0-60; 0
+# (config complexity.audit_revision_seconds, default 60, clamp 0-180; 0
 # disables the revision pass → verdict delivered as envelope only).
-# Default raised 20→30 (live-caught sid18: flash revision call needs >20s on
-# real payloads — the 20s socket timeout masqueraded as reason=empty).
+# Default raised 20→60 (live-caught: frontier glm-5.3 reasoning=max needs
+# >30s on real revision payloads — timeouts masqueraded as reason=empty
+# until the error was surfaced).
 def audit_revision_seconds() -> float:
     try:
         from .router_core import _complexity_cfg
 
-        v = float((_complexity_cfg() or {}).get("audit_revision_seconds") or 30)
-        return max(0.0, min(60.0, v))
+        v = float((_complexity_cfg() or {}).get("audit_revision_seconds") or 60)
+        return max(0.0, min(180.0, v))
     except Exception:  # noqa: BLE001
-        return 30.0
+        return 60.0
 
 # ---------------------------------------------------------------- closure ----
 
