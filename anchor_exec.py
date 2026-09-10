@@ -474,6 +474,31 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             "Advisory only — the agent may deviate.\n\nTHE ASK:\n" + _orig[:orientation_ask_cap()]
                         )
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
+                        # Agent-tailored frontier consults (Goran 2026-09-10):
+                        # prepend the profile's own compact persona card so the
+                        # consultant orients THE AGENT (its role, voice, closed
+                        # lines), not a generic specialist. Derived at runtime
+                        # from HERMES_HOME => universal on any Hermes setup.
+                        # Runs AFTER the frame write — inserting a system msg
+                        # shifts indices, so _last_user must already be consumed.
+                        try:
+                            from . import persona_card as _pc
+                            _card = _pc.build_persona_context()
+                            if _card and _card.strip():
+                                _tailored = (
+                                    "You are consulting for a specific AI agent whose profile card follows. "
+                                    "Tailor your orientation/audit to that agent's role, voice and boundaries.\n\n"
+                                    + _card.strip())
+                                _has_sys = any(isinstance(m, dict) and m.get("role") == "system" for m in _msgs)
+                                if _has_sys:
+                                    for m in _msgs:
+                                        if isinstance(m, dict) and m.get("role") == "system":
+                                            m["content"] = str(m.get("content") or "") + "\n\n" + _tailored
+                                            break
+                                else:
+                                    _msgs.insert(0, {"role": "system", "content": _tailored})
+                        except Exception:  # noqa: BLE001 — tailoring is best-effort
+                            pass
                         api_kwargs["messages"] = _msgs
             except Exception:  # noqa: BLE001 — orientation frame is best-effort
                 pass

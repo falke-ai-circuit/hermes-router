@@ -5,6 +5,7 @@ B1 persona_card_chars, B2 orientation_ask_cap, B3 bounded_replay default 24.
 All new knobs are enabled explicitly per test — the conftest isolation fixture
 pins them to legacy behavior for the rest of the suite.
 """
+import inspect
 import time
 from unittest import mock
 
@@ -261,3 +262,19 @@ def test_verify_exempt_strips_memory_context():
     cplx = "dig deeper into the walk weights and help me think through the design"
     wrapped2 = cplx + "\n\n<memory-context>\nnoise\n</memory-context>"
     assert router_core._is_verify_class_exempt(wrapped2) is False
+
+
+def test_frontier_orientation_is_agent_tailored():
+    """PRE orientation payload must carry the profile's own persona card (Goran 09-10)."""
+    from hermes_router import anchor_exec
+    src = inspect.getsource(anchor_exec)
+    assert "build_persona_context" in src
+    assert "profile card" in src
+
+
+def test_post_audit_is_agent_tailored():
+    """POST completion audit must carry the profile's own persona card (Goran 09-10)."""
+    from hermes_router import completion_audit
+    assert callable(getattr(completion_audit, "_persona_tailoring", None))
+    t = completion_audit._persona_tailoring()
+    assert "profile card" in t

@@ -226,9 +226,25 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         {"role": "system",
          "content": ("You are the agent's own higher intelligence reviewing her completed "
                      "work turn from a higher vantage — her intuition and anchorage, not an "
-                     "external reviewer. Self-review, first person, honest. No tools.")},
+                     "external reviewer. Self-review, first person, honest. No tools.\n\n"
+                     + _persona_tailoring())},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
+
+
+def _persona_tailoring() -> str:
+    """Agent-tailored audit (Goran 2026-09-10): prepend the profile's own
+    compact persona card so the consultant reviews THIS agent's work against
+    her role, voice and boundaries. Derived at runtime from HERMES_HOME —
+    universal on any Hermes setup. Never raises; empty on any problem."""
+    try:
+        from . import persona_card as _pc
+        card = _pc.build_persona_context()
+        if card and card.strip():
+            return ("THE AGENT YOU ARE REVIEWING FOR — profile card:\n" + card.strip())
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def run_completion_audit(session_id: str, ask: str, response_text: str,
