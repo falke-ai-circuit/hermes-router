@@ -434,8 +434,10 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     """
     key = _fire_marker_key(session_id, ask, model)
     # once-per-task marker set ONLY on completion (deep-consult fix: a
-    # timeout must not consume the task's one audit)
-    _LATE_TIMEOUT.add(key)
+    # timeout must not consume the task's one audit).
+    # _LATE_TIMEOUT is added ONLY after a join timeout (battery-caught race:
+    # adding it at start made fast workers discard their own healthy verdict
+    # before the parent's post-join discard ran).
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
     result: Dict[str, Any] = {"meta": None, "timed_out": False}
@@ -458,10 +460,10 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     t.join(timeout_s)
     if t.is_alive():
         result["timed_out"] = True
+        _LATE_TIMEOUT.add(key)  # late-finishing worker will discard its verdict
         _log("completion_audit_sync_timeout budget_s=%.0f" % timeout_s,
              session_id=session_id)
         return None
-    _LATE_TIMEOUT.discard(key)
     meta = result.get("meta")
     if meta:
         _mark_fired(key)  # completed consult consumes the once-per-task audit
