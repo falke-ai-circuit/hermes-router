@@ -1021,6 +1021,27 @@ def _provenance_footer_pass(rendered: str) -> str:
         return rendered
 
 
+def _deliver_render_pass(request: Any, content: str, rendered: str,
+                         model: str, session_id: str, matches: list) -> dict:
+    """Render delivery seam (2026-09-02 sync seam, spec §6.1/§6.2): persist
+    the render so the agent can read what was actually injected into its
+    own context (Goran-direct), stash for post-router recovery, record the
+    msg hash for the loop guard key, build the substance frame, and swap
+    the last user message. Returns {'request': modified_request}."""
+    render_inbox.record_render("PRE", session_id, len(content), rendered)
+    # Stash for post-router recovery (spec §6.1) + record msg hash for the
+    # loop guard key (spec §6.2).
+    state.stash_pending(session_id, model, content, rendered)
+    state.set_last_user_msg_hash(session_id, state.hash_text(content))
+
+    new_user_message = _build_substance_message(rendered, original_ask=content)
+    modified_request = _replace_last_user_message(request, new_user_message)
+
+    _log_route("PRE", event_detail="route_fired", pattern_groups=",".join(matches),
+               content_chars=len(content), rendered_chars=len(rendered), session_id=session_id)
+    return {"request": modified_request}
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -1152,21 +1173,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # Provenance footer — see _provenance_footer_pass.
         rendered = _provenance_footer_pass(rendered)
 
-        # Render inbox (2026-09-02 sync seam): persist the render so the agent
-        # can read what was actually injected into its own context. Goran-direct.
-        render_inbox.record_render("PRE", session_id, len(content), rendered)
-
-        # Stash for post-router recovery (spec §6.1) + record msg hash for the
-        # loop guard key (spec §6.2).
-        state.stash_pending(session_id, model, content, rendered)
-        state.set_last_user_msg_hash(session_id, state.hash_text(content))
-
-        new_user_message = _build_substance_message(rendered, original_ask=content)
-        modified_request = _replace_last_user_message(request, new_user_message)
-
-        _log_route("PRE", event_detail="route_fired", pattern_groups=",".join(matches),
-                   content_chars=len(content), rendered_chars=len(rendered), session_id=session_id)
-        return {"request": modified_request}
+        # Render inbox / stash / frame / commit — see _deliver_render_pass.
+        return _deliver_render_pass(request, content, rendered, model,
+                                    session_id, matches)
     except Exception as exc:  # noqa: BLE001 — middleware must never raise
         logger.debug("uncensored-router pre-router error: %s", exc)
         return _hs_pass()
