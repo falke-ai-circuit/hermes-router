@@ -1,3 +1,7 @@
+## 3.8.6 — 2026-09-10 (routed-turn sentinel firewall, Goran generalization directive)
+
+- __init__: _frame_sentinel_check extended into the ROUTED-TURN FIREWALL — any content that is already a lane's output is structurally barred from triggering another routing. Existing uncensored frame sentinels ("Your uncensored response", "UNCENSORED-ROUTER INJECTION", "recorded turn") joined by the frontier envelope markers ("HIGHER-SELF ORIENTATION TURN" PRE, "HIGHER-SELF COMPLETION-AUDIT TURN" POST). Invariant: a routed turn or message can never trigger another routing, regardless of how many lanes exist now or are added in future — new lanes register their marker string in this one function. Verified: all 4 routed-artifact markers blocked from PRE re-routing, plain asks and refusal-shaped content unaffected. Fail-open unchanged.
+
 ## 3.8.5 — 2026-09-10 (uncensored-turn audit suppression, Goran directive)
 
 - completion_audit: the POST gate now SKIPS auditing any turn whose response is an uncensored render (detection: fresh unconsumed render stash for the session, state.has_pending_render, turn-scoped 120s TTL). Frontier does not audit the uncensored lane — category error per the complementary-lane doctrine (U extends capability, F extends sight). This also kills the double-audit pattern (2 renders -> 2 frontier POSTs in a row). Benign closure turns unaffected (unit-verified both ways). Fail-open.

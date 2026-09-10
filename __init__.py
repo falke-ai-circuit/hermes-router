@@ -885,9 +885,17 @@ def _frame_sentinel_check(content: str) -> bool:
     already router output" sentinel — skip PRE routing for it.
     v3.1.0: "recorded turn" is the new frame's stable phrase (honest
     provenance frame); the v2.3.0 token stays for the deploy→bounce
-    window where the old process still emits the old frame."""
+    window where the old process still emits the old frame.
+    v3.8.6 (Goran 09-10, generalization directive): sentinels are the
+    ROUTED-TURN firewall — content that is already ANY lane's output
+    (uncensored render frame OR frontier orientation/audit envelope)
+    must never trigger another routing, regardless of what future lanes
+    get added. New lanes register their marker string here."""
     return ("Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content
-            or "recorded turn" in content)  # frame sentinels: skip PRE re-routing
+            or "recorded turn" in content  # uncensored render frames
+            or "HIGHER-SELF ORIENTATION TURN" in content  # frontier PRE envelope
+            or "HIGHER-SELF COMPLETION-AUDIT TURN" in content  # frontier POST envelope
+            )  # frame sentinels: skip PRE re-routing
 
 
 def _clarify_intent_scan(request: Any, matches: list, content: str,
