@@ -8,7 +8,14 @@
   doctrine card are HONORED (pass-through, no route); everything else still routes.
   `off` is an explicit alias of `always_route`. Fail-open: missing/broken config reads
   as `always_route`. Existing tests unchanged (default behavior identical).
-- (P1-2) Backoff ledger JSON sidecar persistence — see later entry.
+- BACKOFF LEDGER JSON SIDECAR (P1-2): the anchor-failure backoff ledger in router_core
+  is now persisted to `hermes-router-backoff.json` (profile hermes home, atomic tmp+
+  rename), loaded lazily on first ledger access after boot and rewritten on every
+  update/clear. Gateway restart no longer resets backoff windows — root cause of the
+  2026-09-05 incident (27 anchor attempts / 103 min into a failing endpoint: the
+  in-process ledger died on each bounce). TTL reap runs on load so expired failure
+  memory never resurrects a window. Fail-open everywhere: torn/corrupt sidecar ->
+  empty ledger; write errors -> skipped; routing never touches disk failures.
 
 ## 3.6.0-a1 — 2026-09-07 (Phase 0 + debug banner, BLUEPRINT-hermes-router-consult-gates-2026-09-06.md §10/§11 + §12 simplicity amendment)
 ## 3.8.0 — 2026-09-10 (unified audit gate, sync POST audit, higher-self doctrine, mental-model alignment)

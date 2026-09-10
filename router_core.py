@@ -27,7 +27,9 @@ pass-through. Never raises into middleware.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import threading
 import time
@@ -143,6 +145,90 @@ _ANCHOR_BACKOFF_BASE_S = 30.0    # first-fail window
 _ANCHOR_BACKOFF_MAX_S = 1800.0   # window cap (30 min)
 _ANCHOR_BACKOFF_TTL_S = 3600.0   # 1h memory of failure
 _ANCHOR_BACKOFF_MAX = 256
+
+# v3.8.1 P1-2 — JSON sidecar persistence for the backoff ledger (pattern:
+# render_inbox reconciled sidecar). The in-process ledger dies on gateway
+# restart, resetting every backoff window — the live 2026-09-05 incident
+# (27 anchor attempts / 103 min post-bounce) continued across restarts. The
+# sidecar (hermes-router-backoff.json, profile hermes home) is loaded lazily
+# on first ledger access after boot and rewritten atomically on every update.
+# Fail-open everywhere: load errors -> empty ledger, save errors -> skipped;
+# TTL reap also runs on load so stale entries never resurrect a window.
+_BACKOFF_SIDECAR_FILENAME = "hermes-router-backoff.json"
+_backoff_sidecar_loaded = False
+
+
+def _backoff_sidecar_path() -> str:
+    """Profile-scoped sidecar path via hermes_constants (mirrors render_inbox).
+    Falls back to /tmp with a shadow-qualified name. Never raises."""
+    try:
+        import hermes_constants
+        return str(hermes_constants.get_hermes_home() / _BACKOFF_SIDECAR_FILENAME)
+    except Exception:  # noqa: BLE001
+        return os.path.join("/tmp", "shadow-" + _BACKOFF_SIDECAR_FILENAME)
+
+
+def _load_backoff_sidecar_locked() -> None:
+    """Warm the in-process ledger from the sidecar (caller holds
+    _PENDING_SWAP_LOCK). One-shot per process; Tolerates torn/corrupt files;
+    TTL-reap on load. Never raises."""
+    global _backoff_sidecar_loaded
+    if _backoff_sidecar_loaded:
+        return
+    _backoff_sidecar_loaded = True
+    try:
+        path = _backoff_sidecar_path()
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return
+        try:
+            ttl = float(anchor_backoff_cfg().get("ttl_s", _ANCHOR_BACKOFF_TTL_S))
+        except Exception:  # noqa: BLE001
+            ttl = _ANCHOR_BACKOFF_TTL_S
+        now = time.time()
+        for sid, tasks in data.items():
+            if not isinstance(tasks, dict):
+                continue
+            for tid, rec in tasks.items():
+                try:
+                    last = float(rec.get("last_fail_ts", 0))
+                    if now - last > ttl:
+                        continue  # TTL-reap on load: expired failure memory
+                    _ANCHOR_FAIL_BACKOFF[(str(sid), str(tid))] = {
+                        "fails": max(1, int(rec.get("fails", 1))),
+                        "last_fail_ts": last,
+                        "last_reason": str(rec.get("last_reason", ""))[:200],
+                    }
+                except (TypeError, ValueError):
+                    continue
+    except Exception:  # noqa: BLE001 — sidecar load must never break routing
+        logger.debug("anchor backoff sidecar load failed", exc_info=True)
+
+
+def _save_backoff_sidecar_locked() -> None:
+    """Atomically rewrite the sidecar from the in-process ledger (caller
+    holds _PENDING_SWAP_LOCK). Fail-open: any error is swallowed."""
+    try:
+        path = _backoff_sidecar_path()
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        out: Dict[str, Dict[str, Any]] = {}
+        for (sid, tid), rec in _ANCHOR_FAIL_BACKOFF.items():
+            out.setdefault(sid, {})[tid] = {
+                "fails": int(rec.get("fails", 1)),
+                "last_fail_ts": float(rec.get("last_fail_ts", 0.0)),
+                "last_reason": str(rec.get("last_reason", ""))[:200],
+            }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(out, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 — sidecar write must never break routing
+        logger.debug("anchor backoff sidecar save failed", exc_info=True)
 
 # tool-result envelopes consumed by the consult tool (route_id -> envelope)
 _CONSULT_RESULTS: Dict[str, Dict[str, Any]] = {}
@@ -550,6 +636,7 @@ def record_anchor_backoff_failure(session_id: str, task_id: str,
             return
         now = time.time()
         with _PENDING_SWAP_LOCK:
+            _load_backoff_sidecar_locked()
             rec = _ANCHOR_FAIL_BACKOFF.get(key)
             if rec is None:
                 rec = {"fails": 0, "last_fail_ts": 0.0, "last_reason": ""}
@@ -567,6 +654,7 @@ def record_anchor_backoff_failure(session_id: str, task_id: str,
                 oldest = min(_ANCHOR_FAIL_BACKOFF,
                              key=lambda k: _ANCHOR_FAIL_BACKOFF[k].get("last_fail_ts", 0))
                 _ANCHOR_FAIL_BACKOFF.pop(oldest, None)
+            _save_backoff_sidecar_locked()
     except Exception:  # noqa: BLE001
         pass
 
@@ -578,7 +666,9 @@ def clear_anchor_backoff(session_id: str, task_id: str) -> None:
     try:
         key = (str(session_id or ""), str(task_id or ""))
         with _PENDING_SWAP_LOCK:
+            _load_backoff_sidecar_locked()
             if _ANCHOR_FAIL_BACKOFF.pop(key, None) is not None:
+                _save_backoff_sidecar_locked()
                 from hermes_router import _log_route  # deferred — import cycle
 
                 _log_route("PRE", event_detail="anchor_backoff_cleared",
@@ -597,6 +687,7 @@ def anchor_backoff_active(session_id: str, task_id: str,
             return False
         key = (str(session_id or ""), str(task_id or ""))
         with _PENDING_SWAP_LOCK:
+            _load_backoff_sidecar_locked()
             rec = _ANCHOR_FAIL_BACKOFF.get(key)
             if rec is None:
                 return False
@@ -622,6 +713,7 @@ def anchor_backoff_active_count() -> int:
         cfg = anchor_backoff_cfg()
         ttl = float(cfg.get("ttl_s", _ANCHOR_BACKOFF_TTL_S))
         with _PENDING_SWAP_LOCK:
+            _load_backoff_sidecar_locked()
             n = 0
             for rec in _ANCHOR_FAIL_BACKOFF.values():
                 last = float(rec.get("last_fail_ts", 0))
@@ -1025,3 +1117,7 @@ def _test_reset() -> None:
         _PENDING_SWAP.clear()
         _SWAP_DONE.clear()
         _ANCHOR_FAIL_BACKOFF.clear()
+        # v3.8.1 P1-2: mark sidecar consumed so tests never re-warm from the
+        # real profile home mid-test; the sidecar itself is not deleted.
+        global _backoff_sidecar_loaded
+        _backoff_sidecar_loaded = True
