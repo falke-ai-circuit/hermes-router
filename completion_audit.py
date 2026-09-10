@@ -72,8 +72,9 @@ _CLOSURE_PATTERNS = (
     # 2026-09-10 live miss: answers that open/close with a closure frame
     # ("Closure: ...", "Final summary", "Bottom line") were skipped by the
     # gate (turn counter not yet at N). Closure FRAMING is the signal, not
-    # just closure bookkeeping.
-    r"^\s*(?:closure|final\s+(?:summary|recommendation|answer|verdict|wrap[- ]?up)|bottom\s+line|recommendation\s*:)\s*[:—-]",
+    # just closure bookkeeping. NOTE: no ^ anchor — is_closure_response joins
+    # ask+response with a space, so framing can legitimately sit mid-string.
+    r"\b(?:closure|final\s+(?:summary|recommendation|answer|verdict|wrap[- ]?up)|bottom\s+line)\s*[:—-]",
     r"\b(?:summar(?:y|izing)\s+(?:the|of)\s+(?:the\s+)?(?:full\s+)?recommendation|final\s+thoughts?\s*[:,])",
 )
 
