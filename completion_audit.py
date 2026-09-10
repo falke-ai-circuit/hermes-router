@@ -575,10 +575,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             return None
         max_chars = audit_max_chars()
         msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text, max_chars)
-        # luna-pro is a reasoning model: low max_tokens gets eaten by
-        # reasoning tokens (finish=length, 0 visible content → empty_response).
-        # 2500 leaves room for thinking + the 5-question reflection.
-        api_kwargs = {"messages": msgs, "max_tokens": 2500, "temperature": 0.2}
+        # reasoning_effort=max (Goran 09-10: maximum capacity on frontier)
+        # burns 10k+ reasoning chars — the old 2500 cap starved consults
+        # into empty_response BEFORE any verdict was emitted (battery-proven
+        # 09-10: finish=length, 10254 reasoning chars, 0 verdict). 12000
+        # matches the uncensored-chain floor: thinking room + full verdict.
+        api_kwargs = {"messages": msgs, "max_tokens": 12000, "temperature": 0.2}
         # cap check mirrors the PRE lane; consult is small but respects spend
         est_in, est_out = anchor_exec.estimate_tokens_from_payload(api_kwargs)
         est_cost = anchor_chain.estimate_call_cost(ep, est_in, est_out, chain.pricing)
