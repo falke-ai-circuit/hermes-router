@@ -297,7 +297,29 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         timeout=float(timeout), max_retries=0)
         try:
             resp = client.chat.completions.create(**payload)
-        finally:
+        except Exception as _400:
+            # Nous/z-ai 400 (live 2026-09-10, valmet+conductor): the upstream
+            # occasionally rejects reasoning_effort claiming both
+            # "reasoning_effort" and "reasoning.effort" are provided with
+            # conflicting values — its gateway maps the top-level key for some
+            # z-ai requests. Defense: retry once WITHOUT reasoning_effort.
+            _msg = str(_400)
+            if "reasoning" in _msg and "conflicting values" in _msg and payload.pop("reasoning_effort", None):
+                logger.info("anchor_reasoning_conflict_retry without_reasoning_effort")
+                try:
+                    resp = client.chat.completions.create(**payload)
+                finally:
+                    try:
+                        client.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            else:
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+        else:
             try:
                 client.close()
             except Exception:  # noqa: BLE001
