@@ -1009,6 +1009,18 @@ def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
     return rendered
 
 
+def _provenance_footer_pass(rendered: str) -> str:
+    """Provenance footer (2026-09-07, Goran-direct): mark the render so the
+    main model reading its own history sees it as unauthored raw material
+    — not an injection, not its own voice. Idempotent, failure-isolated."""
+    try:
+        from .provenance_footer import append_footer
+        return append_footer(rendered)
+    except Exception:  # noqa: BLE001
+        logger.debug("provenance_footer (PRE) error", exc_info=True)
+        return rendered
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -1137,14 +1149,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         rendered = _debug_banner_pass(rendered, matches, _render_retries,
                                       session_id, model)
 
-        # Provenance footer (2026-09-07, Goran-direct): mark the render so the
-        # main model reading its own history sees it as unauthored raw material
-        # — not an injection, not its own voice. Idempotent, failure-isolated.
-        try:
-            from .provenance_footer import append_footer
-            rendered = append_footer(rendered)
-        except Exception:  # noqa: BLE001
-            logger.debug("provenance_footer (PRE) error", exc_info=True)
+        # Provenance footer — see _provenance_footer_pass.
+        rendered = _provenance_footer_pass(rendered)
 
         # Render inbox (2026-09-02 sync seam): persist the render so the agent
         # can read what was actually injected into its own context. Goran-direct.
