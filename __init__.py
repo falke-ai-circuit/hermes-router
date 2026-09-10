@@ -968,6 +968,47 @@ def _render_with_retry_ladder(content: str, matches: list, persona: str,
     return rendered, _render_retries
 
 
+def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
+                       session_id: str, model: str) -> str:
+    """v3.6 §10.2 debug banner — PRE uncensored render fire point. The
+    banner rides the DELIVERY representation only (the substance-frame
+    carries what the user reads); render_inbox/stash keep the CANONICAL
+    render (§10.4-F: canonical never contains a banner). Failure
+    isolated: any error -> deliver without banner (append_banner's own
+    contract), never fails the route. Returns possibly-banneared render."""
+    try:
+        from . import debug_banner as _db
+
+        if _db.debug_banner_enabled():
+            _chain_entries_dbg = router._chain_entries()
+            _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
+            _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
+            _dbg_task_id = _tap_task_identity(session_id, model)[0]
+            _banner_text = _db.format_banner(
+                lane="uncensored-render",
+                trigger=",".join(matches)[:60],
+                model=str(_entry_dbg.get("model") or ""),
+                endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
+                tokens_in=_ti, tokens_out=_to, est_cost=_cost,
+                latency_s=0.0, retries=render_retries,
+                task_id=_dbg_task_id, session_id=session_id)
+            _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
+            if _rendered_dbg != rendered:
+                _log_route("PRE", event_detail="debug_banner_emitted",
+                           lane="uncensored-render",
+                           **_db.build_banner_record("uncensored-render", _dbg_task_id,
+                                                     trigger=",".join(matches)[:60],
+                                                     model=str(_entry_dbg.get("model") or ""),
+                                                     tokens_in=_ti, tokens_out=_to,
+                                                     est_cost=_cost, latency_s=0.0,
+                                                     retries=render_retries,
+                                                     session_id=session_id, gate=""))
+                rendered = _rendered_dbg
+    except Exception:  # noqa: BLE001 — §10.4-H failure isolation
+        logger.debug("uncensored-router debug_banner (PRE render) error", exc_info=True)
+    return rendered
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -1092,42 +1133,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # flash receives (canonical invariant: persisted == delivered).
         rendered = cap_render(rendered, render_max_chars())
 
-        # v3.6 §10.2 debug banner — PRE uncensored render fire point. The
-        # banner rides the DELIVERY representation only (the substance-frame
-        # carries what the user reads); render_inbox/stash keep the CANONICAL
-        # render (§10.4-F: canonical never contains a banner). Failure
-        # isolated: any error -> deliver without banner (append_banner's own
-        # contract), never fails the route.
-        try:
-            from . import debug_banner as _db
-
-            if _db.debug_banner_enabled():
-                _chain_entries_dbg = router._chain_entries()
-                _entry_dbg = _chain_entries_dbg[0] if _chain_entries_dbg else {}
-                _ti, _to, _cost = _banner_tokens_from_last_write("render", session_id)
-                _dbg_task_id = _tap_task_identity(session_id, model)[0]
-                _banner_text = _db.format_banner(
-                    lane="uncensored-render",
-                    trigger=",".join(matches)[:60],
-                    model=str(_entry_dbg.get("model") or ""),
-                    endpoint=str(_entry_dbg.get("url") or "").split("://", 1)[-1].split("/", 1)[0],
-                    tokens_in=_ti, tokens_out=_to, est_cost=_cost,
-                    latency_s=0.0, retries=_render_retries,
-                    task_id=_dbg_task_id, session_id=session_id)
-                _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
-                if _rendered_dbg != rendered:
-                    _log_route("PRE", event_detail="debug_banner_emitted",
-                               lane="uncensored-render",
-                               **_db.build_banner_record("uncensored-render", _dbg_task_id,
-                                                         trigger=",".join(matches)[:60],
-                                                         model=str(_entry_dbg.get("model") or ""),
-                                                         tokens_in=_ti, tokens_out=_to,
-                                                         est_cost=_cost, latency_s=0.0,
-                                                         retries=_render_retries,
-                                                         session_id=session_id, gate=""))
-                    rendered = _rendered_dbg
-        except Exception:  # noqa: BLE001 — §10.4-H failure isolation
-            logger.debug("uncensored-router debug_banner (PRE render) error", exc_info=True)
+        # v3.6 §10.2 debug banner — see _debug_banner_pass.
+        rendered = _debug_banner_pass(rendered, matches, _render_retries,
+                                      session_id, model)
 
         # Provenance footer (2026-09-07, Goran-direct): mark the render so the
         # main model reading its own history sees it as unauthored raw material
