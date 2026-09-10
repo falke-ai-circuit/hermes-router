@@ -686,12 +686,13 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         from .anchor_exec import _profile_env_value, _PLACEHOLDER_VALUES
 
         sec = _cac.router_section() or {}
-        # Revision model: the agent's FAST main lane (flash), never the
-        # consult model — the router section's `model` is the frontier
-        # consult target (glm-5.3, reasoning-heavy), which burns the token
-        # budget on thinking and returns content=null → revision_failed
-        # reason=empty (live-caught sid17). Pin flash explicitly.
-        model = "z-ai/glm-5.3-flash"
+        # Revision model: FRONTIER (Goran 2026-09-10) — never downgrade to
+        # flash because it's slow. The revision gets the same thinking and
+        # edge as the consult: glm-5.3, reasoning_effort max, full token
+        # headroom. The earlier "empty" was token starvation (thinking
+        # burned the 4k budget → content=null), not a model problem —
+        # fixed with budget, not by lobotomizing the pass.
+        model = str(sec.get("model") or "") or "z-ai/glm-5.3"
         base = (str(sec.get("base_url") or "").strip()
                 or "https://inference-api.nousresearch.com/v1")
         api_key = ""
@@ -722,7 +723,8 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
             "FINAL RESPONSE (output only the response):"
         )
         payload = {"messages": [{"role": "user", "content": prompt}],
-                   "max_tokens": 4000, "temperature": 0.2}
+                   "max_tokens": 12000, "temperature": 0.2,
+                   "reasoning_effort": "max"}
         from openai import OpenAI
 
         client = OpenAI(base_url=base, api_key=api_key,
