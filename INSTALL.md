@@ -36,6 +36,34 @@ uncensored_router:
       key_file: ~/.secrets/venice_key
 ```
 
+**Optional — Lane 2 (frontier consults).** Add a `hermes_router:` (or legacy
+`uncensored_router:`) `complexity` block + `anchor_chain` pointing at any
+OpenAI-compatible frontier endpoint. All knobs live-read per dispatch — value changes
+need no restart:
+
+```yaml
+hermes_router:
+  enabled: true
+  complexity:
+    enabled: true
+    level: 2            # 0 off / 1 manual-only / 2 conservative-auto / 3 aggressive
+    pre_mode: route     # PRE orientation consults on complex-shaped asks
+    audit_mode: complex # POST completion audits
+  anchor_chain:
+    primary: nous://z-ai/glm-5.3     # any OpenAI-compatible endpoint scheme
+  persona_card_chars: 2500
+  pre_cooldown_seconds: 600
+  post_audit_min_turns: 3
+```
+
+The persona/methodology cards are derived at runtime from the loading profile's own
+`IDENTITY.md` + `SOUL.md` under `HERMES_HOME` — nothing to configure per agent, and
+the plugin adapts to any agent roster automatically.
+
+**Note (v3.7.0+):** aux/semantic calls resolve through the profile's own Hermes
+`auxiliary:` config — configure your aux provider there; the plugin has no separate
+aux endpoint/key surface.
+
 ## 3. Restart gateway
 
 ```bash

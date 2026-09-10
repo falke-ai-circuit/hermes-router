@@ -50,6 +50,24 @@ never crashes a turn.
 
 ## Lane 2 — complexity / struggle (v3)
 
+**Consult cadence gates (v3.7.0)** — frontier consults are rate-shaped, all knobs
+live-read from config and fail-open:
+
+| Knob | Default | Effect |
+|---|---|---|
+| `verify_class_exempt` | on | short imperative confirm/status asks ("can you confirm it's working?") skip PRE orientation entirely; explicit `anchor this` still overrides |
+| `pre_cooldown_seconds` | 600 | minimum seconds between billed PRE consults per session (same task_id exempt, override beats it) |
+| `post_audit_min_turns` | 3 | POST completion audit fires every N substantive turns, not every turn (≥3-tool-call turns audit immediately) |
+| `persona_card_chars` | 2500 | enriched persona card budget (0 = legacy compact card) |
+| `orientation_ask_cap` | 4000 | max chars of the ask included in the orientation payload |
+| `bounded_replay.last_n_turns` | 24 | conversation replay depth for frontier consults |
+
+**Agent-tailored consults (v3.7.0)** — both PRE orientation and POST audit payloads
+carry the profile's own persona card (runtime-derived from `HERMES_HOME/IDENTITY.md` +
+`SOUL.md`), so the frontier consultant orients *this* agent — its role, voice, closed
+lines — not a generic specialist. Universal: another Hermes setup's agents get their
+own cards automatically, zero config.
+
 **4-mode controller** (task-scoped, never start-anchor/end-judge):
 
 | Mode | Fires when | Effect |
