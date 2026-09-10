@@ -226,7 +226,8 @@ def _is_complex_ask(ask: str) -> bool:
         return False
 
 
-def eligible(session_id: str, ask: str, response_text: str, model: str = "") -> Tuple[bool, str]:
+def eligible(session_id: str, ask: str, response_text: str, model: str = "",
+             turn_n: int = None) -> Tuple[bool, str]:
     """Fire decision for the completion audit. Returns (ok, reason)."""
     mode = audit_mode()
     if mode == "off":
@@ -249,10 +250,13 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "") -> 
         return False, "response_quotes_audit"
     # deep-consult fix (PRE+POST mutual exclusion): a PRE consult staged for
     # this exchange → the POST audit stands down (one frontier call per turn).
+    # Turn-scoped (09-10 battery fix): a PRE flag from an EARLIER turn does
+    # NOT exclude — its exclusion right expired with that turn; otherwise a
+    # turn-1 PRE suppresses the turn-2 closure audit forever.
     try:
         from . import state as _st
 
-        if _st.pre_fired_this_turn(session_id):
+        if _st.pre_fired_this_turn(session_id, current_turn=turn_n):
             return False, "pre_consult_this_turn"
     except Exception:  # noqa: BLE001
         pass
@@ -439,7 +443,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             _log("audit_gate_skip",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
-        _ok, _why = eligible(session_id, ask, response_text, model)
+        _ok, _why = eligible(session_id, ask, response_text, model,
+                             turn_n=_turn_n)
         _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
                    turn=_turn_n, of=_min_turns, closure=_closure)

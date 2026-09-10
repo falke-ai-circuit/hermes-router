@@ -260,24 +260,35 @@ def _prune_turn_flags(now: float) -> None:
             store.pop(k, None)
 
 
-def mark_pre_fired(session_id: str) -> None:
+def mark_pre_fired(session_id: str, turn_n: int = 0) -> None:
     try:
         now = time.time()
         with _TURN_FLAG_LOCK:
             _prune_turn_flags(now)
-            _PRE_FIRED_TURN[session_id or ""] = now
+            _PRE_FIRED_TURN[session_id or ""] = (now, int(turn_n))
     except Exception:  # noqa: BLE001
         pass
 
 
-def pre_fired_this_turn(session_id: str, window_s: float = 120.0) -> bool:
-    """True when a PRE consult staged for this session within the last
-    `window_s` seconds — the POST audit stands down (mutual exclusion)."""
+def pre_fired_this_turn(session_id: str, current_turn: int = None,
+                        window_s: float = 120.0) -> bool:
+    """True when a PRE consult staged for this session and the POST gate is
+    evaluating the SAME substantive turn (mutual exclusion, one frontier call
+    per turn). When `current_turn` is provided, a PRE flag from an EARLIER
+    turn no longer excludes — its exclusion right expired with that turn.
+    Falls back to the time window when the counter is unavailable."""
     try:
         now = time.time()
         with _TURN_FLAG_LOCK:
-            ts = _PRE_FIRED_TURN.get(session_id or "")
-        return bool(ts and now - ts <= window_s)
+            entry = _PRE_FIRED_TURN.get(session_id or "")
+        if not entry:
+            return False
+        ts = entry[0] if isinstance(entry, tuple) else entry
+        if now - ts > window_s:
+            return False
+        if current_turn is not None and isinstance(entry, tuple):
+            return int(entry[1]) >= int(current_turn)
+        return True
     except Exception:  # noqa: BLE001
         return False
 

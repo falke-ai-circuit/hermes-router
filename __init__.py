@@ -870,7 +870,12 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 # mark the PRE fire so the POST completion audit stands down
                 # for this exchange (no double frontier call on one turn).
                 try:
-                    state.mark_pre_fired(session_id)
+                    _pre_turn = 0
+                    try:
+                        _pre_turn = state.bump_substantive_turn(session_id)
+                    except Exception:  # noqa: BLE001
+                        _pre_turn = 0
+                    state.mark_pre_fired(session_id, _pre_turn)
                 except Exception:  # noqa: BLE001
                     pass
                 # Goran 2026-09-10: a frontier consult marks a task boundary —
