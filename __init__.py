@@ -61,7 +61,12 @@ def _persona_system_prompt(request: Optional[dict]) -> str:
     dynamic from the loading profile's DNA — voice, lines, scene continuity).
     Never raises; empty string on any problem = legacy bare-prompt behavior."""
     try:
-        card = persona_card.build_persona_context()
+        budget = persona_card.persona_card_chars_budget()
+        msgs = request.get("messages") if isinstance(request, dict) else None
+        if budget > 0:
+            card = persona_card._build_enriched_persona_context(budget, messages=msgs)
+        else:
+            card = persona_card.build_persona_context()
         stub = ""
         if isinstance(request, dict) and isinstance(request.get("messages"), list):
             msgs = request.get("messages")
