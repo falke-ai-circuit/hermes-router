@@ -69,6 +69,12 @@ _CLOSURE_PATTERNS = (
     r"\b(?:wrapped|wrapped\s+up|closed\s+out|all\s+done|everything\s+(?:is\s+)?(?:done|shipped|landed|verified))\b",
     r"\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b.{0,60}\b(?:and|plus|\+)\s.{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
     r"\ball\s+(?:three|four|five|\d+)?\s*(?:of\s+(?:them|these))?\s*(?:are\s+)?(?:fixed|shipped|verified|done|landed)\b",
+    # 2026-09-10 live miss: answers that open/close with a closure frame
+    # ("Closure: ...", "Final summary", "Bottom line") were skipped by the
+    # gate (turn counter not yet at N). Closure FRAMING is the signal, not
+    # just closure bookkeeping.
+    r"^\s*(?:closure|final\s+(?:summary|recommendation|answer|verdict|wrap[- ]?up)|bottom\s+line|recommendation\s*:)\s*[:—-]",
+    r"\b(?:summar(?:y|izing)\s+(?:the|of)\s+(?:the\s+)?(?:full\s+)?recommendation|final\s+thoughts?\s*[:,])",
 )
 
 _CLOSURE_RE = None  # compiled lazily
