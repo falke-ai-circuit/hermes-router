@@ -624,6 +624,33 @@ def _hs_inject_pass(request: Any) -> bool:
     return False
 
 
+def _audit_delivery_pass(request: Any, context: Dict[str, Any]) -> "Optional[dict]":
+    """Pass 3 — v3.6.1 completion-audit delivery (Goran 2026-09-08): a stashed
+    frontier verdict from the PREVIOUS turn's completion audit is injected
+    as an advisory assistant-role envelope — the agent reads it before
+    composing her next turn and either surfaces the finding for user decision
+    or fixes and delivers. One-shot consume. Returns the modified-request
+    envelope when a verdict was delivered, else None."""
+    try:
+        from . import completion_audit as _ca
+        # session_id binds only later in on_llm_request — derive it locally
+        # here (same trap as the 2026-09-01 H3 gate UnboundLocalError).
+        _sid = context.get("session_id") or ""
+        _verdict = _ca.consume_verdict(_sid)
+        if _verdict:
+            modified_req = copy.deepcopy(request) if isinstance(request, dict) else {}
+            msgs2 = modified_req.get("messages")
+            if isinstance(msgs2, list):
+                msgs2.append({"role": "assistant", "content": _verdict})
+                modified_req["messages"] = msgs2
+                _log_route("PRE", event_detail="completion_audit_delivered",
+                           chars=len(_verdict), session_id=_sid)
+                return {"request": modified_req}
+    except Exception:  # noqa: BLE001 — verdict delivery must never break routing
+        logger.debug("completion audit delivery error", exc_info=True)
+    return None
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -663,23 +690,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # injected HERE as an advisory assistant-role envelope — the agent
         # reads it before composing her next turn and either surfaces the
         # finding for user decision or fixes and delivers. One-shot consume.
-        try:
-            from . import completion_audit as _ca
-            # session_id binds only at L675 (below) — derive it locally here
-            # (same trap as the 2026-09-01 H3 gate UnboundLocalError).
-            _sid = context.get("session_id") or ""
-            _verdict = _ca.consume_verdict(_sid)
-            if _verdict:
-                modified_req = copy.deepcopy(request) if isinstance(request, dict) else {}
-                msgs2 = modified_req.get("messages")
-                if isinstance(msgs2, list):
-                    msgs2.append({"role": "assistant", "content": _verdict})
-                    modified_req["messages"] = msgs2
-                    _log_route("PRE", event_detail="completion_audit_delivered",
-                               chars=len(_verdict), session_id=_sid)
-                    return {"request": modified_req}
-        except Exception:  # noqa: BLE001 — verdict delivery must never break routing
-            logger.debug("completion audit delivery error", exc_info=True)
+        _audit_delivered = _audit_delivery_pass(request, context)
+        if _audit_delivered is not None:
+            return _audit_delivered
 
         # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
         # blocking, uncensored should not filter anything when asked"). The
