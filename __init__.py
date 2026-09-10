@@ -1196,189 +1196,36 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # mode=flag_only logs+flags only; mode=route enters the EXISTING
             # downstream pipeline at the "matches" point via matches=[semantic_*].
             semantic_verdict, matches = _semantic_stage(response_text, session_id, model, context)
-            if not matches:
-                # v3.6.1 completion-audit arm (Goran 2026-09-08 ruling): the
-                # ONLY automatic frontier touchpoint at completion. Fires on
-                # every benign FINAL response (before the banner early-return
-                # so banner turns still audit). Async — delivery never delays.
-                try:
-                    from . import completion_audit as _ca
-                    if _ca.audit_enabled() and response_text and len(response_text.strip()) >= 500:
-                        _ask = (context.get("user_message")
-                                if isinstance(context, dict) else None) \
-                            or state.get_last_seen(session_id) or ""
-                        if _ask.strip():
-                            # Router tuning A3 (2026-09-09): POST every-N gate.
-                            # Counter increments on each gate evaluation where
-                            # the response passes the >=500-char threshold.
-                            # Audit fires when counter % N == 0, or when the
-                            # turn involved >= 3 tool calls (cheap count only).
-                            # N=1 => current behavior. Fail-open: any problem
-                            # => fire (current behavior).
-                            try:
-                                from . import router_core as _rc
-                                _min_turns = _rc.post_audit_min_turns()
-                            except Exception:  # noqa: BLE001
-                                _min_turns = 3
-                            _turn_n = 0
-                            try:
-                                _turn_n = state.bump_substantive_turn(session_id)
-                            except Exception:  # noqa: BLE001
-                                _turn_n = 0
-                            # deep-consult fix (audit-of-audit recursion): a
-                            # response that carries router audit artifacts
-                            # (prior verdict envelope / spend banner) is
-                            # router OUTPUT, not agent work — it must not
-                            # count as a substantive turn toward the audit
-                            # cadence, and its text must never enter a
-                            # consult payload.
-                            try:
-                                if _ca._is_audit_artifact(response_text or ""):
-                                    try:
-                                        state.reset_substantive_turn(session_id)
-                                    except Exception:  # noqa: BLE001
-                                        pass
-                                    _turn_n = 0
-                            except Exception:  # noqa: BLE001
-                                pass
-                            _fire_by_count = bool(
-                                _min_turns <= 1 or
-                                (_turn_n > 0 and _turn_n % _min_turns == 0))
-                            _closure = False
-                            if not _fire_by_count:
-                                # Goran 2026-09-10 (option C): closure-shaped
-                                # response audits regardless of the counter —
-                                # "n turns could be bs without closure".
-                                try:
-                                    _closure = _ca.is_closure_response(
-                                        _ask, response_text)
-                                except Exception:  # noqa: BLE001
-                                    _closure = False
-                                _fire_by_count = _closure
-                            if not _fire_by_count:
-                                try:
-                                    _req_ctx = context.get("request") \
-                                        if isinstance(context, dict) else None
-                                    _tool_calls = 0
-                                    if isinstance(_req_ctx, dict):
-                                        _msgs_ctx = _req_ctx.get("messages")
-                                        if isinstance(_msgs_ctx, list):
-                                            _tool_calls = sum(
-                                                1 for _m in _msgs_ctx
-                                                if isinstance(_m, dict)
-                                                and _m.get("role") == "tool")
-                                except Exception:  # noqa: BLE001
-                                    _tool_calls = 0
-                                _fire_by_count = _tool_calls >= 3
-                            if _fire_by_count:
-                                _ok, _why = _ca.eligible(session_id, _ask, response_text, model)
-                                _log_route("POST", event_detail="completion_audit_gate",
-                                           ok=_ok, reason=_why, session_id=session_id,
-                                           turn=_turn_n, of=_min_turns,
-                                           closure=_closure)
-                                if _ok:
-                                    # Sync/async topology toggle (Goran 09-10):
-                                    # audit_topology sync|async — sync blocks
-                                    # delivery on the consult (fail-open on
-                                    # timeout: unaudited ALWAYS delivers);
-                                    # async = legacy next-turn verdict.
-                                    _sync_budget = _ca.audit_sync_seconds()
-                                    _topology = _ca.audit_topology()
-                                    _meta = None
-                                    if _topology == "sync" and _sync_budget > 0:
-                                        try:
-                                            _meta = _ca.run_completion_audit_sync(
-                                                session_id, _ask, response_text,
-                                                context.get("request")
-                                                if isinstance(context, dict) else None,
-                                                model, timeout_s=_sync_budget)
-                                        except Exception:  # noqa: BLE001
-                                            _meta = None
-                                        if _meta and isinstance(_meta, dict):
-                                            _note = str(_meta.get("note") or "")
-                                            # In-hook revision pass (Goran-approved
-                                            # 09-10 deep-consult): the verdict must be
-                                            # SEEN AND ACTED ON before delivery — one
-                                            # bounded flash re-call produces the revised
-                                            # response. Fail-open to the draft.
-                                            _delivered = response_text
-                                            _rev_budget = _ca.audit_revision_seconds()
-                                            if _rev_budget > 0 and _note:
-                                                try:
-                                                    _revised = _ca.revise_with_verdict(
-                                                        session_id, _ask, response_text,
-                                                        _note, timeout_s=_rev_budget)
-                                                    if _revised:
-                                                        _delivered = _revised
-                                                except Exception:  # noqa: BLE001
-                                                    pass
-                                            _log_route("POST",
-                                                       event_detail="completion_audit_sync_applied",
-                                                       chars=len(_note),
-                                                       budget_s=_sync_budget,
-                                                       revised=(_delivered != response_text),
-                                                       session_id=session_id)
-                                            # mark POST audited — PRE stands down
-                                            # next turn (mutual exclusion)
-                                            try:
-                                                state.mark_post_audited(session_id)
-                                            except Exception:  # noqa: BLE001
-                                                pass
-                                            # Banner for this consult (Goran: every
-                                            # frontier call user-visible) — append
-                                            # inline, no park/consume roundtrip.
-                                            _btext = ""
-                                            try:
-                                                from . import debug_banner as _dbg
-                                                if _dbg.debug_banner_enabled():
-                                                    _btext = _dbg.format_banner(
-                                                        lane="frontier-anchor",
-                                                        trigger="completion_audit",
-                                                        model=str(_meta.get("model") or ""),
-                                                        endpoint=str(_meta.get("endpoint") or ""),
-                                                        tokens_in=_meta.get("tokens_in"),
-                                                        tokens_out=_meta.get("tokens_out"),
-                                                        est_cost=_meta.get("cost"),
-                                                        latency_s=_sync_budget,
-                                                        retries=0, task_id="",
-                                                        session_id=session_id) or ""
-                                            except Exception:  # noqa: BLE001
-                                                _btext = ""
-                                            _out_sync = _delivered
-                                            if _btext:
-                                                try:
-                                                    _out_sync = _dbg.append_banner(
-                                                        _out_sync, "\n" + _btext,
-                                                        _knob_checked=True)
-                                                except Exception:  # noqa: BLE001
-                                                    pass
-                                            return _out_sync
-                                    if _topology == "async" or _sync_budget <= 0:
-                                        _ca.run_completion_audit(session_id, _ask,
-                                                                 response_text,
-                                                                 context.get("request")
-                                                                 if isinstance(context, dict) else None,
-                                                                 model)
-                            else:
-                                _log_route("POST", event_detail="audit_gate_skip",
-                                           turn=_turn_n, of=_min_turns,
-                                           session_id=session_id)
-                except Exception:  # noqa: BLE001 — audit must never break delivery
-                    logger.debug("completion audit gate error", exc_info=True)
-                # Benign delivery — §10.4: consume any parked frontier-anchor
-                # banner and append to this turn's DELIVERY (one-shot).
-                try:
-                    from . import debug_banner as _dbp
-                    _parked = _dbp.consume_parked_banner(session_id)
-                    _log_route("POST", event_detail="anchor_banner_consume",
-                               parked=bool(_parked), session_id=session_id)
-                    if _parked:
-                        _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
-                        if _out != response_text:
-                            return _out
-                except Exception:  # noqa: BLE001 — banner must never break delivery
-                    pass
-                return None
+        if not matches:
+            # v3.6.1 completion-audit arm — unified audit_gate (Goran
+            # 2026-09-08 ruling + 09-10 battery): the ONLY automatic frontier
+            # touchpoint at completion. Previously nested under stage-2's
+            # `if not matches`, refusal-phrase FP passthroughs skipped the
+            # audit entirely (closure responses are the most refusal-shaped
+            # text — live-caught). audit_gate handles fire policy, sync
+            # consult, revision pass, banner; returns revised text or None.
+            try:
+                from . import completion_audit as _ca
+                _out_audit = _ca.audit_gate(
+                    session_id, response_text, model=model, context=context)
+                if _out_audit:
+                    return _out_audit
+            except Exception:  # noqa: BLE001 — audit must never break delivery
+                logger.debug("completion audit gate error", exc_info=True)
+            # Benign delivery — §10.4: consume any parked frontier-anchor
+            # banner and append to this turn's DELIVERY (one-shot).
+            try:
+                from . import debug_banner as _dbp
+                _parked = _dbp.consume_parked_banner(session_id)
+                _log_route("POST", event_detail="anchor_banner_consume",
+                           parked=bool(_parked), session_id=session_id)
+                if _parked:
+                    _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
+                    if _out != response_text:
+                        return _out
+            except Exception:  # noqa: BLE001 — banner must never break delivery
+                pass
+            return None
 
         session_id = session_id or ""
         model = model or ""

@@ -350,14 +350,166 @@ def _is_audit_artifact(text: str) -> bool:
 
 
 def substantive_turn_bump(session_id: str) -> int:
-    """Counter bump that does NOT count audit-artifact turns: responses that
-    carry verdict envelopes or banners are router output, not the agent's
-    substantive work (deep-consult fix: audit-of-audit recursion).
-    Falls back to a plain bump when the artifact check is inconclusive."""
+    """Counter bump for the substantive-turn cadence. Audit-artifact
+    responses (verdict envelopes / banners) are handled by audit_gate,
+    which resets the counter instead of counting them."""
     try:
         return state.bump_substantive_turn(session_id)
     except Exception:  # noqa: BLE001
         return 0
+
+
+def audit_gate(session_id: str, response_text: str, model: str = "",
+               context: Optional[dict] = None,
+               *, ask_override: str = "") -> Optional[str]:
+    """Unified POST completion-audit gate: fire policy (every-3-substantive-
+    turns OR closure-shaped response OR >=3 tool calls), eligibility, sync
+    consult, in-hook revision pass, inline spend banner. Returns the response
+    string to deliver, or None when no audit fired (caller passes through).
+
+    Extracted so BOTH benign-passthrough AND technical-flinch-passthrough
+    delivery paths reach the audit arm (live-verified gap: refusal-phrase
+    false-positive passthroughs were skipping the audit entirely — closure
+    responses are exactly the most refusal-shape-shaped text)."""
+    try:
+        if not audit_enabled():
+            return None
+        if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
+            return None
+        ask = ask_override or ""
+        if not ask.strip() and isinstance(context, dict):
+            ask = context.get("user_message") or ""
+        if not ask.strip():
+            try:
+                from . import state as _state
+                ask = _state.get_last_seen(session_id) or ""
+            except Exception:  # noqa: BLE001
+                ask = ""
+        if not ask.strip():
+            return None
+        try:
+            from . import router_core as _rc
+
+            _min_turns = _rc.post_audit_min_turns()
+        except Exception:  # noqa: BLE001
+            _min_turns = 3
+        try:
+            from . import state as _state
+            _turn_n = _state.bump_substantive_turn(session_id)
+        except Exception:  # noqa: BLE001
+            _turn_n = 0
+        # audit-of-audit recursion: a response carrying router artifacts is
+        # router output, not agent work — reset the cadence counter.
+        try:
+            if _is_audit_artifact(response_text or ""):
+                try:
+                    from . import state as _state
+                    _state.reset_substantive_turn(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                _turn_n = 0
+        except Exception:  # noqa: BLE001
+            pass
+        _fire = bool(_min_turns <= 1 or (_turn_n > 0 and _turn_n % _min_turns == 0))
+        _closure = False
+        if not _fire:
+            # Goran 2026-09-10 (option C): closure-shaped responses audit
+            # regardless of the counter.
+            try:
+                _closure = is_closure_response(ask, response_text)
+            except Exception:  # noqa: BLE001
+                _closure = False
+            _fire = _closure
+        if not _fire:
+            # >=3 tool-role messages in the outbound payload → audited even
+            # on turn 1 (heavy work turn).
+            try:
+                _req = (context or {}).get("request") if isinstance(context, dict) else None
+                _msgs = (_req or {}).get("messages") if isinstance(_req, dict) else None
+                _tools = sum(1 for _m in (_msgs or [])
+                             if isinstance(_m, dict) and _m.get("role") == "tool") \
+                    if isinstance(_msgs, list) else 0
+                _fire = _tools >= 3
+            except Exception:  # noqa: BLE001
+                pass
+        from . import router_core as _rc  # for _log_route session scoping
+        from .router_core import _log_route
+        if not _fire:
+            _log_route("POST", event_detail="audit_gate_skip",
+                       turn=_turn_n, of=_min_turns, session_id=session_id)
+            return None
+        _ok, _why = eligible(session_id, ask, response_text, model)
+        _log_route("POST", event_detail="completion_audit_gate",
+                   ok=_ok, reason=_why, session_id=session_id,
+                   turn=_turn_n, of=_min_turns, closure=_closure)
+        if not _ok:
+            return None
+        _sync_budget = audit_sync_seconds()
+        _topology = audit_topology()
+        if _topology == "sync" and _sync_budget > 0:
+            _req = (context or {}).get("request") if isinstance(context, dict) else None
+            try:
+                _meta = run_completion_audit_sync(
+                    session_id, ask, response_text, _req, model,
+                    timeout_s=_sync_budget)
+            except Exception:  # noqa: BLE001
+                _meta = None
+            if not (_meta and isinstance(_meta, dict)):
+                return None
+            _note = str(_meta.get("note") or "")
+            # In-hook revision pass (Goran-approved 09-10): verdict must be
+            # SEEN AND ACTED ON before delivery — one bounded flash re-call.
+            _delivered = response_text
+            _rev_budget = audit_revision_seconds()
+            if _rev_budget > 0 and _note:
+                try:
+                    _revised = revise_with_verdict(
+                        session_id, ask, response_text, _note,
+                        timeout_s=_rev_budget)
+                    if _revised:
+                        _delivered = _revised
+                except Exception:  # noqa: BLE001
+                    pass
+            _log_route("POST", event_detail="completion_audit_sync_applied",
+                       chars=len(_note), budget_s=_sync_budget,
+                       revised=(_delivered != response_text),
+                       session_id=session_id)
+            try:
+                from . import state as _state
+                _state.mark_post_audited(session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            _btext = ""
+            try:
+                from . import debug_banner as _dbg
+                if _dbg.debug_banner_enabled():
+                    _btext = _dbg.format_banner(
+                        lane="frontier-anchor", trigger="completion_audit",
+                        model=str(_meta.get("model") or ""),
+                        endpoint=str(_meta.get("endpoint") or ""),
+                        tokens_in=_meta.get("tokens_in"),
+                        tokens_out=_meta.get("tokens_out"),
+                        est_cost=_meta.get("cost"),
+                        latency_s=_sync_budget, retries=0, task_id="",
+                        session_id=session_id) or ""
+            except Exception:  # noqa: BLE001
+                _btext = ""
+            _out = _delivered
+            if _btext:
+                try:
+                    from . import debug_banner as _dbg
+                    _out = _dbg.append_banner(_out, "\n" + _btext,
+                                              _knob_checked=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            return _out
+        # async topology (or sync budget 0): legacy next-turn verdict.
+        _req = (context or {}).get("request") if isinstance(context, dict) else None
+        run_completion_audit(session_id, ask, response_text, _req, model)
+        return None
+    except Exception:  # noqa: BLE001 — audit must never break delivery
+        logger.debug("audit_gate error", exc_info=True)
+        return None
 
 
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> List[Dict[str, str]]:
