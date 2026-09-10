@@ -86,6 +86,18 @@ _PLANNING_ARCH: List[str] = [
     r"\b(?:break(?:ing)? down|decompos\w+)\b.{0,40}\b(?:into|the)\b.{0,60}\b(?:phase\w*|step\w*|stage\w*|milestone\w*|checkpoint\w*)\b",
     r"\b(?:roadmap|milestones?)\b.{0,40}\b(?:for|with)\b.{0,60}\b(?:deliver\w*|phase\w*|commit\w*|release\w*)\b",
     r"\b(?:evaluate|compare)\b.{0,40}\b(?:framework\w*|librar\w+|approach\w*|design\w*|databases?|architectures?)\b.{0,60}\b(?:for|against|vs)\b",
+    # Design/analysis verbs with engineering objects (2026-09-10 live miss:
+    # "Design the failure-mode matrix for X" scored 0 — 'design' wasn't within
+    # 40 chars of 'for' + infrastructure noun). Widen: design/analyze/enumerate
+    # + any matrix/topology/protocol/semantics/policy/mechanism/gate/strategy.
+    r"\b(?:design|architect|analyz\w+|analys\w+|enumerat\w+|spec(?:ify| out)?|define)\b.{0,60}\b(?:failure[- ]mode|matrix|topolog\w+|protocol|semantics|polic\w+|mechanism\w*|gate\w*|strategy|schema|data ?model|workflow|lifecycle)\b",
+    # Tradeoff/compare asks without "for|against|vs" tail: "compare blocking
+    # POST consult with next-turn verdict delivery" (live miss #2).
+    r"\b(?:compare|contrast|weigh)\b.{0,80}\b(?:with|against|versus|vs)\b",
+    # "what breaks when..." failure-enumeration shape.
+    r"\bwhat\s+(?:breaks?|fails?|goes\s+wrong)\b",
+    # "mitigation/rollback/fallback ... for each" enumeration-of-handling shape.
+    r"\b(?:mitigation\w*|fallback\w*|rollback|failure modes?)\b.{0,60}\b(?:for each|per|and the)\b",
 ]
 
 # Bucket DEBUG CHAINS — "why does X fail", root-cause hunts with unknown cause
