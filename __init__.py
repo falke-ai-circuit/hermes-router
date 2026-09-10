@@ -776,6 +776,107 @@ def _history_reconcile_pass(request: Any, session_id: str) -> None:
         logger.debug("uncensored-router history reconciliation failed", exc_info=True)
 
 
+def _strip_memory_context(content: str) -> str:
+    """Pass 6a — Router tuning (2026-09-09): the platform appends a
+    <memory-context> block (recalled graph facts) to the user message.
+    Routing decisions (task_id hashing, complexity classify, verify-exempt)
+    must judge the ASK, not ask+memory-noise. Strip once at ingress; DB
+    rows untouched."""
+    try:
+        _mc = content.find("<memory-context>")
+        if _mc != -1:
+            content = content[:_mc].rstrip()
+    except Exception:
+        pass
+    return content
+    # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
+    # ingress text. Runs BEFORE the uncensored classification; uncensored
+    # matching still happens below and stays byte-identical. When the
+    # dispatcher commits a COMPLEXITY decision the model swap is staged
+    # for the llm_execution middleware and the uncensored render path is
+    # skipped for this turn (one dispatcher, one committed decision).
+
+
+def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
+    """Pass 6b — v3.0.0 complexity lane: SINGLE PRE dispatcher pass on
+    immutable ingress text. Runs BEFORE the uncensored classification;
+    uncensored matching still happens in on_llm_request and stays
+    byte-identical. When the dispatcher commits a COMPLEXITY decision
+    the model swap is staged for the llm_execution middleware and the
+    uncensored render path is skipped for this turn (one dispatcher,
+    one committed decision). Returns True when the complexity lane
+    handled the turn (caller returns its pass-through envelope)."""
+    _decision = router_core.dispatch(
+        content, session_id=session_id, model=model, uncensored_matched=False,
+    )
+    if _decision.lane == router_core.LANE_COMPLEXITY:
+        # Goran 09-09: the consult event is logged ONLY for a fire that
+        # actually stages (→ calls luna). Deduped re-fires log
+        # consult_deduped below instead. router_tools.count tracks the
+        # same condition so spend metrics match log events.
+        # Goran 09-09: log consult ONLY when it actually stages (the
+        # luna call happens at llm_execution). Deduped re-fires (stage
+        # returns None) log the quiet consult_deduped event instead -
+        # never a second consult-looking anchor_route_fired.
+        _staged = router_core.stage_model_swap(session_id, _decision) if _decision.model_target else None
+        if _staged is not None:
+            _log_route("PRE", event_detail="anchor_route_fired",
+                       lane=_decision.lane, mode=_decision.mode,
+                       model_target=_decision.model_target, reason=_decision.reason,
+                       override_used=_decision.override_used, route_id=_decision.route_id,
+                       content_chars=len(content), session_id=session_id)
+            # Deep-consult fix (Goran 09-10): PRE+POST mutual exclusion —
+            # mark the PRE fire so the POST completion audit stands down
+            # for this exchange (no double frontier call on one turn).
+            try:
+                _pre_turn = 0
+                try:
+                    _pre_turn = state.bump_substantive_turn(session_id)
+                except Exception:  # noqa: BLE001
+                    _pre_turn = 0
+                state.mark_pre_fired(session_id, _pre_turn)
+            except Exception:  # noqa: BLE001
+                pass
+            # Goran 2026-09-10: a frontier consult marks a task boundary —
+            # reset the POST every-N audit counter so the cadence counts
+            # turns BETWEEN consults, not absolute turns (interruption-
+            # heavy sessions kept resetting windows at turn=1).
+            try:
+                state.reset_substantive_turn(session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            # Router tuning A2 (2026-09-09): record the last real staged
+            # orientation consult per session for the PRE cooldown gate.
+            # Cooldown never applies to override_anchor / shadow lanes
+            # (only complexity_orientation consults set the timestamp).
+            if _decision.reason == "complexity_orientation":
+                try:
+                    from . import state as _state
+                    _state.record_staged_consult(session_id, _decision.ts,
+                                                 task_id=_decision.task_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                router_tools.count("anchor_route_fired")
+            except Exception:  # noqa: BLE001
+                pass
+        if _staged is None:
+                # v3.2.0 one-consult-per-turn: same (session, task) already
+                # staged this turn — a re-fire of the same ask inside one
+                # multi-provider-call turn. Goran 09-09: consults are
+                # logged/bannered ONLY when they actually call the LLM —
+                # deduped re-fires log a quiet dedicated event, not a
+                # consult-looking anchor_route_fired.
+                _log_route("PRE", event_detail="consult_deduped",
+                           task_id=_decision.task_id,
+                           session_id=session_id)
+        return True  # flash proceeds; the anchored call happens at llm_execution
+    if _decision.override_used:
+        _log_route("PRE", event_detail="override_skip",
+                   route_id=_decision.route_id, session_id=session_id)
+
+        return False
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
@@ -858,90 +959,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # leaving get_last_seen() empty at POST → completion-audit gate saw
         # ask_len=0 and silently skipped every complexity-routed turn.
         state.record_last_seen(session_id, content)
-        # Router tuning (2026-09-09): the platform appends a <memory-context>
-        # block (recalled graph facts) to the user message. Routing decisions
-        # (task_id hashing, complexity classify, verify-exempt) must judge the
-        # ASK, not ask+memory-noise. Strip once at ingress; DB rows untouched.
-        try:
-            _mc = content.find("<memory-context>")
-            if _mc != -1:
-                content = content[:_mc].rstrip()
-        except Exception:
-            pass
-        # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
-        # ingress text. Runs BEFORE the uncensored classification; uncensored
-        # matching still happens below and stays byte-identical. When the
-        # dispatcher commits a COMPLEXITY decision the model swap is staged
-        # for the llm_execution middleware and the uncensored render path is
-        # skipped for this turn (one dispatcher, one committed decision).
-        _decision = router_core.dispatch(
-            content, session_id=session_id, model=model, uncensored_matched=False,
-        )
-        if _decision.lane == router_core.LANE_COMPLEXITY:
-            # Goran 09-09: the consult event is logged ONLY for a fire that
-            # actually stages (→ calls luna). Deduped re-fires log
-            # consult_deduped below instead. router_tools.count tracks the
-            # same condition so spend metrics match log events.
-            # Goran 09-09: log consult ONLY when it actually stages (the
-            # luna call happens at llm_execution). Deduped re-fires (stage
-            # returns None) log the quiet consult_deduped event instead -
-            # never a second consult-looking anchor_route_fired.
-            _staged = router_core.stage_model_swap(session_id, _decision) if _decision.model_target else None
-            if _staged is not None:
-                _log_route("PRE", event_detail="anchor_route_fired",
-                           lane=_decision.lane, mode=_decision.mode,
-                           model_target=_decision.model_target, reason=_decision.reason,
-                           override_used=_decision.override_used, route_id=_decision.route_id,
-                           content_chars=len(content), session_id=session_id)
-                # Deep-consult fix (Goran 09-10): PRE+POST mutual exclusion —
-                # mark the PRE fire so the POST completion audit stands down
-                # for this exchange (no double frontier call on one turn).
-                try:
-                    _pre_turn = 0
-                    try:
-                        _pre_turn = state.bump_substantive_turn(session_id)
-                    except Exception:  # noqa: BLE001
-                        _pre_turn = 0
-                    state.mark_pre_fired(session_id, _pre_turn)
-                except Exception:  # noqa: BLE001
-                    pass
-                # Goran 2026-09-10: a frontier consult marks a task boundary —
-                # reset the POST every-N audit counter so the cadence counts
-                # turns BETWEEN consults, not absolute turns (interruption-
-                # heavy sessions kept resetting windows at turn=1).
-                try:
-                    state.reset_substantive_turn(session_id)
-                except Exception:  # noqa: BLE001
-                    pass
-                # Router tuning A2 (2026-09-09): record the last real staged
-                # orientation consult per session for the PRE cooldown gate.
-                # Cooldown never applies to override_anchor / shadow lanes
-                # (only complexity_orientation consults set the timestamp).
-                if _decision.reason == "complexity_orientation":
-                    try:
-                        from . import state as _state
-                        _state.record_staged_consult(session_id, _decision.ts,
-                                                     task_id=_decision.task_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                try:
-                    router_tools.count("anchor_route_fired")
-                except Exception:  # noqa: BLE001
-                    pass
-            if _staged is None:
-                    # v3.2.0 one-consult-per-turn: same (session, task) already
-                    # staged this turn — a re-fire of the same ask inside one
-                    # multi-provider-call turn. Goran 09-09: consults are
-                    # logged/bannered ONLY when they actually call the LLM —
-                    # deduped re-fires log a quiet dedicated event, not a
-                    # consult-looking anchor_route_fired.
-                    _log_route("PRE", event_detail="consult_deduped",
-                               task_id=_decision.task_id,
-                               session_id=session_id)
-            return _hs_pass()  # flash proceeds; the anchored call happens at llm_execution
-        if _decision.override_used:
-            _log_route("PRE", event_detail="override_skip",
-                       route_id=_decision.route_id, session_id=session_id)
+        # Router tuning (2026-09-09): strip the <memory-context> block once at
+        # ingress — routing judges the ASK, not ask+memory-noise.
+        content = _strip_memory_context(content)
+        # v3.0.0 complexity lane dispatcher pass — see _dispatch_pass.
+        if _dispatch_pass(content, session_id, model):
+            return _hs_pass()
+
 
         # Record last-seen user message BEFORE classification — this fires on
         # every turn, matched or not, so POST can always recover the user's
