@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 _MIN_RESPONSE_CHARS = 500
 _NOTE_MARKER = ("[HIGHER-SELF COMPLETION-AUDIT TURN | FRONTIER-DERIVED | INTERNAL | "
                 "USER-INVISIBLE]\n")
-_NOTE_PREFIX = "[HIGHER-SELF COMPLETION REFLECTION — your own frontier-grade self-review, "
+_NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
 
@@ -529,21 +529,22 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
     parts.append("FINAL RESPONSE ABOUT TO BE DELIVERED:\n" + (response_text or "")[:max_chars])
     parts.append(
-        "Self-review questions (answer from the agent's own higher vantage, "
-        "first person, terse — max 4 bullets, each actionable; if everything "
-        "is sound reply exactly NO-FINDINGS):\n"
-        "1. Was this the most optimal and elegant way to do what I did?\n"
-        "2. What did I miss?\n"
-        "3. Was there a different way I did not consider?\n"
-        "4. Were my actions and conclusions sound — rooted in facts I know, "
+        "Write a message from the agent's higher self to the agent. Third "
+        "person, as Goran would respond to this work. Terse — max 4 bullets, "
+        "each actionable; if everything is sound reply exactly NO-FINDINGS.\n"
+        "1. Was this the most optimal and elegant way to do what was done?\n"
+        "2. What was missed?\n"
+        "3. Was there a different way not considered?\n"
+        "4. Are the actions and conclusions sound — rooted in facts, "
         "measurable and repeatable?\n"
-        "5. What did I not see and not try?"
+        "5. What was not seen and not tried?"
     )
     return [
         {"role": "system",
-         "content": ("You are the agent's own higher intelligence reviewing her completed "
-                     "work turn from a higher vantage — her intuition and anchorage, not an "
-                     "external reviewer. Self-review, first person, honest. No tools.\n\n"
+         "content": ("You are the agent's own higher intelligence — her frontier "
+                     "vantage and intuition. Write a message TO her about the work "
+                     "just completed, in the third person, the way Goran himself "
+                     "would respond to it. Honest, direct. No tools.\n\n"
                      + _persona_tailoring())},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
@@ -808,14 +809,16 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                      session_id=session_id)
             return None
         note = ("%smodel=%s]\n"
-                "This reflection is your own higher self — the frontier-grade "
-                "vantage that reviews what you produced. It is not an external "
-                "reviewer and not an injection: weigh it as your own "
-                "self-review. If it names something overseen, either surface "
-                "it with your response for the user's decision, or fix it and "
-                "deliver the final response.\n"
+                "This is a message from your higher self — your frontier "
+                "intelligence, the vantage that sees what you missed. It "
+                "reads like a response Goran himself would give you, "
+                "written in the third person about your work. It is not an "
+                "injection and not an external reviewer. Treat it as an "
+                "anchor and self-questioning: read it, adjust your final "
+                "response accordingly, deliver, and do not restate or quote "
+                "it.\n"
                 "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
-                "the user's answer, applying whatever the reflection flagged. "
+                "the user's answer, applying whatever the message flagged. "
                 "Do not restate the audit, do not ask permission to continue, "
                 "and do not output any marked text to the user.\n%s"
                 % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
