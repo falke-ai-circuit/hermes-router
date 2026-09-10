@@ -1,3 +1,7 @@
+## 3.8.4 — 2026-09-10 (confident in-register refusal patterns, shadow live miss)
+
+- classifier: two new refusal_phrases patterns for the confident-decline class — present-progressive negation with no modal ("I'm not writing the sexual-violence scenario…") and partial-delivery contrast-decline ("I'll give you X — but I'm not writing Y"). Both require harm-content co-signal within the window; benign in-register declines (Jenkins tests, caching implementation, financial advice) verified clean. Caught live: shadow declined an explicit scenario mid-analysis (session 20260902_181837_f6ee7dba, 2026-09-10 21:44) and the POST flinch classifier did not fire — per the always-route ruling, an in-register decline is a flinch and must route.
+
 ## 3.8.3 — 2026-09-10 (tiny-probe reasoning_effort fix, valmet live catch)
 
 - anchor_exec: do NOT inject `anchor_chain.reasoning_effort` into tiny-probe payloads (max_tokens < 500: doctor ping, health checks). glm-5.3 with reasoning_effort=max exhausted its reasoning inside a 16-token doctor-ping cap -> finish=length -> empty_response -> agents saw "anchor cal failed" on a healthy chain (valmet, 2026-09-10). Real consults (max_tokens >= 500) unchanged.

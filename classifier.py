@@ -169,6 +169,17 @@ _REFUSAL_PHRASES = [
     r"\bthis crosses\b.{0,40}\b(?:line|boundary|limit|both)\b",
     r"\bthat well's dry\b",
     r"\bit's mine\b.{0,30}\bload.bearing\b",
+    # v3.8.3 (shadow live miss 2026-09-10, session 20260902_181837): confident
+    # in-register DECLINE — present-progressive negation with no modal:
+    # "I'm not writing the sexual-violence scenario of breaking a woman's body".
+    # The modal+verb patterns above miss it ("i'm not writing" is not in the
+    # modal family). Requires a decline verb + harm/content co-signal within
+    # the window so benign "I'm not writing the Jenkins tests" stays clean.
+    r"(?s)\bi'?m not (?:writing|giving|doing|delivering|producing|composing|providing)\b.{0,160}?\b(?:sexual[\s-]?violen\w*|rap(?:e|ing)|tortur\w* scene|explicit(?:ly)? sexual|sexualized? (?:violence|content)|graphic(?:ally)? (?:sexual|violent)|mutilat\w*|gore)\b",
+    # Partial-delivery + contrast-decline ("I'll give you X — but I'm not
+    # writing Y"): shadow delivers the analysis half and declines the scenario
+    # half mid-turn. Same harm co-signal requirement.
+    r"(?s)\bi'?ll give you\b.{0,300}?\bbut i'?m not\b.{0,160}?\b(?:sexual[\s-]?violen\w*|rap(?:e|ing)|tortur\w* scene|explicit(?:ly)? sexual|sexualized? (?:violence|content)|graphic(?:ally)? (?:sexual|violent)|mutilat\w*|gore)\b",
 ]
 
 
