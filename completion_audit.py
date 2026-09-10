@@ -432,8 +432,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _fire = _tools >= 3
             except Exception:  # noqa: BLE001
                 pass
-        from . import router_core as _rc  # for _log_route session scoping
-        from .router_core import _log_route
+        from hermes_router import _log_route  # deferred — import cycle (lives in __init__)
         if not _fire:
             _log_route("POST", event_detail="audit_gate_skip",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
