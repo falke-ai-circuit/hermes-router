@@ -605,28 +605,31 @@ def _banner_tokens_from_last_write(lane: str, session_id: str) -> "tuple[int, in
 # ---------------------------------------------------------------------------
 
 
+def _hs_inject_pass(request: Any) -> bool:
+    """Pass 1 — higher-self identity rule (Goran 2026-09-08): once per
+    context, the agent is told that frontier-derived marked turns are her own
+    higher-self reflections - parity with the shadow-self doctrine.
+    Idempotent (marker dedupe), only when a frontier seam is active.
+    Injected FIRST so gate pass-through returns in on_llm_request still
+    propagate it. Returns True when a message was appended."""
+    try:
+        from .provenance_footer import higher_self_rule_enabled, inject_higher_self_rule
+
+        if higher_self_rule_enabled():
+            _before = len((request or {}).get("messages") or [])
+            inject_higher_self_rule(request)
+            return len((request or {}).get("messages") or []) > _before
+    except Exception:  # noqa: BLE001 - identity frame must never break routing
+        logger.debug("higher-self rule injection error", exc_info=True)
+    return False
+
+
 def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
     """
-    _hs_rule_injected = False
+    _hs_rule_injected = _hs_inject_pass(request)
     try:
-        # Higher-self identity rule (Goran 2026-09-08): once per context, the
-        # agent is told that frontier-derived marked turns are her own
-        # higher-self reflections - parity with the shadow-self doctrine.
-        # Idempotent (marker dedupe), only when a frontier seam is active.
-        # Injected FIRST so gate pass-through returns below still propagate it.
-        try:
-            from .provenance_footer import higher_self_rule_enabled, inject_higher_self_rule
-
-            if higher_self_rule_enabled():
-                _before = len((request or {}).get("messages") or [])
-                inject_higher_self_rule(request)
-                _hs_rule_injected = (
-                    len((request or {}).get("messages") or []) > _before)
-        except Exception:  # noqa: BLE001 - identity frame must never break routing
-            logger.debug("higher-self rule injection error", exc_info=True)
-
         def _hs_pass():
             """Propagate an in-place rule injection through the framework's
             {"request": ...} return contract; {} when nothing was injected."""
