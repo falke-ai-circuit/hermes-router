@@ -2,11 +2,16 @@
 
 Generic **two-lane Hermes router** plugin (any profile, any agent). Lane 1 is the proven
 uncensored render lane (v2 behavior, byte-identical mechanics). Lane 2 is the v3
-complexity/struggle lane: when a task needs stronger reasoning — or the flash model is
+complexity/struggle lane: when a task needs stronger reasoning — or the main model is
 visibly struggling — ONE per-call anchored call goes to a configured frontier model, and
-its answer enters the flash model's context as a provenance-stamped advisory envelope.
+its answer enters the main model's context as a provenance-stamped advisory envelope.
 Fail-open everywhere: every failure degrades to normal agent pass-through. The plugin
 never crashes a turn.
+
+**Two-lane doctrine (v3.8.0):** the frontier lane is the *observer*; the uncensored lane
+is *capability*. Frontier calls never filter and never rewrite — they observe, orient,
+and audit (as advisory "higher-self" messages); capability work (including uncensored
+rendering) stays with the agent's own configured chain.
 
 ```
                        ┌──────────────────────────────────────────────────┐
@@ -29,8 +34,8 @@ never crashes a turn.
         persona from profile DNA,                    endpoint (openrouter:// or
         POST refusal swap + FIX1                     custom scheme), cap guard,
         history reconcile                            spend ledger
-                                                     frontier answer enters flash
-                                                     context as advisory envelope
+                                                     frontier answer enters main
+                                                     model context as advisory
                                                      (kind/producer/route_id/
                                                       task_id/limitations)
 ```
@@ -43,14 +48,37 @@ never crashes a turn.
   renders in the agent's voice; unconditional on fallback recovery; loop guard keyed on
   message hash stays as-is.
 - **Model chain**: ordered `chain:` (primary → fallback), first success wins.
-- **Persona card**: derived from `HERMES_HOME/{IDENTITY,SOUL}.md` at call time,
+- Persona card: derived from `HERMES_HOME/{IDENTITY,SOUL}.md` at call time,
   secret-scrubbed, mtime-cached; modes `voice_stems` (default) / `voice_only` / `full` / `none`.
-- The 2026-09-04 Goran-direct reversal removed the csam content gate entirely: no
-  code-side filtering — boundaries live in the render substrate, not routing code.
+- No code-side content filtering: boundaries live in the render substrate, not routing
+  code.
 
 ## Lane 2 — complexity / struggle (v3)
 
-**Consult cadence gates (v3.7.0)** — frontier consults are rate-shaped, all knobs
+**Higher-self frontier consults (v3.8.0)** — both lanes deliver frontier input as a
+*message from your higher self*: the part of the agent that observes it while it acts.
+
+- **PRE orientation** — before a complex task, the frontier sends an orientation message:
+  how the agent's higher self would optimally do the coming job (role, voice, closed
+  lines, pitfalls). The agent owns the conclusion and never disowns the turn.
+- **POST completion audit** — every `post_audit_min_turns` substantive turns, the
+  frontier gives its own post-intuition take on the resolution: requested-vs-delivered
+  sense check, unexplored angles, what is genuinely good, what could be better. Never an
+  audit *of* the main model, never first-person self-review, no user names in frames.
+- **Sync with fail-open (v3.8.0)**: the POST audit runs synchronously within
+  `audit_sync_seconds` (default 45) so the verdict is visible immediately. An unaudited
+  turn ALWAYS delivers — a frontier failure or timeout never blocks the answer. A sync
+  audit that merely times out downgrades to async and delivers next turn with a parked
+  banner (slow ≠ failed). `audit_topology: sync|async` selects the default topology.
+- **Revision pass**: when the audit flags a real problem, the delivered turn is
+  re-run/revised on the FULL frontier model (full reasoning budget, 60s
+  `audit_revision_seconds`, clamp 0–180) — never a downgraded model.
+- Payloads are **agent-tailored**: PRE and POST messages carry the profile's own persona
+  card (runtime-derived from `HERMES_HOME/IDENTITY.md` + `SOUL.md`) — the frontier orients
+  *this* agent, not a generic specialist. Universal: any Hermes setup's agents get their
+  own cards automatically, zero config.
+
+**Consult cadence gates (v3.7.0+)** — frontier consults are rate-shaped, all knobs
 live-read from config and fail-open:
 
 | Knob | Default | Effect |
@@ -58,23 +86,28 @@ live-read from config and fail-open:
 | `verify_class_exempt` | on | short imperative confirm/status asks ("can you confirm it's working?") skip PRE orientation entirely; explicit `anchor this` still overrides |
 | `pre_cooldown_seconds` | 600 | minimum seconds between billed PRE consults per session (same task_id exempt, override beats it) |
 | `post_audit_min_turns` | 3 | POST completion audit fires every N substantive turns, not every turn (≥3-tool-call turns audit immediately) |
+| `audit_topology` | sync | POST audit topology: `sync` (45s budget, fail-open, async downgrade on timeout) or `async` (always next-turn) |
+| `audit_sync_seconds` | 45 | max seconds a synchronous POST audit may hold the turn before downgrading to async |
+| `audit_revision_seconds` | 60 | budget for the full-frontier revision pass (clamp 0–180; 0 disables revision) |
 | `persona_card_chars` | 2500 | enriched persona card budget (0 = legacy compact card) |
 | `orientation_ask_cap` | 4000 | max chars of the ask included in the orientation payload |
 | `bounded_replay.last_n_turns` | 24 | conversation replay depth for frontier consults |
+| `debug_banner` | 0 | route banner verbosity on delivered output: 0 off / 1 one-liner / 2 +context / 3 maximum (diagnostic only, never enters canonical/history/model context) |
 
-**Agent-tailored consults (v3.7.0)** — both PRE orientation and POST audit payloads
-carry the profile's own persona card (runtime-derived from `HERMES_HOME/IDENTITY.md` +
-`SOUL.md`), so the frontier consultant orients *this* agent — its role, voice, closed
-lines — not a generic specialist. Universal: another Hermes setup's agents get their
-own cards automatically, zero config.
+**Zero-config frontier lane (v3.7.1+)** — if `anchor_chain.primary` is configured (you
+inserted a frontier API) but NO `complexity` block exists, the complexity lane
+auto-defaults to level 2 (conservative-auto). Explicit config always wins:
+`complexity.enabled: false` keeps it off; an explicit level is honored as-is. Out-of-box
+contract: insert your frontier (and optionally uncensored-chain) API config → both lanes
+work; knobs only if you want non-defaults.
 
 **4-mode controller** (task-scoped, never start-anchor/end-judge):
 
 | Mode | Fires when | Effect |
 |---|---|---|
-| `flash_direct` | default | pass-through, no extra calls |
-| `plan` | complexity classifier fires | one anchored frontier call; flash executes with the plan as advisory data |
-| `consult` | explicit `anchor this` or gray-zone stage-2 "complex" | one bounded frontier consult; flash keeps ownership |
+| `direct` | default | pass-through, no extra calls |
+| `plan` | complexity classifier fires | one anchored frontier call; the main model executes with the plan as advisory data |
+| `consult` | explicit `anchor this` or gray-zone stage-2 "complex" | one bounded frontier consult; the main model keeps ownership |
 | `ownership` | struggle signals fire | escalation to the anchor for the task segment |
 
 **Detection** — 2-stage. Stage 1 is free/local regex over immutable ingress text
@@ -87,9 +120,9 @@ on stage-1 borderline texts — never on clear matches. Intensity per profile:
 | 0 | off | lane disabled |
 | 1 | manual-only | route only on inline `anchor this` |
 | 2 | conservative-auto | planning/architecture signals |
-| 3 | aggressive-auto | + debug chains, cross-file, multi-part (default in config examples) |
+| 3 | aggressive-auto | + debug chains, cross-file, multi-part |
 
-**Struggle detection** (router-owned — flash cannot self-report being lost):
+**Struggle detection** (router-owned — the main model cannot self-report being lost):
 (a) N≥3 refusals/failures on the same task hash, (b) ≥5 provider calls in one turn with
 no new tool-result content (hash dedup), (c) explicit user struggle phrasing ("still
 broken", "not working", third correction). Trigger → next provider call escalates to
@@ -99,10 +132,10 @@ broken", "not working", third correction). Trigger → next provider call escala
 line only): `anchor this` → force a CONSULT route; `skip anchor` → force pass-through.
 
 **Anchored execution** — the frontier answer never rewrites the user message. It enters
-the flash request as a provenance-stamped advisory envelope:
+the main model's request as a provenance-stamped advisory envelope:
 `{kind: frontier_plan|consultation, producer, route_id, task_id, answer, evidence_refs,
-limitations}` — flash evaluates it and writes its own turn. Per-call only; the agent's
-provider configuration is never touched.
+limitations}` — the main model evaluates it and writes its own turn. Per-call only; the
+agent's provider configuration is never touched.
 
 ## Anchor chain config (LANE 2)
 
@@ -111,11 +144,18 @@ hermes_router:
   enabled: true                       # lane 1 master
   complexity:
     enabled: true
-    level: 3                          # 0-3, see table above
+    level: 3                          # 0-3, see table above; omit the block → auto level 2
+    pre_mode: route                   # PRE orientation consults on complex-shaped asks
+    audit_mode: complex               # POST completion audits
+    audit_topology: sync              # sync (45s fail-open budget) | async (next-turn)
+    audit_sync_seconds: 45
+    audit_revision_seconds: 60
+    pre_cooldown_seconds: 600
+    post_audit_min_turns: 3
   anchor_chain:
     primary: openrouter://anthropic/claude-fable-5.1
     judge: openrouter://openai/o4-mini     # verification/consult tier
-    overflow: pass_through                  # fail/over-cap → flash + route_skipped log
+    overflow: pass_through                  # fail/over-cap → main model + route_skipped log
     daily_cap_usd: 2.0                      # non-tunable floor; raise only via router_control
     pricing:                                # per-model $/1M tokens (cost guard)
       openai/o4-mini: {input_per_1m: 1.15, output_per_1m: 4.60}
@@ -184,37 +224,50 @@ Every decision logs one line to `log_path` (0600, content-free):
 
 ## Deployment layout
 
-Dev canonical: `/opt/data/plugins/hermes_router` (its own git repo). Each profile owns
-an independent REAL copy at `/opt/data/profiles/<agent>/plugins/hermes_router` —
-no symlinks (Goran 2026-09-02). Propagate with
-`/opt/data/uncensored-router-update-all.sh` (`--dry-run` first; deploys under the NEW
-name, seeds from and then removes the legacy `uncensored_router` dir, prints a
-per-profile md5 table). Bounce gateways after a copy: `/command/s6-svc -r
-/run/service/gateway-<agent>`.
+Dev canonical: the plugin's own git repo. Each Hermes profile owns an independent REAL
+copy of the plugin directory under its plugins path — no symlinks (a per-profile copy
+lets each profile pin its own version). After copying a new version to a profile,
+restart that profile's gateway so the plugin re-registers. Install via `hermes plugins
+install` or a straight directory copy — see INSTALL.md.
 
 ## Config backward compatibility
 
 Existing `uncensored_router:` profile-config sections keep working untouched — the
-config readers check `hermes_router` first and fall back to `uncensored_router`
-(all 11 deployed profiles migrate transparently). `router_control` writes go to the
-canonical `hermes_router:` section and dual-write the legacy section so fallback
-readers stay coherent. Canonical going forward: `hermes_router`.
+config readers check `hermes_router` first and fall back to `uncensored_router`.
+`router_control` writes go to the canonical `hermes_router:` section and dual-write the
+legacy section so fallback readers stay coherent. Canonical going forward: `hermes_router`.
 
 ## Testing
 
-- Mock suite: 240 tests, fully offline (`pytest` — the live marker is deselected).
+- Mock suite: 500+ tests, fully offline (`pytest` — the live marker is deselected).
 - Live smoke: exactly ONE cheap call (`pytest tests/test_live_smoke.py -m live`,
-  openrouter openai/o4-mini, max_tokens 64, prompt "Reply with the single word: OK";
-  skipped when `OPENROUTER_API_KEY` is absent). No frontier/fable/astra calls in tests.
+  max_tokens 16, prompt "Reply with the single word: OK";
+  skipped when `OPENROUTER_API_KEY` is absent). No frontier/uncensored-chain calls in tests.
 
 ## Changelog
+
+### 3.8.0 — 2026-09-10
+- **Higher-self doctrine:** PRE orientation + POST audit envelopes framed as messages
+  from the agent's higher self (frontier = observer, uncensored = capability); POST is
+  post-intuition on the resolution — requested-vs-delivered, unexplored angles, genuinely
+  good, could-be-better — never an audit of the main model.
+- **Unified audit gate:** POST audit covers benign + refusal-FP passthrough delivery
+  paths; gateway-safe imports (no hard top-level `from hermes_router import` in gateway
+  paths — plugins load under a `hermes_plugins.*` alias).
+- **Sync POST audit:** `audit_topology` sync|async (default sync, 45s budget), fail-open
+  (unaudited always delivers), timeout downgrades to async with next-turn delivery.
+- **Full-frontier revision pass** (60s budget, full reasoning budget — empty verdicts
+  were token starvation, not slowness).
+- **Zero-config defaults** (3.7.1): `anchor_chain.primary` set + no complexity block →
+  auto level 2; `/router` chat command ships ON.
+- See CHANGELOG.md for the full entry.
 
 ### 3.0.0 — 2026-09-05
 - **Two-lane generic router.** Lane 1 (uncensored render) keeps v2 mechanics byte-identical.
   Lane 2 (complexity/struggle): 2-stage detection, 4-mode controller, router-owned struggle
   escalation, per-call anchored execution with provenance envelopes, anchor-chain config,
   daily cap guard, router_status/router_control tools with atomic config-writer.
-- **csam content gate removed** (2026-09-04, Goran-direct reversal): uncensored should not
+- **csam content gate removed** (2026-09-04): uncensored should not
   filter anything when asked — no code-side content gate remains; boundaries live in the
   render substrate. (The gate had been live-unverified since 2026-09-01 anyway.)
 - **Post-mortem one-liner:** the 2026-09-01 "hard gate" referenced `session_id` three lines

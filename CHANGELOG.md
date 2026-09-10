@@ -1,4 +1,46 @@
 ## 3.6.0-a1 — 2026-09-07 (Phase 0 + debug banner, BLUEPRINT-hermes-router-consult-gates-2026-09-06.md §10/§11 + §12 simplicity amendment)
+## 3.8.0 — 2026-09-10 (unified audit gate, sync POST audit, higher-self doctrine, mental-model alignment)
+
+- AUDIT GATE UNIFICATION (0a30e26 + 60e625d + 66ebae7): the POST audit arm is hoisted
+  out of the flinch/stage-2 nesting into ONE audit_gate() — refusal-phrase false-positive
+  technical passthroughs no longer skip the audit (closure responses are the most
+  refusal-shaped text in practice). Gateway-portability rule learned live: gateway loads
+  plugins under a `hermes_plugins.*` alias, so a hard top-level `from hermes_router
+  import ...` inside gateway paths raises ImportError and silently disables the whole
+  gate — audit_gate uses a module-local `_log()` instead. Never hard top-level
+  hermes_router imports in gateway paths.
+- SYNC POST AUDIT (edf7eb0 + 37a7bbd): new `audit_topology` knob (`sync|async`, default
+  sync) with `audit_sync_seconds` (default 45, raised from 30 — real consults need
+  longer). Fail-open doctrine: an unaudited turn ALWAYS delivers; a frontier failure
+  never blocks delivery. A sync consult that only times out downgrades to async — slow
+  is NOT failed: the verdict still arrives and delivers next turn with a parked banner;
+  only true provider errors waste the call. Turn-scoped PRE exclusion: POST stands down
+  only on the SAME turn a PRE fired (turn-N PRE no longer suppresses turn-(N+1) audits).
+- REVISION PASS ON FULL FRONTIER (7eaf1df + 13a9ca6 + afa4cb3): the in-hook revision
+  pass (verdict → re-call → revised delivery) runs the FULL frontier model with
+  reasoning_effort=max — never downgraded to a lighter model for slowness. max_tokens
+  raised 2500→12000: max reasoning burned ~10k reasoning chars inside the 2500 cap,
+  producing empty responses (root cause of missing banners + no-op audits). Budget
+  60s (clamp 0–180). Prompt hardened to a strict output-only contract (vague prompt
+  produced a pleasantries shell that the empty guard correctly rejected).
+- HIGHER-SELF ENVELOPE DOCTRINE (e984925→a86a576 line): PRE and POST envelopes are
+  framed as a message from the agent's higher self — the part that observes while it
+  acts. PRE = orientation for the coming job ("how your higher self would optimally do
+  this"); POST = post-intuition on the resolution: requested-vs-delivered sense check,
+  unexplored angles, what is genuinely good, what could be better — never an audit of
+  the main model, no user names in frames. Doctrine split: the frontier lane is the
+  observer, the uncensored lane is capability.
+- COMPLEXITY WIDENING (9d0b110): stage-1 planning_arch regexes widened (design/analyze +
+  engineering-object verbs, compare/contrast-with, what-breaks, mitigation-for-each
+  shapes) — approved widening, live-verified.
+- MENTAL-MODEL ALIGNMENT BATCH (7ad5a49): P0 fix — `_level` NameError when
+  complexity.pre_mode is shadow/off (dispatch silently degraded); L2+ verdicts now
+  visible under the POST banner; NO-FINDINGS audits still emit a banner (a billed call
+  must be visible); the manual `anchor this` consult now includes the agent's own
+  self-assessment alongside the ask.
+- Suite: 533 passed, 5 failed (pre-existing in tests/test_v321_anchor_strip.py, also
+  failing on clean HEAD), 1 skipped, 1 deselected.
+
 ## 3.7.1 — 2026-09-10 (zero-config defaults: /router ships ON, frontier auto-activates with API)
 
 - ZERO-CONFIG FRONTIER LANE (Goran 09-10): when anchor_chain.primary is configured

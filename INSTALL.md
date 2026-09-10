@@ -48,13 +48,18 @@ hermes_router:
     enabled: true
     level: 2            # 0 off / 1 manual-only / 2 conservative-auto / 3 aggressive
     pre_mode: route     # PRE orientation consults on complex-shaped asks
-    audit_mode: complex # POST completion audits
+    audit_mode: complex # POST completion audits (sync, fail-open)
   anchor_chain:
     primary: nous://z-ai/glm-5.3     # any OpenAI-compatible endpoint scheme
   persona_card_chars: 2500
   pre_cooldown_seconds: 600
   post_audit_min_turns: 3
 ```
+
+**Zero-config (v3.7.1+):** if you set only `anchor_chain.primary` and omit the
+`complexity` block entirely, the complexity lane auto-defaults to level 2
+(conservative-auto) — insert your frontier API and it just works; add the block only
+for non-defaults.
 
 The persona/methodology cards are derived at runtime from the loading profile's own
 `IDENTITY.md` + `SOUL.md` under `HERMES_HOME` — nothing to configure per agent, and
