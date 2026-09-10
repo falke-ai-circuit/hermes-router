@@ -527,16 +527,18 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
             logger.info("completion_audit_revision_skipped reason=no_key")
             return None
         prompt = (
-            "You just finished answering the user. Your own higher-self review "
-            "flagged the points below. Produce the FINAL corrected response: "
-            "apply what is right, ignore what is wrong, keep your voice and "
-            "structure. Do not mention the review, do not add meta-commentary. "
-            "If the review is wrong about everything, return the original "
-            "response essentially unchanged.\n\n"
+            "You are the revision pass of a completion audit. Below is the "
+            "response that was about to be delivered, and your own higher-self "
+            "review of it. Produce the corrected FINAL response: incorporate "
+            "every valid point from the review, ignore any review point that "
+            "is wrong, and keep the original's voice, structure, and length "
+            "unless the review demands changes. Never mention the review, the "
+            "audit, or this process. Output ONLY the final response text — "
+            "no preamble, no meta-commentary, no closing pleasantries.\n\n"
             "ORIGINAL ASK:\n" + (ask or "")[:4000] + "\n\n"
-            "YOUR DRAFT:\n" + _strip_audit_artifacts(draft or "")[:8000] + "\n\n"
-            "HIGHER-SELF REVIEW POINTS:\n" + (verdict_note or "")[:4000] + "\n\n"
-            "FINAL RESPONSE:"
+            "RESPONSE UNDER REVIEW:\n" + _strip_audit_artifacts(draft or "")[:8000] + "\n\n"
+            "REVIEW POINTS TO INCORPORATE:\n" + (verdict_note or "")[:4000] + "\n\n"
+            "FINAL RESPONSE (output only the response):"
         )
         payload = {"messages": [{"role": "user", "content": prompt}],
                    "max_tokens": 4000, "temperature": 0.2}
