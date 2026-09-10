@@ -128,15 +128,37 @@ def audit_max_chars() -> int:
 def audit_sync_seconds() -> float:
     """Sync POST audit (Goran 2026-09-10): frontier consult must complete
     BEFORE the final response is delivered. audit_sync_seconds caps how long
-    delivery blocks on the consult (default 30s, Goran: "should be more than
-    24 sec"). 0 disables sync (legacy async path). Never raises."""
+    delivery blocks on the consult (default 45s — Goran: consults need more
+    than 30s on real payloads). 0 disables sync (legacy async path).
+    toggleable: audit_mode = sync | async (sync default when knob set/absent).
+    On timeout/error the unaudited response ALWAYS delivers (fail-open).
+    Never raises."""
     try:
         from .router_core import _complexity_cfg
 
-        v = float((_complexity_cfg() or {}).get("audit_sync_seconds") or 30)
-        return max(0.0, min(120.0, v))
+        v = float((_complexity_cfg() or {}).get("audit_sync_seconds") or 45)
+        return max(0.0, min(180.0, v))
     except Exception:  # noqa: BLE001
-        return 30.0
+        return 45.0
+
+
+def audit_topology() -> str:
+    """audit_mode topology toggle: 'sync' (default) blocks delivery on the
+    consult; 'async' returns the legacy next-turn verdict delivery. Independent
+    of audit_mode's off|complex|always FIRE policy (router section knob
+    audit_topology overrides; complexity.audit_topology fallback)."""
+    try:
+        from . import config_access as _cac
+
+        sec = _cac.router_section() or {}
+        raw = str(sec.get("audit_topology") or "").strip().lower()
+        if not raw:
+            from .router_core import _complexity_cfg
+
+            raw = str((_complexity_cfg() or {}).get("audit_topology") or "").strip().lower()
+        return "async" if raw == "async" else "sync"
+    except Exception:  # noqa: BLE001
+        return "sync"
 
 
 # ------------------------------------------------------- once-per-task ------

@@ -1254,14 +1254,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                            turn=_turn_n, of=_min_turns,
                                            closure=_closure)
                                 if _ok:
-                                    # Sync POST (Goran 2026-09-10): the frontier
-                                    # consult completes BEFORE delivery so the main
-                                    # model processes the verdict within THIS turn.
-                                    # Fail-open: timeout / failure / NO-FINDINGS =>
-                                    # deliver unchanged.
+                                    # Sync/async topology toggle (Goran 09-10):
+                                    # audit_topology sync|async — sync blocks
+                                    # delivery on the consult (fail-open on
+                                    # timeout: unaudited ALWAYS delivers);
+                                    # async = legacy next-turn verdict.
                                     _sync_budget = _ca.audit_sync_seconds()
+                                    _topology = _ca.audit_topology()
                                     _meta = None
-                                    if _sync_budget > 0:
+                                    if _topology == "sync" and _sync_budget > 0:
                                         try:
                                             _meta = _ca.run_completion_audit_sync(
                                                 session_id, _ask, response_text,
@@ -1310,7 +1311,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                             # model processes next context-build
                                             # (advisory; user never sees marker).
                                             return _out_sync
-                                    else:
+                                    if _topology == "async" or _sync_budget <= 0:
                                         _ca.run_completion_audit(session_id, _ask,
                                                                  response_text,
                                                                  context.get("request")
