@@ -495,6 +495,24 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             break
                     if _last_user is not None:
                         _orig = str(_msgs[_last_user].get("content") or "")
+                        # Manual 'anchor this' (Goran 2026-09-10): the consult
+                        # must include the agent's own current self-assessment
+                        # so frontier observes ask + agent state, not the ask
+                        # alone. Last 700 chars of the preceding context give
+                        # the agent's recent self-reflect; absent when none.
+                        _self_reflect = ""
+                        try:
+                            for _j in range(_last_user - 1, -1, -1):
+                                _m = _msgs[_j]
+                                if isinstance(_m, dict) and _m.get("role") == "assistant":
+                                    _sa = str(_m.get("content") or "").strip()
+                                    if _sa:
+                                        _self_reflect = _sa[-700:]
+                                    break
+                        except Exception:  # noqa: BLE001
+                            _self_reflect = ""
+                        _sr_block = ("\n\nTHE AGENT'S CURRENT SELF-ASSESSMENT (her own last words, "
+                                     "for context — observe ask AND agent):\n" + _self_reflect) if _self_reflect else ""
                         _frame = (
                             "You are the agent's higher intuition at task START. "
                             "Do NOT solve the task. Given the ask below, produce a terse "
@@ -504,7 +522,8 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             "3. Common pitfalls and known good solutions.\n"
                             "4. What to avoid.\n"
                             "5. How failure would look like (early-warning signs).\n"
-                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n" + _orig[:orientation_ask_cap()]
+                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n"
+                            + _orig[:orientation_ask_cap()] + _sr_block
                         )
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):

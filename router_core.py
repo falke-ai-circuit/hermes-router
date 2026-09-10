@@ -825,7 +825,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                            event_detail=("complexity_pre_shadow" if _pre_mode == "shadow"
                                          else "complexity_pre_off"),
                            stage1=str(meta.get("stage1")),
-                           task_id=task_id, level=_level)
+                           task_id=task_id, level=level)
                 route_complex = False
             if route_complex:
                 # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no

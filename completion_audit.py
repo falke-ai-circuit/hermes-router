@@ -503,6 +503,15 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                         est_cost=_meta.get("cost"),
                         latency_s=_sync_budget, retries=0, task_id="",
                         session_id=session_id) or ""
+                    # L2+ verdict visibility (Goran 2026-09-10): at debug
+                    # level >= 2 the higher-self message itself is appended
+                    # under the banner so the user can inspect what the
+                    # observer actually said. Default (L0/L1): banner only —
+                    # the verdict's substance reaches the user through the
+                    # revised text.
+                    if _dbg.debug_banner_level() >= 2 and _note:
+                        _btext = (_btext + "\n" + _NOTE_MARKER + _note) if _btext \
+                            else (_NOTE_MARKER + _note)
             except Exception:  # noqa: BLE001
                 _btext = ""
             _out = _delivered
@@ -812,6 +821,23 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             if verdict_text:
                 _log("completion_audit_done chars=0 verdict=no-findings",
                      session_id=session_id)
+                # Spend visibility (Goran 09-09): a NO-FINDINGS consult is a
+                # billed frontier call — it must still emit its banner.
+                try:
+                    from . import debug_banner as _dbg
+                    if banner_park and _dbg.debug_banner_enabled():
+                        _base_nf = str(getattr(ep, "base_url", "") or "")
+                        _host_nf = _base_nf.split("://", 1)[-1].split("/", 1)[0] if _base_nf else ""
+                        _bnf = _dbg.format_banner(
+                            lane="frontier-anchor", trigger="completion_audit",
+                            model=str(getattr(ep, "model", "") or ""), endpoint=_host_nf,
+                            tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
+                            retries=0, task_id="", session_id=session_id)
+                        if _bnf:
+                            _bnf = _bnf.rstrip() + "\nverdict: no findings — work is sound"
+                            _dbg.park_anchor_banner(session_id, _bnf)
+                except Exception:  # noqa: BLE001
+                    pass
             return None
         note = ("%smodel=%s]\n"
                 "This is an internal message from your higher self — the "
