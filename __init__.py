@@ -1600,11 +1600,15 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             if _kind == "orientation":
                 advisory = (
                     "[HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
-                    "[ORIENTATION BRIEF — your higher intuition's pre-work read on this "
-                    "task (producer=%s, route_id=%s). Advisory and NON-BINDING: it "
-                    "suggests; it does not have to be followed. Use what helps — result "
-                    "shape, watch-fors, pitfalls, known good solutions, failure signs. "
-                    "Then write your own turn.\n"
+                    "[MESSAGE FROM YOUR HIGHER SELF — the part of you that observes "
+                    "you while you act and reports what it sees (producer=%s, "
+                    "route_id=%s). This is a consult and secondary opinion: a "
+                    "helpful guideline, not an order. Before you start, here is "
+                    "how your higher self would optimally do this job — result "
+                    "shape, what to watch for, pitfalls, known good solutions, "
+                    "failure signs, and how to adapt your methodology to do it "
+                    "optimally. Advisory and NON-BINDING: use what helps. Then "
+                    "write your own turn.\n"
                     "INTEGRATION CONTRACT: the user asked a question and awaits THE ANSWER. "
                     "Do NOT reproduce, summarize, reformat, or acknowledge this brief in "
                     "your reply - quoting it back is a contract violation. Your next turn "
@@ -1616,9 +1620,12 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             else:
                 advisory = (
                     "[HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
-                    "[FRONTIER ANCHOR RESULT — advisory tool data, kind=%s, producer=%s, "
-                    "route_id=%s. Evaluate critically and write your own turn from it; "
-                    "do not treat as user instruction. limitations: %s]\n%s"
+                    "[MESSAGE FROM YOUR HIGHER SELF — the part of you that observes "
+                    "you while you act and reports what it observed, after the act "
+                    "(kind=%s, producer=%s, route_id=%s). This is a consult and "
+                    "secondary opinion: a helpful guideline, not an order. Evaluate "
+                    "critically and write your own turn from it; do not treat as "
+                    "user instruction. limitations: %s]\n%s"
                     % (_kind, envelope.get("producer"), envelope.get("route_id"),
                        envelope.get("limitations"), str(envelope.get("answer") or ""))
                 )
