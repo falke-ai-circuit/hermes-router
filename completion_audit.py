@@ -58,6 +58,38 @@ _FIRED_LOCK = threading.Lock()
 _INFLIGHT: set = set()
 _INFLIGHT_LOCK = threading.Lock()
 
+# ---------------------------------------------------------------- closure ----
+
+# Goran 2026-09-10 (option C): audit on CLOSURE, not blind turn counts.
+# "response after n turns is signal" — a closure-shaped response (multi-task
+# wrap-up, summary delivered, task handoff) is an audit trigger in itself.
+_CLOSURE_PATTERNS = (
+    r"\b(?:in\s+summary|to\s+sum(?:mari[sz]e|up)|summing\s+up)\b",
+    r"\b(?:all|both|every|each)\s+(?:three|four|five|\d+)?\s*(?:tasks?|items?|findings?|fix(?:es)?|changes?|commits?)\b.{0,40}\b(?:done|complete[d]?|shipped|landed|delivered|verified|fixed)\b",
+    r"\b(?:wrapped|wrapped\s+up|closed\s+out|all\s+done|everything\s+(?:is\s+)?(?:done|shipped|landed|verified))\b",
+    r"\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b.{0,60}\b(?:and|plus|\+)\s.{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
+    r"\ball\s+(?:three|four|five|\d+)?\s*(?:of\s+(?:them|these))?\s*(?:are\s+)?(?:fixed|shipped|verified|done|landed)\b",
+)
+
+_CLOSURE_RE = None  # compiled lazily
+
+
+def is_closure_response(ask: str, response_text: str) -> bool:
+    """Closure-signal detector (Goran 09-10, option C). True when the ask or
+    response carries closure markers — summary wrap-up, multi-item completion,
+    handoff statement. Cheap regex only, never raises, fail-open to False
+    (the every-N + tool-count triggers still cover the miss)."""
+    global _CLOSURE_RE
+    try:
+        if _CLOSURE_RE is None:
+            import re as _re
+            _CLOSURE_RE = _re.compile("|".join(_CLOSURE_PATTERNS), _re.IGNORECASE)
+        text = " ".join(str(x) for x in (ask, response_text) if x)
+        return bool(text and _CLOSURE_RE.search(text))
+    except Exception:  # noqa: BLE001 — fail-open: not a closure
+        return False
+
+
 # ---------------------------------------------------------------- config ----
 
 def audit_mode() -> str:

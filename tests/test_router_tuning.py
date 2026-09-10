@@ -298,3 +298,25 @@ def test_zero_config_frontier_default_activates_with_anchor_chain():
     with mock.patch.object(plugin.router_core, "_complexity_cfg",
                            return_value={"enabled": False, "level": 2}):
         assert plugin.router_core._complexity_level() == 0
+
+
+def test_closure_response_detector():
+    """Goran 09-10 option C: closure-shaped responses trigger the POST audit
+    regardless of the every-N counter."""
+    closure = plugin.completion_audit.is_closure_response(
+        "status?", "All three fixes are shipped and verified. In summary, the fleet is on 3.7.1.")
+    assert closure is True
+    non_closure = plugin.completion_audit.is_closure_response(
+        "can you confirm the gateway is up?", "Yes, it's up. PID 934432.")
+    assert non_closure is False
+
+
+def test_consult_resets_audit_counter():
+    """Goran 09-10: 'signal should be between frontier consults' — a PRE
+    consult fire resets the POST every-N counter (task boundary)."""
+    sid = "reset-test-sid"
+    plugin.state.bump_substantive_turn(sid)
+    plugin.state.bump_substantive_turn(sid)
+    assert plugin.state.substantive_turn_count(sid) == 2
+    plugin.state.reset_substantive_turn(sid)
+    assert plugin.state.substantive_turn_count(sid) == 0

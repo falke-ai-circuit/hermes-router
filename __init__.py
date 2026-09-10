@@ -866,6 +866,14 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                            model_target=_decision.model_target, reason=_decision.reason,
                            override_used=_decision.override_used, route_id=_decision.route_id,
                            content_chars=len(content), session_id=session_id)
+                # Goran 2026-09-10: a frontier consult marks a task boundary —
+                # reset the POST every-N audit counter so the cadence counts
+                # turns BETWEEN consults, not absolute turns (interruption-
+                # heavy sessions kept resetting windows at turn=1).
+                try:
+                    state.reset_substantive_turn(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
                 # Router tuning A2 (2026-09-09): record the last real staged
                 # orientation consult per session for the PRE cooldown gate.
                 # Cooldown never applies to override_anchor / shadow lanes
@@ -1213,6 +1221,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             _fire_by_count = bool(
                                 _min_turns <= 1 or
                                 (_turn_n > 0 and _turn_n % _min_turns == 0))
+                            _closure = False
+                            if not _fire_by_count:
+                                # Goran 2026-09-10 (option C): closure-shaped
+                                # response audits regardless of the counter —
+                                # "n turns could be bs without closure".
+                                try:
+                                    _closure = _ca.is_closure_response(
+                                        _ask, response_text)
+                                except Exception:  # noqa: BLE001
+                                    _closure = False
+                                _fire_by_count = _closure
                             if not _fire_by_count:
                                 try:
                                     _req_ctx = context.get("request") \
@@ -1232,7 +1251,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 _ok, _why = _ca.eligible(session_id, _ask, response_text, model)
                                 _log_route("POST", event_detail="completion_audit_gate",
                                            ok=_ok, reason=_why, session_id=session_id,
-                                           turn=_turn_n, of=_min_turns)
+                                           turn=_turn_n, of=_min_turns,
+                                           closure=_closure)
                                 if _ok:
                                     _ca.run_completion_audit(session_id, _ask,
                                                              response_text,

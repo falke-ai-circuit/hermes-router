@@ -267,6 +267,19 @@ def bump_substantive_turn(session_id: str) -> int:
         return 0
 
 
+def reset_substantive_turn(session_id: str) -> None:
+    """Reset the substantive-turn counter (Goran 2026-09-10: 'signal between
+    frontier consults' — a PRE consult marks a task boundary, so the every-N
+    audit cadence restarts from the consult, not from stale absolute turns).
+    Never raises."""
+    try:
+        sid = session_id or ""
+        with _TURN_COUNTER_LOCK:
+            _TURN_COUNTERS.pop(sid, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def substantive_turn_count(session_id: str) -> int:
     """Current substantive-turn counter (no increment). Never raises."""
     try:
