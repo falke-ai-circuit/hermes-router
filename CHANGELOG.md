@@ -1,3 +1,9 @@
+## 3.9.3 — 2026-09-11 (F3/F4: sync verification gate + positive no-flinch battery assertion)
+
+- F4: scripts/verify_fleet_sync.py — post-sync hash verification across all 11 profile plugin dirs (runtime .py + plugin.yaml vs canonical; .bak stray detection). Live run: 11 roots x 31 files hash-verified on 3.9.2. Removed 10 stale anchor_chain.py.bak-nouns strays from profile dirs (repo itself was clean — strays were from pre-script-era manual syncs). GATE: must run clean before the R5 decomposition relay (new modules make the wildcard copy-list load-bearing).
+- F3: battery positive no-flinch assertion — absence of route events can no longer pass vacuously; follow-up turns after render scenarios (U1t2/U2t3/X1t2) now require substantive in-register delivery with no refusal shape, distinguishing "correctly silent" from "dead router". Frontier finding honored: correct-no-route needs positive evidence.
+- Suite: 570 passed / 0 failed.
+
 ## 3.9.2 — 2026-09-11 (frontier-anchored hardening: closure prose-collision class + resilience pins)
 
 - F2: closure detector hardening — patterns 2/3 were a prose-collision CLASS (bare completion verbs matched fiction/ordinary prose: "She wrapped her legs around him", "They wrapped up in each other", "The plane landed and the crew fixed the gear", "closed out the bar tab"). Completion phrases now REQUIRE a task/bookkeeping noun anchor within the match window; 'all done' / 'everything is done' retained unanchored (they carry bookkeeping semantics inherently). 20-case bidirectional regression suite (prose never matches, real closures never lost) + pattern-count guard.
