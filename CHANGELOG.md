@@ -1,3 +1,16 @@
+## 4.0.0 — 2026-09-11 (R5 decomposition: god-files decomposed, zero behavior change)
+
+- `__init__.py` 1848 -> 1023 lines; `commands.py` 2564 -> 669 lines. 6 new cohesive modules:
+  dispatcher_pre.py (PRE taps + ordered passes), dispatcher_post.py (stage-2 semantic family),
+  dispatcher_knobs.py (package-knob readers + message extraction), commands_config.py (config cluster),
+  commands_diag.py (diagnostics), commands_runtime.py (stateful lane/runtime commands).
+- Late-binding seam doctrine enforced throughout: extracted helpers resolve monkeypatched names
+  (plugin._cfg, commands._route_log_path, _MUTATIONS_ARMED, _pending_confirmations, ...) through
+  sys.modules-based accessors at call time. Public API unchanged.
+- Mutable state single-owner: _MUTATIONS_ARMED / _RATE_WINDOWS / _pending_confirmations owned by commands.py only.
+- 7-leg relay, suite 570/0 verified after every leg. Leg 6c (orchestrator extraction) aborted per abort rule — dirty tree reverted, defect documented (docstring-eating seam regex + late orchestrator seam) for future attempt.
+- Fleet: 11 roots x 37 runtime files hash-verified post-deploy.
+
 ## 3.9.3 — 2026-09-11 (F3/F4: sync verification gate + positive no-flinch battery assertion)
 
 - F4: scripts/verify_fleet_sync.py — post-sync hash verification across all 11 profile plugin dirs (runtime .py + plugin.yaml vs canonical; .bak stray detection). Live run: 11 roots x 31 files hash-verified on 3.9.2. Removed 10 stale anchor_chain.py.bak-nouns strays from profile dirs (repo itself was clean — strays were from pre-script-era manual syncs). GATE: must run clean before the R5 decomposition relay (new modules make the wildcard copy-list load-bearing).
