@@ -1,0 +1,7 @@
+# Runtime dependencies for hermes-router.
+# The plugin runs inside the Hermes Agent process, which already provides
+# most of these; this file pins the minimum direct imports so the unit
+# suite and clean installs are reproducible outside the host runtime.
+openai>=1.30,<3
+pyyaml>=6.0
+requests>=2.31

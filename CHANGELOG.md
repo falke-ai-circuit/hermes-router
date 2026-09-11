@@ -1,3 +1,13 @@
+## 3.9.1 — 2026-09-11 (repository polish: CI, docs, benchmarks, resilience suite)
+
+- CI: .github/workflows/ci.yml — unit matrix (py3.11-3.13 × ubuntu/macos), hermetic env (placeholder keys), import-sanity check, clean-install job (plugin.yaml/CHANGELOG validation, no-stray-artifacts, secret heuristic scan).
+- packaging: requirements.txt pinned (openai/pyyaml/requests).
+- docs/: architecture.md (PRE/POST flow diagram, two-lane doctrine, invariants table, module map, state/log locations) + operator-guide.md (install, verify, fail-open diagnosis, knob table, upgrade, manual controls, known limitations).
+- benchmarks/: behavioral_battery.py promoted from private QA + METHODOLOGY.md (pass trichotomy, scenario classes, oracle pitfalls incl. the wrapped-verb FP lesson) + baseline-2026-09-11.json.
+- resilience suite (tests/test_resilience.py): fail-open fault injection (audit gate / banner / classifier / ledger under fault must never break delivery), sidecar upgrade path (old-format ledgers, corrupt sidecars fail open), concurrency (parallel ledger writers, pending-render map churn bounds).
+- governance: CONTRIBUTING.md (fail-open doctrine, sentinel registration rule, PR checklist), issue templates (bug report with route-log excerpt field, feature request with doctrine-check), scripts/install.sh (per-profile deploy helper).
+- suite: 546 passed / 0 failed / 2 skipped.
+
 ## 3.9.0 — 2026-09-11 (repository polish release — suite fully green)
 
 - tests: fixed the 5 long-red v3.2.1 anchor-strip tests. Root cause was NOT test debt: the 09-10 OpenRouter-402 remediation stripped OPENROUTER_API_KEY from every environment, and the strip tests resolved their dummy endpoint key from process env — key_unavailable -> anchored_call returned None. Fixture now pins a dummy key (hermetic). Full suite: 538 passed / 0 failed (first fully-green run in repo history).
