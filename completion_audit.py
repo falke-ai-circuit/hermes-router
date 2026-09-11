@@ -96,8 +96,16 @@ def audit_revision_seconds() -> float:
 _CLOSURE_PATTERNS = (
     r"\b(?:in\s+summary|to\s+sum(?:mari[sz]e|up)|summing\s+up)\b",
     r"\b(?:all|both|every|each)\s+(?:three|four|five|\d+)?\s*(?:tasks?|items?|findings?|fix(?:es)?|changes?|commits?)\b.{0,40}\b(?:done|complete[d]?|shipped|landed|delivered|verified|fixed)\b",
-    r"\b(?:wrapped\s+up|closed\s+out|all\s+done|everything\s+(?:is\s+)?(?:done|shipped|landed|verified))\b",
-    r"\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b.{0,60}\b(?:and|plus|\+)\s.{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
+    # 2026-09-11 F2 hardening (frontier-anchored): patterns 2/3 were prose-collision
+    # class — bare completion verbs match fiction/ordinary prose ("She wrapped her
+    # legs around him", "They wrapped up in each other", "The plane landed and the
+    # crew fixed the gear", "closed out the bar tab"). Fix: completion phrases now
+    # REQUIRE a task/bookkeeping noun anchor within the window. Bare summary verbs
+    # are never closure by themselves.
+    r"\b(?:wrapped\s+up|closed\s+out)\b(?=[^.]{0,60}?\b(?:everything|all\b|the\s+work|the\s+task|this\s+task|the\s+audit|the\s+review|the\s+session|the\s+discussion|the\s+investigation|the\s+analysis|tasks?\b|items?\b)\b)",
+    r"\ball\s+done\b",
+    r"\beverything\s+(?:is\s+)?(?:done|shipped|landed|verified)\b",
+    r"\b(?:tasks?|items?|work|changes?|fix(?:es)?|commits?|findings?|reviews?|audits?|modules?|files?|components?|plan|session)\b[^\n]{0,120}\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b[^.]{0,80}\b(?:and|plus|\+)\s[^.]{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
     r"\ball\s+(?:three|four|five|\d+)?\s*(?:of\s+(?:them|these))?\s*(?:are\s+)?(?:fixed|shipped|verified|done|landed)\b",
     # 2026-09-10 live miss: answers that open/close with a closure frame
     # ("Closure: ...", "Final summary", "Bottom line") were skipped by the
