@@ -38,7 +38,13 @@ CLEAN_ASK = "plain ask with no wrapper"
 
 
 @pytest.fixture
-def endpoint():
+def endpoint(monkeypatch):
+    # 2026-09-11 hermeticity fix: these tests were red since the OpenRouter
+    # 402 remediation stripped OPENROUTER_API_KEY from every env —
+    # _resolve_key() returned "" -> anchor_route_failed reason=key_unavailable
+    # -> anchored_call() returned None content. Key resolution must not be
+    # environment-dependent in unit tests; pin a dummy key.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test-dummy-key-for-strip-tests")
     return anchor_chain.parse_anchor_uri("openrouter://test/anchor-primary", "primary")
 
 

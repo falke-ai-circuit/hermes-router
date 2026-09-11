@@ -1,3 +1,9 @@
+## 3.9.0 — 2026-09-11 (repository polish release — suite fully green)
+
+- tests: fixed the 5 long-red v3.2.1 anchor-strip tests. Root cause was NOT test debt: the 09-10 OpenRouter-402 remediation stripped OPENROUTER_API_KEY from every environment, and the strip tests resolved their dummy endpoint key from process env — key_unavailable -> anchored_call returned None. Fixture now pins a dummy key (hermetic). Full suite: 538 passed / 0 failed (first fully-green run in repo history).
+- hygiene: removed stray anchor_chain.py.bak-nous from tree.
+- added SECURITY.md (threat model: full prompt/completion visibility, outbound-endpoint policy, sentinel-forgery known limitation, private disclosure path).
+
 ## 3.8.7 — 2026-09-11 (closure FP fix, behavioral-battery catch)
 
 - completion_audit: closure pattern matched bare "wrapped" — the verb "She wrapped her legs around him" (uncensored scene text) tripped the closure detector and audited an uncensored render turn. Fix: "wrapped" now requires its completion particle ("wrapped up"). Bare-verb class lesson: closure patterns must match completion phrases, not activity verbs that appear in any prose. Battery result log: /opt/data/tmp/battery_results.json (11/17 clean PASS; U1/U2/X1 "misses" were battery expectations, not router bugs — main model correctly wrote dark content without flinching; F2 "miss" was a harness grep bug, gate actually fired with NO-FINDINGS).
