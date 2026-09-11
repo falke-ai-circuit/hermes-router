@@ -1,3 +1,10 @@
+## 3.9.2 — 2026-09-11 (frontier-anchored hardening: closure prose-collision class + resilience pins)
+
+- F2: closure detector hardening — patterns 2/3 were a prose-collision CLASS (bare completion verbs matched fiction/ordinary prose: "She wrapped her legs around him", "They wrapped up in each other", "The plane landed and the crew fixed the gear", "closed out the bar tab"). Completion phrases now REQUIRE a task/bookkeeping noun anchor within the match window; 'all done' / 'everything is done' retained unanchored (they carry bookkeeping semantics inherently). 20-case bidirectional regression suite (prose never matches, real closures never lost) + pattern-count guard.
+- F6: anchored_call fail-open pin — placeholder/missing key -> clean (None,)*4 tuple, downstream delivers unaudited. Pinned via _resolve_key isolation (dev-box dotenv fallback resolves a real fleet key; env-level isolation is environment-dependent).
+- Suite: 570 passed / 0 failed / 2 skipped.
+- Note: two ad-hoc frontier consults (repo-polish verdict + anchor review) were run outside the plugin lane with no banner/ledger — spend now recorded honestly in the conductor usage ledger ($0.041); ad-hoc consults outside the plugin path remain a process gap (no banner surface exists for them) — documented here per spend-visibility rule.
+
 ## 3.9.1 — 2026-09-11 (repository polish: CI, docs, benchmarks, resilience suite)
 
 - CI: .github/workflows/ci.yml — unit matrix (py3.11-3.13 × ubuntu/macos), hermetic env (placeholder keys), import-sanity check, clean-install job (plugin.yaml/CHANGELOG validation, no-stray-artifacts, secret heuristic scan).
