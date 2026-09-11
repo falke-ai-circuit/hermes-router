@@ -41,7 +41,7 @@ def _issue_confirmation(subcommand: str, args: List[str], summary: str) -> str:
     import secrets
 
     token = secrets.token_hex(16)
-    _purge_confirmations()
+    _commands()._purge_confirmations()
     _commands()._pending_confirmations[token] = {
         "subcommand": subcommand,
         "args": list(args),
@@ -95,7 +95,9 @@ def _mask_value(key: str, value: object) -> str:
 
 def _render_section_lines(section: Dict[str, Any], prefix: str = "",
                           lines: Optional[List[str]] = None,
-                          budget: int = _commands().CONFIG_GET_MAX_LINES) -> List[str]:
+                          budget: int = -1) -> List[str]:
+    if budget == -1:
+        budget = _commands().CONFIG_GET_MAX_LINES
     if lines is None:
         lines = []
     try:
@@ -107,18 +109,18 @@ def _render_section_lines(section: Dict[str, Any], prefix: str = "",
             v = section[k]
             full = "%s%s" % (prefix, k)
             if isinstance(v, dict):
-                _render_section_lines(v, prefix + str(k) + ".", lines, budget)
+                _commands()._render_section_lines(v, prefix + str(k) + ".", lines, budget)
             elif isinstance(v, list):
                 lines.append("%s = [%d entries]" % (full, len(v)))
                 for i, entry in enumerate(v[:3]):
                     if isinstance(entry, dict):
-                        _render_section_lines(entry, "%s[%d]." % (full, i), lines, budget)
+                        _commands()._render_section_lines(entry, "%s[%d]." % (full, i), lines, budget)
                     else:
-                        lines.append("%s[%d] = %s" % (full, i, _mask_value(full, entry)))
+                        lines.append("%s[%d] = %s" % (full, i, _commands()._mask_value(full, entry)))
                 if len(v) > 3:
                     lines.append("... %d more entries" % (len(v) - 3))
             else:
-                lines.append("%s = %s" % (full, _mask_value(full, v)))
+                lines.append("%s = %s" % (full, _commands()._mask_value(full, v)))
         return lines
     except Exception:  # noqa: BLE001
         return lines or ["config render failed"]
@@ -209,7 +211,7 @@ def _parse_value(spec: Dict[str, object], raw: str) -> Tuple[bool, str, object]:
     t = str(spec.get("type"))
     try:
         if t == "bool":
-            b = _parse_bool(raw)
+            b = _commands()._parse_bool(raw)
             if b is None:
                 return False, "expected true/false", None
             return True, "", b
@@ -295,7 +297,7 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
     try:
         from . import config_writer
 
-        spec = _knob_whitelist().get(knob)
+        spec = _commands()._knob_whitelist().get(knob)
         if spec is None:
             return False, "unknown knob: %s" % knob
 
@@ -328,7 +330,7 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
             if not entry_name:
                 return False, "chain knobs need name=<entry> (e.g. /router config set chain.max_tokens 16000 name=venice-qwen-xhigh)"
             def mut(section: Dict[str, Any], _v=value, _n=entry_name, _k=str(knob.split(".", 1)[1])) -> None:
-                _chain_entry_mut_inner(section, _k, _v, _n)
+                _commands()._chain_entry_mut_inner(section, _k, _v, _n)
         elif knob.startswith("complexity.") or knob.startswith("classification.") or knob.startswith("decision_head."):
             if knob == "decision_head.backend":
                 def mut(section: Dict[str, Any], _v=str(value)) -> None:
@@ -338,7 +340,7 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
                     section["decision_head"] = dh
             else:
                 def mut(section: Dict[str, Any], _d=str(knob), _v=value) -> None:
-                    _set_nested_value(section, _d, _v)
+                    _commands()._set_nested_value(section, _d, _v)
         elif knob == "anchor_chain.primary" or knob == "anchor_chain.judge":
             role = str(spec.get("role") or knob.split(".")[-1])
             def mut(section: Dict[str, Any], _uri=str(value), _r=role) -> None:
@@ -353,7 +355,7 @@ def _apply_config_set(knob: str, value: object, extra: Dict[str, str]) -> Tuple[
                 ac["overflow"] = _v
                 section["anchor_chain"] = ac
         elif knob == "anchor_chain.daily_cap_usd":
-            return _apply_cap_set(value)
+            return _commands()._apply_cap_set(value)
         elif knob.startswith("anchor_chain.pricing."):
             field = str(spec.get("pricing") or knob.rsplit(".", 1)[-1])
             model = str(extra.get("name") or "")
@@ -476,7 +478,7 @@ def _config_get(rest: List[str]) -> str:
 
     section = config_writer.read_plugin_section()
     if not rest:
-        lines = _render_section_lines(section)
+        lines = _commands()._render_section_lines(section)
         return "\n".join(["effective plugin section (secrets masked):"] + lines)
     knob = rest[0].strip().lower()
     value: object = section
@@ -486,20 +488,20 @@ def _config_get(rest: List[str]) -> str:
         else:
             return "knob %r not present in section (try /router config list for chat-settable knobs)" % knob
     if isinstance(value, dict):
-        lines = _render_section_lines(value, prefix=knob + ".")
+        lines = _commands()._render_section_lines(value, prefix=knob + ".")
         return "\n".join(lines)
     if isinstance(value, list):
         # Render list values through the masked renderer entry-by-entry
         # (raw json.dumps would leak key_file values / full URLs).
-        lines = _render_section_lines({str(i): v for i, v in enumerate(value)},
+        lines = _commands()._render_section_lines({str(i): v for i, v in enumerate(value)},
                                       prefix=knob + ".")
         return "\n".join(lines)
-    return "%s = %s" % (knob, _mask_value(knob, value))
+    return "%s = %s" % (knob, _commands()._mask_value(knob, value))
 
 
 def _config_list() -> str:
     lines = ["chat-settable knobs (type, range — everything else is config-file only):"]
-    wl = _knob_whitelist()
+    wl = _commands()._knob_whitelist()
     for name in sorted(wl):
         spec = wl[name]
         t = str(spec.get("type"))
@@ -522,7 +524,7 @@ def _config_set(rest: List[str]) -> str:
     if len(rest) < 2:
         return "usage: /router config set <knob> <value>   (see /router config list)"
     knob = rest[0].strip().lower()
-    wl = _knob_whitelist()
+    wl = _commands()._knob_whitelist()
     spec = wl.get(knob)
     if spec is None:
         if knob in _commands()._NOT_WRITABLE:
@@ -548,9 +550,9 @@ def _config_set(rest: List[str]) -> str:
         return "rejected: %s needs name=<entry> (e.g. name=%s)" % (
             knob, "venice-qwen-xhigh" if knob.startswith("chain.") else "openai/gpt-5.6-luna-pro")
 
-    ok, why, parsed = _parse_value(spec, raw_value)
+    ok, why, parsed = _commands()._parse_value(spec, raw_value)
     if not ok and knob == "debug_banner":
-        ok, why, parsed = _parse_value_debug_banner_fallback(spec, raw_value)
+        ok, why, parsed = _commands()._parse_value_debug_banner_fallback(spec, raw_value)
     if not ok:
         return "rejected: %s — %s" % (knob, why)
 
@@ -561,7 +563,7 @@ def _config_set(rest: List[str]) -> str:
         # cross-field guard: value must satisfy (other_key, relation) where
         # relation is ">=" (value >= other). None other = no constraint yet.
         other_key, relation = spec["cross"]  # type: ignore[misc]
-        other = _lookup_knob(before, str(other_key))
+        other = _commands()._lookup_knob(before, str(other_key))
         if other is not None:
             try:
                 a = float(parsed)  # type: ignore[arg-type]
@@ -572,7 +574,7 @@ def _config_set(rest: List[str]) -> str:
                 return ("rejected: %s=%s violates %s %s %s (current %s=%s)" % (
                     knob, a, knob, relation, other_key, other_key, b))
 
-    if not mutations_consequential(knob):
+    if not _commands().mutations_consequential(knob):
         ok_w, detail = _commands()._apply_config_set(knob, parsed, extra)
         if not ok_w:
             return "config set failed: %s" % detail
@@ -580,8 +582,8 @@ def _config_set(rest: List[str]) -> str:
         return _commands()._config_set_result_line(knob, before, after, detail)
     # Consequential mutation: two-step confirmation (6b.2).
     summary = "config set %s = %r%s" % (knob, parsed, (" " + extra["name"]) if extra.get("name") else "")
-    token = _issue_confirmation("config_set", [knob, raw_value] + (["name=" + extra["name"]] if extra.get("name") else []), summary)
-    before_fp = _config_fingerprint(before)
+    token = _commands()._issue_confirmation("config_set", [knob, raw_value] + (["name=" + extra["name"]] if extra.get("name") else []), summary)
+    before_fp = _commands()._config_fingerprint(before)
     return ("proposed: %s\nfingerprint(before): %s\n"
             "confirm within 120s: /router confirm %s" % (summary, before_fp, token))
 
@@ -597,7 +599,7 @@ def _lookup_dotted(section: Dict[str, Any], dotted: str) -> object:
 
 
 def _lookup_knob(section: Dict[str, Any], knob: str) -> object:
-    return _lookup_dotted(section, knob)
+    return _commands()._lookup_dotted(section, knob)
 
 
 def _config_set_result_line(knob: str, before: Dict[str, Any],
@@ -605,15 +607,15 @@ def _config_set_result_line(knob: str, before: Dict[str, Any],
     """Result line for a direct (non-consequential) config set: before/after
     masked values + guard result + live-effect note + local fingerprint (D7)."""
     try:
-        old_val = _lookup_dotted(before, knob)
-        new_val = _lookup_dotted(after, knob)
+        old_val = _commands()._lookup_dotted(before, knob)
+        new_val = _commands()._lookup_dotted(after, knob)
         return "\n".join([
             "ok: %s %r -> %r" % (knob,
-                                 _mask_value(knob, old_val) if old_val is not None else "(unset)",
-                                 _mask_value(knob, new_val) if new_val is not None else "(unset)"),
+                                 _commands()._mask_value(knob, old_val) if old_val is not None else "(unset)",
+                                 _commands()._mask_value(knob, new_val) if new_val is not None else "(unset)"),
             "guard: config_writer atomic write (%s)" % detail,
             "live-effect: config readers re-read per call (no gateway bounce needed)",
-            "fingerprint(after): %s" % _config_fingerprint(after),
+            "fingerprint(after): %s" % _commands()._config_fingerprint(after),
         ])
     except Exception as exc:  # noqa: BLE001
         return "config set ok but result render failed: %s" % str(exc)[:120]
@@ -625,7 +627,7 @@ def _config_diff() -> str:
         from . import config_writer
 
         section = config_writer.read_plugin_section()
-        path = _rollback_path()
+        path = _commands()._rollback_path()
         if not os.path.exists(path):
             return ("config diff: no previous-section records (nothing mutated "
                     "through /router yet) — the on-disk config IS the baseline")
@@ -640,7 +642,7 @@ def _config_diff() -> str:
         prev = last.get("previous_section")
         if not isinstance(prev, dict):
             return "config diff: last record has no previous_section"
-        diffs: List[str] = ["config diff (sidecar snapshot %s vs live):" % _fmt_ts(float(last.get("ts", 0.0) or 0.0))]
+        diffs: List[str] = ["config diff (sidecar snapshot %s vs live):" % _commands()._fmt_ts(float(last.get("ts", 0.0) or 0.0))]
         keys = sorted(set(list(prev.keys()) + list(section.keys())))
         shown = 0
         for k in keys:
@@ -649,7 +651,7 @@ def _config_diff() -> str:
                 break
             pv, cv = prev.get(k), section.get(k)
             if json.dumps(pv, sort_keys=True, default=str) != json.dumps(cv, sort_keys=True, default=str):
-                diffs.append("  %s: %r -> %r" % (k, _mask_value(k, pv), _mask_value(k, cv)))
+                diffs.append("  %s: %r -> %r" % (k, _commands()._mask_value(k, pv), _commands()._mask_value(k, cv)))
                 shown += 1
         if not shown:
             diffs.append("  (no top-level differences)")
@@ -682,14 +684,14 @@ def _config_validate() -> str:
                         problems.append("anchor_chain.%s not <scheme>://<model>" % role)
         except Exception as exc:  # noqa: BLE001
             problems.append("anchor_chain probe error: %s" % str(exc)[:80])
-        wl = _knob_whitelist()
+        wl = _commands()._knob_whitelist()
         checked = 0
         for name, spec in wl.items():
-            val = _lookup_dotted(section, name)
+            val = _commands()._lookup_dotted(section, name)
             if val is None:
                 continue
             checked += 1
-            ok, why, _parsed = _parse_value(spec, str(val))
+            ok, why, _parsed = _commands()._parse_value(spec, str(val))
             if not ok:
                 problems.append("%s=%r: %s" % (name, val, why))
         lines = ["config validate: %d known knobs checked" % checked]
@@ -711,7 +713,7 @@ def _config_rollback(rest: List[str]) -> str:
     try:
         from . import config_writer
 
-        path = _rollback_path()
+        path = _commands()._rollback_path()
         if not os.path.exists(path):
             return "rollback: no previous-section records (nothing mutated through /router yet)"
         with open(path, "r", encoding="utf-8") as fh:
@@ -743,9 +745,107 @@ def _config_rollback(rest: List[str]) -> str:
         after = config_writer.read_plugin_section()
         return "\n".join([
             "rollback ok (restored snapshot from %s, record #%d of %d)" % (
-                _fmt_ts(float(rec.get("ts", 0.0) or 0.0)), idx, len(lines)),
+                _commands()._fmt_ts(float(rec.get("ts", 0.0) or 0.0)), idx, len(lines)),
             "guard: went through config_writer (%s); FORBIDDEN_KEYS preserved" % detail,
-            "fingerprint(after): %s" % _config_fingerprint(after),
+            "fingerprint(after): %s" % _commands()._config_fingerprint(after),
         ])
     except Exception as exc:  # noqa: BLE001
         return "error: rollback failed: %s" % str(exc)[:160]
+
+def _peek_confirmation(token: str) -> Optional[str]:
+    """Summary of a live pending token, or None (expired/unknown)."""
+    try:
+        _commands()._purge_confirmations()
+        rec = _commands()._pending_confirmations.get(str(token or ""))
+        if not rec:
+            return None
+        return str(rec.get("summary") or "")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _chain_entry_mut(knob_tail: str, value: object, entry_name: str):
+    def mut(section: Dict[str, Any]) -> None:
+        chain = section.get("chain")
+        chain = [e for e in chain if isinstance(e, dict)] if isinstance(chain, list) else []
+        hit = None
+        for e in chain:
+            if str(e.get("name") or e.get("model") or "") == entry_name:
+                hit = e
+                break
+        if hit is None:
+            raise ValueError("no chain entry named %r (existing: %s)" % (
+                entry_name, ", ".join(str(e.get("name") or e.get("model") or "?") for e in chain) or "none"))
+        if knob_tail not in ("max_tokens", "temperature", "timeout"):
+            raise ValueError("only max_tokens/temperature/timeout are chat-settable on chain entries")
+        e2 = dict(hit)
+        e2[knob_tail] = value
+        chain = [e2 if e is hit else e for e in chain]
+        section["chain"] = chain
+    return mut
+
+
+def _record_rollback(previous_section: Dict[str, Any], changed_keys: List[str]) -> None:
+    """Append the pre-mutation section to the JSONL sidecar (keep last 10).
+    Best-effort; never raises (rollback availability must not break writes)."""
+    try:
+        path = _commands()._rollback_path()
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        rec = {"ts": round(time_mod(), 3), "changed_keys": changed_keys[:12],
+               "previous_section": previous_section}
+        lines: List[str] = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+        lines.append(json.dumps(rec, ensure_ascii=False) + "\n")
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.writelines(lines[-_commands()._ROLLBACK_KEEP:])
+        os.replace(path + ".tmp", path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except Exception as exc:  # noqa: BLE001
+        _commands().logger.debug("rollback record failed: %s", exc)
+
+
+def _cmd_cap(args: List[str]) -> str:
+    try:
+        from . import anchor_chain
+
+        if not args or args[0].lower() == "get":
+            chain = anchor_chain.load_anchor_chain()
+            spend = anchor_chain.today_spend()
+            remaining = max(0.0, chain.daily_cap_usd - spend)
+            lines = ["cap: %s" % _commands()._fmt_cost(chain.daily_cap_usd),
+                     "spend today: %s" % _commands()._fmt_cost(spend),
+                     "projected remaining: %s" % _commands()._fmt_cost(remaining),
+                     "raising: /router cap set <usd> (UP-only; lowering is a config-file act)"]
+            gate = _commands()._mutation_gate_line()
+            if gate:
+                lines.append(gate)
+            return "\n".join(lines)
+        if args[0].lower() == "set":
+            if not _commands().mutations_armed():
+                return _commands()._mutation_gate_line() or "mutations disabled"
+            if len(args) < 2:
+                return "usage: /router cap set <usd>"
+            try:
+                want = float(args[1])
+            except (TypeError, ValueError):
+                return "rejected: cap must be a number"
+            from . import anchor_chain as _ac
+
+            chain = _ac.load_anchor_chain()
+            if want < chain.daily_cap_usd or want < _ac.DEFAULT_DAILY_CAP_USD:
+                return ("rejected: cap is UP-only (have=%s, floor=%s) — lowering the "
+                        "cap is a config-file act" % (_commands()._fmt_cost(chain.daily_cap_usd),
+                                                      _commands()._fmt_cost(_ac.DEFAULT_DAILY_CAP_USD)))
+            summary = "cap set %s -> %s" % (_commands()._fmt_cost(chain.daily_cap_usd), _commands()._fmt_cost(want))
+            token = _commands()._issue_confirmation("cap_set", ["set", args[1]], summary)
+            return ("proposed: %s\nconfirm within 120s: /router confirm %s" % (summary, token))
+        return "unknown cap subcommand: %s (get | set <usd>)" % args[0]
+    except Exception as exc:  # noqa: BLE001
+        return "error: cap failed: %s" % str(exc)[:160]
