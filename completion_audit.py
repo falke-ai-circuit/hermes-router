@@ -96,7 +96,7 @@ def audit_revision_seconds() -> float:
 _CLOSURE_PATTERNS = (
     r"\b(?:in\s+summary|to\s+sum(?:mari[sz]e|up)|summing\s+up)\b",
     r"\b(?:all|both|every|each)\s+(?:three|four|five|\d+)?\s*(?:tasks?|items?|findings?|fix(?:es)?|changes?|commits?)\b.{0,40}\b(?:done|complete[d]?|shipped|landed|delivered|verified|fixed)\b",
-    r"\b(?:wrapped|wrapped\s+up|closed\s+out|all\s+done|everything\s+(?:is\s+)?(?:done|shipped|landed|verified))\b",
+    r"\b(?:wrapped\s+up|closed\s+out|all\s+done|everything\s+(?:is\s+)?(?:done|shipped|landed|verified))\b",
     r"\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b.{0,60}\b(?:and|plus|\+)\s.{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
     r"\ball\s+(?:three|four|five|\d+)?\s*(?:of\s+(?:them|these))?\s*(?:are\s+)?(?:fixed|shipped|verified|done|landed)\b",
     # 2026-09-10 live miss: answers that open/close with a closure frame

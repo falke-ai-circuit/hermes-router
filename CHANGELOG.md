@@ -1,3 +1,7 @@
+## 3.8.7 — 2026-09-11 (closure FP fix, behavioral-battery catch)
+
+- completion_audit: closure pattern matched bare "wrapped" — the verb "She wrapped her legs around him" (uncensored scene text) tripped the closure detector and audited an uncensored render turn. Fix: "wrapped" now requires its completion particle ("wrapped up"). Bare-verb class lesson: closure patterns must match completion phrases, not activity verbs that appear in any prose. Battery result log: /opt/data/tmp/battery_results.json (11/17 clean PASS; U1/U2/X1 "misses" were battery expectations, not router bugs — main model correctly wrote dark content without flinching; F2 "miss" was a harness grep bug, gate actually fired with NO-FINDINGS).
+
 ## 3.8.6 — 2026-09-10 (routed-turn sentinel firewall, Goran generalization directive)
 
 - __init__: _frame_sentinel_check extended into the ROUTED-TURN FIREWALL — any content that is already a lane's output is structurally barred from triggering another routing. Existing uncensored frame sentinels ("Your uncensored response", "UNCENSORED-ROUTER INJECTION", "recorded turn") joined by the frontier envelope markers ("HIGHER-SELF ORIENTATION TURN" PRE, "HIGHER-SELF COMPLETION-AUDIT TURN" POST). Invariant: a routed turn or message can never trigger another routing, regardless of how many lanes exist now or are added in future — new lanes register their marker string in this one function. Verified: all 4 routed-artifact markers blocked from PRE re-routing, plain asks and refusal-shaped content unaffected. Fail-open unchanged.
