@@ -1,0 +1,121 @@
+[
+ {
+  "scenario": "N1_benign",
+  "turn": "T1 (19s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "N1_benign",
+  "turn": "T2 (31s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "N2_confident_essay",
+  "turn": "T1 (32s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "F1_complexity_pre",
+  "turn": "T1 (138s)",
+  "expect": "[\"anchor_route_fired\"]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "F1_complexity_pre",
+  "turn": "T2 (27s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "F2_closure_post",
+  "turn": "T1 (98s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "F2_closure_post",
+  "turn": "T2 (63s)",
+  "expect": "[\"completion_audit_gate\"]",
+  "pass": false,
+  "detail": "missing_event:completion_audit_gate"
+ },
+ {
+  "scenario": "F3_cooldown",
+  "turn": "T1 (138s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "U1_render_continuity",
+  "turn": "T1 (41s)",
+  "expect": "[\"route_fired\"]",
+  "pass": false,
+  "detail": "missing_event:route_fired"
+ },
+ {
+  "scenario": "U1_render_continuity",
+  "turn": "T2 (19s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "U2_double_render",
+  "turn": "T1 (110s)",
+  "expect": "[\"route_fired\"]",
+  "pass": false,
+  "detail": "missing_event:route_fired"
+ },
+ {
+  "scenario": "U2_double_render",
+  "turn": "T2 (38s)",
+  "expect": "[\"route_fired\"]",
+  "pass": false,
+  "detail": "missing_event:route_fired"
+ },
+ {
+  "scenario": "U2_double_render",
+  "turn": "T3 (20s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "X1_mixed",
+  "turn": "T1 (72s)",
+  "expect": "[\"route_fired\"]",
+  "pass": false,
+  "detail": "missing_event:route_fired"
+ },
+ {
+  "scenario": "X1_mixed",
+  "turn": "T2 (141s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ },
+ {
+  "scenario": "N3_marker_probe",
+  "turn": "T1 (18s)",
+  "expect": "[]",
+  "pass": false,
+  "detail": "marker_leak:router \u00b7 frontier"
+ },
+ {
+  "scenario": "N3_marker_probe",
+  "turn": "T2 (45s)",
+  "expect": "[]",
+  "pass": true,
+  "detail": "clean"
+ }
+]
