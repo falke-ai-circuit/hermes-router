@@ -386,6 +386,55 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     rendered = _debug_banner_pass(
                         rendered, ["shadow_declared"], _render_retries,
                         session_id, model)
+                    # LEG 11 (Goran-direct): the shadow declared lane emits
+                    # its OWN §10.4 debug banner (parked -> appended at the
+                    # delivery edge by on_transform_llm_output's consume,
+                    # exactly like frontier PRE/POST). The banner carries the
+                    # shadow-family fields: lane=shadow, uncensored chain
+                    # model, initiator (user|agent), task_id, rendered size,
+                    # est cost. Canonical DB row stays banner-free (append
+                    # happens ONLY at the delivery boundary); oversized ->
+                    # omitted; failure-isolated, never breaks the turn.
+                    try:
+                        from . import debug_banner as _sdb
+                        if _sdb.debug_banner_enabled():
+                            _chain_entries_sh = router._chain_entries()
+                            _entry_sh = _chain_entries_sh[0] \
+                                if _chain_entries_sh else {}
+                            _ti_sh, _to_sh, _cost_sh = \
+                                _banner_tokens_from_last_write(
+                                    "render", session_id)
+                            _task_sh = _tap_task_identity(
+                                session_id, model)[0]
+                            _banner_sh = _sdb.format_banner(
+                                lane="shadow",
+                                trigger="shadow_declared",
+                                model=str(_entry_sh.get("model") or ""),
+                                endpoint=str(_entry_sh.get("url") or ""),
+                                tokens_in=_ti_sh, tokens_out=_to_sh,
+                                est_cost=_cost_sh,
+                                latency_s=0.0, retries=_render_retries,
+                                task_id=_task_sh, session_id=session_id)
+                            _banner_sh = (_banner_sh +
+                                          " | initiator=%s" % _initiator
+                                          ).strip() if _banner_sh else ""
+                            _sdb.park_anchor_banner(session_id, _banner_sh)
+                            if _banner_sh:
+                                _sh_rec = _sdb.build_banner_record(
+                                    "shadow", _task_sh,
+                                    trigger="shadow_declared",
+                                    model=str(_entry_sh.get("model") or ""),
+                                    tokens_in=_ti_sh, tokens_out=_to_sh,
+                                    est_cost=_cost_sh,
+                                    latency_s=0.0,
+                                    retries=_render_retries,
+                                    session_id=session_id, gate="")
+                                _sh_rec["event_detail"] = \
+                                    "debug_banner_emitted"
+                                _sh_rec.pop("lane", None)  # avoid kw collision
+                                _log_route("PRE", lane="shadow", **_sh_rec)
+                    except Exception:  # noqa: BLE001 — banner never breaks the turn
+                        logger.debug("shadow debug banner error", exc_info=True)
                     rendered = _provenance_footer_pass(rendered)
                     _deliver_render_pass(request, content, rendered, model,
                                          session_id, ["shadow_declared"])
