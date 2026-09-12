@@ -141,10 +141,18 @@ def test_mid_sentence_inert():
 
 
 def test_payload_needed_mid_line_never_fires_via_prefix():
-    """A phrase followed by prose (no separator/punct) stays inert — the
-    prefix match requires a separator or trailing punctuation."""
+    """Leg 10 contract update: a variant followed by a SPACE + prose now
+    FIRES ('ask shadow self to give her read' — the live canary miss); the
+    still-inert form is a phrase embedded MID-SENTENCE, not at line start.
+    Echo guard (H7.2) unchanged for mid-line/quoted content."""
+    # line-start variant + prose = FIRES (leg 10):
     assert route_gate.detect_declared_user(
-        "ask your higher self please and thanks") is None
+        "ask your higher self please and thanks") == "higher-pre"
+    # mid-sentence mention stays inert:
+    assert route_gate.detect_declared_user(
+        "maybe we should ask your higher self about that later") is None
+    assert route_gate.detect_declared_user(
+        "the guide says ask your higher self nightly") is None
 
 
 # ---------------------------------------------------------------------------
