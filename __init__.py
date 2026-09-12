@@ -357,6 +357,23 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # execution stays at on_llm_execution).
         _claim_decision = _route_gate.claim_pass(
             content, session_id, model, request=request, context=context)
+        # LEG 12 FIX 2 (Goran FP doctrine): declared-intent NEAR MISS —
+        # family words present in a turn-start directive-ish line but no
+        # lane fired. Inject the advisory bare-call reminder into the
+        # request context (marker-deduped, once per turn, fail-open). The
+        # near-miss probe uses the SAME strict line-start rules as the
+        # declared variants: quoted lines, mid-sentence mentions, and
+        # meta/prose ('what does uncensored routing mean') are inert.
+        # Advisory only — never routes, never claims.
+        if not _claim_decision.route:
+            try:
+                if _route_gate._detect_declared_intent_near_miss(content):
+                    if _route_gate.inject_bare_call_reminder(request):
+                        _log_route("PRE",
+                                   event_detail="bare_call_reminder_injected",
+                                   session_id=session_id)
+            except Exception:  # noqa: BLE001 — advisory must never break routing
+                logger.debug("bare-call reminder error", exc_info=True)
         if _claim_decision.route:
             # LEG 8 (blueprint §2): declared SHADOW routes execute on the
             # UNCENSORED RENDER chain (abliteration primary / Venice

@@ -115,11 +115,46 @@ DECLARED_USER_VARIANTS: Dict[str, str] = {
     "shadow self read": LANE_SHADOW,
 }
 
+# LEG 12 FIX 1 (Goran FP doctrine): the 'uncensored take' family is NARROW —
+# ONLY directive shapes at LINE START. 'uncensored' is a common word: meta
+# discussion ('what does uncensored routing mean'), quoted phrases, and
+# prose ('the uncensored chain uses abliterated') must stay inert. The
+# variants below are verb-phrase directives; article (a/an/the) after the
+# verb phrase is tolerated via the article-tolerant matching below
+# (do [a/an/the] uncensored take ...). All map to LANE_SHADOW.
+_DECLARED_UNCENSORED_VERBS = ("do ", "give me ", "give ")
+_DECLARED_UNCENSORED_NOUN = "uncensored take"
+_DECLARED_UNCENSORED_HEADS = ("uncensored take on", "uncensored take",
+                              "uncensored view on", "uncensored view",
+                              "uncensored read on", "uncensored read")
+
 # Loose family probes for the declared_intent_no_route OBSERVABILITY signal
 # (BUG B-2): family DETECTED (words present) but no strict variant matched —
 # the turn is greppable/auditable, NOT routed. These never claim a lane.
 _DECLARED_INTENT_LOOSE = ("higher self", "higher-self", "shadow self",
-                          "shadow self read", "the shadow")
+                          "shadow self read", "the shadow", "uncensored")
+
+# LEG 12 FIX 2 (Goran FP doctrine): when family intent words are present in
+# a turn-start directive-ish line but NO strict variant matched, the
+# middleware injects a ONE-LINE advisory reminder — the agent must use the
+# router_control request_routing action, never hand-roll model calls. The
+# near-miss detection REUSES the same strict line-shape rules as the
+# declared variants (turn-start directive lines only; quoted/echoed lines
+# and mid-sentence prose are inert — _directive_lines echo guard). This is
+# advisory only: it never routes, never claims, fail-open, once per turn.
+ROUTER_BARE_CALL_REMINDER_MARKER = "ROUTER BARE-CALL GUARD"
+ROUTER_BARE_CALL_REMINDER = (
+    "[" + ROUTER_BARE_CALL_REMINDER_MARKER + "] user requested "
+    "uncensored/shadow/higher routing but no lane fired — use the "
+    "router_control request_routing action; never hand-roll model calls.")
+
+# Near-miss line heads for FIX 2 — STRICT line-start directive-ish shapes
+# only (Goran FP doctrine): a line must START with the family word to count.
+# 'what does uncensored routing mean' (starts 'what'), 'the uncensored chain
+# uses abliterated' (starts 'the'), mid-sentence mentions, and quoted lines
+# (_directive_lines echo guard) are INERT.
+_NEAR_MISS_LINE_HEADS = ("uncensored", "shadow", "shadow self", "the shadow",
+                         "higher self", "higher-self", "the higher self")
 
 # Optional leading politeness prefixes stripped before variant matching
 # ('can you ask higher self ...' — live canary miss #1).
@@ -316,6 +351,51 @@ def _detect_declared_intent_loose(content: str) -> bool:
         return False
 
 
+def _detect_declared_intent_near_miss(content: str) -> bool:
+    """LEG 12 FIX 2 near-miss probe for the bare-call reminder — STRICT
+    line-shape rule per the Goran FP doctrine: a directive-ISH line is one
+    that STARTS with a family word (after the standard politeness-prefix
+    strip). 'what does uncensored routing mean' (starts 'what'), 'the
+    uncensored chain uses abliterated' (starts 'the'), mid-sentence
+    mentions, and quoted lines are INERT. Signal only; NEVER routes.
+    Never raises."""
+    try:
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            for head in _NEAR_MISS_LINE_HEADS:
+                if norm.startswith(head):
+                    nxt = norm[len(head)] if len(norm) > len(head) else " "
+                    if nxt in " ?.,:":  # word boundary, not 'uncensoredly'
+                        return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def inject_bare_call_reminder(request: Any) -> bool:
+    """LEG 12 FIX 2: advisory one-line reminder injected into the request
+    context when a declared-intent near miss fired (family words present,
+    no lane claimed). Marker-deduped (one per context), advisory only —
+    never routes, never claims. Returns True when injected. Never raises
+    (caller also fail-open)."""
+    try:
+        msgs = (request or {}).get("messages")
+        if not isinstance(msgs, list):
+            return False
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "system"
+                    and ROUTER_BARE_CALL_REMINDER_MARKER
+                    in str(m.get("content") or "")):
+                return False
+        msgs.append({"role": "system",
+                     "content": ROUTER_BARE_CALL_REMINDER})
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def detect_declared_user(content: str) -> Optional[str]:
     """Lane for a declared-user on-demand phrase appearing as a directive
     line (optionally carrying a consult payload after the phrase:
@@ -363,6 +443,46 @@ def detect_declared_user(content: str) -> Optional[str]:
         return best_lane
     except Exception:  # noqa: BLE001
         return None
+
+
+def _detect_uncensored_take(content: str) -> bool:
+    """LEG 12 FIX 1: narrow line-start directive matcher for the
+    'uncensored take/view/read' family. Fires ONLY on directive shapes:
+    '<verb> [a/an/the] uncensored take/view/read [on X]' or
+    'uncensored take on X' AS THE LINE START (after the standard
+    politeness-prefix strip). Returns True when a directive fired (lane is
+    LANE_SHADOW — fixed). Meta-mentions ('what does uncensored routing
+    mean'), prose ('the uncensored chain uses abliterated'), and quoted
+    lines (skipped by _directive_lines) NEVER match. Never raises."""
+    try:
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            # Verb-phrase directives: 'do an uncensored take on X',
+            # 'give me a uncensored read on X'.
+            for verb in _DECLARED_UNCENSORED_VERBS:
+                if norm.startswith(verb):
+                    rest = norm[len(verb):].strip()
+                    # Tolerate a leading article (a/an/the).
+                    for art in ("the ", "an ", "a "):
+                        if rest.startswith(art):
+                            rest = rest[len(art):].strip()
+                            break
+                    if rest.startswith(_DECLARED_UNCENSORED_NOUN):
+                        return True
+                    for head in _DECLARED_UNCENSORED_HEADS:
+                        if rest.startswith(head):
+                            return True
+            # Bare line-start head with a payload: 'uncensored take on X'.
+            for head in _DECLARED_UNCENSORED_HEADS:
+                if norm.startswith(head) and len(norm) > len(head):
+                    nxt = norm[len(head)]
+                    if nxt in " ?.,:":  # 'uncensored take on X' or 'uncensored take?'
+                        return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _skip_anchor_requested(content: str) -> bool:
@@ -661,6 +781,14 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
         return GateDecision(route=True, lane=str(existing["lane"]),
                             source=SOURCE_DECLARED_AGENT,
                             reason="declared_agent")
+    # LEG 12 FIX 1: narrow 'uncensored take' directive family — line-start
+    # directive shapes ONLY (Goran FP doctrine); lane is LANE_SHADOW.
+    if _detect_uncensored_take(content):
+        if existing is None:
+            register_declared(session_id, LANE_SHADOW, SOURCE_DECLARED_USER)
+        return GateDecision(route=True, lane=LANE_SHADOW,
+                            source=SOURCE_DECLARED_USER,
+                            reason="declared_user")
     return NO_ROUTE
 
 
