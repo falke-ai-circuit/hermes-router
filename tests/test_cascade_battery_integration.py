@@ -112,8 +112,9 @@ def test_on_demand_matrix_shadow_lane_claims(monkeypatch, caps_tmp, model):
     _rr(lane="shadow")
     d = route_gate.claim_pass("work the problem", SID, model)
     assert d.route is True and d.lane == "shadow"
-    assert staged and staged[0].mode == router_core.MODE_CONSULT
-    assert staged[0].orientation is False
+    # Leg 8 (blueprint §2): shadow executes on the UNCENSORED RENDER chain —
+    # no frontier anchor swap is staged for the shadow lane.
+    assert not staged
 
 
 def test_on_demand_higher_post_claim_consumed_without_pre_envelope(monkeypatch, caps_tmp):
@@ -209,6 +210,15 @@ def test_double_declare_agent_then_user_via_middleware(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     monkeypatch.setattr(router_core, "stage_model_swap",
                         lambda sid, rd, role="primary": {"route_id": rd.route_id})
+    # Leg 8: the declared shadow claim executes via the render chain — stub
+    # the ladder so the test never egresses.
+    monkeypatch.setattr(plugin, "_render_with_retry_ladder",
+                        lambda c, m, p, s: ("LEG8 RENDER", 0))
+    monkeypatch.setattr(plugin, "_debug_banner_pass", lambda r, *a, **k: r)
+    monkeypatch.setattr(plugin, "_provenance_footer_pass", lambda r: r)
+    monkeypatch.setattr(plugin._dispatcher_pre, "_deliver_render_pass",
+                        lambda request, content, rendered, model, sid, matches:
+                        {"request": request})
     _rr(lane="shadow")
     result = plugin.on_llm_request(
         request=_request("ask your higher self"),

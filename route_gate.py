@@ -770,6 +770,17 @@ def claim_pass(content: str, session_id: str, model: str,
                          content, str(model or ""))
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT):
+        # Leg 8: shadow claims never stage an anchor swap (no task_id flows
+        # through router_core), but billing sites still need the initiator —
+        # stamp the claim source on the content-derived task id up front.
+        try:
+            from . import router_core as _rc0
+
+            _stamp_task_source(_rc0.task_id_for(session_id, content,
+                                                str(model or "")),
+                               decision.source)
+        except Exception:  # noqa: BLE001 — observability never breaks the gate
+            pass
         # Leg 3: the declared claim's execution envelope rides the EXISTING
         # staged-swap machinery (router_core.stage_model_swap -> the frozen
         # on_llm_execution anchor lane). One consult per turn is enforced by
@@ -779,36 +790,54 @@ def claim_pass(content: str, session_id: str, model: str,
         # audit's (the declared marker for it is consumed by the gate here,
         # the audit itself stays on its own cadence); shadow stages a plain
         # consult swap (same endpoint, no orientation flag).
-        try:
-            from . import router_core as _rc
+        # LEG 8 (blueprint §2): shadow does NOT touch the frontier anchor
+        # chain — the shadow lane's execution is the UNCENSORED RENDER chain
+        # (abliteration primary / Venice fallback), the same machinery as
+        # refusal-shaped/contested PRE renders. The middleware (on_llm_request)
+        # sees lane==LANE_SHADOW on the returned decision and runs the render
+        # ladder + render_inbox delivery; NO tokens.jsonl anchor consult row.
+        if decision.lane != LANE_SHADOW:
+            try:
+                from . import router_core as _rc
 
-            _task = _rc.task_id_for(session_id, content, str(model or ""))
-            # Leg 6: stamp the claim's source for initiator provenance —
-            # billing sites (anchor_exec / completion_audit) resolve
-            # route_gate.initiator_for_task(task_id) at record time.
-            _stamp_task_source(_task, decision.source)
-            _rd = _rc.RouteDecision(
-                task_id=_task, lane=_rc.LANE_COMPLEXITY,
-                mode=_rc.MODE_CONSULT,
-                model_target=None, reason="request_routing_declared",
-                ts=time.time(), override_used=None,
-                route_id=_task[:12] + "-" + str(int(time.time())),
-                orientation=(decision.lane == LANE_HIGHER_PRE))
-            _staged = _rc.stage_model_swap(session_id, _rd)
-            # Leg 7c: the declared claim's consult has now FIRED — flag the
-            # turn-claim record executed so every later pass of this turn
-            # stands down (the register-time record was executed=False).
+                _task = _rc.task_id_for(session_id, content, str(model or ""))
+                # Leg 6: stamp the claim's source for initiator provenance —
+                # billing sites (anchor_exec / completion_audit) resolve
+                # route_gate.initiator_for_task(task_id) at record time.
+                _stamp_task_source(_task, decision.source)
+                _rd = _rc.RouteDecision(
+                    task_id=_task, lane=_rc.LANE_COMPLEXITY,
+                    mode=_rc.MODE_CONSULT,
+                    model_target=None, reason="request_routing_declared",
+                    ts=time.time(), override_used=None,
+                    route_id=_task[:12] + "-" + str(int(time.time())),
+                    orientation=(decision.lane == LANE_HIGHER_PRE))
+                _staged = _rc.stage_model_swap(session_id, _rd)
+                # Leg 7c: the declared claim's consult has now FIRED — flag
+                # the turn-claim record executed so every later pass of this
+                # turn stands down (register-time record executed=False).
+                mark_turn_claim_executed(session_id)
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="request_routing_executed",
+                    lane=decision.lane, source=decision.source,
+                    reason=decision.reason, staged=_staged is not None,
+                    task_id=_task, session_id=session_id)
+            except Exception:  # noqa: BLE001 — envelope must never break the gate
+                logger.debug("request_routing envelope error", exc_info=True)
+        else:
+            # LEG 8: declared shadow — execution is the UNCENSORED RENDER
+            # chain, performed by on_llm_request's shadow-render branch when
+            # it sees this decision. The declared claim is consumed here
+            # (one consult per turn); mark the turn record executed so the
+            # render fires EXACTLY ONCE even across a provider-call burst.
             mark_turn_claim_executed(session_id)
             _pkg_fn("_log_route")(
                 "PRE", event_detail="request_routing_executed",
                 lane=decision.lane, source=decision.source,
-                reason=decision.reason, staged=_staged is not None,
-                task_id=_task, session_id=session_id)
-        except Exception:  # noqa: BLE001 — envelope must never break the gate
-            logger.debug("request_routing envelope error", exc_info=True)
-        finally:
-            # One consult per turn: the declared claim is CONSUMED by this
-            # claim — a later re-fire inside the same turn sees no fresh
-            # claim (the stage_model_swap _SWAP_DONE dedupe holds the line).
-            clear_declared(session_id)
+                reason=decision.reason, staged=False, render_lane=True,
+                session_id=session_id)
+        # One consult per turn: the declared claim is CONSUMED by this
+        # claim — a later re-fire inside the same turn sees no fresh
+        # claim (the stage_model_swap _SWAP_DONE dedupe holds the line).
+        clear_declared(session_id)
     return decision

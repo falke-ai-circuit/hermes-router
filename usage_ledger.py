@@ -219,6 +219,53 @@ def aggregate(records: Optional[List[Dict[str, Any]]] = None, *,
         return {}
 
 
+def tag_last_render_initiator(session_id: str, initiator: str) -> bool:
+    """Leg 8: thread the declared-claim initiator onto the LAST render-lane
+    tokens record for this session (written by router._record_usage during
+    the just-completed uncensored render — router.py has no session→initiator
+    context at that seam). Rewrites the ledger tail record in place; a
+    record already carrying an initiator keeps it (fresh tags overwrite only
+    when the record is untagged — same preservation rule as
+    routing_caps.record_agent_spend). Returns True when tagged. Never
+    raises; observability must never break delivery."""
+    try:
+        tag = str(initiator or "").strip()
+        if not tag:
+            return False
+        path = _store_path()
+        if not os.path.exists(path):
+            return False
+        with _lock:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            tagged = False
+            for idx in range(len(lines) - 1, -1, -1):
+                try:
+                    rec = json.loads(lines[idx])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(rec, dict) or rec.get("lane") != "render":
+                    continue
+                if str(rec.get("session_id") or "") != str(session_id or ""):
+                    continue
+                if not rec.get("initiator"):
+                    rec["initiator"] = tag[:20]
+                    lines[idx] = json.dumps(rec, ensure_ascii=False) + "\n"
+                    tagged = True
+                break
+            if tagged:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.writelines(lines)
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+            return tagged
+    except Exception as exc:  # noqa: BLE001 - observability never breaks delivery
+        logger.debug("render initiator tag failed: %s", exc)
+        return False
+
+
 def _test_reset() -> None:
     """Tests-only hook: the ledger path is monkeypatched via _store_path in
     tests; nothing in-process to reset (no caches)."""
