@@ -45,7 +45,7 @@ VALID_ROLES = ("primary", "judge")
 VALID_CONTROL_ACTIONS = (
     "enable_lane", "disable_lane", "set_level", "set_endpoint",
     "set_cap", "reload", "ping", "set_decision_head",
-    "set_pre_mode", "set_audit_mode",
+    "set_pre_mode", "set_audit_mode", "request_routing",
 )
 
 
@@ -55,7 +55,8 @@ VALID_CONTROL_ACTIONS = (
 
 
 def count(event_detail: str) -> None:
-    """Track anchored/route_skipped/cap_blocked events. Never raises."""
+    """Track anchored/route_skipped/cap_blocked/request_routing events.
+    Never raises."""
     try:
         with _LOCK:
             if event_detail == "anchor_route_fired":
@@ -64,6 +65,9 @@ def count(event_detail: str) -> None:
                 _COUNTERS["skipped"] = int(_COUNTERS.get("skipped", 0)) + 1
             elif event_detail == "cap_blocked":
                 _COUNTERS["blocked"] = int(_COUNTERS.get("blocked", 0)) + 1
+            elif event_detail == "request_routing":
+                _COUNTERS["request_routing"] = \
+                    int(_COUNTERS.get("request_routing", 0)) + 1
     except Exception:  # noqa: BLE001
         pass
 
@@ -186,7 +190,7 @@ def _set_nested(section: Dict[str, Any], block: str, key: str, value: Any) -> No
 
 def router_control(action: str = "", lane: str = "", level: Any = None,
                    role: str = "", model: str = "", cap: Any = None,
-                   backend: str = "") -> str:
+                   backend: str = "", session_id: str = "") -> str:
     """Single validated-action control tool. Returns a JSON string result.
     Never raises; every invalid input returns ok=false with a reason."""
     try:
@@ -325,9 +329,68 @@ def router_control(action: str = "", lane: str = "", level: Any = None,
         if action == "ping":
             return _ping()
 
+        if action == "request_routing":
+            return _request_routing(lane=lane, session_id=session_id)
+
         return json.dumps({"ok": False, "error": "unhandled_action"})
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"ok": False, "error": "router_control_failed", "detail": str(exc)[:200]})
+
+
+def _request_routing(lane: str = "", session_id: str = "") -> str:
+    """request_routing action (request-routing blueprint Phase 1, leg 3):
+    the agent DECLARES on-demand routing for its CURRENT turn. Registers a
+    declared claim in the gate's single-owner registry; the gate's claim
+    phase consumes it THIS turn (same turn — the middleware fires after the
+    tool call completes, before the agent's next provider call).
+
+    lane: higher-pre | higher-post | shadow (blueprint lane vocabulary).
+    session_id: the CURRENT session (the tool environment supplies it;
+    empty -> the claim is registered under "" and the gate matches it via
+    the same empty-session id the middleware passes when session_id is
+    absent).
+
+    Guards: lane validated against route_gate.VALID_ROUTE_LANES; the
+    per-agent daily cap is checked BEFORE the claim registers (a cap-denied
+    request returns ok=false with reason=cap_denied and emits the same
+    visible denial banner as the gate path); a fresh existing claim makes
+    this a no-op ok=true deduped=true (double-declare dedupe H7.5). The
+    registry is in-process single-owner state owned by route_gate — no
+    second writer is introduced. Never raises."""
+    try:
+        from . import route_gate
+        from . import routing_caps
+
+        lane_n = (lane or "").strip().lower()
+        if lane_n not in route_gate.VALID_ROUTE_LANES:
+            return json.dumps({"ok": False, "error": "invalid_lane",
+                               "valid": list(route_gate.VALID_ROUTE_LANES)})
+        sid = str(session_id or "")
+        # Cap check FIRST — denial is visible even on the declared path.
+        allowed, spend, cap_val = routing_caps.gate_cap_check(sid)
+        if not allowed:
+            routing_caps.deny_routing(sid, lane=lane_n, initiator="agent",
+                                      session_id=sid)
+            return json.dumps({"ok": False, "error": "cap_denied",
+                               "lane": lane_n, "spend_usd": round(spend, 4),
+                               "cap_usd": round(cap_val, 2),
+                               "detail": routing_caps.denied_banner_text(spend, cap_val)})
+        fresh = route_gate.register_declared(sid, lane_n,
+                                             route_gate.SOURCE_DECLARED_AGENT)
+        try:
+            count("request_routing")
+        except Exception:  # noqa: BLE001
+            pass
+        return json.dumps({"ok": True, "action": "request_routing",
+                           "lane": lane_n, "deduped": not fresh,
+                           "session_id": sid,
+                           "detail": ("claim already fresh — one consult per "
+                                      "turn stands (H7.5)" if not fresh else
+                                      "declared claim staged; the gate claims "
+                                      "this turn's routing")})
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"ok": False, "error": "request_routing_failed",
+                           "detail": str(exc)[:200]})
 
 
 def _ping() -> str:
@@ -379,23 +442,28 @@ CONTROL_SCHEMA = {
         "config re-read, NO gateway bounce), ping (ONE cheap live smoke call, "
         "max_tokens<=64), set_decision_head (heuristic|routellm_mf), "
         "set_pre_mode (route|shadow|off — frontier orientation brief on/off), "
-        "set_audit_mode (off|complex|always — frontier higher-self audit on/off). "
+        "set_audit_mode (off|complex|always — frontier higher-self audit on/off), "
+        "request_routing (lane=higher-pre|higher-post|shadow, session_id — the "
+        "agent DECLARES on-demand routing for its CURRENT turn; the unified "
+        "route gate claims it before classification). "
         "Guards: config edits go through the atomic config-writer; caps are "
-        "UP-only; route logging and the loop guard are never alterable from here."
+        "UP-only; route logging and the loop guard are never alterable from here; "
+        "request_routing respects the per-agent daily cap and the one-claim-per-turn dedupe."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: enable_lane, disable_lane, set_level, set_endpoint, set_cap, reload, ping, set_decision_head, set_pre_mode, set_audit_mode.",
+                "description": "One of: enable_lane, disable_lane, set_level, set_endpoint, set_cap, reload, ping, set_decision_head, set_pre_mode, set_audit_mode, request_routing.",
             },
-            "lane": {"type": "string", "description": "For lane actions: uncensored | complexity. set_endpoint uses lane=anchor."},
+            "lane": {"type": "string", "description": "For lane actions: uncensored | complexity. set_endpoint uses lane=anchor. request_routing: higher-pre | higher-post | shadow."},
             "level": {"type": ["integer", "string"], "description": "For set_level: 0-3 int. For set_pre_mode: route|shadow|off. For set_audit_mode: off|complex|always."},
             "role": {"type": "string", "description": "For set_endpoint: primary | judge."},
             "model": {"type": "string", "description": "For set_endpoint: <scheme>://<model>, e.g. openrouter://openai/o4-mini."},
             "cap": {"type": "number", "description": "For set_cap: new daily cap in USD (raise only)."},
             "backend": {"type": "string", "description": "For set_decision_head: heuristic | routellm_mf."},
+            "session_id": {"type": "string", "description": "For request_routing: the CURRENT session id (supplied by the tool environment)."},
         },
         "required": ["action"],
     },
@@ -426,6 +494,7 @@ def register(ctx) -> None:
             model=args.get("model", ""),
             cap=args.get("cap"),
             backend=args.get("backend", ""),
+            session_id=str(kw.get("session_id") or args.get("session_id", "") or ""),
         ),
         description=CONTROL_SCHEMA["description"],
         emoji="🎛️",

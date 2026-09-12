@@ -274,8 +274,9 @@ def test_gate_fires_before_classification_inside_on_llm_request(monkeypatch):
     assert result == {}
     assert not scan_calls
     assert not dispatch_calls
-    claim = route_gate.peek_declared("s-gate")
-    assert claim is not None and claim["lane"] == route_gate.LANE_HIGHER_PRE
+    # Leg 3 consume-on-claim semantics: the declared claim is CONSUMED by
+    # the gate's claim (one consult per turn) — no fresh claim remains.
+    assert route_gate.peek_declared("s-gate") is None
 
 
 def test_audit_delivery_is_gate_branch_not_bypass(monkeypatch):
