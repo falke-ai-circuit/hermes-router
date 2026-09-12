@@ -214,10 +214,13 @@ def test_pre_middleware_logs_consult_deduped(monkeypatch):
     # Second call on the SAME ingress text (provider call 2 of the turn).
     out2 = plugin.on_llm_request(request=req, original_request=req, session_id="s5")
     assert out2 == {}  # flash proceeds normally (fail-open)
-    skips = [f for _, f in LOGGED if f.get("event_detail") == "consult_deduped"]
+    # Leg 7 (single claim point): the re-fire stands down at the GATE
+    # (turn-scoped claim record) — one step earlier than the v3.2.0
+    # stage-level dedupe, same guarantee, observability event renamed.
+    skips = [f for _, f in LOGGED if f.get("event_detail") == "claim_standdown"]
     assert len(skips) == 1
     assert skips[0]["session_id"] == "s5"
-    assert skips[0]["task_id"] == router_core.task_id_for("s5", PLAN_ASK, "m")
+    assert skips[0]["claim_source"] == "auto"
 
 
 def test_pre_middleware_second_new_ask_routes_normally(monkeypatch):

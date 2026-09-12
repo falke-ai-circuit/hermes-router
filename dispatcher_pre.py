@@ -333,6 +333,23 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
     uncensored render path is skipped for this turn (one dispatcher,
     one committed decision). Returns True when the complexity lane
     handled the turn (caller returns its pass-through envelope)."""
+    # Leg 7 (single claim point, blueprint invariant #1): the gate's claim
+    # registry is authoritative — when ANY claim (any lane, any source)
+    # already stands for this session/turn, this legacy claim attempt
+    # stands down. Fail-open: registry unavailable -> legacy behavior.
+    try:
+        from . import route_gate as _rg
+
+        _existing = _rg.claim_state(session_id, content, str(model or ""))
+        if _existing is not None:
+            _plugin()._log_route(
+                "PRE", event_detail="claim_standdown",
+                claim_lane=str(_existing.get("lane") or ""),
+                claim_source=str(_existing.get("source") or ""),
+                session_id=session_id)
+            return False
+    except Exception:  # noqa: BLE001 — fail-open to legacy behavior
+        pass
     _decision = router_core.dispatch(
         content, session_id=session_id, model=model, uncensored_matched=False,
     )
