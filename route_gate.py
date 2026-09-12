@@ -356,6 +356,116 @@ def clear_declared(session_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Turn-claim state (leg 7 — single claim point enforcement)
+# ---------------------------------------------------------------------------
+
+# session_id -> claim record for ANY lane/source claim this turn (declared
+# claims write here at registration; auto claims at claim time). The legacy
+# claim sites (_dispatch_pass complexity PRE, completion_audit POST gate,
+# uncensored PRE render gate) read claim_state() first and STAND DOWN when
+# a claim exists — blueprint invariant #1: one routing outcome per turn.
+_TURN_CLAIMS: Dict[str, Dict[str, Any]] = {}
+
+
+def claim_state(session_id: str, content: str = "",
+                model: str = "") -> Optional[Dict[str, Any]]:
+    """Fresh claim for the session (any lane, any source), else None.
+    Read-only — legacy claim sites call this before asserting their own
+    claim and stand down when it returns a record. Sees BOTH the pending
+    declared claim AND the turn-scoped record stamped by claim_pass (which
+    survives the one-consult-per-turn consumption). When content is given,
+    the turn-scoped record is matched against that turn's key — a same-turn
+    re-fire of the same ask matches; a genuinely NEW user turn does not.
+    Fail-open: on ANY internal error returns None (legacy behavior — never
+    block delivery). Never raises."""
+    try:
+        rec = peek_declared(session_id)
+        if rec is not None:
+            return rec
+        return _peek_turn_claim(session_id, content, model)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Turn-window claim record (leg 7): stamped by claim_pass on EVERY route=True
+# decision (any source — declared AND auto), NOT consumed by the one-consult-
+# per-turn clear. Enforces blueprint invariant #1 across the multi-provider-
+# call bursts that make up one turn (a provider-call burst re-fires
+# on_llm_request; without this, claim #2 re-runs the legacy auto pass and
+# bills a SECOND frontier consult — the live-probe regression). Keyed by
+# (session_id, turn_key) where turn_key = state.turn_key_for(ingress text):
+# a same-turn re-fire of the same ask hashes the SAME key and stands down;
+# a genuinely NEW user turn hashes a different key and routes normally.
+# TTL matches pre_fired_this_turn's 120s exclusion window.
+_TURN_CLAIM_WINDOW_S = 120.0
+_TURN_CLAIMED: Dict[str, Dict[str, Any]] = {}
+
+
+def _turn_claim_key(session_id: str, content: str = "",
+                    model: str = "") -> str:
+    try:
+        from . import state as _state
+        return (str(session_id or "") + "|" +
+                _state.turn_key_for(session_id, content, model))
+    except Exception:  # noqa: BLE001
+        return str(session_id or "")
+
+
+def stamp_turn_claim(session_id: str, lane: str, source: str,
+                     content: str = "", model: str = "") -> None:
+    """Record the turn's claim (single-owner registry write). Never raises."""
+    try:
+        with _CLAIM_LOCK:
+            _TURN_CLAIMED[_turn_claim_key(session_id, content, model)] = {
+                "lane": str(lane or ""), "source": str(source or ""),
+                "ts": time.time()}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _peek_turn_claim(session_id: str, content: str = "",
+                     model: str = "") -> Optional[Dict[str, Any]]:
+    try:
+        now = time.time()
+        key = _turn_claim_key(session_id, content, model)
+        with _CLAIM_LOCK:
+            rec = _TURN_CLAIMED.get(key)
+            if rec is None:
+                return None
+            if now - float(rec.get("ts") or 0.0) > _TURN_CLAIM_WINDOW_S:
+                _TURN_CLAIMED.pop(key, None)
+                return None
+            return dict(rec)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def clear_turn_claims(session_id: Optional[str] = None) -> None:
+    """Test/recovery hook — drop turn-window claim record(s). Never raises."""
+    try:
+        with _CLAIM_LOCK:
+            if session_id is None:
+                _TURN_CLAIMED.clear()
+            else:
+                prefix = str(session_id or "") + "|"
+                for key in [k for k in _TURN_CLAIMED
+                            if str(k).startswith(prefix)]:
+                    _TURN_CLAIMED.pop(key, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def record_turn_claim(session_id: str, lane: str, source: str) -> None:
+    """Record a turn-level claim (auto lanes use this; declared claims are
+    registered via register_declared and visible through claim_state
+    automatically). Best-effort — never raises, never blocks delivery."""
+    try:
+        register_declared(session_id, lane, source)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
 # State-leak guard (reviewer H7.1)
 # ---------------------------------------------------------------------------
 
@@ -494,6 +604,22 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                         pass
                     return GateDecision(route=False, reason="cap_denied")
 
+        # 3.6 Turn record (leg 7, single claim point): a claim already
+        #    registered for THIS turn (any lane, any source) is BINDING —
+        #    no second claim of any kind in the same turn.
+        _turn = _peek_turn_claim(session_id, content,
+                                 str(ctx.get("model") or ""))
+        if _turn is not None:
+            try:
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="claim_standdown",
+                    claim_lane=str(_turn.get("lane") or ""),
+                    claim_source=str(_turn.get("source") or ""),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return GateDecision(route=False, reason="turn_claimed")
+
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
         if on_demand_routing_enabled():
             declared = _declared_decision(content, session_id)
@@ -548,6 +674,15 @@ def claim_pass(content: str, session_id: str, model: str,
     Never raises."""
 
     def _auto_shape() -> GateDecision:
+        # Leg 7 (single claim point): the turn-window claim record outranks
+        # the legacy auto pass — a claimed turn cannot claim again. The
+        # VERBATIM _dispatch_pass consult is skipped entirely (no double
+        # classification, no second consult). The record is turn-scoped
+        # (ingress-text turn_key): a genuinely NEW user turn hashes a
+        # different key and routes normally.
+        _turn = _peek_turn_claim(session_id, content, str(model or ""))
+        if _turn is not None:
+            return NO_ROUTE
         routed = bool(_pkg_fn("_dispatch_pass",
                               ("dispatcher_pre", "_dispatch_pass"))(
             content, session_id, model))
@@ -558,7 +693,14 @@ def claim_pass(content: str, session_id: str, model: str,
 
     decision = decide_turn({"content": content, "request": request,
                             "context": context or {}, "session_id": session_id,
+                            "model": str(model or ""),
                             "auto_shape": _auto_shape, "claim": True})
+    if decision.route:
+        # Leg 7: stamp the turn-scoped claim record on EVERY claim (any
+        # lane, any source) — legacy claim sites read claim_state() and
+        # stand down for the rest of this turn's provider-call burst.
+        stamp_turn_claim(session_id, decision.lane or "", decision.source or "",
+                         content, str(model or ""))
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT):
         # Leg 3: the declared claim's execution envelope rides the EXISTING

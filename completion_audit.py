@@ -393,6 +393,21 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             return None
         if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
             return None
+        # Leg 7 (single claim point, blueprint invariant #1): when the
+        # gate's claim registry holds ANY claim for this session/turn,
+        # the audit stands down — that claim owns the turn's one routing
+        # outcome. Fail-open: registry unavailable -> legacy behavior.
+        try:
+            from . import route_gate as _rg
+            _claim = _rg.claim_state(session_id)
+            if _claim is not None:
+                _log("audit_gate_skip", reason="turn_claimed",
+                     claim_lane=str(_claim.get("lane") or ""),
+                     claim_source=str(_claim.get("source") or ""),
+                     session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
         # v3.8.5 (Goran 09-10): a turn whose response IS an uncensored render
         # must not be audited — the frontier lane would audit the uncensored
         # lane's output, which is a category error (complementary lanes: U

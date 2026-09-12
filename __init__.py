@@ -348,6 +348,23 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # the 2026-09-01 escalation-hole ruling).
         state.record_last_seen(session_id, content)
 
+        # Leg 7 (single claim point, blueprint invariant #1): when the gate
+        # registered a claim for this turn (any lane — shadow render, agent
+        # claim, complexity consult), the uncensored PRE render stands down —
+        # the claim owns the turn's ONE routing outcome. Fail-open: registry
+        # unavailable -> legacy behavior (never block delivery).
+        try:
+            _turn_claim = _route_gate.claim_state(session_id)
+        except Exception:  # noqa: BLE001 — fail-open
+            _turn_claim = None
+        if _turn_claim is not None and _turn_claim.get("lane") not in (
+                _route_gate.LANE_HIGHER_PRE, _route_gate.LANE_HIGHER_POST):
+            _log_route("PRE", event_detail="claim_standdown_uncensored",
+                       claim_lane=str(_turn_claim.get("lane") or ""),
+                       claim_source=str(_turn_claim.get("source") or ""),
+                       session_id=session_id)
+            return _hs_pass()
+
         case_sensitive = bool(_classification_cfg().get("case_sensitive", False))
         matches = classifier.scan_pre(content, patterns=_pre_patterns(), case_sensitive=case_sensitive)
 

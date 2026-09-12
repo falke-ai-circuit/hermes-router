@@ -44,6 +44,7 @@ def _request(text, model="minimax-m3"):
 def _reset(monkeypatch):
     state.clear()
     route_gate.clear_declared(SID)
+    route_gate.clear_turn_claims(SID)
     monkeypatch.setattr(plugin, "_cfg", lambda: {
         "enabled": True,
         "classification": {"pre_classify": True, "post_classify": True,
@@ -55,6 +56,7 @@ def _reset(monkeypatch):
     yield
     state.clear()
     route_gate.clear_declared(SID)
+    route_gate.clear_turn_claims(SID)
 
 
 # ---------------------------------------------------------------------------
