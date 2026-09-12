@@ -74,14 +74,20 @@ def _maybe_rotate_locked(path: str) -> None:
 def record_tokens(lane: str, model: str, session_id: str,
                   input_tokens: Optional[int], output_tokens: Optional[int],
                   est_cost: Optional[float], detail: str = "",
-                  task_id: str = "", event_seq: Optional[int] = None) -> bool:
+                  task_id: str = "", event_seq: Optional[int] = None,
+                  initiator: Optional[str] = None) -> bool:
     """Append one token-usage record. Returns True when written.
 
     Usage-absent calls (input/output None) record NOTHING - honest-absent
     beats plausible-fake (blueprint D9). v3.6 §10.4-E: records carry
     correlation task_id + monotonic event seq (suggestions.next_event_seq)
     so concurrent tool-cycle events never misattribute. Never raises; any
-    failure is a silent no-op (ledger writes must never break routing)."""
+    failure is a silent no-op (ledger writes must never break routing).
+
+    Phase 1 (request-routing blueprint, leg 2): additive `initiator` tag
+    ("user"|"agent") — consult records carry who initiated the consult.
+    None (default) omits the field entirely: legacy call sites write
+    byte-identical records."""
     try:
         if lane not in VALID_LANES:
             return False
@@ -101,6 +107,8 @@ def record_tokens(lane: str, model: str, session_id: str,
         }
         if task_id:
             rec["task_id"] = str(task_id)[:40]
+        if initiator:
+            rec["initiator"] = str(initiator)[:20]
         if event_seq is not None:
             try:
                 rec["event_seq"] = int(event_seq)
