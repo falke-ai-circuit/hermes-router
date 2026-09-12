@@ -327,7 +327,13 @@ def register_declared(session_id: str, lane: str,
                 return False
             _DECLARED_CLAIMS[str(session_id or "")] = {
                 "lane": str(lane), "source": str(source), "ts": now}
-            return True
+        # Leg 7b: a MID-TURN declared claim (agent's request_routing tool)
+        # binds the CURRENT turn immediately — stamp the turn-claim record
+        # here so every later PRE/POST pass of this turn stands down even
+        # if the gate's claim_pass never consumes the declared claim first
+        # (and after it does: the record survives the consumption).
+        stamp_turn_claim(session_id, lane, source)
+        return True
     except Exception:  # noqa: BLE001
         return False
 
@@ -403,12 +409,23 @@ _TURN_CLAIMED: Dict[str, Dict[str, Any]] = {}
 
 def _turn_claim_key(session_id: str, content: str = "",
                     model: str = "") -> str:
+    """Turn-claim registry key. Leg 7b: keyed by (session_id, TURN ID) —
+    the shared session+counter identity from state.advance_turn_identity —
+    NOT the ingress-text hash. Mid-turn content rotation (tool results
+    appended to the request, tool-loop continuations) must NOT rotate the
+    key: a claim registered mid-turn binds every later pass of the same
+    turn. Fallback when the counter is unavailable: legacy content key."""
     try:
         from . import state as _state
-        return (str(session_id or "") + "|" +
-                _state.turn_key_for(session_id, content, model))
+        return (str(session_id or "") + "|t" +
+                str(_state.current_turn_id(session_id)))
     except Exception:  # noqa: BLE001
-        return str(session_id or "")
+        try:
+            from . import state as _state
+            return (str(session_id or "") + "|" +
+                    _state.turn_key_for(session_id, content, model))
+        except Exception:  # noqa: BLE001
+            return str(session_id or "")
 
 
 def stamp_turn_claim(session_id: str, lane: str, source: str,
@@ -606,10 +623,14 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
 
         # 3.6 Turn record (leg 7, single claim point): a claim already
         #    registered for THIS turn (any lane, any source) is BINDING —
-        #    no second claim of any kind in the same turn.
+        #    no second claim of any kind in the same turn. EXCEPTION: a
+        #    PENDING declared claim must be consumed/executed ONCE (the
+        #    mid-turn request_routing tool registered it for this turn);
+        #    the record was stamped at registration and keeps binding
+        #    later passes after the consumption.
         _turn = _peek_turn_claim(session_id, content,
                                  str(ctx.get("model") or ""))
-        if _turn is not None:
+        if _turn is not None and peek_declared(session_id) is None:
             try:
                 _pkg_fn("_log_route")(
                     "PRE", event_detail="claim_standdown",

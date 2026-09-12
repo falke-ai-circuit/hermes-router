@@ -332,6 +332,24 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # Router tuning (2026-09-09): strip the <memory-context> block once at
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _strip_memory_context(content)
+        # Leg 7b (single claim point, key continuity): advance the session's
+        # TURN IDENTITY before the gate's claim phase. Tool-loop passes
+        # (tool-role messages present) are continuations of the SAME turn —
+        # the counter holds; otherwise a changed last-user hash means a new
+        # user turn. router_tools and route_gate share this identity, so a
+        # claim registered mid-turn binds every later pass of the turn.
+        try:
+            _is_tool_loop = any(
+                isinstance(m, dict) and str(m.get("role") or "") == "tool"
+                for m in (request.get("messages") or []))
+        except Exception:  # noqa: BLE001 — fail-open to non-continuation
+            _is_tool_loop = False
+        try:
+            state.advance_turn_identity(
+                session_id, state.hash_text(content or ""),
+                is_continuation=bool(_is_tool_loop))
+        except Exception:  # noqa: BLE001 — fail-open, never block delivery
+            pass
         # v3.0.0 complexity lane dispatcher pass — now the gate's CLAIM
         # phase (Phase 1 route gate): declared on-demand inputs are
         # evaluated at the same position, with the legacy _dispatch_pass

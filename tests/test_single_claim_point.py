@@ -49,11 +49,21 @@ def _rr(lane="shadow", session_id=SID):
         action="request_routing", lane=lane, session_id=session_id))
 
 
+LOGGED = []
+
+
+def _capture_log(event, **fields):
+    LOGGED.append((event, dict(fields)))
+
+
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     state.clear()
+    state.reset_turn_identity(SID)
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
+    LOGGED.clear()
+    monkeypatch.setattr(plugin, "_log_route", _capture_log)
     monkeypatch.setattr(plugin, "_cfg", lambda: {
         "enabled": True,
         "classification": {"pre_classify": True, "post_classify": True,
@@ -64,6 +74,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(debug_banner, "park_anchor_banner", lambda *a, **k: None)
     yield
     state.clear()
+    state.reset_turn_identity(SID)
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
 
@@ -168,6 +179,9 @@ def test_auto_claim_then_declared_dedupes(monkeypatch):
     monkeypatch.setattr(plugin, "_dispatch_pass",
                         lambda c, s, m: dispatch_calls.append(1) or True)
     ask = "design a caching layer with tradeoffs"
+    # Middleware contract: every pass advances turn identity. Baseline this
+    # turn's ask first, so the later different ask bumps the counter.
+    state.advance_turn_identity(SID, state.hash_text(ask))
     d1 = route_gate.claim_pass(ask, SID, "minimax-m3")
     assert d1.route is True and d1.source == route_gate.SOURCE_AUTO
     assert dispatch_calls == [1]
@@ -180,9 +194,12 @@ def test_auto_claim_then_declared_dedupes(monkeypatch):
     assert route_gate.claim_state(SID, ask, "minimax-m3") is not None
     assert route_gate.claim_state(SID, ask, "minimax-m3")["source"] == \
         route_gate.SOURCE_AUTO
-    # A genuinely NEW user turn (different ask) routes normally again:
+    # A genuinely NEW user turn (different ask, new turn identity) routes
+    # normally again — advance_turn_identity is the middleware's new-turn
+    # seam (content hash change, no tool-role continuation).
     monkeypatch.setattr(plugin, "_dispatch_pass",
                         lambda c, s, m: dispatch_calls.append(1) or True)
+    state.advance_turn_identity(SID, state.hash_text("a different fresh ask"))
     d3 = route_gate.claim_pass("a different fresh ask", SID, "minimax-m3")
     assert d3.route is True and d3.source == route_gate.SOURCE_AUTO
 
@@ -297,3 +314,94 @@ def test_claim_state_readonly_and_failopen():
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
     assert route_gate.claim_state(SID) is None
+
+
+# ---------------------------------------------------------------------------
+# Leg 7b — mid-turn declared claims bind the WHOLE turn (key continuity)
+# ---------------------------------------------------------------------------
+
+def _wire_complexity(monkeypatch):
+    """Pin auto-complexity routing so _dispatch_pass wants to fire."""
+    monkeypatch.setattr(router_core, "_complexity_level", lambda: 3)
+    monkeypatch.setattr(router_core, "_complexity_cfg",
+                        lambda: {"pre_mode": "route", "mid_mode": "route"})
+    from hermes_router import anchor_chain
+    chain = anchor_chain.AnchorChainCfg(
+        primary=anchor_chain.parse_anchor_uri(
+            "openrouter://test/anchor-primary", "primary"),
+        judge=anchor_chain.parse_anchor_uri(
+            "openrouter://test/anchor-judge", "judge"),
+        overflow="pass_through", daily_cap_usd=10.0, pricing={})
+    monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain",
+                        lambda: chain)
+
+
+def test_midturn_tool_claim_binds_rotated_content_passes(monkeypatch):
+    """Live-probe regression (api_1789232397): agent's request_routing tool
+    registers a shadow claim MID-TURN; later passes of the SAME turn carry
+    rotated content (tool results appended) — every one must stand down
+    (no second frontier consult billed). Key continuity: router_tools and
+    route_gate share session_id + turn counter, NOT a content hash."""
+    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    _wire_complexity(monkeypatch)
+    ask = "hard multi-step ask for the tool loop"
+    req1 = _request(ask)
+    _rr(lane="shadow")  # MID-TURN: the agent's tool call
+    # turn-identity advanced like the middleware does on every pass
+    state.advance_turn_identity(SID, state.hash_text(ask))
+    assert route_gate.claim_state(SID) is not None  # bound immediately
+    out1 = plugin.on_llm_request(request=req1, original_request=req1,
+                                 session_id=SID)
+    fires1 = [(f.get("event_detail"), f.get("lane"))
+              for _, f in LOGGED if f.get("event_detail")
+              in ("anchor_route_fired", "request_routing_executed")]
+    assert "anchor_route_fired" not in [e for e, _ in fires1]
+    router_core.pending_model_swap(SID)  # llm_execution consumes swap
+    # Same-turn pass with ROTATED content (tool results appended, tool-role
+    # present) — must stand down, no anchor consult billed.
+    req2 = dict(req1)
+    req2["messages"] = [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": ask},
+        {"role": "assistant", "content": "running tool"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "user", "content": ask + " (with tool output)"},
+    ]
+    LOGGED.clear()
+    out2 = plugin.on_llm_request(request=req2, original_request=req2,
+                                 session_id=SID)
+    assert out2 == {}
+    assert not [f for _, f in LOGGED
+                if f.get("event_detail") == "anchor_route_fired"]
+    assert any(f.get("event_detail") == "claim_standdown" for _, f in LOGGED)
+    # Second rotated re-fire: still bound.
+    LOGGED.clear()
+    plugin.on_llm_request(request=req2, original_request=req2,
+                          session_id=SID)
+    assert not [f for _, f in LOGGED
+                if f.get("event_detail") == "anchor_route_fired"]
+
+
+def test_midturn_tool_claim_does_not_block_next_user_turn(monkeypatch):
+    """A mid-turn claim binds only ITS turn: the next genuine user turn
+    (new ask, no tool-role messages) routes normally again."""
+    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    _wire_complexity(monkeypatch)
+    monkeypatch.setattr(router_core, "pre_cooldown_seconds", lambda: 0)
+    ask1 = "first hard ask"
+    state.advance_turn_identity(SID, state.hash_text(ask1))
+    _rr(lane="shadow")
+    plugin.on_llm_request(request=_request(ask1),
+                          original_request=_request(ask1), session_id=SID)
+    router_core.pending_model_swap(SID)
+    # New user turn: different ask (complexity-triggering), no tool-role
+    # continuation.
+    ask2 = ("Design a multi-stage migration plan for splitting the "
+            "monolith into services, including architecture trade-offs.")
+    state.advance_turn_identity(SID, state.hash_text(ask2))
+    assert route_gate.claim_state(SID) is None  # prior turn's record aged out
+    LOGGED.clear()
+    plugin.on_llm_request(request=_request(ask2),
+                          original_request=_request(ask2), session_id=SID)
+    assert any(f.get("event_detail") == "anchor_route_fired"
+               for _, f in LOGGED)  # new turn routes normally

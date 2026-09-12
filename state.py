@@ -23,7 +23,7 @@ import hashlib
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 PendingKey = Tuple[str, str]
 LoopGuardKey = Tuple[str, str, str]
@@ -372,5 +372,78 @@ def substantive_turn_count(session_id: str) -> int:
     """Current substantive-turn counter (no increment). Never raises."""
     try:
         return int(_TURN_COUNTERS.get(session_id or "", 0))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Turn identity (leg 7b — mid-turn declared claims must bind the WHOLE turn)
+# ---------------------------------------------------------------------------
+# A multi-provider-call turn re-fires on_llm_request once per provider call;
+# mid-turn passes can carry rotated content (tool results appended) and may
+# or may not include tool-role messages. Turn identity must therefore be a
+# SESSION-SCOPED COUNTER advanced only on a genuinely NEW user turn — NOT a
+# content hash. Key continuity (Goran directive, leg 7b): router_tools and
+# route_gate share THIS identity (session_id + turn counter), so a claim
+# registered mid-turn via the request_routing tool binds every later
+# PRE/POST pass of the same turn.
+#
+# New-turn detection: a pass WITHOUT tool-role messages whose last-user
+# hash differs from the recorded one is a new turn; everything else
+# (tool-loop continuations, re-fires of the same ask) keeps the counter.
+
+_TURN_ID_LOCK = threading.Lock()
+_TURN_ID: Dict[str, List] = {}  # session_id -> [counter:int, last_hash:str]
+_TURN_ID_MAX = 512
+
+
+def current_turn_id(session_id: str) -> int:
+    """Current turn identity counter for the session (no mutation).
+    Fail-open: 0 when unavailable. Never raises."""
+    try:
+        with _TURN_ID_LOCK:
+            entry = _TURN_ID.get(session_id or "")
+            return int(entry[0]) if entry else 1
+    except Exception:
+        return 1
+
+
+def advance_turn_identity(session_id: str, user_hash: str,
+                          is_continuation: bool = False) -> int:
+    """Advance (or confirm) the session's turn identity. Called once per
+    on_llm_request pass BEFORE the gate's claim phase:
+      - tool-loop continuation (tool-role messages present): counter held —
+        same turn, whatever the content rotation;
+      - otherwise: counter advances only when the last-user hash CHANGED
+        (a genuinely new user ask); a re-fire of the same ask holds.
+    Returns the current turn id. Fail-open: returns 1 on any problem."""
+    try:
+        sid = session_id or ""
+        with _TURN_ID_LOCK:
+            entry = _TURN_ID.get(sid)
+            if entry is None:
+                entry = [1, ""]
+                _TURN_ID[sid] = entry
+                while len(_TURN_ID) > _TURN_ID_MAX:
+                    _TURN_ID.pop(next(iter(_TURN_ID)))
+            if not is_continuation:
+                new_hash = str(user_hash or "")
+                if entry[1] and new_hash != entry[1]:
+                    entry[0] = int(entry[0]) + 1
+                if new_hash:
+                    entry[1] = new_hash
+            return int(entry[0])
+    except Exception:
+        return 1
+
+
+def reset_turn_identity(session_id: Optional[str] = None) -> None:
+    """Test/recovery hook. Never raises."""
+    try:
+        with _TURN_ID_LOCK:
+            if session_id is None:
+                _TURN_ID.clear()
+            else:
+                _TURN_ID.pop(session_id or "", None)
+    except Exception:
+        pass
