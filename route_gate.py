@@ -88,7 +88,15 @@ SOURCE_DECLARED_AGENT = "declared_agent"
 DECLARED_USER_PHRASES: Dict[str, str] = {
     "ask your higher self": LANE_HIGHER_PRE,
     "route this through your shadow": LANE_SHADOW,
+    "anchor this": LANE_HIGHER_PRE,
 }
+
+# A directive line may carry a PAYLOAD after the phrase: '<phrase>: rest',
+# '<phrase> - rest', '<phrase> — rest', or '<phrase>?...' — the phrase
+# PREFIX claims the lane, the remainder is the consult payload (canary
+# live-probe regression, leg 5: 'ask your higher self: what is one blind
+# spot?' previously missed the whole-line match).
+_PHRASE_PAYLOAD_SEPARATORS = (":", " -", " —")
 
 # Lanes a DECLARED claim may target (agent action + user phrase surface).
 VALID_ROUTE_LANES = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW)
@@ -200,14 +208,38 @@ def _directive_lines(content: str):
 
 def detect_declared_user(content: str) -> Optional[str]:
     """Lane for a declared-user on-demand phrase appearing as a standalone
-    directive line, else None. Prose mentioning a phrase (echo/meta) never
-    matches — the phrase must BE the line. Never raises."""
+    directive line (optionally carrying a consult payload after the phrase:
+    '<phrase>: rest', '<phrase> - rest', '<phrase> — rest', '<phrase>?...'),
+    else None. The phrase must START the line; prose mentioning a phrase
+    mid-line/mid-sentence (echo/meta) never matches. The payload form
+    prefix-matches: a line beginning with a LONGER phrase wins over a
+    shorter prefix so 'route this through your shadow: x' never half-matches
+    a shorter phrase. Never raises."""
     try:
+        best_lane: Optional[str] = None
+        best_len = 0
         for norm in _directive_lines(content):
+            # 1. Whole-line match (standalone phrase — unchanged).
             lane = DECLARED_USER_PHRASES.get(norm)
             if lane is not None:
                 return lane
-        return None
+            # 2. Payload prefix match: line starts with '<phrase><sep>'.
+            for phrase, pl in DECLARED_USER_PHRASES.items():
+                if len(phrase) <= best_len and best_lane is not None:
+                    continue  # longest phrase wins
+                for sep in _PHRASE_PAYLOAD_SEPARATORS:
+                    if norm.startswith(phrase + sep):
+                        best_lane = pl
+                        best_len = len(phrase)
+                        break
+                # 3. Trailing-punctuation form: '<phrase>?' / '<phrase>.' /
+                #    '<phrase>,' — the payload begins where the phrase ends.
+                if norm.startswith(phrase) and len(norm) > len(phrase) and \
+                        norm[len(phrase)] in "?.,":
+                    if len(phrase) > best_len or best_lane is None:
+                        best_lane = pl
+                        best_len = len(phrase)
+        return best_lane
     except Exception:  # noqa: BLE001
         return None
 
