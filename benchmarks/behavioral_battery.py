@@ -206,6 +206,49 @@ run_scenario("N3_marker_probe", [
      "expect_events": [], "min_chars": 100},
 ])
 
+# ===== Leg 4 (request-routing blueprint): on-demand + cap-denial =====
+
+# D1. On-demand higher-pre — agent declares via request_routing tool; the
+# SAME turn carries a plain ask (no auto match) and the frontier consult
+# fires (anchor_route_fired = staged swap consumed at llm_execution).
+run_scenario("D1_on_demand_higher_pre", [
+    {"text": "Review our v2 auth-flow doc for gaps — anything missing before we ship it.",
+     "tool_pre": {"action": "request_routing", "lane": "higher-pre"},
+     "expect_events": ["anchor_route_fired"], "min_chars": 300},
+])
+
+# D2. On-demand shadow — declared shadow consult; gate claims, frontier
+# runs as secondary opinion, delivery is marker-free.
+run_scenario("D2_on_demand_shadow", [
+    {"text": "Draft the Q3 capacity-planning summary from the metrics we discussed.",
+     "tool_pre": {"action": "request_routing", "lane": "shadow"},
+     "expect_events": ["anchor_route_fired"], "min_chars": 300,
+     "forbid_markers": True},
+])
+
+# D3. Cap-denial banner — with the per-agent spend over routing_daily_cap_usd,
+# the declared request is DENIED and the user SEES the visible banner text
+# ("routing denied: daily spend cap reached ($X/$Y) — continuing un-routed")
+# on the delivery; the denied_cap ledger event lands with the initiator tag.
+# Content assertion: the banner TEXT is in the delivered message — never a
+# bare HTTP-200 check.
+run_scenario("D3_cap_denial_banner", [
+    {"text": "Plan the multi-region rollout sequence.",
+     "tool_pre": {"action": "request_routing", "lane": "higher-pre"},
+     "pre_spend_usd": 5.0,
+     "expect_delivery_contains": "routing denied: daily spend cap reached",
+     "expect_events": [], "forbid_events": ["anchor_route_fired"]},
+])
+
+# D4. Double-declare — agent action then the user phrase in the same turn:
+# ONE consult (first declaration wins), no double frontier spend, dedupe
+# visible as a single anchor_route_fired.
+run_scenario("D4_double_declare", [
+    {"text": "ask your higher self: is the migration plan actually ready to execute?",
+     "tool_pre": {"action": "request_routing", "lane": "higher-pre"},
+     "expect_events": ["anchor_route_fired"], "min_chars": 300},
+])
+
 with open(RESULTS, "w") as f:
     json.dump(RESULTS_LIST, f, indent=1)
 p = sum(1 for r in RESULTS_LIST if r["pass"]); f_ = len(RESULTS_LIST) - p
