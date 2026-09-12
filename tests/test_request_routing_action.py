@@ -143,7 +143,10 @@ def test_declare_then_gate_claims_and_stages_swap(monkeypatch, caps_tmp):
     assert not dispatch_calls  # classification never consulted past the claim
 
 
-def test_declared_shadow_stages_non_orientation_swap(monkeypatch, caps_tmp):
+def test_declared_shadow_stages_render_lane_not_anchor_swap(monkeypatch, caps_tmp):
+    """Leg 8 (blueprint §2): declared shadow executes on the UNCENSORED
+    RENDER chain — the gate stages NO anchor swap (the frontier anchor
+    chain is reserved for higher lanes)."""
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
@@ -152,7 +155,7 @@ def test_declared_shadow_stages_non_orientation_swap(monkeypatch, caps_tmp):
     _rr(lane="shadow")
     decision = route_gate.claim_pass("analyze this failure mode", SID, "minimax-m3")
     assert decision.route is True and decision.lane == "shadow"
-    assert staged and staged[0].orientation is False
+    assert not staged  # no frontier anchor consult for shadow
 
 
 def test_declare_then_gate_same_turn_via_middleware(monkeypatch, caps_tmp):

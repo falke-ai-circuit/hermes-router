@@ -105,7 +105,12 @@ def test_declared_agent_stamps_agent_tag(monkeypatch, caps_tmp):
     _rr(lane="shadow")
     d = route_gate.claim_pass("work the problem", SID, "minimax-m3")
     assert d.route is True and d.source == route_gate.SOURCE_DECLARED_AGENT
-    assert route_gate.initiator_for_task(staged[0].task_id) == "agent"
+    # Leg 8: shadow does NOT stage an anchor swap — but the initiator
+    # provenance still resolves from the claim source at any billing site.
+    assert not staged
+    assert route_gate.initiator_for_task(
+        router_core.task_id_for(SID, "work the problem", "minimax-m3")
+    ) == "agent"
 
 
 def test_auto_claim_stamps_auto_tag(monkeypatch, caps_tmp):

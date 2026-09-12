@@ -355,8 +355,52 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # evaluated at the same position, with the legacy _dispatch_pass
         # consulted VERBATIM as the auto-shape gate input (policy frozen,
         # execution stays at on_llm_execution).
-        if _route_gate.claim_pass(content, session_id, model,
-                                  request=request, context=context).route:
+        _claim_decision = _route_gate.claim_pass(
+            content, session_id, model, request=request, context=context)
+        if _claim_decision.route:
+            # LEG 8 (blueprint §2): declared SHADOW routes execute on the
+            # UNCENSORED RENDER chain (abliteration primary / Venice
+            # fallback — the same machinery as refusal-shaped/contested PRE
+            # renders), NOT a frontier anchor consult. The render's spend
+            # flows to the render lane of the tokens ledger; a render row
+            # lands in uncensored-router-renders.jsonl. Declared HIGHER
+            # lanes keep the frontier anchor envelope (handled at
+            # on_llm_execution via the staged swap).
+            if (_claim_decision.lane == _route_gate.LANE_SHADOW
+                    and _claim_decision.source in (
+                        _route_gate.SOURCE_DECLARED_USER,
+                        _route_gate.SOURCE_DECLARED_AGENT)):
+                _initiator = ("user" if _claim_decision.source ==
+                              _route_gate.SOURCE_DECLARED_USER else "agent")
+                try:
+                    _persona = _persona_system_prompt(
+                        request if isinstance(request, dict) else None)
+                    rendered, _render_retries = _render_with_retry_ladder(
+                        content, ["shadow_declared"], _persona, session_id)
+                    if not rendered:
+                        _log_route("PRE", event_detail="route_failed",
+                                   pattern_groups="shadow_declared",
+                                   render_lane="shadow", session_id=session_id)
+                        return _hs_pass()
+                    rendered = cap_render(rendered, render_max_chars())
+                    rendered = _debug_banner_pass(
+                        rendered, ["shadow_declared"], _render_retries,
+                        session_id, model)
+                    rendered = _provenance_footer_pass(rendered)
+                    _deliver_render_pass(request, content, rendered, model,
+                                         session_id, ["shadow_declared"])
+                    # initiator tag on the render-chain spend (leg 6/8):
+                    # the render lane wrote its ledger record inside
+                    # router.call; thread the claim's initiator onto the
+                    # LAST render-lane record for this session.
+                    try:
+                        from . import usage_ledger as _ul
+                        _ul.tag_last_render_initiator(session_id, _initiator)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                except Exception:  # noqa: BLE001 — never break delivery
+                    logger.debug("shadow render branch error", exc_info=True)
+                return _hs_pass()
             return _hs_pass()
 
 

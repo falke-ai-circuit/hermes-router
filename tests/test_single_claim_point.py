@@ -149,8 +149,10 @@ def test_higher_claimed_turn_no_uncensored_pre(monkeypatch):
 
 
 def test_shadow_claimed_turn_uncensored_pre_stands_down(monkeypatch):
-    """Shadow claim + uncensored-matching content: the render must NOT
-    fire — the shadow claim owns the turn."""
+    """Shadow claim + uncensored-matching content: the PRE classification
+    render must NOT fire its own path — the declared shadow claim owns the
+    turn and executes ONCE on the render chain (leg 8), classification is
+    never consulted."""
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     _rr(lane="shadow")
     monkeypatch.setattr(plugin, "_pre_patterns", lambda: {"dummy": ["matchme"]})
@@ -159,11 +161,22 @@ def test_shadow_claimed_turn_uncensored_pre_stands_down(monkeypatch):
                         lambda content, patterns, case_sensitive: scan_calls.append(1) or ["matchme"])
     monkeypatch.setattr(plugin._dispatcher_pre, "_dispatch_pass",
                         lambda c, s, m: False)
+    # Leg 8: the declared shadow claim renders via the render chain — stub
+    # the ladder so the test never egresses; delivery is captured instead.
+    monkeypatch.setattr(plugin, "_render_with_retry_ladder",
+                        lambda c, m, p, s: ("LEG8 RENDER", 0))
+    monkeypatch.setattr(plugin, "_debug_banner_pass", lambda r, *a, **k: r)
+    monkeypatch.setattr(plugin, "_provenance_footer_pass", lambda r: r)
+    delivered = []
+    monkeypatch.setattr(plugin._dispatcher_pre, "_deliver_render_pass",
+                        lambda request, content, rendered, model, sid, matches:
+                        delivered.append(rendered) or {"request": request})
     plugin.on_llm_request(
         request=_request("please matchme this text"),
         original_request=_request("please matchme this text"),
         session_id=SID)
     assert scan_calls == []
+    assert delivered == ["LEG8 RENDER"]  # the declared shadow render fired once
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +358,15 @@ def test_midturn_tool_claim_binds_rotated_content_passes(monkeypatch):
     route_gate share session_id + turn counter, NOT a content hash."""
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     _wire_complexity(monkeypatch)
+    # Leg 8: the declared shadow claim executes via the render chain — stub
+    # the ladder so the test never egresses.
+    monkeypatch.setattr(plugin, "_render_with_retry_ladder",
+                        lambda c, m, p, s: ("LEG8 RENDER", 0))
+    monkeypatch.setattr(plugin, "_debug_banner_pass", lambda r, *a, **k: r)
+    monkeypatch.setattr(plugin, "_provenance_footer_pass", lambda r: r)
+    monkeypatch.setattr(plugin._dispatcher_pre, "_deliver_render_pass",
+                        lambda request, content, rendered, model, sid, matches:
+                        {"request": request})
     ask = "hard multi-step ask for the tool loop"
     req1 = _request(ask)
     _rr(lane="shadow")  # MID-TURN: the agent's tool call
@@ -389,6 +411,15 @@ def test_midturn_tool_claim_does_not_block_next_user_turn(monkeypatch):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     _wire_complexity(monkeypatch)
     monkeypatch.setattr(router_core, "pre_cooldown_seconds", lambda: 0)
+    # Leg 8: the declared shadow claim executes via the render chain — stub
+    # the ladder so the test never egresses.
+    monkeypatch.setattr(plugin, "_render_with_retry_ladder",
+                        lambda c, m, p, s: ("LEG8 RENDER", 0))
+    monkeypatch.setattr(plugin, "_debug_banner_pass", lambda r, *a, **k: r)
+    monkeypatch.setattr(plugin, "_provenance_footer_pass", lambda r: r)
+    monkeypatch.setattr(plugin._dispatcher_pre, "_deliver_render_pass",
+                        lambda request, content, rendered, model, sid, matches:
+                        {"request": request})
     ask1 = "first hard ask"
     state.advance_turn_identity(SID, state.hash_text(ask1))
     _rr(lane="shadow")
