@@ -51,7 +51,8 @@ BANNER_HEAD = "· router ·"
 BANNER_TAIL = "·"
 MAX_BANNER_CHARS = 400          # oversized diagnostic -> omit entirely
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
-               "consult-pre", "consult-mid", "consult-post")
+               "consult-pre", "consult-mid", "consult-post",
+               "shadow")  # leg 11: declared shadow lane banner
 
 # Lanes that must never banner (defense-in-depth — callers also gate):
 FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
