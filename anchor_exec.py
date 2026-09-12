@@ -570,11 +570,16 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             # Leg 2 (request-routing blueprint): the agent's durable
             # per-agent cap counter accumulates ONLY here — after a
             # successful claim (H7.1). Best-effort, never breaks the lane.
+            # Leg 6: initiator resolves from the gate's claim source
+            # (declared_user->user, declared_agent->agent, auto/legacy->auto).
             try:
+                from . import route_gate as _rg
                 from . import routing_caps
 
+                _initiator = _rg.initiator_for_task(
+                    str(rec.get("task_id") or ""))
                 routing_caps.record_agent_spend(session_id, real_cost,
-                                                initiator="agent",
+                                                initiator=_initiator,
                                                 lane="higher-pre")
                 routing_caps.record_cooldown(session_id)
             except Exception:  # noqa: BLE001
@@ -583,6 +588,13 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # real usage tokens when the provider supplied them; usage-absent
         # calls record nothing (never estimate). Strictly fail-open — a
         # ledger failure must never affect the consult delivery path.
+        _initiator = "auto"
+        try:
+            from . import route_gate as _rg
+
+            _initiator = _rg.initiator_for_task(str(rec.get("task_id") or ""))
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from . import usage_ledger
 
@@ -600,7 +612,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                     usage_ledger.estimate_cost(endpoint.model, pt, ct),
                     "consult",
                     task_id=str(rec.get("task_id") or ""), event_seq=_seq,
-                    initiator="agent",
+                    initiator=_initiator,
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
             pass
