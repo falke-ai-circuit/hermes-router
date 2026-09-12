@@ -82,12 +82,16 @@ SOURCE_DECLARED_USER = "declared_user"
 SOURCE_DECLARED_AGENT = "declared_agent"
 
 # Declared-user on-demand phrases (explicit intent only — no prose
-# mind-reading). Turn-start standalone directive lines; Leg 3 wires the
-# execution envelope, the gate owns detection + precedence now.
+# mind-reading). Turn-start standalone directive lines; the execution
+# envelope rides the EXISTING staged-swap machinery (Leg 3: the
+# request_routing action stages the claim; on_llm_execution consumes it).
 DECLARED_USER_PHRASES: Dict[str, str] = {
     "ask your higher self": LANE_HIGHER_PRE,
     "route this through your shadow": LANE_SHADOW,
 }
+
+# Lanes a DECLARED claim may target (agent action + user phrase surface).
+VALID_ROUTE_LANES = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW)
 
 # Lines starting with these are quoted/echoed content — never a command
 # surface (echo guard, reviewer H7.2).
@@ -468,12 +472,37 @@ def claim_pass(content: str, session_id: str, model: str,
                             "auto_shape": _auto_shape, "claim": True})
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT):
-        # Declared claim decided; Leg 3 wires the envelope execution. The
-        # log is the gate-input observability surface until then.
+        # Leg 3: the declared claim's execution envelope rides the EXISTING
+        # staged-swap machinery (router_core.stage_model_swap -> the frozen
+        # on_llm_execution anchor lane). One consult per turn is enforced by
+        # stage_model_swap's own _SWAP_DONE dedupe; the durable cooldown +
+        # per-agent spend record at the anchor lane remain post-claim (H7.1).
+        # higher-post has NO PRE envelope — its consult is the completion
+        # audit's (the declared marker for it is consumed by the gate here,
+        # the audit itself stays on its own cadence); shadow stages a plain
+        # consult swap (same endpoint, no orientation flag).
         try:
-            _pkg_fn("_log_route")("PRE", event_detail="request_routing_declared",
-                                  lane=decision.lane, source=decision.source,
-                                  reason=decision.reason, session_id=session_id)
-        except Exception:  # noqa: BLE001
-            pass
+            from . import router_core as _rc
+
+            _task = _rc.task_id_for(session_id, content, str(model or ""))
+            _rd = _rc.RouteDecision(
+                task_id=_task, lane=_rc.LANE_COMPLEXITY,
+                mode=_rc.MODE_CONSULT,
+                model_target=None, reason="request_routing_declared",
+                ts=time.time(), override_used=None,
+                route_id=_task[:12] + "-" + str(int(time.time())),
+                orientation=(decision.lane == LANE_HIGHER_PRE))
+            _staged = _rc.stage_model_swap(session_id, _rd)
+            _pkg_fn("_log_route")(
+                "PRE", event_detail="request_routing_executed",
+                lane=decision.lane, source=decision.source,
+                reason=decision.reason, staged=_staged is not None,
+                task_id=_task, session_id=session_id)
+        except Exception:  # noqa: BLE001 — envelope must never break the gate
+            logger.debug("request_routing envelope error", exc_info=True)
+        finally:
+            # One consult per turn: the declared claim is CONSUMED by this
+            # claim — a later re-fire inside the same turn sees no fresh
+            # claim (the stage_model_swap _SWAP_DONE dedupe holds the line).
+            clear_declared(session_id)
     return decision
