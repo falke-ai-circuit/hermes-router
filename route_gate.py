@@ -80,6 +80,10 @@ LANE_SHADOW = "shadow"
 SOURCE_AUTO = "auto"
 SOURCE_DECLARED_USER = "declared_user"
 SOURCE_DECLARED_AGENT = "declared_agent"
+# LEG 13 (blueprint-aux-intent-classifier): aux-slot classified intent is a
+# FIRST-CLASS DECLARED source (H1) — initiator_for_task maps it to
+# INITIATOR_USER (the user's phrasing initiated the route), never auto.
+SOURCE_AUX_INTENT = "aux_intent"
 
 # Declared-user on-demand phrases (explicit intent only — no prose
 # mind-reading). Turn-start standalone directive lines; the execution
@@ -200,6 +204,9 @@ def initiator_for_task(task_id: str) -> str:
                 return "user"
             if src == SOURCE_DECLARED_AGENT:
                 return INITIATOR_AGENT
+            if src == SOURCE_AUX_INTENT:
+                # H1: user phrasing initiated — tagged user, never auto.
+                return "user"
             return INITIATOR_AUTO
     except Exception:  # noqa: BLE001
         return INITIATOR_AUTO
@@ -296,6 +303,22 @@ def on_demand_routing_enabled() -> bool:
         return True
 
 
+def on_demand_aux_classify_enabled() -> bool:
+    """LEG 13 kill-switch knob `on_demand_aux_classify: on|off` (H7.4
+    pattern, feature-level isolation). Default ON; config-live read (no
+    gateway bounce). False -> legacy strict-table behavior only (no aux
+    call). Never raises."""
+    try:
+        raw = _config_access().router_section().get("on_demand_aux_classify")
+        if raw is None:
+            return True
+        if isinstance(raw, bool):
+            return raw
+        return str(raw).strip().lower() in ("on", "true", "1", "yes")
+    except Exception:  # noqa: BLE001 — fail-open: knob errors never block the gate
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Input-side echo guard + declared-user detection (reviewer H7.2)
 # ---------------------------------------------------------------------------
@@ -304,11 +327,19 @@ def on_demand_routing_enabled() -> bool:
 def _directive_lines(content: str):
     """Yield normalized whole directive lines from the turn-start command
     surface. Quoted/echoed lines (blockquote or quote-char prefixed) are
-    SKIPPED — trigger phrases inside quoted/meta content are inert."""
+    SKIPPED — trigger phrases inside quoted/meta content are inert.
+    LEG 13 (FP doctrine): lines inside fenced ``` code blocks are also
+    SKIPPED — a fenced directive is display text, never a command."""
     if not isinstance(content, str):
         return
+    in_fence = False
     for line in content.split("\n"):
         stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if not stripped or stripped.startswith(_QUOTE_LINE_PREFIXES):
             continue
         yield stripped.strip("`*# ").lower()
@@ -792,6 +823,101 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
     return NO_ROUTE
 
 
+def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision]:
+    """LEG 13: the aux-slot intent classifier's gate decision.
+
+    Blueprint mapping + hardening:
+      shadow            -> LANE_SHADOW (source=aux_intent, reason=aux_intent)
+      higher+pre        -> LANE_HIGHER_PRE
+      higher+post       -> LANE_HIGHER_POST
+      none / <0.75 conf -> None (inert; logged intent_none by classifier path)
+      timeout/fail      -> None (caller logs intent_aux_error — H4, distinct
+                           from intent_none)
+
+    H6: ONE classify per turn (turn-identity cache inside the classifier).
+    H5: a ROUTING verdict passes the per-agent cap check like
+    declared_agent (machine-detected but user-phrased — cap applies);
+    denial -> visible banner + denied_cap event, NEVER silent.
+    A route registers the declared claim (single-owner registry) so the
+    existing claim_pass envelope (shadow render branch / anchor staging)
+    executes it EXACTLY once, unchanged. Never raises."""
+    try:
+        from . import intent_classifier as _ic
+        from .intent_classifier import _intent_suspect
+
+        if not _intent_suspect(content):
+            return None  # heuristic miss — clean turns never pay the aux call
+        verdict = _ic.classify_intent(
+            content, session_id,
+            log_route=lambda *a, **k: _pkg_fn("_log_route")(*a, **k))
+        if verdict is None:
+            # H4: transport/timeout/parse failure — DISTINCT log from
+            # intent_none (frontier condition b).
+            try:
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="intent_aux_error",
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return None
+        lane = verdict.get("lane")
+        confidence = float(verdict.get("confidence") or 0.0)
+        if lane == "none" or confidence < 0.75:
+            try:
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="intent_none",
+                    lane=str(lane), confidence=confidence,
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return None
+        if lane == "shadow":
+            aux_lane = LANE_SHADOW
+        elif lane == "higher":
+            aux_lane = (LANE_HIGHER_POST
+                        if verdict.get("subtype") == "post"
+                        else LANE_HIGHER_PRE)
+        else:
+            return None
+
+        # H5: per-agent daily cap — machine-detected, so the cap binds
+        # (same exposure as declared_agent). Denial NEVER silent.
+        _caps_mod = _caps()
+        if _caps_mod is not None:
+            _agent_id = _caps_mod.agent_identity()
+            _cap_allowed, _cap_spend, _cap_val = \
+                _caps_mod.gate_cap_check(_agent_id)
+            if not _cap_allowed:
+                _caps_mod.deny_routing(_agent_id, lane=str(aux_lane),
+                                       initiator="user",
+                                       session_id=session_id)
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="denied_cap",
+                        agent_id=_agent_id, lane=str(aux_lane),
+                        spend=round(_cap_spend, 4), cap=round(_cap_val, 2),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
+                return GateDecision(route=False, reason="cap_denied")
+
+        register_declared(session_id, aux_lane, SOURCE_AUX_INTENT)
+        try:
+            _pkg_fn("_log_route")(
+                "PRE", event_detail="aux_intent_route",
+                lane=str(aux_lane), confidence=confidence,
+                subtype=str(verdict.get("subtype") or ""),
+                session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return GateDecision(route=True, lane=aux_lane,
+                            source=SOURCE_AUX_INTENT,
+                            reason="aux_intent")
+    except Exception:  # noqa: BLE001 — the classifier must never break the gate
+        logger.debug("aux intent decision error", exc_info=True)
+        return None
+
+
 def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
     """THE single claim point. Precedence (reviewer H4):
       sentinel -> skip-anchor -> declared request -> auto-shape.
@@ -912,13 +1038,37 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
             # matched -> the turn is GREPPABLE (declared_intent_no_route) so
             # near-miss phrases are auditable. Observability signal ONLY —
             # the loose pattern never routes.
-            if _detect_declared_intent_loose(content):
+            _near_miss = _detect_declared_intent_loose(content)
+            if _near_miss:
                 try:
                     _pkg_fn("_log_route")(
                         "PRE", event_detail="declared_intent_no_route",
                         session_id=session_id)
                 except Exception:  # noqa: BLE001 — observability only
                     pass
+
+            # LEG 13 (BLUEPRINT-aux-intent-classifier-2026-09-12): aux
+            # intent classify — the SEMANTIC layer for on-demand routing.
+            # Fires ONLY on the near-miss heuristic (_intent_suspect:
+            # word-boundary routing vocabulary + short imperatives) after
+            # the strict tables missed, behind its own kill-switch
+            # `on_demand_aux_classify` (default on). Mapping:
+            #   shadow            -> LANE_SHADOW
+            #   higher+pre        -> LANE_HIGHER_PRE
+            #   higher+post       -> LANE_HIGHER_POST
+            #   none / <0.75 conf -> NO_ROUTE (reason=intent_none)
+            #   timeout/fail      -> NO_ROUTE (reason=intent_aux_error, H4
+            #                        — DISTINCT from intent_none)
+            # Route events carry source=aux_intent (H1 first-class declared
+            # source; initiator=user). H5: aux-intent routes pass
+            # gate_cap_check like declared_agent — user-initiated but
+            # machine-detected, so the per-agent daily cap applies.
+            if not declared.route and on_demand_aux_classify_enabled():
+                from .intent_classifier import _intent_suspect as _suspect_fn
+                if _suspect_fn(content):
+                    _aux_lane = _aux_intent_decision(content, session_id)
+                    if _aux_lane is not None:
+                        return _aux_lane
 
         # 5. Auto-shape input — legacy classification, consulted VERBATIM
         #    only here, inside the gate's yes-branch (gate INPUT; policy
@@ -996,7 +1146,8 @@ def claim_pass(content: str, session_id: str, model: str,
         stamp_turn_claim(session_id, decision.lane or "", decision.source or "",
                          content, str(model or ""))
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
-                                              SOURCE_DECLARED_AGENT):
+                                              SOURCE_DECLARED_AGENT,
+                                              SOURCE_AUX_INTENT):
         # Leg 8: shadow claims never stage an anchor swap (no task_id flows
         # through router_core), but billing sites still need the initiator —
         # stamp the claim source on the content-derived task id up front.
