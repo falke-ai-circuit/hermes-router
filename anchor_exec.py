@@ -567,6 +567,18 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         real_cost = cost if cost is not None else est_cost
         if real_cost > 0:
             anchor_chain.record_spend(real_cost)
+            # Leg 2 (request-routing blueprint): the agent's durable
+            # per-agent cap counter accumulates ONLY here — after a
+            # successful claim (H7.1). Best-effort, never breaks the lane.
+            try:
+                from . import routing_caps
+
+                routing_caps.record_agent_spend(session_id, real_cost,
+                                                initiator="agent",
+                                                lane="higher-pre")
+                routing_caps.record_cooldown(session_id)
+            except Exception:  # noqa: BLE001
+                pass
         # v3.5.0 tokens-ledger tap (blueprint 5.2): record the anchor lane's
         # real usage tokens when the provider supplied them; usage-absent
         # calls record nothing (never estimate). Strictly fail-open — a
@@ -588,6 +600,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                     usage_ledger.estimate_cost(endpoint.model, pt, ct),
                     "consult",
                     task_id=str(rec.get("task_id") or ""), event_seq=_seq,
+                    initiator="agent",
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
             pass

@@ -836,6 +836,17 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 anchor_chain.record_spend(cost)
             except Exception:  # noqa: BLE001
                 pass
+            # Leg 2 (request-routing blueprint): durable per-agent counter +
+            # cooldown for the higher-post lane, post-claim only (H7.1).
+            try:
+                from . import routing_caps
+
+                routing_caps.record_agent_spend(session_id, cost,
+                                                initiator="agent",
+                                                lane="higher-post")
+                routing_caps.record_cooldown(session_id)
+            except Exception:  # noqa: BLE001
+                pass
         if content is None:
             _log("completion_audit_skipped reason=anchored_call_failed", session_id=session_id)
             return None
@@ -902,6 +913,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         return {"note": note,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
+                "initiator": "agent",
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))

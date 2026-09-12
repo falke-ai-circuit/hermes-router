@@ -124,6 +124,14 @@ def _pkg():
     return _sys.modules[__package__]
 
 
+def _caps():
+    """Late-bound routing_caps import (leg 2: per-agent gate cap + denial
+    banner + durable state). Deferred to call time — import-cycle doctrine."""
+    from . import routing_caps
+
+    return routing_caps
+
+
 def _pkg_fn(name: str, fallback_module_attr: Optional[tuple] = None) -> Callable:
     """Resolve a helper through the package namespace at CALL time so test
     monkeypatches on the package are always seen; fall back to the owning
@@ -343,6 +351,8 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                   classification consulted VERBATIM inside the gate's
                   yes-branch (gate INPUT, policy frozen). When absent the
                   gate reports no-route after the fence chain.
+      claim       True when the caller is the gate's claim phase (cap
+                  check applies); the fence phase never caps.
     """
     try:
         content = ctx.get("content") or ""
@@ -369,6 +379,27 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
         # 3. `skip anchor` bypass — outranks every declared request.
         if _skip_anchor_requested(content):
             return GateDecision(route=False, reason="override_skip")
+
+        # 3.5 Gate step-1 per-agent daily cap (leg 2, reviewer H1): applies
+        # to EVERY lane including shadow. Denied routing emits a visible
+        # delivery banner + denied_cap ledger event — NEVER silent (Goran
+        # amendment). Fail-open: cap-check errors allow (the execution
+        # seam's frozen cap_check stays the hard guard). Claim phase only —
+        # the fence early-returns above are never capped.
+        if bool(ctx.get("claim")):
+            _caps_mod = _caps()
+            _cap_allowed, _cap_spend, _cap_val = _caps_mod.gate_cap_check(session_id)
+            if not _cap_allowed:
+                _caps_mod.deny_routing(session_id, lane="", initiator="agent",
+                                       session_id=session_id)
+                try:
+                    _pkg_fn("_log_route")("PRE", event_detail="denied_cap",
+                                          spend=round(_cap_spend, 4),
+                                          cap=round(_cap_val, 2),
+                                          session_id=session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                return GateDecision(route=False, reason="cap_denied")
 
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
         if on_demand_routing_enabled():
@@ -434,7 +465,7 @@ def claim_pass(content: str, session_id: str, model: str,
 
     decision = decide_turn({"content": content, "request": request,
                             "context": context or {}, "session_id": session_id,
-                            "auto_shape": _auto_shape})
+                            "auto_shape": _auto_shape, "claim": True})
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT):
         # Declared claim decided; Leg 3 wires the envelope execution. The
