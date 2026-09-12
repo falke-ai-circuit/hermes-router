@@ -146,7 +146,7 @@ def test_cap_denial_banner_is_the_delivered_text(monkeypatch, caps_tmp):
                         lambda sid, text: parked.append((sid, text)))
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 2.0})
-    routing_caps.record_agent_spend(SID, 2.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 2.5)
     # Leg 6: the capped lane is declared_agent — register an agent claim.
     route_gate.register_declared(SID, route_gate.LANE_HIGHER_PRE,
                                  route_gate.SOURCE_DECLARED_AGENT)

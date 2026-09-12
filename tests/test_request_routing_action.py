@@ -108,7 +108,7 @@ def test_request_routing_double_declare_dedupes():
 def test_request_routing_cap_denied_before_claim(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 1.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 1.5)
     out = _rr(lane="higher-pre")
     assert out["ok"] is False and out["error"] == "cap_denied"
     assert route_gate.peek_declared(SID) is None  # NO claim registered

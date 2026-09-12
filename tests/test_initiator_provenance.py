@@ -212,7 +212,7 @@ def test_denied_cap_keeps_agent_initiator(monkeypatch, caps_tmp):
     (correct per cost model)."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 1.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 1.5)
     # Action-level denial: no claim registered, event carries agent tag.
     out = _rr(lane="higher-pre")
     assert out["ok"] is False and out["error"] == "cap_denied"
@@ -233,7 +233,7 @@ def test_user_phrase_over_cap_still_routes(monkeypatch, caps_tmp):
     cap_check remains the hard guard)."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 5.0)  # massively over cap
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 5.0)  # massively over cap
     d = route_gate.claim_pass("ask your higher self: blind spots?", SID,
                               "minimax-m3")
     assert d.route is True and d.source == route_gate.SOURCE_DECLARED_USER

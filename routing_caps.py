@@ -82,6 +82,59 @@ def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+_AGENT_ID_CACHE: Optional[str] = None
+_AGENT_ID_LOCK = threading.Lock()
+
+
+def agent_identity() -> str:
+    """Leg 9: the AGENT (profile) identity for the per-agent cap ledger.
+
+    Spend must accumulate per AGENT across ALL sessions (blueprint H1:
+    'per-agent caps') — keying by session_id made the cap unbindable
+    (a fresh session always read 0.0). The agent id is the profile name:
+    hermes_home = <home>/.hermes/profiles/<profile> (gateway process is
+    profile-scoped); fall back to the resolved home dir name, then to the
+    plugin module path's profiles/<name> parent. Cached in-process (the
+    identity never changes mid-process). NEVER empty — last-resort literal
+    'unknown-agent' so the cap always binds to SOMETHING stable. Never
+    raises."""
+    global _AGENT_ID_CACHE
+    if _AGENT_ID_CACHE:
+        return _AGENT_ID_CACHE
+    try:
+        with _AGENT_ID_LOCK:
+            if _AGENT_ID_CACHE:
+                return _AGENT_ID_CACHE
+            ident = ""
+            # 1) hermes home path: .../profiles/<profile-name>
+            try:
+                import hermes_constants
+
+                home = str(hermes_constants.get_hermes_home()).rstrip("/")
+            except Exception:  # noqa: BLE001
+                home = (os.environ.get("HERMES_HOME")
+                        or os.path.expanduser("~/.hermes")).rstrip("/")
+            if home:
+                parts = home.split("/")
+                if len(parts) >= 2 and parts[-2] == "profiles":
+                    ident = parts[-1]
+            # 2) plugin install path: <profile>/plugins/hermes_router/...
+            if not ident:
+                try:
+                    here = os.path.dirname(os.path.abspath(__file__))
+                    prof = os.path.dirname(os.path.dirname(here))
+                    parts = prof.rstrip("/").split("/")
+                    if len(parts) >= 2 and parts[-2] == "profiles":
+                        ident = parts[-1]
+                except Exception:  # noqa: BLE001
+                    pass
+            ident = (ident or "unknown-agent").strip()[:80]
+            _AGENT_ID_CACHE = ident
+            return ident
+    except Exception:  # noqa: BLE001
+        return "unknown-agent"
+
+
 def _load_state() -> Dict[str, Any]:
     try:
         with open(_state_path(), "r", encoding="utf-8") as fh:
