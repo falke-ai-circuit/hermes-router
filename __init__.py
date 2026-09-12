@@ -197,6 +197,7 @@ def _session_id_from_context(**context: Any) -> str:
 
 from . import dispatcher_knobs as _dispatcher_knobs
 from . import dispatcher_pre as _dispatcher_pre  # noqa: E402
+from . import route_gate as _route_gate  # noqa: E402
 
 
 def _tap_task_identity(*args: Any, **kwargs: Any) -> "tuple[str, str]":
@@ -281,18 +282,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not content.strip():
             return _hs_pass()
 
-        # v3.1.0 frame sentinels: skip PRE re-routing — see _frame_sentinel_check.
-        if _frame_sentinel_check(content):
-            return _hs_pass()
-
-        # v3.6.1 completion-audit delivery (Goran 2026-09-08): a stashed
-        # frontier verdict from the PREVIOUS turn's completion audit is
-        # injected HERE as an advisory assistant-role envelope — the agent
-        # reads it before composing her next turn and either surfaces the
-        # finding for user decision or fixes and delivers. One-shot consume.
-        _audit_delivered = _audit_delivery_pass(request, context)
-        if _audit_delivered is not None:
-            return _audit_delivered
+        # Phase 1 route gate (BLUEPRINT-request-routing-2026-09-12): the
+        # sentinel firewall + completion-audit delivery early-returns are
+        # now EXPLICIT no-route branches OF the unified gate (reviewer
+        # F4/H3) — same position, same behavior, gate-owned envelope.
+        _gate_env = _route_gate.fence_pass(content, request, context, _hs_pass)
+        if _gate_env is not None:
+            return _gate_env
 
         # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
         # blocking, uncensored should not filter anything when asked"). The
@@ -336,8 +332,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # Router tuning (2026-09-09): strip the <memory-context> block once at
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _strip_memory_context(content)
-        # v3.0.0 complexity lane dispatcher pass — see _dispatch_pass.
-        if _dispatch_pass(content, session_id, model):
+        # v3.0.0 complexity lane dispatcher pass — now the gate's CLAIM
+        # phase (Phase 1 route gate): declared on-demand inputs are
+        # evaluated at the same position, with the legacy _dispatch_pass
+        # consulted VERBATIM as the auto-shape gate input (policy frozen,
+        # execution stays at on_llm_execution).
+        if _route_gate.claim_pass(content, session_id, model,
+                                  request=request, context=context).route:
             return _hs_pass()
 
 
