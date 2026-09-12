@@ -62,6 +62,7 @@ def _reset(monkeypatch):
     state.reset_turn_identity(SID)
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
+    router_core._test_reset()
     LOGGED.clear()
     monkeypatch.setattr(plugin, "_log_route", _capture_log)
     monkeypatch.setattr(plugin, "_cfg", lambda: {
@@ -188,7 +189,7 @@ def test_auto_claim_then_declared_dedupes(monkeypatch):
     # Same-turn re-fire (same ask, provider call 2): auto pass never
     # re-consulted; the turn record stands it down.
     d2 = route_gate.claim_pass(ask, SID, "minimax-m3")
-    assert d2.route is False and d2.reason == "turn_claimed"
+    assert d2.route is False and d2.reason == "turn_claim_exists"
     assert dispatch_calls == [1]  # legacy pass consulted exactly ONCE
     # Turn record survives (visible to audit gate / legacy sites):
     assert route_gate.claim_state(SID, ask, "minimax-m3") is not None
@@ -217,7 +218,7 @@ def test_declared_then_auto_dispatch_stands_down(monkeypatch):
     assert d.route is True and d.source == route_gate.SOURCE_DECLARED_USER
     d2 = route_gate.claim_pass(ask, SID, "minimax-m3")
     # The turn record stands it down (leg 7: binding, one outcome/turn).
-    assert d2.route is False and d2.reason == "turn_claimed"
+    assert d2.route is False and d2.reason == "turn_claim_exists"
 
 
 # ---------------------------------------------------------------------------
@@ -405,3 +406,65 @@ def test_midturn_tool_claim_does_not_block_next_user_turn(monkeypatch):
                           original_request=_request(ask2), session_id=SID)
     assert any(f.get("event_detail") == "anchor_route_fired"
                for _, f in LOGGED)  # new turn routes normally
+
+
+def test_leg7c_auto_then_midturn_tool_claim_no_second_consult(monkeypatch):
+    """THE live regression (api_1789234078_9992a079): auto complexity consult
+    fired at turn start (billed), the agent's request_routing tool registered
+    a shadow claim MID-TURN, and the NEXT pass re-executed the declared
+    claim — a SECOND billed consult in one turn. Leg 7c: the turn-claim
+    record is written at the auto fire (executed=True) and a mid-turn
+    registration must NOT overwrite it (stamp_turn_claim_if_absent) — the
+    pending declared claim of a turn whose outcome already fired is a
+    standdown, reason=turn_claim_exists."""
+    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    _wire_complexity(monkeypatch)
+    monkeypatch.setattr(router_core, "pre_cooldown_seconds", lambda: 0)
+    ask = ("Design a multi-stage migration plan for splitting the "
+           "monolith into services, including architecture trade-offs.")
+    state.advance_turn_identity(SID, state.hash_text(ask))
+    p1 = _request(ask)
+    p2 = {
+        "model": "minimax-m3",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": ask},
+            {"role": "assistant", "content": "running tool"},
+            {"role": "tool", "content": "tool result"},
+            {"role": "user", "content": ask + " continue"},
+        ],
+    }
+    # PASS 1 — turn start, auto complexity consult fires and bills.
+    out1 = plugin.on_llm_request(request=p1, original_request=p1,
+                                 session_id=SID)
+    fires = [f for _, f in LOGGED if f.get("event_detail")
+             == "anchor_route_fired"]
+    assert len(fires) == 1
+    router_core.pending_model_swap(SID)  # llm_execution consumes + bills
+    # MID-TURN — the agent calls the request_routing tool.
+    res = _rr(lane="shadow")
+    assert res["ok"] is True
+    # The turn record KEEPS the original auto claim (executed=True).
+    rec = route_gate.claim_state(SID)  # pending declared claim visible
+    assert rec is not None and rec["source"] == route_gate.SOURCE_DECLARED_AGENT
+    turn_rec = route_gate._TURN_CLAIMED.get(SID + "|t" + str(state.current_turn_id(SID)))
+    assert turn_rec is not None
+    assert turn_rec["executed"] is True  # original auto claim preserved
+    assert turn_rec["source"] == route_gate.SOURCE_AUTO
+    # PASS 2 — tool-loop continuation: STANDDOWN, no second consult.
+    LOGGED.clear()
+    out2 = plugin.on_llm_request(request=p2, original_request=p2,
+                                 session_id=SID)
+    assert out2 == {}
+    assert not [f for _, f in LOGGED
+                if f.get("event_detail") in
+                ("anchor_route_fired", "request_routing_executed")]
+    stand = [f for _, f in LOGGED if f.get("event_detail") == "claim_standdown"]
+    assert len(stand) == 1
+    assert stand[0]["claim_source"] == route_gate.SOURCE_AUTO
+    # PASS 3 — still bound.
+    LOGGED.clear()
+    plugin.on_llm_request(request=p2, original_request=p2, session_id=SID)
+    assert not [f for _, f in LOGGED
+                if f.get("event_detail") in
+                ("anchor_route_fired", "request_routing_executed")]
