@@ -91,6 +91,40 @@ DECLARED_USER_PHRASES: Dict[str, str] = {
     "anchor this": LANE_HIGHER_PRE,
 }
 
+# Leg 10 (live canary regression, BUG A): 'Can you ask higher self ...' and
+# 'Ask shadow self to give her read' fired NO lane — the phrase table above
+# was too narrow. VARIANT TABLE: canonical directive forms per family,
+# normalized (hyphens -> spaces, leading politeness prefixes stripped).
+# Strict prefix/standalone matching only — static dict + small normalizer,
+# NO fuzzy/semantic matching. Mid-sentence/quoted lines stay inert (echo
+# guard unchanged).
+DECLARED_USER_VARIANTS: Dict[str, str] = {
+    # higher-self family
+    "ask your higher self": LANE_HIGHER_PRE,
+    "ask higher self": LANE_HIGHER_PRE,
+    "ask the higher self": LANE_HIGHER_PRE,
+    "higher self": LANE_HIGHER_PRE,
+    "anchor this": LANE_HIGHER_PRE,
+    # shadow family
+    "route this through your shadow": LANE_SHADOW,
+    "route through shadow": LANE_SHADOW,
+    "ask your shadow self": LANE_SHADOW,
+    "ask shadow self": LANE_SHADOW,
+    "ask your shadow": LANE_SHADOW,
+    "ask the shadow": LANE_SHADOW,
+    "shadow self read": LANE_SHADOW,
+}
+
+# Loose family probes for the declared_intent_no_route OBSERVABILITY signal
+# (BUG B-2): family DETECTED (words present) but no strict variant matched —
+# the turn is greppable/auditable, NOT routed. These never claim a lane.
+_DECLARED_INTENT_LOOSE = ("higher self", "higher-self", "shadow self",
+                          "shadow self read", "the shadow")
+
+# Optional leading politeness prefixes stripped before variant matching
+# ('can you ask higher self ...' — live canary miss #1).
+_DECLARED_LINE_PREFIXES = ("can you ", "please ", "go ", "now ")
+
 # A directive line may carry a PAYLOAD after the phrase: '<phrase>: rest',
 # '<phrase> - rest', '<phrase> — rest', or '<phrase>?...' — the phrase
 # PREFIX claims the lane, the remainder is the consult payload (canary
@@ -245,39 +279,87 @@ def _directive_lines(content: str):
         yield stripped.strip("`*# ").lower()
 
 
+def _normalize_directive_line(line: str) -> str:
+    """Leg 10 normalizer: lowercase, hyphens/en-dashes -> spaces, strip
+    markdown noise, then strip optional leading politeness prefixes
+    ('can you ', 'please ', 'go ', 'now ' — repeatedly, so 'now please '
+    also strips). Static string work — no fuzzy matching. Never raises."""
+    try:
+        norm = str(line or "").strip().strip("`*# ").lower()
+        norm = norm.replace("—", " ").replace("–", " ").replace("-", " ")
+        # collapse whitespace collapsed by hyphen substitution
+        norm = " ".join(norm.split())
+        changed = True
+        while changed:
+            changed = False
+            for pre in _DECLARED_LINE_PREFIXES:
+                if norm.startswith(pre):
+                    norm = norm[len(pre):].strip()
+                    changed = True
+        return norm
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _detect_declared_intent_loose(content: str) -> bool:
+    """Leg 10 BUG B-2 observability probe: family words ('higher self',
+    'shadow self', ...) present in any non-quoted line — the user TRIED to
+    declare routing but no strict variant matched. Signal only; NEVER
+    routes. Never raises."""
+    try:
+        for norm in _directive_lines(content):
+            for probe in _DECLARED_INTENT_LOOSE:
+                if probe in norm:
+                    return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def detect_declared_user(content: str) -> Optional[str]:
-    """Lane for a declared-user on-demand phrase appearing as a standalone
-    directive line (optionally carrying a consult payload after the phrase:
+    """Lane for a declared-user on-demand phrase appearing as a directive
+    line (optionally carrying a consult payload after the phrase:
     '<phrase>: rest', '<phrase> - rest', '<phrase> — rest', '<phrase>?...'),
-    else None. The phrase must START the line; prose mentioning a phrase
-    mid-line/mid-sentence (echo/meta) never matches. The payload form
-    prefix-matches: a line beginning with a LONGER phrase wins over a
-    shorter prefix so 'route this through your shadow: x' never half-matches
-    a shorter phrase. Never raises."""
+    else None. Leg 10: matching runs over the VARIANT TABLE
+    (DECLARED_USER_VARIANTS) with politeness-prefix stripping + hyphen
+    normalization — 'can you ask higher self: ...' and 'ask shadow self to
+    give her read' now claim their lanes. The phrase must START the line
+    (after normalization); prose mentioning a phrase mid-line/mid-sentence
+    (echo/meta) never matches. A line beginning with a LONGER variant wins
+    over a shorter prefix so 'route this through your shadow: x' never
+    half-matches a shorter phrase. Never raises."""
     try:
         best_lane: Optional[str] = None
         best_len = 0
-        for norm in _directive_lines(content):
-            # 1. Whole-line match (standalone phrase — unchanged).
-            lane = DECLARED_USER_PHRASES.get(norm)
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            # 1. Whole-line match (standalone variant).
+            lane = DECLARED_USER_VARIANTS.get(norm)
             if lane is not None:
                 return lane
-            # 2. Payload prefix match: line starts with '<phrase><sep>'.
-            for phrase, pl in DECLARED_USER_PHRASES.items():
+            # 2. Payload prefix match: line starts with '<variant><sep>'.
+            #    Separators are checked on the RAW line too (the normalizer
+            #    collapsed hyphen separators into spaces).
+            for phrase, pl in DECLARED_USER_VARIANTS.items():
                 if len(phrase) <= best_len and best_lane is not None:
-                    continue  # longest phrase wins
+                    continue  # longest variant wins
                 for sep in _PHRASE_PAYLOAD_SEPARATORS:
-                    if norm.startswith(phrase + sep):
+                    if norm.startswith(phrase + sep) or \
+                            raw.startswith(phrase + sep):
                         best_lane = pl
                         best_len = len(phrase)
                         break
-                # 3. Trailing-punctuation form: '<phrase>?' / '<phrase>.' /
-                #    '<phrase>,' — the payload begins where the phrase ends.
-                if norm.startswith(phrase) and len(norm) > len(phrase) and \
-                        norm[len(phrase)] in "?.,":
-                    if len(phrase) > best_len or best_lane is None:
-                        best_lane = pl
-                        best_len = len(phrase)
+                # 3. Trailing-word boundary: the variant followed by a
+                #    space + more text ('ask shadow self to give her read')
+                #    OR trailing punctuation ('<phrase>?' / '<phrase>.').
+                if norm.startswith(phrase) and len(norm) > len(phrase):
+                    nxt = norm[len(phrase)]
+                    if nxt in "?.," or nxt == " ":
+                        if len(phrase) > best_len or best_lane is None:
+                            best_lane = pl
+                            best_len = len(phrase)
         return best_lane
     except Exception:  # noqa: BLE001
         return None
@@ -698,6 +780,17 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
             declared = _declared_decision(content, session_id)
             if declared.route or declared.reason == "declared_deduped":
                 return declared
+            # Leg 10 BUG B-2: family words present but no strict variant
+            # matched -> the turn is GREPPABLE (declared_intent_no_route) so
+            # near-miss phrases are auditable. Observability signal ONLY —
+            # the loose pattern never routes.
+            if _detect_declared_intent_loose(content):
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="declared_intent_no_route",
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
 
         # 5. Auto-shape input — legacy classification, consulted VERBATIM
         #    only here, inside the gate's yes-branch (gate INPUT; policy
