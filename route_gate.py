@@ -327,12 +327,17 @@ def register_declared(session_id: str, lane: str,
                 return False
             _DECLARED_CLAIMS[str(session_id or "")] = {
                 "lane": str(lane), "source": str(source), "ts": now}
-        # Leg 7b: a MID-TURN declared claim (agent's request_routing tool)
+        # Leg 7b/7c: a MID-TURN declared claim (agent's request_routing tool)
         # binds the CURRENT turn immediately — stamp the turn-claim record
         # here so every later PRE/POST pass of this turn stands down even
         # if the gate's claim_pass never consumes the declared claim first
         # (and after it does: the record survives the consumption).
-        stamp_turn_claim(session_id, lane, source)
+        # `executed=False` so the gate's claim phase may execute it ONCE —
+        # BUT only when the turn has no record yet (7c): if the turn ALREADY
+        # claimed (e.g. an auto consult fired at turn start), the original
+        # executed record stands and the mid-turn registration cannot
+        # resurrect routing (no second billed consult).
+        stamp_turn_claim_if_absent(session_id, lane, source, executed=False)
         return True
     except Exception:  # noqa: BLE001
         return False
@@ -429,13 +434,48 @@ def _turn_claim_key(session_id: str, content: str = "",
 
 
 def stamp_turn_claim(session_id: str, lane: str, source: str,
-                     content: str = "", model: str = "") -> None:
-    """Record the turn's claim (single-owner registry write). Never raises."""
+                     content: str = "", model: str = "",
+                     executed: bool = True) -> None:
+    """Record the turn's claim (single-owner registry write). Never raises.
+    `executed`: True when the claim's consult already fired at claim time
+    (auto lanes, executed declared envelopes); False when a claim was only
+    REGISTERED (mid-turn request_routing tool call) and still owes its
+    one execution this turn."""
     try:
         with _CLAIM_LOCK:
             _TURN_CLAIMED[_turn_claim_key(session_id, content, model)] = {
                 "lane": str(lane or ""), "source": str(source or ""),
+                "executed": bool(executed),
                 "ts": time.time()}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def mark_turn_claim_executed(session_id: str) -> None:
+    """Flag the session's current turn-claim record as EXECUTED (its one
+    consult fired). Never raises."""
+    try:
+        with _CLAIM_LOCK:
+            rec = _TURN_CLAIMED.get(_turn_claim_key(session_id))
+            if rec is not None:
+                rec["executed"] = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def stamp_turn_claim_if_absent(session_id: str, lane: str, source: str,
+                               executed: bool = False) -> None:
+    """Stamp the turn-claim record ONLY when the turn has no record yet
+    (leg 7c): an already-claimed turn keeps its ORIGINAL record — a
+    mid-turn registration must not resurrect routing after the turn's one
+    outcome fired. Never raises."""
+    try:
+        with _CLAIM_LOCK:
+            key = _turn_claim_key(session_id)
+            if key not in _TURN_CLAIMED:
+                _TURN_CLAIMED[key] = {
+                    "lane": str(lane or ""), "source": str(source or ""),
+                    "executed": bool(executed), "ts": time.time()}
     except Exception:  # noqa: BLE001
         pass
 
@@ -621,25 +661,31 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                         pass
                     return GateDecision(route=False, reason="cap_denied")
 
-        # 3.6 Turn record (leg 7, single claim point): a claim already
-        #    registered for THIS turn (any lane, any source) is BINDING —
-        #    no second claim of any kind in the same turn. EXCEPTION: a
-        #    PENDING declared claim must be consumed/executed ONCE (the
-        #    mid-turn request_routing tool registered it for this turn);
-        #    the record was stamped at registration and keeps binding
-        #    later passes after the consumption.
+        # 3.6 Turn record (leg 7/7b/7c, single claim point): the turn-claim
+        #    peek is the FIRST binding check — before declared peek AND
+        #    before auto-shape evaluation — for every pass. A fresh turn
+        #    claim (any lane, any source) stands down ALL further claims:
+        #    decision = no-route, reason=turn_claim_exists, logged as
+        #    claim_standdown with claim_lane/claim_source.
+        #    ONE exception (execute-once): a claim that was only REGISTERED
+        #    (mid-turn request_routing tool call, executed=False) and whose
+        #    pending declared claim still stands — the gate's claim phase
+        #    executes it this pass; mark_turn_claim_executed flags it and
+        #    every LATER pass stands down.
         _turn = _peek_turn_claim(session_id, content,
                                  str(ctx.get("model") or ""))
-        if _turn is not None and peek_declared(session_id) is None:
-            try:
-                _pkg_fn("_log_route")(
-                    "PRE", event_detail="claim_standdown",
-                    claim_lane=str(_turn.get("lane") or ""),
-                    claim_source=str(_turn.get("source") or ""),
-                    session_id=session_id)
-            except Exception:  # noqa: BLE001 — observability only
-                pass
-            return GateDecision(route=False, reason="turn_claimed")
+        if _turn is not None:
+            _pending_declared = peek_declared(session_id)
+            if (_turn.get("executed") is True) or (_pending_declared is None):
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="claim_standdown",
+                        claim_lane=str(_turn.get("lane") or ""),
+                        claim_source=str(_turn.get("source") or ""),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
+                return GateDecision(route=False, reason="turn_claim_exists")
 
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
         if on_demand_routing_enabled():
@@ -695,12 +741,12 @@ def claim_pass(content: str, session_id: str, model: str,
     Never raises."""
 
     def _auto_shape() -> GateDecision:
-        # Leg 7 (single claim point): the turn-window claim record outranks
-        # the legacy auto pass — a claimed turn cannot claim again. The
-        # VERBATIM _dispatch_pass consult is skipped entirely (no double
-        # classification, no second consult). The record is turn-scoped
-        # (ingress-text turn_key): a genuinely NEW user turn hashes a
-        # different key and routes normally.
+        # Leg 7/7c (single claim point): the turn-window claim record
+        # outranks the legacy auto pass — a claimed turn cannot claim
+        # again. The VERBATIM _dispatch_pass consult is skipped entirely
+        # (no double classification, no second consult). The record is
+        # turn-scoped (session + turn counter): a genuinely NEW user turn
+        # advances the counter and routes normally.
         _turn = _peek_turn_claim(session_id, content, str(model or ""))
         if _turn is not None:
             return NO_ROUTE
@@ -749,6 +795,10 @@ def claim_pass(content: str, session_id: str, model: str,
                 route_id=_task[:12] + "-" + str(int(time.time())),
                 orientation=(decision.lane == LANE_HIGHER_PRE))
             _staged = _rc.stage_model_swap(session_id, _rd)
+            # Leg 7c: the declared claim's consult has now FIRED — flag the
+            # turn-claim record executed so every later pass of this turn
+            # stands down (the register-time record was executed=False).
+            mark_turn_claim_executed(session_id)
             _pkg_fn("_log_route")(
                 "PRE", event_detail="request_routing_executed",
                 lane=decision.lane, source=decision.source,
