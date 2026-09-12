@@ -578,9 +578,12 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
 
                 _initiator = _rg.initiator_for_task(
                     str(rec.get("task_id") or ""))
-                routing_caps.record_agent_spend(session_id, real_cost,
-                                                initiator=_initiator,
-                                                lane="higher-pre")
+                # Leg 9: spend keys by AGENT IDENTITY (profile) — accumulate
+                # across ALL of the agent's sessions.
+                routing_caps.record_agent_spend(
+                    routing_caps.agent_identity(), real_cost,
+                    initiator=_initiator,
+                    lane="higher-pre")
                 routing_caps.record_cooldown(session_id)
             except Exception:  # noqa: BLE001
                 pass

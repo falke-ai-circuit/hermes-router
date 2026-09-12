@@ -645,15 +645,21 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                 pass
             else:
                 _caps_mod = _caps()
+                # Leg 9: cap spend keys by AGENT IDENTITY (profile), not
+                # session — a fresh session must still see the agent's
+                # accumulated daily spend. agent_id is greppable in the
+                # denied_cap/allowed events.
+                _agent_id = _caps_mod.agent_identity()
                 _cap_allowed, _cap_spend, _cap_val = \
-                    _caps_mod.gate_cap_check(session_id)
+                    _caps_mod.gate_cap_check(_agent_id)
                 if not _cap_allowed:
-                    _caps_mod.deny_routing(session_id, lane="",
+                    _caps_mod.deny_routing(_agent_id, lane="",
                                            initiator=INITIATOR_AGENT,
                                            session_id=session_id)
                     try:
                         _pkg_fn("_log_route")(
                             "PRE", event_detail="denied_cap",
+                            agent_id=_agent_id,
                             spend=round(_cap_spend, 4),
                             cap=round(_cap_val, 2),
                             session_id=session_id)

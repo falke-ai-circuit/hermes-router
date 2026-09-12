@@ -367,11 +367,14 @@ def _request_routing(lane: str = "", session_id: str = "") -> str:
                                "valid": list(route_gate.VALID_ROUTE_LANES)})
         sid = str(session_id or "")
         # Cap check FIRST — denial is visible even on the declared path.
-        allowed, spend, cap_val = routing_caps.gate_cap_check(sid)
+        # Leg 9: spend keys by AGENT IDENTITY (profile), not session.
+        agent_id = routing_caps.agent_identity()
+        allowed, spend, cap_val = routing_caps.gate_cap_check(agent_id)
         if not allowed:
-            routing_caps.deny_routing(sid, lane=lane_n, initiator="agent",
+            routing_caps.deny_routing(agent_id, lane=lane_n, initiator="agent",
                                       session_id=sid)
             return json.dumps({"ok": False, "error": "cap_denied",
+                               "agent_id": agent_id,
                                "lane": lane_n, "spend_usd": round(spend, 4),
                                "cap_usd": round(cap_val, 2),
                                "detail": routing_caps.denied_banner_text(spend, cap_val)})

@@ -859,9 +859,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 from . import routing_caps
 
                 _initiator = _rg.initiator_for_task(str(key or ""))
-                routing_caps.record_agent_spend(session_id, cost,
-                                                initiator=_initiator,
-                                                lane="higher-post")
+                # Leg 9: spend keys by AGENT IDENTITY (profile) — accumulate
+                # across ALL of the agent's sessions.
+                routing_caps.record_agent_spend(
+                    routing_caps.agent_identity(), cost,
+                    initiator=_initiator,
+                    lane="higher-post")
                 routing_caps.record_cooldown(session_id)
             except Exception:  # noqa: BLE001
                 pass

@@ -104,12 +104,12 @@ def test_cap_knob_bogus_falls_back(monkeypatch):
 
 
 def test_agent_spend_roundtrip_and_restart_durable(caps_tmp):
-    routing_caps.record_agent_spend(SID, 0.4, initiator="agent", lane="higher-pre")
-    assert abs(routing_caps.agent_spend(SID) - 0.4) < 1e-9
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.4, initiator="agent", lane="higher-pre")
+    assert abs(routing_caps.agent_spend(routing_caps.agent_identity()) - 0.4) < 1e-9
     # Restart durability: a FRESH module-level read loads from the sidecar
     # file again (same seam the gateway process uses after a bounce).
     data = json.load(open(caps_tmp))
-    today = list(data["agents"][SID].values())[0]
+    today = list(data["agents"][routing_caps.agent_identity()].values())[0]
     assert today["spend_usd"] == pytest.approx(0.4)
     assert today["initiator"] == "agent"
     assert today["lane"] == "higher-pre"
@@ -136,15 +136,15 @@ def test_per_agent_isolation(caps_tmp):
 def test_gate_cap_allows_under_and_exactly_at_cap(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 2.0})
-    routing_caps.record_agent_spend(SID, 1.5)
-    allowed, spend, cap = routing_caps.gate_cap_check(SID, est_cost=0.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 1.5)
+    allowed, spend, cap = routing_caps.gate_cap_check(routing_caps.agent_identity(), est_cost=0.5)
     assert allowed is True          # projected == cap exactly -> allowed (H7.7 edge)
     assert cap == 2.0
-    routing_caps.record_agent_spend(SID, 0.5)  # spend exactly at cap
-    allowed, spend, _ = routing_caps.gate_cap_check(SID, est_cost=0.0)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.5)  # spend exactly at cap
+    allowed, spend, _ = routing_caps.gate_cap_check(routing_caps.agent_identity(), est_cost=0.0)
     assert allowed is True          # projected == cap -> still allowed
     assert spend == pytest.approx(2.0)
-    allowed, _, _ = routing_caps.gate_cap_check(SID, est_cost=0.01)
+    allowed, _, _ = routing_caps.gate_cap_check(routing_caps.agent_identity(), est_cost=0.01)
     assert allowed is False         # projected beyond cap denies
 
 
@@ -154,7 +154,7 @@ def test_shadow_lane_capped_at_gate(monkeypatch, caps_tmp):
     anchor_chain.cap_check at the execution seam remains the hard guard."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 1.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 1.5)
     route_gate.register_declared(SID, route_gate.LANE_SHADOW,
                                  route_gate.SOURCE_DECLARED_AGENT)
     d = route_gate.decide_turn({
@@ -170,7 +170,7 @@ def test_auto_lane_capped_at_gate(monkeypatch, caps_tmp):
     The auto claim routes through; spend accrues only at execution."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 1.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 1.5)
 
     def _auto():
         return route_gate.GateDecision(route=True, lane=route_gate.LANE_HIGHER_PRE,
@@ -198,7 +198,7 @@ def _auto_marker():
 def test_fence_phase_never_capped(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
-    routing_caps.record_agent_spend(SID, 5.0)  # massively over cap
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 5.0)  # massively over cap
     # Leg 6: the fence-phase cap check rides the DECLARED_AGENT scope — a
     # declared-agent claim over cap is denied even in claim ctx...
     route_gate.register_declared(SID, route_gate.LANE_HIGHER_PRE,
@@ -237,7 +237,7 @@ def test_denial_parks_visible_banner_and_ledger_event(monkeypatch, caps_tmp):
 
     monkeypatch.setattr(debug_banner, "park_anchor_banner",
                         lambda sid, text: parked.append((sid, text)))
-    routing_caps.record_agent_spend(SID, 2.5)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 2.5)
     # Leg 6: the capped lane is declared_agent — register an agent claim.
     route_gate.register_declared(SID, route_gate.LANE_HIGHER_PRE,
                                  route_gate.SOURCE_DECLARED_AGENT)
@@ -269,12 +269,12 @@ def test_denial_does_not_increment_counters(monkeypatch, caps_tmp):
     from hermes_router import debug_banner
 
     monkeypatch.setattr(debug_banner, "park_anchor_banner", lambda *a, **k: None)
-    routing_caps.record_agent_spend(SID, 2.5)
-    before = routing_caps.agent_spend(SID)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 2.5)
+    before = routing_caps.agent_spend(routing_caps.agent_identity())
     route_gate.decide_turn({
         "content": "ask your higher self", "request": _request("x"),
         "context": {}, "session_id": SID, "auto_shape": None, "claim": True})
-    assert routing_caps.agent_spend(SID) == before  # no leak
+    assert routing_caps.agent_spend(routing_caps.agent_identity()) == before  # no leak
 
 
 def test_spend_records_only_on_successful_claim(monkeypatch, caps_tmp):
@@ -290,10 +290,10 @@ def test_spend_records_only_on_successful_claim(monkeypatch, caps_tmp):
         "content": "ask your higher self", "request": _request("x"),
         "context": {}, "session_id": SID, "auto_shape": None, "claim": True})
     assert d.route is True
-    assert routing_caps.agent_spend(SID) == 0.0  # claim alone spends nothing
-    routing_caps.record_agent_spend(SID, 0.25, initiator="agent",
+    assert routing_caps.agent_spend(routing_caps.agent_identity()) == 0.0  # claim alone spends nothing
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.25, initiator="agent",
                                     lane="higher-pre")  # execution seam bills
-    assert routing_caps.agent_spend(SID) == pytest.approx(0.25)
+    assert routing_caps.agent_spend(routing_caps.agent_identity()) == pytest.approx(0.25)
 
 
 # ---------------------------------------------------------------------------
@@ -320,15 +320,15 @@ def test_tokens_ledger_legacy_records_byte_identical(tmp_path, monkeypatch):
 
 
 def test_record_agent_spend_preserves_tag_on_continuation(caps_tmp):
-    routing_caps.record_agent_spend(SID, 0.1, initiator="user", lane="shadow")
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.1, initiator="user", lane="shadow")
     # Explicit no-tag continuation (initiator="") preserves the previous tag.
-    routing_caps.record_agent_spend(SID, 0.1, initiator="")
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.1, initiator="")
     data = json.load(open(caps_tmp))
-    today = list(data["agents"][SID].values())[0]
+    today = list(data["agents"][routing_caps.agent_identity()].values())[0]
     assert today["initiator"] == "user"
     assert today["lane"] == "shadow"
     # Default call (no arg) carries the documented agent default tag.
-    routing_caps.record_agent_spend(SID, 0.1)
+    routing_caps.record_agent_spend(routing_caps.agent_identity(), 0.1)
     data = json.load(open(caps_tmp))
-    today = list(data["agents"][SID].values())[0]
+    today = list(data["agents"][routing_caps.agent_identity()].values())[0]
     assert today["initiator"] == "agent"
