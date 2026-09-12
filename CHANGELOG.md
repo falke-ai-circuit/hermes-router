@@ -1,3 +1,24 @@
+## 4.1.0 — 2026-09-12 (Phase 1 request_routing: unified cascade route gate + aux intent classification)
+
+- New `route_gate.py`: single decision point (gate-before-classification cascade). Claim precedence:
+  sentinel → skip-anchor → cap → turn-claim → declared → auto-shape. Multi-routing impossible by topology.
+- On-demand `request_routing` agent action (router_tools.py): agent-initiated routing with per-agent
+  daily caps, initiator provenance (user|agent) in ledger, visible denial banner + denied_cap event.
+- Per-agent caps (`routing_caps.py`): restart-durable sidecar (atomic, chmod 0600, 7-day prune),
+  keyed by AGENT identity (profile), apply to every lane incl. shadow; boundary at exactly-cap passes.
+- Declared user phrases with variant table + echo guard (quoted/meta inert) + narrow 'uncensored take'
+  directive family (line-start only).
+- Aux intent classifier (`intent_classifier.py`): semantic on-demand detection on strict-table near-miss
+  (heuristic-gated), shadow = two votes, 0.75 threshold, quote-stripped payload, 3s timeout, fail-open,
+  intent_aux_error distinct from intent_none, kill-switch `on_demand_aux_classify`.
+- Declared shadow lane executes on the UNCENSORED render chain (leg 8 miswire fix) and emits its own
+  §10.4 debug banner at delivery edge (leg 11).
+- Turn mutual exclusion: turn-identity claim registry, original record wins, mid-turn tool claims cannot
+  resurrect executed turns. One consult per turn enforced.
+- Bare-model-call guard: near-miss turns inject one-shot advisory reminder; request_routing is the only
+  sanctioned on-demand path. 3 live leaked turns encoded as regression fixtures.
+- Suite: 756 passed / 2 skipped / 1 deselected. Live-verified on researcher canary (T1–T11 + FP battery).
+
 ## 4.0.0 — 2026-09-11 (R5 decomposition: god-files decomposed, zero behavior change)
 
 - `__init__.py` 1848 -> 1023 lines; `commands.py` 2564 -> 669 lines. 6 new cohesive modules:
