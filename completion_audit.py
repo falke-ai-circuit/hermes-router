@@ -838,11 +838,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 pass
             # Leg 2 (request-routing blueprint): durable per-agent counter +
             # cooldown for the higher-post lane, post-claim only (H7.1).
+            # Leg 6: initiator resolves from the gate's claim source.
             try:
+                from . import route_gate as _rg
                 from . import routing_caps
 
+                _initiator = _rg.initiator_for_task(str(key or ""))
                 routing_caps.record_agent_spend(session_id, cost,
-                                                initiator="agent",
+                                                initiator=_initiator,
                                                 lane="higher-post")
                 routing_caps.record_cooldown(session_id)
             except Exception:  # noqa: BLE001
@@ -910,10 +913,19 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             except Exception:  # noqa: BLE001 — banner must never break audit
                 pass
         _base = str(getattr(ep, "base_url", "") or "")
+        # Leg 6: the consult meta carries the gate's claim source as the
+        # initiator tag (declared_user->user, declared_agent->agent,
+        # auto/legacy->auto) — consumed by banner/detail surfaces.
+        try:
+            from . import route_gate as _rg
+
+            _initiator = _rg.initiator_for_task(str(key or ""))
+        except Exception:  # noqa: BLE001
+            _initiator = "auto"
         return {"note": note,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
-                "initiator": "agent",
+                "initiator": _initiator,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))

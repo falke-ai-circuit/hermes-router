@@ -147,18 +147,25 @@ def test_gate_cap_allows_under_and_exactly_at_cap(monkeypatch, caps_tmp):
 
 
 def test_shadow_lane_capped_at_gate(monkeypatch, caps_tmp):
-    """H1: the shadow lane had ZERO cap checks — the gate step-1 check now
-    caps it like every other lane."""
+    """H1 + leg 6 re-scope: the shadow lane IS capped when the AGENT claims
+    it via request_routing (declared_agent = the gated lane). The frozen
+    anchor_chain.cap_check at the execution seam remains the hard guard."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
     routing_caps.record_agent_spend(SID, 1.5)
+    route_gate.register_declared(SID, route_gate.LANE_SHADOW,
+                                 route_gate.SOURCE_DECLARED_AGENT)
     d = route_gate.decide_turn({
-        "content": "route this through your shadow", "request": _request("x"),
+        "content": "work the problem", "request": _request("x"),
         "context": {}, "session_id": SID, "auto_shape": None, "claim": True})
     assert d.route is False and d.reason == "cap_denied"
 
 
 def test_auto_lane_capped_at_gate(monkeypatch, caps_tmp):
+    """Leg 6 re-scope: the on-demand gate cap applies to the DECLARED_AGENT
+    lane only — auto lanes are exempt at the gate (their spend still hits
+    the frozen anchor_chain.cap_check hard guard at the execution seam).
+    The auto claim routes through; spend accrues only at execution."""
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
     routing_caps.record_agent_spend(SID, 1.5)
@@ -171,8 +178,9 @@ def test_auto_lane_capped_at_gate(monkeypatch, caps_tmp):
     d = route_gate.decide_turn({
         "content": "ordinary ask", "request": _request("x"),
         "context": {}, "session_id": SID, "auto_shape": _auto, "claim": True})
-    assert d.route is False and d.reason == "cap_denied"
-    assert not _auto_calls  # classification never consulted past denial
+    assert d.route is True and d.source == route_gate.SOURCE_AUTO  # exempt
+    events = routing_caps.read_denied_events()
+    assert not events  # no denial — auto is not the capped lane
 
 
 _auto_calls = []
@@ -189,11 +197,15 @@ def test_fence_phase_never_capped(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"routing_daily_cap_usd": 1.0})
     routing_caps.record_agent_spend(SID, 5.0)  # massively over cap
-    # declare=False claim ctx: cap check runs and denies...
+    # Leg 6: the fence-phase cap check rides the DECLARED_AGENT scope — a
+    # declared-agent claim over cap is denied even in claim ctx...
+    route_gate.register_declared(SID, route_gate.LANE_HIGHER_PRE,
+                                 route_gate.SOURCE_DECLARED_AGENT)
     d = route_gate.decide_turn({"content": "hello", "request": None,
                                 "context": {}, "session_id": SID,
                                 "auto_shape": None, "claim": True})
     assert d.reason == "cap_denied"
+    route_gate.clear_declared(SID)
     # ...but the audit-delivery fence branch is never capped.
     env = {"request": _request("delivered")}
 
@@ -223,8 +235,11 @@ def test_denial_parks_visible_banner_and_ledger_event(monkeypatch, caps_tmp):
     monkeypatch.setattr(debug_banner, "park_anchor_banner",
                         lambda sid, text: parked.append((sid, text)))
     routing_caps.record_agent_spend(SID, 2.5)
+    # Leg 6: the capped lane is declared_agent — register an agent claim.
+    route_gate.register_declared(SID, route_gate.LANE_HIGHER_PRE,
+                                 route_gate.SOURCE_DECLARED_AGENT)
     d = route_gate.decide_turn({
-        "content": "ask your higher self", "request": _request("x"),
+        "content": "work the problem", "request": _request("x"),
         "context": {}, "session_id": SID, "auto_shape": None, "claim": True})
     assert d.route is False and d.reason == "cap_denied"
     # Visible banner, exact text contract:

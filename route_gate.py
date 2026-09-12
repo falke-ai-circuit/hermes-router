@@ -109,6 +109,45 @@ _QUOTE_LINE_PREFIXES = (">", '"', "'", ")")
 # pending-routes TTL scale).
 _CLAIM_TTL_SECONDS = 300.0
 
+# Leg 6 (initiator provenance): task_id -> claim source ("user"|"agent"|
+# "auto"), stamped at claim time in claim_pass, read by the billing sites
+# (anchor_exec / completion_audit) at record time. Default "auto" — a
+# legacy/unclaimed consult is auto-initiated. Single-owner: this map is
+# written ONLY here, read anywhere.
+INITIATOR_AUTO = "auto"
+INITIATOR_AGENT = "agent"
+
+
+def initiator_for_task(task_id: str) -> str:
+    """Initiator tag for a task's billing records: the claim source stamped
+    by claim_pass when this task claimed routing — declared_user->"user",
+    declared_agent->"agent", auto/legacy/unclaimed->"auto". Never raises."""
+    try:
+        with _CLAIM_LOCK:
+            src = _TASK_SOURCE.get(str(task_id or ""))
+            if not src:
+                return INITIATOR_AUTO
+            if src == SOURCE_DECLARED_USER:
+                return "user"
+            if src == SOURCE_DECLARED_AGENT:
+                return INITIATOR_AGENT
+            return INITIATOR_AUTO
+    except Exception:  # noqa: BLE001
+        return INITIATOR_AUTO
+
+
+def _stamp_task_source(task_id: str, source: str) -> None:
+    try:
+        with _CLAIM_LOCK:
+            _TASK_SOURCE[str(task_id or "")] = str(source)
+            # Bounded: keep the newest entries (simple size cap — claims are
+            # one-per-turn, so growth is slow; the map rides the same
+            # process lifetime as the gate's own claim registry).
+            while len(_TASK_SOURCE) > 512:
+                _TASK_SOURCE.pop(next(iter(_TASK_SOURCE)))
+    except Exception:  # noqa: BLE001
+        pass
+
 
 @dataclass
 class GateDecision:
@@ -261,6 +300,9 @@ def _skip_anchor_requested(content: str) -> bool:
 
 _CLAIM_LOCK = threading.Lock()
 _DECLARED_CLAIMS: Dict[str, Dict[str, Any]] = {}
+# Leg 6: task_id -> claim source for initiator provenance (see
+# initiator_for_task above). Defined here beside the claim registry.
+_TASK_SOURCE: Dict[str, str] = {}
 
 
 def _gc_claims_locked(now: float) -> None:
@@ -416,26 +458,41 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
         if _skip_anchor_requested(content):
             return GateDecision(route=False, reason="override_skip")
 
-        # 3.5 Gate step-1 per-agent daily cap (leg 2, reviewer H1): applies
-        # to EVERY lane including shadow. Denied routing emits a visible
+        # 3.5 Gate step-1 per-agent daily cap (leg 2, reviewer H1; leg 6
+        # re-scope): caps the DECLARED_AGENT on-demand lane only. User
+        # phrases are explicit asks (uncapped by the per-agent gate knob);
+        # auto lanes are governed by their existing cadence knobs. The
+        # frozen anchor_chain.cap_check at the execution seam remains the
+        # HARD guard for every lane. Denied routing emits a visible
         # delivery banner + denied_cap ledger event — NEVER silent (Goran
-        # amendment). Fail-open: cap-check errors allow (the execution
-        # seam's frozen cap_check stays the hard guard). Claim phase only —
+        # amendment). Fail-open: cap-check errors allow. Claim phase only —
         # the fence early-returns above are never capped.
         if bool(ctx.get("claim")):
-            _caps_mod = _caps()
-            _cap_allowed, _cap_spend, _cap_val = _caps_mod.gate_cap_check(session_id)
-            if not _cap_allowed:
-                _caps_mod.deny_routing(session_id, lane="", initiator="agent",
-                                       session_id=session_id)
-                try:
-                    _pkg_fn("_log_route")("PRE", event_detail="denied_cap",
-                                          spend=round(_cap_spend, 4),
-                                          cap=round(_cap_val, 2),
-                                          session_id=session_id)
-                except Exception:  # noqa: BLE001
-                    pass
-                return GateDecision(route=False, reason="cap_denied")
+            _declared_probe = peek_declared(session_id)
+            _is_agent_claim = (
+                _declared_probe is not None and
+                _declared_probe.get("source") == SOURCE_DECLARED_AGENT)
+            if not _is_agent_claim:
+                # User phrase (explicit ask) / auto / legacy: exempt from
+                # the per-agent on-demand cap at the gate.
+                pass
+            else:
+                _caps_mod = _caps()
+                _cap_allowed, _cap_spend, _cap_val = \
+                    _caps_mod.gate_cap_check(session_id)
+                if not _cap_allowed:
+                    _caps_mod.deny_routing(session_id, lane="",
+                                           initiator=INITIATOR_AGENT,
+                                           session_id=session_id)
+                    try:
+                        _pkg_fn("_log_route")(
+                            "PRE", event_detail="denied_cap",
+                            spend=round(_cap_spend, 4),
+                            cap=round(_cap_val, 2),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return GateDecision(route=False, reason="cap_denied")
 
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
         if on_demand_routing_enabled():
@@ -517,6 +574,10 @@ def claim_pass(content: str, session_id: str, model: str,
             from . import router_core as _rc
 
             _task = _rc.task_id_for(session_id, content, str(model or ""))
+            # Leg 6: stamp the claim's source for initiator provenance —
+            # billing sites (anchor_exec / completion_audit) resolve
+            # route_gate.initiator_for_task(task_id) at record time.
+            _stamp_task_source(_task, decision.source)
             _rd = _rc.RouteDecision(
                 task_id=_task, lane=_rc.LANE_COMPLEXITY,
                 mode=_rc.MODE_CONSULT,
