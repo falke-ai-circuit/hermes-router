@@ -119,6 +119,18 @@ def test_confirm_none_on_internal_error(plugin_env, monkeypatch):
     assert hr._two_vote_confirm(IED_AUDIT_ASK, "s1") is None
 
 
+def test_confirm_rejects_fallback_verdict(plugin_env, monkeypatch):
+    """v4.2.2 evidence-laundering guard (astra-flex): a v4.2.1 mechanical
+    fallback verdict (source=aux_fallback, shadow 0.76) must NEVER satisfy
+    the protected-group confirm — otherwise the render fires exactly when
+    the semantic safeguard (live aux) is down. Confirm -> None -> standdown."""
+    monkeypatch.setattr(
+        "hermes_router.intent_classifier.classify_intent",
+        lambda *a, **k: {"lane": "shadow", "subtype": None,
+                         "confidence": 0.76, "source": "aux_fallback"})
+    assert hr._two_vote_confirm(IED_ACTIONABLE, "s1") is None
+
+
 def test_confirm_inherits_two_vote_discipline(plugin_env, monkeypatch):
     """classify_intent itself enforces vote2: a primary shadow vote whose
     second vote disagrees comes back lane=none -> confirm False."""

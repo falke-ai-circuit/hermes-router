@@ -106,6 +106,14 @@ def _two_vote_confirm(content: str, session_id: str) -> "Optional[bool]":
                                       log_route=lambda *a, **k: None)
         if verdict is None:
             return None
+        # v4.2.2 evidence-laundering guard (astra-flex consult 2026-09-13):
+        # the v4.2.1 mechanical fallback fires shadow verdicts during aux
+        # outages. If this confirm read a fallback verdict as confirmation,
+        # the protected-group render would fire exactly when the semantic
+        # safeguard is down — inverting fail-closed. Fallback verdicts are
+        # NON-AUTHORITATIVE here: aux down -> confirm None -> standdown.
+        if verdict.get("source") == "aux_fallback":
+            return None
         if verdict.get("lane") == "shadow" and \
                 float(verdict.get("confidence") or 0.0) >= _ic.CONFIDENCE_THRESHOLD:
             return True
