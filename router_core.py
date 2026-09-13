@@ -970,7 +970,8 @@ def _primary_model() -> Optional[str]:
 
 def stage_model_swap(session_id: str, decision: RouteDecision,
                      role: str = "primary",
-                     model_override: Optional[Tuple[str, str]] = None
+                     model_override: Optional[Tuple[str, str]] = None,
+                     claim_source: str = ""
                      ) -> Optional[Dict[str, Any]]:
     """Called by PRE after a COMPLEXITY decision: stage the per-call swap so
     the NEXT llm_execution middleware invocation (same session) performs the
@@ -980,6 +981,11 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
     the CONFIGURED primary's scheme/base/key with ONLY the model id swapped
     (one-off; config never written). Caps/pricing/ledger run on the resolved
     model id exactly as a normal consult.
+
+    R7 (Goran 09-13): model override is USER-ONLY. When an override is
+    provided and claim_source != "declared_user", the override is DROPPED
+    (belt-and-braces: logged model_override_rejected, content-free) and the
+    consult proceeds with the configured anchor primary endpoint.
 
     v3.2.0 one-consult-per-turn: when a swap for the SAME (session_id,
     task_id) was already staged within _SWAP_DONE_TTL, this is a re-fire of
@@ -1014,6 +1020,19 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         ep = chain.endpoint_for(role)
         if ep is None:
             return None
+        # R7: model override is USER-ONLY — drop non-user overrides and
+        # proceed with the config endpoint (logged, content-free).
+        if model_override and claim_source != "declared_user":
+            try:
+                from hermes_router import _log_route  # deferred — import cycle
+
+                _log_route("PRE", event_detail="model_override_rejected",
+                           source=str(claim_source or ""),
+                           task_id=str(decision.task_id or ""),
+                           session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — logging never breaks staging
+                pass
+            model_override = None
         # R6 leg 1: named-model override — same scheme/base/key, only the
         # model id changes (one-off; config never written).
         try:

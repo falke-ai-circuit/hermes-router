@@ -221,10 +221,20 @@ Every decision logs one line to `log_path` (0600, content-free):
 `anchor_route_fired` (lane/mode/model_target/reason/override_used) ·
 `route_skipped` (anchored call failed) · `cap_blocked` (spend, cap) ·
 `escalation_fired` semantics carried by `mode=ownership` ·
-`model_override_detected` (alias/model/lane — a declared or aux consult
-directed at a NAMED model via `anchor_chain.models` aliases; one-off,
-stored config untouched) · legacy lane-1 events
+`model_override_detected` (alias/model/lane — a declared consult directed
+at a NAMED model via `anchor_chain.models` aliases; one-off, stored config
+untouched) · `model_override_rejected` (source — an override was stripped
+at staging because the claim was not user-initiated) · legacy lane-1 events
 (`route_fired`, `render_refusal_retry`, `loop_guard_skipped`, ...) unchanged.
+
+### Model override is user-only (R7)
+
+Model override is user-only: on-demand phrases typed BY THE USER name the
+consult model; agent-initiated consults (declared_agent, aux_intent) always
+use `anchor_chain.primary` from config; persistent changes via
+`/router confirm` (set_endpoint) only. In a same-turn dedupe the user's
+phrase outranks an earlier agent claim — the override rides only when the
+existing claim was user-declared.
 
 ## Protected-group confirm gate (v4.2.x)
 
