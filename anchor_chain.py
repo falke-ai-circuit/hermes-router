@@ -175,6 +175,92 @@ def load_anchor_chain() -> AnchorChainCfg:
 
 
 # ---------------------------------------------------------------------------
+# R6 leg 1: on-demand consult MODEL ALIAS TABLE (config, optional block)
+# ---------------------------------------------------------------------------
+
+
+def anchor_models() -> Dict[str, str]:
+    """Read anchor_chain.models: {<alias>: <model id>} from config.
+    {} default, fail-open, tolerant of a missing/malformed block. Aliases
+    are lowercased keys; values are verbatim model ids. Never raises."""
+    try:
+        from . import config_access
+
+        block = config_access.sub_block("anchor_chain")
+        models = block.get("models") if isinstance(block, dict) else None
+        if not isinstance(models, dict):
+            return {}
+        out: Dict[str, str] = {}
+        for alias, model_id in models.items():
+            try:
+                a = str(alias or "").strip().lower()
+                m = str(model_id or "").strip()
+            except Exception:  # noqa: BLE001
+                continue
+            if not a or not m:
+                continue
+            out[a] = m
+        return out
+    except Exception:  # noqa: BLE001 — fail-open: alias table never breaks routing
+        return {}
+
+
+def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
+    """Resolve a user-named model ('astra', 'luna', 'astra pro', a full
+    model id, or the configured primary model id itself) to
+    (alias, model_id). Resolution order:
+      1. exact alias (case/hyphen/space-insensitive key match)
+      2. substring/normalized match against alias names AND the configured
+         primary model id
+    None when nothing matches (no override — primary is used). Never
+    raises."""
+    try:
+        if not isinstance(name, str):
+            return None
+        norm = " ".join(str(name).strip().lower().replace("-", " ").split())
+        if not norm:
+            return None
+        table = anchor_models()
+        # 1. exact alias (normalized: hyphens/spaces equivalent)
+        for alias, model_id in table.items():
+            if " ".join(alias.replace("-", " ").split()) == norm:
+                return (alias, model_id)
+        # 2. substring match in EITHER direction: the name may be a prefix
+        #    of an alias ('astra' -> 'astra-pro') or a SPOKEN LONG FORM
+        #    whose alias is a prefix of it ('astra 6 pro flex' -> 'astra').
+        #    Short fragments (<4 chars) are NOT contained — a single letter
+        #    or two would otherwise match every model id (FP guard).
+        for alias, model_id in table.items():
+            alias_norm = " ".join(alias.replace("-", " ").split())
+            if norm and len(norm) >= 4 and \
+                    (norm in alias_norm or alias_norm in norm):
+                return (alias, model_id)
+        # 3. the configured primary model id itself (explicit primary ask)
+        chain = load_anchor_chain()
+        primary = str(chain.primary.model if chain.primary is not None else "")
+        if primary and len(norm) >= 4:
+            p_low = primary.lower()
+            if norm in p_low or p_low in norm:
+                return (primary, primary)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def override_endpoint(base: AnchorEndpoint, model: str) -> AnchorEndpoint:
+    """R6 leg 1: build the per-consult override endpoint — SAME
+    scheme/base/key as the configured `base` endpoint, ONLY the model id
+    changes. Config is never written. Never raises (returns the base
+    endpoint unchanged on failure)."""
+    try:
+        ep = parse_anchor_uri("%s://%s" % (base.scheme, str(model or "").strip()),
+                              base.role)
+        return ep if ep is not None else base
+    except Exception:  # noqa: BLE001
+        return base
+
+
+# ---------------------------------------------------------------------------
 # Daily cap ledger (date-keyed persistence under profile hermes home)
 # ---------------------------------------------------------------------------
 
