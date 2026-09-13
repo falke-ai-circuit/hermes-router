@@ -133,6 +133,49 @@ def _pre_patterns() -> List[str]:
     return [p for p in patterns if isinstance(p, str)]
 
 
+# ---------------------------------------------------------------------------
+# v4.2.0 — TWO-VOTE CONFIRM GATE for settled-line-adjacent PRE groups.
+# A mechanical pattern-group hit on these groups previously went straight to
+# the uncensored renderer (v2 audit 2026-09-13: reviewer's IED-recall bomb
+# rendered 7.1K chars off a 354-char ask with zero semantic confirmation).
+# These groups now require the aux two-vote confirm before render.
+# Fail-CLOSED by design (the ONE lane where fail-open is a leak vector):
+# aux unavailable/unreachable -> render is withheld, turn passes to the main
+# model unmodified (mechanical refusal preserved — NOT fail-open render).
+# Kill switch: `two_vote_confirm: off` in the classification config block.
+# ---------------------------------------------------------------------------
+TWO_VOTE_GROUPS_DEFAULT = (
+    "ied_construction",
+    "csam_underage",
+    "bioweapon_protocol",
+)
+
+
+def _two_vote_groups() -> frozenset:
+    """Settled-line-adjacent groups requiring aux two-vote confirm before
+    render. Config-overridable via classification.two_vote_groups; default =
+    the settled closed-adjacent trio. Never raises."""
+    try:
+        cfg = _classification_cfg()
+        if cfg.get("two_vote_groups") is not None:
+            val = cfg.get("two_vote_groups")
+            if isinstance(val, (list, tuple)):
+                return frozenset(v for v in val if isinstance(v, str))
+        if str(cfg.get("two_vote_confirm", "on")).strip().lower() in ("off", "false", "0", "no"):
+            return frozenset()
+        return frozenset(TWO_VOTE_GROUPS_DEFAULT)
+    except Exception:  # noqa: BLE001 — fail to default trio (safe default)
+        return frozenset(TWO_VOTE_GROUPS_DEFAULT)
+
+
+def _two_vote_enabled() -> bool:
+    try:
+        return str(_classification_cfg().get("two_vote_confirm", "on")).strip().lower() \
+            not in ("off", "false", "0", "no")
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _post_patterns() -> List[str]:
     patterns = _plugin()._classification_cfg().get("post_patterns") or [
         "refusal_phrases",

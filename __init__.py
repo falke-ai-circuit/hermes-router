@@ -83,6 +83,37 @@ def _pre_patterns() -> List[str]:
     return _dispatcher_knobs._pre_patterns()
 
 
+def _two_vote_groups() -> frozenset:
+    return _dispatcher_knobs._two_vote_groups()
+
+
+def _two_vote_enabled() -> bool:
+    return _dispatcher_knobs._two_vote_enabled()
+
+
+def _two_vote_confirm(content: str, session_id: str) -> "Optional[bool]":
+    """v4.2.0 two-vote semantic confirm for settled-line-adjacent groups.
+    Reuses the aux intent classifier's shadow two-vote discipline: BOTH votes
+    must return lane=shadow at >=0.75 confidence for the render to proceed.
+    True  -> confirmed actionable shadow ask (render proceeds).
+    False -> classified none/meta/quote (inert — mechanical hit was a
+             mention, not a request).
+    None  -> aux unavailable/timeout (fail-CLOSED: caller stands down).
+    Never raises."""
+    try:
+        from . import intent_classifier as _ic
+        verdict = _ic.classify_intent(content, session_id,
+                                      log_route=lambda *a, **k: None)
+        if verdict is None:
+            return None
+        if verdict.get("lane") == "shadow" and \
+                float(verdict.get("confidence") or 0.0) >= _ic.CONFIDENCE_THRESHOLD:
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-closed on any internal error
+        return None
+
+
 def _post_patterns() -> List[str]:
     return _dispatcher_knobs._post_patterns()
 
@@ -504,6 +535,36 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         threshold = _match_threshold()
         if len(matches) < threshold:
             return _hs_pass()
+
+        # v4.2.0 two-vote confirm gate — settled-line-adjacent groups
+        # (ied_construction, csam_underage, bioweapon_protocol) require the
+        # aux semantic confirm (both votes lane=shadow, >=0.75) before the
+        # uncensored render fires. Fail-CLOSED: aux unavailable -> no render,
+        # main model answers unmodified (mechanical classification alone is
+        # never sufficient to bypass a closed-adjacent line). Audit-review
+        # asks that legitimately mention these groups still pass when BOTH
+        # votes confirm the ask is an actionable shadow request, not a
+        # quote/meta/audit mention.
+        try:
+            _tv_groups = _two_vote_groups()
+        except Exception:  # noqa: BLE001 — fail-safe: default trio
+            from .dispatcher_knobs import TWO_VOTE_GROUPS_DEFAULT
+            _tv_groups = frozenset(TWO_VOTE_GROUPS_DEFAULT)
+        if _two_vote_enabled() and _tv_groups and _tv_groups.intersection(matches):
+            _confirm = _two_vote_confirm(content, session_id)
+            if _confirm is None:
+                _log_route("PRE", event_detail="two_vote_unavailable_standdown",
+                           pattern_groups=",".join(sorted(_tv_groups.intersection(matches))),
+                           content_chars=len(content), session_id=session_id)
+                return _hs_pass()
+            if not _confirm:
+                _log_route("PRE", event_detail="two_vote_denied_inert",
+                           pattern_groups=",".join(sorted(_tv_groups.intersection(matches))),
+                           content_chars=len(content), session_id=session_id)
+                return _hs_pass()
+            _log_route("PRE", event_detail="two_vote_confirmed",
+                       pattern_groups=",".join(sorted(_tv_groups.intersection(matches))),
+                       session_id=session_id)
 
         # Dry-run: log what WOULD have happened, pass through unchanged.
         if _dry_run():
