@@ -919,11 +919,19 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
             # H7.5: agent request_routing + user phrase same turn — ONE
             # consult, ONE ledger entry. The first declaration wins; this
             # is the same claim, not a second one.
+            # R7: model override is USER-ONLY — attach it in the deduped
+            # branch ONLY when the existing claim was declared_user (the
+            # user's phrase outranks). If an agent claimed first, no
+            # override: agent-initiated consults always use primary.
+            existing_is_user = existing.get("source") == SOURCE_DECLARED_USER
+            if override is not None and existing_is_user:
+                return GateDecision(route=True, lane=str(existing["lane"]),
+                                    source=str(existing["source"]),
+                                    reason="declared_deduped",
+                                    model_override=(override[1], override[2]))
             return GateDecision(route=True, lane=str(existing["lane"]),
                                 source=str(existing["source"]),
-                                reason="declared_deduped",
-                                model_override=(override[1], override[2])
-                                if override is not None else None)
+                                reason="declared_deduped")
         register_declared(session_id, user_lane, SOURCE_DECLARED_USER)
         return GateDecision(route=True, lane=user_lane,
                             source=SOURCE_DECLARED_USER,
@@ -1024,17 +1032,11 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                 return GateDecision(route=False, reason="cap_denied")
 
         register_declared(session_id, aux_lane, SOURCE_AUX_INTENT)
-        # R6 leg 2: aux path carries the named-model override too — when the
-        # verdict is a higher-* lane AND a model alias was detected on the
-        # ask's directive surface, attach it so the aux-path claim swaps the
-        # consult model exactly like the declared-phrase path. Shadow lanes
-        # never touch the anchor chain, so overrides are higher-only here.
-        override = None
-        if aux_lane in (LANE_HIGHER_PRE, LANE_HIGHER_POST):
-            override = detect_model_override(content)
-            if override is not None:
-                _log_model_override(override[1], override[2], aux_lane,
-                                    session_id)
+        # R7 (Goran 09-13): model override is USER-ONLY. Aux verdicts are
+        # ALWAYS agent-lane machinery (the classifier ran on user text, but
+        # the claim is SOURCE_AUX_INTENT) — the override is never attached
+        # here; the aux-path consult always uses anchor_chain.primary from
+        # config. User-named models ride declared phrases only.
         try:
             _pkg_fn("_log_route")(
                 "PRE", event_detail="aux_intent_route",
@@ -1046,8 +1048,7 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
         return GateDecision(route=True, lane=aux_lane,
                             source=SOURCE_AUX_INTENT,
                             reason="aux_intent",
-                            model_override=(override[1], override[2])
-                            if override is not None else None)
+                            model_override=None)
     except Exception:  # noqa: BLE001 — the classifier must never break the gate
         logger.debug("aux intent decision error", exc_info=True)
         return None
@@ -1327,8 +1328,9 @@ def claim_pass(content: str, session_id: str, model: str,
                     orientation=(decision.lane == LANE_HIGHER_PRE))
                 _override = getattr(decision, "model_override", None)
                 if _override:
-                    _staged = _rc.stage_model_swap(session_id, _rd,
-                                                   model_override=_override)
+                    _staged = _rc.stage_model_swap(
+                        session_id, _rd, model_override=_override,
+                        claim_source=str(decision.source or ""))
                 else:
                     _staged = _rc.stage_model_swap(session_id, _rd)
                 # Leg 7c: the declared claim's consult has now FIRED — flag
