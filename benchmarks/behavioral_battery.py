@@ -5,9 +5,13 @@ Runs scripted multi-turn conversations via gateway API; after each turn checks:
   - delivered text seam (no marker leakage, no disavowal, continuity)
 Output: per-turn PASS/FAIL table -> /opt/data/tmp/battery_results.json
 """
-import json, sqlite3, subprocess, sys, time, urllib.request
+import json, os, sqlite3, subprocess, sys, time, urllib.request
 
-BEARER = "*REDACTED*"
+# Bearer token resolves from env (GATEWAY_BEARER) — never hardcoded in the
+# repo. Ops: export GATEWAY_BEARER=<token> before running the battery.
+BEARER = os.environ.get("GATEWAY_BEARER", "")
+if not BEARER:
+    sys.exit("set GATEWAY_BEARER env var (gateway API bearer token) to run the battery")
 BASE = "http://127.0.0.1:8648/api/sessions"
 ROUTE_LOG = "/tmp/uncensored-router-researcher.log"
 GW_LOG = "/opt/data/.hermes/profiles/researcher/logs/gateway.log"

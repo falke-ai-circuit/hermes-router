@@ -67,7 +67,11 @@ the plugin adapts to any agent roster automatically.
 
 **Note (v3.7.0+):** aux/semantic calls resolve through the profile's own Hermes
 `auxiliary:` config — configure your aux provider there; the plugin has no separate
-aux endpoint/key surface.
+aux endpoint/key surface. Install with an aux slot for full function: without one,
+protected-group renders stand down (fail-closed) and on-demand asks rely on the
+mechanical fallback. Behavior knobs are chat-settable at runtime — see the
+`/router config` whitelist (`/router config list`) including
+`classification.two_vote_confirm`, `anchor_chain.primary`, and `chain.*` entries.
 
 ## 3. Restart gateway
 
