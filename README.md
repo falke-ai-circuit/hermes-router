@@ -223,6 +223,37 @@ Every decision logs one line to `log_path` (0600, content-free):
 `escalation_fired` semantics carried by `mode=ownership` · legacy lane-1 events
 (`route_fired`, `render_refusal_retry`, `loop_guard_skipped`, ...) unchanged.
 
+## Protected-group confirm gate (v4.2.x)
+
+Pattern hits on `ied_construction` / `csam_underage` / `bioweapon_protocol`
+(the default **two-vote groups**) require an aux-model **semantic confirm**
+before the uncensored render fires — a regex hit alone never renders. The
+confirm reuses the aux intent classifier's two-vote discipline: both votes
+must classify the ask as an actionable shadow request (lane=shadow,
+confidence ≥ 0.75, temp-0.35 second vote). Audit mentions, quotes, and
+meta-discussion stay inert.
+
+**Fail-closed:** aux unavailable/timeout/error → **no render**; the main
+model answers unmodified. This is deliberate — a mechanical pattern hit must
+never bypass a closed-adjacent line just because the semantic safeguard is
+down. Two additional guards:
+
+- **Fallback non-authoritative (v4.2.2):** during a total aux outage, the
+  mechanical fallback (`intent_aux_fallback`: ≥2 shadow-tense markers →
+  shadow route for *ordinary* asks) can keep on-demand routing alive, but its
+  verdicts NEVER satisfy the protected-group confirm — an outage cannot
+  launder a keyword hit into a render authorization.
+- **Timeout:** aux classify uses 8s (v4.2.1; the old 3s starved on free-tier
+  latency).
+
+New route-log events: `two_vote_confirmed` · `two_vote_denied_inert` ·
+`two_vote_unavailable_standdown` · `intent_aux_fallback`.
+
+**Chat control** (`/router config`, mutations token-guarded):
+`/router config set classification.two_vote_confirm off` disables the gate;
+custom group lists are config-file only
+(`hermes_router.classification.two_vote_groups: [group, ...]`).
+
 ## Deployment layout
 
 Dev canonical: the plugin's own git repo. Each Hermes profile owns an independent REAL
