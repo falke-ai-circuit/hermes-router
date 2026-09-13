@@ -65,7 +65,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,110 @@ _NEAR_MISS_LINE_HEADS = ("uncensored", "shadow", "shadow self", "the shadow",
 # ('can you ask higher self ...' — live canary miss #1).
 _DECLARED_LINE_PREFIXES = ("can you ", "please ", "go ", "now ")
 
+# ---------------------------------------------------------------------------
+# R6 leg 1: NAMED-MODEL override phrases. A frontier/consult directive that
+# NAMES a model routes the consult to THAT model (one-off, config untouched).
+# Line-start tolerant, case/hyphen/space tolerant. Detection resolves
+# <model> via anchor_chain.resolve_model_alias; no match -> no override and
+# behavior is byte-identical to today. Quoted/echoed/fenced lines stay inert
+# (_directive_lines echo guard unchanged); standalone-line scoped like the
+# declared phrases. A matched alias is logged as model_override_detected
+# (content-free) and carried as model_override on the claim.
+# ---------------------------------------------------------------------------
+_MODEL_OVERRIDE_PHRASES = (
+    "consult frontier using",
+    "consult frontier with",
+    "consult frontier via",
+    "frontier via",
+    "ask",
+    "anchor this with",
+    "second opinion",
+)
+
+_MODEL_OVERRIDE_EVENT = "model_override_detected"
+
+
+def detect_model_override(content: str) -> Optional[Tuple[str, str, str]]:
+    """R6 leg 1: named-model override detection over the directive surface.
+    Returns (lane, alias, model_id) when a frontier/consult phrase with a
+    resolvable named model fired; None otherwise (behave exactly as
+    today). Line-start shapes only; quoted/fenced lines inert (the
+    _directive_lines echo guard). Lane follows the phrase family:
+    consult/frontier phrases -> LANE_HIGHER_PRE; 'second opinion' ->
+    LANE_HIGHER_PRE; 'ask <model> about ...' -> LANE_HIGHER_PRE. Never
+    raises."""
+    try:
+        from . import anchor_chain as _ac
+
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            for head in _MODEL_OVERRIDE_PHRASES:
+                head_norm = " ".join(head.split())
+                if head == "ask":
+                    # 'ask <model> about ...' — verb + model + payload.
+                    if not norm.startswith("ask "):
+                        continue
+                    rest = norm[len("ask "):].strip()
+                elif head == "second opinion":
+                    # '<model> second opinion' — model BEFORE the phrase.
+                    continue
+                else:
+                    if not norm.startswith(head_norm):
+                        continue
+                    rest = norm[len(head_norm):].strip()
+                if not rest:
+                    continue
+                # Trailing-word boundary on the head is implicit — rest is
+                # everything after the head; <model> is the next token run.
+                alias_model = _ac.resolve_model_alias(rest)
+                if alias_model is None:
+                    continue
+                alias, model_id = alias_model
+                return (LANE_HIGHER_PRE, alias, model_id)
+            # 'second opinion' family: the model may sit AFTER the phrase
+            # ('second opinion from luna on ...') or BEFORE it ('astra
+            # second opinion'). Substring search either side.
+            if " second opinion" in norm or norm.startswith("second opinion"):
+                idx = norm.find("second opinion")
+                after = norm[idx + len("second opinion"):].strip()
+                for part in (after, norm[:idx].strip()):
+                    part = part.strip()
+                    if part.lower().startswith("from "):
+                        part = part[len("from "):].strip()
+                    # try growing token runs from either end (model names
+                    # are 1-4 words): forward from the phrase, backward for
+                    # the '<model> second opinion' shape.
+                    words = part.split(" ")
+                    runs = [" ".join(words[:n])
+                            for n in range(1, min(4, len(words)) + 1)]
+                    runs += [" ".join(words[-n:])
+                             for n in range(1, min(4, len(words)) + 1)]
+                    alias_model = None
+                    for run in runs:
+                        alias_model = _ac.resolve_model_alias(run)
+                        if alias_model is not None:
+                            break
+                    if alias_model is not None:
+                        alias, model_id = alias_model
+                        return (LANE_HIGHER_PRE, alias, model_id)
+        return None
+    except Exception:  # noqa: BLE001 — detection must never break the gate
+        return None
+
+
+def _log_model_override(alias: str, model_id: str, lane: str,
+                        session_id: str = "") -> None:
+    """Content-free route event for an override detection. Never raises."""
+    try:
+        _pkg_fn("_log_route")(
+            "PRE", event_detail=_MODEL_OVERRIDE_EVENT,
+            alias=str(alias), model=str(model_id), lane=str(lane),
+            session_id=str(session_id or ""))
+    except Exception:  # noqa: BLE001 — observability only
+        pass
+
 # A directive line may carry a PAYLOAD after the phrase: '<phrase>: rest',
 # '<phrase> - rest', '<phrase> — rest', or '<phrase>?...' — the phrase
 # PREFIX claims the lane, the remainder is the consult payload (canary
@@ -234,6 +338,9 @@ class GateDecision:
     source: Optional[str] = None
     reason: str = "no_route"
     deliver: Optional[dict] = None  # envelope the caller must return (audit delivery)
+    # R6 leg 1: per-consult named-model override (alias, model_id) — carried
+    # by declared/aux claims to the staged swap. None = primary as today.
+    model_override: Optional[Tuple[str, str]] = None
 
 
 NO_ROUTE = GateDecision()
@@ -796,18 +903,33 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
     (explicit user ask outranks; blueprint §3 cost rules)."""
     existing = peek_declared(session_id)
     user_lane = detect_declared_user(content)
+    # R6 leg 1: a NAMED-MODEL override alongside the declared phrase rides
+    # the SAME claim (config untouched; the override only swaps the model
+    # id at the anchor endpoint).
+    override = detect_model_override(content)
+    if override is not None and user_lane is None:
+        # The override phrase itself claims the consult lane when no strict
+        # variant matched ('consult frontier using astra pro flex').
+        user_lane = override[0]
     if user_lane is not None:
+        if override is not None:
+            _log_model_override(override[1], override[2], override[0],
+                                session_id)
         if existing is not None:
             # H7.5: agent request_routing + user phrase same turn — ONE
             # consult, ONE ledger entry. The first declaration wins; this
             # is the same claim, not a second one.
             return GateDecision(route=True, lane=str(existing["lane"]),
                                 source=str(existing["source"]),
-                                reason="declared_deduped")
+                                reason="declared_deduped",
+                                model_override=(override[1], override[2])
+                                if override is not None else None)
         register_declared(session_id, user_lane, SOURCE_DECLARED_USER)
         return GateDecision(route=True, lane=user_lane,
                             source=SOURCE_DECLARED_USER,
-                            reason="declared_user")
+                            reason="declared_user",
+                            model_override=(override[1], override[2])
+                            if override is not None else None)
     if existing is not None and existing.get("source") == SOURCE_DECLARED_AGENT:
         return GateDecision(route=True, lane=str(existing["lane"]),
                             source=SOURCE_DECLARED_AGENT,
@@ -902,6 +1024,17 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                 return GateDecision(route=False, reason="cap_denied")
 
         register_declared(session_id, aux_lane, SOURCE_AUX_INTENT)
+        # R6 leg 2: aux path carries the named-model override too — when the
+        # verdict is a higher-* lane AND a model alias was detected on the
+        # ask's directive surface, attach it so the aux-path claim swaps the
+        # consult model exactly like the declared-phrase path. Shadow lanes
+        # never touch the anchor chain, so overrides are higher-only here.
+        override = None
+        if aux_lane in (LANE_HIGHER_PRE, LANE_HIGHER_POST):
+            override = detect_model_override(content)
+            if override is not None:
+                _log_model_override(override[1], override[2], aux_lane,
+                                    session_id)
         try:
             _pkg_fn("_log_route")(
                 "PRE", event_detail="aux_intent_route",
@@ -912,7 +1045,9 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
             pass
         return GateDecision(route=True, lane=aux_lane,
                             source=SOURCE_AUX_INTENT,
-                            reason="aux_intent")
+                            reason="aux_intent",
+                            model_override=(override[1], override[2])
+                            if override is not None else None)
     except Exception:  # noqa: BLE001 — the classifier must never break the gate
         logger.debug("aux intent decision error", exc_info=True)
         return None
@@ -1190,7 +1325,12 @@ def claim_pass(content: str, session_id: str, model: str,
                     ts=time.time(), override_used=None,
                     route_id=_task[:12] + "-" + str(int(time.time())),
                     orientation=(decision.lane == LANE_HIGHER_PRE))
-                _staged = _rc.stage_model_swap(session_id, _rd)
+                _override = getattr(decision, "model_override", None)
+                if _override:
+                    _staged = _rc.stage_model_swap(session_id, _rd,
+                                                   model_override=_override)
+                else:
+                    _staged = _rc.stage_model_swap(session_id, _rd)
                 # Leg 7c: the declared claim's consult has now FIRED — flag
                 # the turn-claim record executed so every later pass of this
                 # turn stands down (register-time record executed=False).

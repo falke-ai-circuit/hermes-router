@@ -969,10 +969,17 @@ def _primary_model() -> Optional[str]:
 
 
 def stage_model_swap(session_id: str, decision: RouteDecision,
-                     role: str = "primary") -> Optional[Dict[str, Any]]:
+                     role: str = "primary",
+                     model_override: Optional[Tuple[str, str]] = None
+                     ) -> Optional[Dict[str, Any]]:
     """Called by PRE after a COMPLEXITY decision: stage the per-call swap so
     the NEXT llm_execution middleware invocation (same session) performs the
     anchored call. Per-call, never persistent — the record is consumed once.
+
+    R6 leg 1: model_override=(alias, model_id) builds the swap endpoint from
+    the CONFIGURED primary's scheme/base/key with ONLY the model id swapped
+    (one-off; config never written). Caps/pricing/ledger run on the resolved
+    model id exactly as a normal consult.
 
     v3.2.0 one-consult-per-turn: when a swap for the SAME (session_id,
     task_id) was already staged within _SWAP_DONE_TTL, this is a re-fire of
@@ -1007,6 +1014,14 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         ep = chain.endpoint_for(role)
         if ep is None:
             return None
+        # R6 leg 1: named-model override — same scheme/base/key, only the
+        # model id changes (one-off; config never written).
+        try:
+            if model_override and isinstance(model_override, tuple) \
+                    and len(model_override) == 2 and str(model_override[1]).strip():
+                ep = anchor_chain.override_endpoint(ep, model_override[1])
+        except Exception:  # noqa: BLE001 — override is best-effort
+            pass
         rec = {
             "route_id": decision.route_id,
             "task_id": decision.task_id,
