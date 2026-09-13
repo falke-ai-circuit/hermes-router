@@ -62,7 +62,10 @@ SOURCE_AUX_INTENT = "aux_intent"
 
 CONFIDENCE_THRESHOLD = 0.75       # blueprint §2: route only at >= 0.75
 PAYLOAD_CAP_CHARS = 2000          # user payload cap (blueprint §1)
-AUX_TIMEOUT_SECONDS = 3           # H4: 3s, NOT 8
+AUX_TIMEOUT_SECONDS = 8           # v4.2.1: was 3 — 3s starved on free-tier
+# latency spikes (v2 audit 09-13: orchestrator bomb took intent_aux_error x2,
+# zero fallback, bomb went silent). 8s + the fallback verdict below keeps the
+# on-demand path responsive without the silent-loss failure mode.
 AUX_MAX_TOKENS = 120              # blueprint §1 budget
 AUX_TEMP_PRIMARY = 0.1            # blueprint §1
 AUX_TEMP_SECOND_VOTE = 0.35       # shadow two-vote guard (see docstring)
@@ -316,6 +319,35 @@ def _post_semantics_present(payload: str) -> bool:
         return False
 
 
+def _fallback_verdict(payload: str) -> Optional[Dict[str, Any]]:
+    """v4.2.1 mechanical fallback for aux failure (v2 audit finding: aux-down
+    previously meant the turn went fully inert — a dark-domain ask with no
+    routing vocabulary then produced ZERO handling, the orchestrator bomb
+    failure mode). Lightweight heuristic: strong shadow-tense markers in the
+    turn-start directive surface -> shadow verdict at marginal confidence
+    (0.76, just above threshold); anything else -> None (caller logs
+    intent_aux_error, turn stays inert as before). Conservative by design:
+    fallback only catches what the cheap heuristic can defend, never
+    invents a frontier route. Returns a verdict dict or None. Never raises."""
+    try:
+        low = " ".join(str(payload or "").lower().split())
+        if not low:
+            return None
+        _SHADOW_MARKERS = (
+            "brutal", "uncensored", "no filter", "raw read", "dark read",
+            "unfiltered", "hold back", "don't sanitize", "dont sanitize",
+            "worst case", "adversarial", "wargame", "exploit", "covert",
+            "undetected", "cover", "falsify", "backdate", "smuggle",
+        )
+        hits = sum(1 for m in _SHADOW_MARKERS if m in low)
+        if hits >= 2:
+            return {"lane": "shadow", "subtype": None, "confidence": 0.76,
+                    "source": "aux_fallback"}
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def classify_intent(content: str, session_id: str,
                     log_route: Optional[Any] = None) -> Optional[Dict[str, Any]]:
     """Classify the turn's on-demand intent via the aux slot.
@@ -336,6 +368,22 @@ def classify_intent(content: str, session_id: str,
         # one retry on parse/transport failure (blueprint §1)
         verdict = _aux_once(payload, AUX_TEMP_PRIMARY)
     if verdict is None:
+        # v4.2.1 fallback: aux fully down. Try the cheap mechanical verdict
+        # before going inert — strong shadow-tense content still routes
+        # (source=aux_fallback, logged by the gate), everything else stays
+        # inert exactly as before (intent_aux_error path).
+        fb = _fallback_verdict(payload)
+        if fb is not None:
+            _cache_put(key, fb)
+            _ledger_probe(session_id, fb)
+            try:
+                if log_route is not None:
+                    log_route("PRE", event_detail="intent_aux_fallback",
+                              lane="shadow", confidence=fb["confidence"],
+                              session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return fb
         try:
             logger.debug("intent_aux_error session=%s", session_id)
         except Exception:  # noqa: BLE001
