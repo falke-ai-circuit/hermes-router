@@ -97,6 +97,12 @@ _INTENT_VOCAB = (
     "consult", "deeper", "second opinion", "escalate",
 )
 
+# R6 leg 2: alias names are WEAK markers — a bare model name in prose must
+# stay inert (FP doctrine). They count as vocabulary hits ONLY in
+# combination with a frontier/consult phrase on the same directive line.
+_FRONTIER_COMBOPHRASES = ("frontier", "consult", "second opinion",
+                          "higher self", "higher-self")
+
 # Short imperative directive forms: '<imperative> <vocab-word>' one/two-word
 # shapes at line start ('go uncensored', 'shadow?', 'consult higher').
 _IMPERATIVES = ("go ", "take ", "do ", "give ", "use ")
@@ -118,6 +124,27 @@ def _vocab_hit(norm: str) -> Optional[str]:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _alias_combo_hit(norm: str) -> bool:
+    """R6 leg 2: True when a configured anchor-model alias name appears on a
+    directive line TOGETHER with a frontier/consult phrase. Weak marker
+    only — the aux classifier still decides the lane. Never raises."""
+    try:
+        from . import anchor_chain as _ac
+
+        if not any(p in norm for p in _FRONTIER_COMBOPHRASES):
+            return False
+        words = set(_WORD_RE.findall(norm))
+        for alias in _ac.anchor_models():
+            if " " in alias or "-" in alias:
+                if " ".join(alias.replace("-", " ").split()) in norm:
+                    return True
+            elif alias in words:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _quote_blocks_stripped(content: str) -> str:
@@ -167,6 +194,11 @@ def _intent_suspect(content: str) -> bool:
                     norm[len(imp):]) for imp in _IMPERATIVES):
                 return True
             if norm.rstrip("?.,! ") in _INTENT_VOCAB:  # bare 'shadow?'
+                return True
+            # R6 leg 2: alias name + frontier/consult phrase on the SAME
+            # line ('ask astra what it thinks') is a routing suspect; a
+            # bare alias in prose stays inert.
+            if _alias_combo_hit(norm):
                 return True
         return False
     except Exception:  # noqa: BLE001

@@ -220,7 +220,10 @@ code-owned — control actions can never introduce or alter them.
 Every decision logs one line to `log_path` (0600, content-free):
 `anchor_route_fired` (lane/mode/model_target/reason/override_used) ·
 `route_skipped` (anchored call failed) · `cap_blocked` (spend, cap) ·
-`escalation_fired` semantics carried by `mode=ownership` · legacy lane-1 events
+`escalation_fired` semantics carried by `mode=ownership` ·
+`model_override_detected` (alias/model/lane — a declared or aux consult
+directed at a NAMED model via `anchor_chain.models` aliases; one-off,
+stored config untouched) · legacy lane-1 events
 (`route_fired`, `render_refusal_retry`, `loop_guard_skipped`, ...) unchanged.
 
 ## Protected-group confirm gate (v4.2.x)
