@@ -371,6 +371,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # Router tuning (2026-09-09): strip the <memory-context> block once at
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _strip_memory_context(content)
+        # R8b (2026-09-13) orientation-leak guard: a resume-after-interruption
+        # turn must not have the PRE orientation envelope recited back as the
+        # reply — reinforce it as internal-only (one line, deduped, fail-open).
+        try:
+            if _dispatcher_pre.inject_orientation_leak_guard(request, content):
+                _log_route("PRE", event_detail="orientation_leak_guard_injected",
+                           session_id=session_id)
+        except Exception:  # noqa: BLE001 — guard must never break routing
+            logger.debug("orientation-leak guard wiring error", exc_info=True)
         # Leg 7b (single claim point, key continuity): advance the session's
         # TURN IDENTITY before the gate's claim phase. Tool-loop passes
         # (tool-role messages present) are continuations of the SAME turn —
