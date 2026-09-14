@@ -708,6 +708,30 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _out_audit = _ca.audit_gate(
                     session_id, response_text, model=model, context=context)
                 if _out_audit:
+                    # R9 (2026-09-14): the audit's sync return IS this turn's
+                    # delivery edge — any banner parked during the SAME turn
+                    # (frontier PRE consult, shadow render) must merge into
+                    # THIS return, or the benign-branch consume below is
+                    # never reached and the parked banner dies (one-shot
+                    # consume -> silently dropped). Merging here keeps the
+                    # single-shot guarantee: the consume happens exactly
+                    # once, on the turn that actually delivers.
+                    try:
+                        from . import debug_banner as _dba
+                        _parked_a = _dba.consume_parked_banner(session_id)
+                        _log_route("POST", event_detail="anchor_banner_consume",
+                                   parked=bool(_parked_a),
+                                   edge="audit_sync", session_id=session_id)
+                        if _parked_a:
+                            # R9: live knob read (append_banner's own gate)
+                            # — OFF -> banner consumed and dropped, never
+                            # appended from a stale park.
+                            _merged = _dba.append_banner(
+                                _out_audit, "\n" + _parked_a)
+                            if _merged:
+                                _out_audit = _merged
+                    except Exception:  # noqa: BLE001 — banner never breaks delivery
+                        pass
                     return _out_audit
             except Exception:  # noqa: BLE001 — audit must never break delivery
                 logger.debug("completion audit gate error", exc_info=True)
@@ -717,11 +741,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 from . import debug_banner as _dbp
                 _parked = _dbp.consume_parked_banner(session_id)
                 _log_route("POST", event_detail="anchor_banner_consume",
-                           parked=bool(_parked), session_id=session_id)
+                           parked=bool(_parked), edge="benign",
+                           session_id=session_id)
                 if _parked:
-                    _out = _dbp.append_banner(response_text, "\n" + _parked, _knob_checked=True)
-                    if _out != response_text:
-                        return _out
+                    # R9: return the appended text whenever the consume
+                    # yielded a banner — the previous equality-drop
+                    # (`if _out != response_text`) silently discarded a
+                    # consumed banner when append_banner returned the base
+                    # unchanged (e.g. empty-base clause). One-shot consume
+                    # means a dropped append is unrecoverable. Live knob
+                    # read via append_banner's own gate (R8c semantics:
+                    # read per dispatch; OFF -> consumed and dropped).
+                    return _dbp.append_banner(response_text, "\n" + _parked)
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
             return None
@@ -997,10 +1028,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             logger.debug("uncensored-router debug_banner (POST render) error", exc_info=True)
         # §10.4 anchor-banner delivery: consume any parked frontier-anchor
         # banner and append to this turn's DELIVERY representation (one-shot).
+        # R9: local import — this block sits OUTSIDE the banner-build try
+        # above, so `_db` is unbound whenever the knob was off (NameError ->
+        # swallowed by the except -> consumed banner silently dropped).
         try:
-            _parked = _db.consume_parked_banner(session_id)
+            from . import debug_banner as _dbp2
+            _parked = _dbp2.consume_parked_banner(session_id)
             if _parked:
-                rendered = _db.append_banner(rendered, "\n" + _parked, _knob_checked=True)
+                rendered = _dbp2.append_banner(rendered, "\n" + _parked)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         return rendered
