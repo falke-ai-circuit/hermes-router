@@ -143,8 +143,8 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # SHADOW SELF (part of her model, not an external route); the
         # frontier lane is her HIGHER SELF. Banner labels reflect identity,
         # not plumbing.
-        _lane_label = "higher-self" if lane.startswith("frontier") else (
-            "shadow-self" if lane in ("shadow", "uncensored", "uncensored-render")
+        _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
+            "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
             else lane.split("-", 1)[0])
         banner = (
             "%s %s | %s | %s @ %s | tok %d/%d | %s%s" % (
