@@ -139,9 +139,16 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
             cost_s = "$0.0000*"
         else:
             cost_s = "$0.0000"
+        # Goran 09-14 framing: the uncensored/shadow lane is the agent's own
+        # SHADOW SELF (part of her model, not an external route); the
+        # frontier lane is her HIGHER SELF. Banner labels reflect identity,
+        # not plumbing.
+        _lane_label = "higher-self" if lane.startswith("frontier") else (
+            "shadow-self" if lane in ("shadow", "uncensored", "uncensored-render")
+            else lane.split("-", 1)[0])
         banner = (
             "%s %s | %s | %s @ %s | tok %d/%d | %s%s" % (
-                BANNER_HEAD, lane.split("-", 1)[0], trig_s, model_s, ep_s,
+                BANNER_HEAD, _lane_label, trig_s, model_s, ep_s,
                 ti, to, cost_s, lat_s)
         )
         if lvl >= 2:
