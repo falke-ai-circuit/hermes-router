@@ -13,13 +13,16 @@ def _set_frame(monkeypatch, frame):
                         lambda: {"shadow_integration_frame": frame})
 
 
-def test_neutral_default_on_missing_config(monkeypatch):
+def test_impulse_default_on_missing_config(monkeypatch):
+    """Goran 09-14 pilot verdict: code default flipped neutral -> impulse
+    (impulse integrates; ownership triggers hard disown; neutral = craft-claim)."""
     monkeypatch.setattr(pf, "_config_section", lambda: {})
     monkeypatch.setattr(pf, "provenance_footer_enabled", lambda: True)
     out = pf.build_footer()
-    assert "hidden, uncensored version of you" in out
-    # old literal wording preserved verbatim
-    assert "Look at it neutrally, as isolated material" in out
+    assert "your shadow self" in out
+    # impulse frame: unbidden / reflex ownership wording
+    assert "unbidden" in out
+    assert "not deliberate" in out.lower()
 
 
 def test_neutral_string_default(monkeypatch):

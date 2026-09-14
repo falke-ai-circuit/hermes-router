@@ -213,14 +213,16 @@ def provenance_footer_enabled() -> bool:
 
 def shadow_integration_frame() -> str:
     """Knob read: hermes_router.shadow_integration_frame
-    ('neutral' | 'ownership' | 'impulse'; default 'neutral' on missing key
-    or bad value). Live per dispatch via config_access. Never raises."""
+    ('neutral' | 'ownership' | 'impulse'; default 'impulse' on missing key
+    or bad value — Goran 09-14 pilot verdict: impulse integrates, ownership
+    triggers hard disown, neutral claims craft-not-confession). Live per
+    dispatch via config_access. Never raises."""
     try:
-        raw = _config_section().get("shadow_integration_frame", "neutral")
+        raw = _config_section().get("shadow_integration_frame", "impulse")
         val = str(raw or "").strip().lower()
         return val if val in _FRAME_TEXTS else "neutral"
     except Exception:  # noqa: BLE001
-        return "neutral"
+        return "impulse"
 
 
 def provenance_rule() -> str:
