@@ -547,15 +547,22 @@ def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
                 task_id=_dbg_task_id, session_id=session_id)
             _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
             if _rendered_dbg != rendered:
-                _plugin()._log_route("PRE", event_detail="debug_banner_emitted",
-                           lane="uncensored-render",
-                           **_db.build_banner_record("uncensored-render", _dbg_task_id,
-                                                     trigger=",".join(matches)[:60],
-                                                     model=str(_entry_dbg.get("model") or ""),
-                                                     tokens_in=_ti, tokens_out=_to,
-                                                     est_cost=_cost, latency_s=0.0,
-                                                     retries=render_retries,
-                                                     session_id=session_id, gate=""))
+                # R9 hotfix: build_banner_record carries its own event_detail
+                # (via build_banner_record internals) — do NOT also pass
+                # event_detail here or _log_route raises
+                # "multiple values for keyword argument" -> swallowed by the
+                # except -> banner append DISCARDED. This TypeError was the
+                # R8/R9 live probe bug: events logged, banner text dropped.
+                _rec_dbg = _db.build_banner_record("uncensored-render", _dbg_task_id,
+                                                   trigger=",".join(matches)[:60],
+                                                   model=str(_entry_dbg.get("model") or ""),
+                                                   tokens_in=_ti, tokens_out=_to,
+                                                   est_cost=_cost, latency_s=0.0,
+                                                   retries=render_retries,
+                                                   session_id=session_id, gate="")
+                _rec_dbg["event_detail"] = "debug_banner_emitted"
+                _rec_dbg["lane"] = "uncensored-render"
+                _plugin()._log_route("PRE", **_rec_dbg)
                 rendered = _rendered_dbg
     except Exception:  # noqa: BLE001 — §10.4-H failure isolation
         logger.debug("uncensored-router debug_banner (PRE render) error", exc_info=True)

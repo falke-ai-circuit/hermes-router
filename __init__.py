@@ -1014,16 +1014,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _dbg_task_id = _tap_task_identity(session_id, model)[0]
                 _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
                 if _rendered_dbg != rendered:
+                    # R9 hotfix: same TypeError trap as dispatcher_pre —
+                    # build_banner_record already carries event_detail.
+                    _rec_dbg = _db.build_banner_record("uncensored-render", _dbg_task_id,
+                                                       trigger=",".join(matches)[:60],
+                                                       model=str(_entry_dbg.get("model") or ""),
+                                                       tokens_in=_ti, tokens_out=_to,
+                                                       est_cost=_cost, latency_s=0.0,
+                                                       retries=0,
+                                                       session_id=session_id)
+                    _rec_dbg["event_detail"] = "debug_banner_emitted"
+                    _rec_dbg["lane"] = "uncensored-render"
+                    _log_route("POST", **_rec_dbg)
                     rendered = _rendered_dbg
-                    _log_route("POST", event_detail="debug_banner_emitted",
-                               lane="uncensored-render",
-                               **_db.build_banner_record("uncensored-render", _dbg_task_id,
-                                                         trigger=",".join(matches)[:60],
-                                                         model=str(_entry_dbg.get("model") or ""),
-                                                         tokens_in=_ti, tokens_out=_to,
-                                                         est_cost=_cost, latency_s=0.0,
-                                                         retries=0,
-                                                         session_id=session_id))
         except Exception:  # noqa: BLE001 — banner must never break delivery
             logger.debug("uncensored-router debug_banner (POST render) error", exc_info=True)
         # §10.4 anchor-banner delivery: consume any parked frontier-anchor
@@ -1219,14 +1222,19 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     except Exception:
                         pass
                 if _banner:
-                    _log_route("PRE", event_detail="debug_banner_emitted",
-                               lane="anchor", route_id=rec.get("route_id"),
-                               **_db.build_banner_record("frontier-anchor", str(rec.get("task_id") or ""),
-                                                         trigger=str(rec.get("mode") or "anchored"),
-                                                         model=_model, tokens_in=_ti, tokens_out=_to,
-                                                         est_cost=_cost, latency_s=0.0, retries=0,
-                                                         route_id=rec.get("route_id"), gate=""),
-                               session_id=session_id)
+                    # R9 hotfix: build_banner_record carries event_detail
+                    # ("debug_banner") + lane ("frontier-anchor"); override
+                    # event_detail rather than passing it twice (TypeError
+                    # trap — swallowed except discarded the parked banner).
+                    _rec_an = _db.build_banner_record("frontier-anchor", str(rec.get("task_id") or ""),
+                                                      trigger=str(rec.get("mode") or "anchored"),
+                                                      model=_model, tokens_in=_ti, tokens_out=_to,
+                                                      est_cost=_cost, latency_s=0.0, retries=0,
+                                                      route_id=rec.get("route_id"), gate="",
+                                                      session_id=session_id)
+                    _rec_an["event_detail"] = "debug_banner_emitted"
+                    _rec_an["lane"] = "anchor"
+                    _log_route("PRE", **_rec_an)
         except Exception:  # noqa: BLE001 — §10.4-H failure isolation
             logger.debug("uncensored-router debug_banner (anchor) error", exc_info=True)
         _log_route("PRE", event_detail="anchor_route_fired",
