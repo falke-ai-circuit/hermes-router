@@ -448,9 +448,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                                    render_lane="shadow", session_id=session_id)
                         return _hs_pass()
                     rendered = cap_render(rendered, render_max_chars())
-                    rendered = _debug_banner_pass(
-                        rendered, ["shadow_declared"], _render_retries,
-                        session_id, model)
+                    # R9d (Goran 09-14): NO inline _debug_banner_pass here —
+                    # the LEG 11 block below parks THE one banner for this
+                    # call. Both paths firing = duplicate banner (1 LLM call
+                    # must show exactly 1 banner).
                     # LEG 11 (Goran-direct): the shadow declared lane emits
                     # its OWN §10.4 debug banner (parked -> appended at the
                     # delivery edge by on_transform_llm_output's consume,
@@ -483,7 +484,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                             _banner_sh = (_banner_sh +
                                           " | initiator=%s" % _initiator
                                           ).strip() if _banner_sh else ""
-                            _sdb.park_anchor_banner(session_id, _banner_sh)
+                            _sdb.park_anchor_banner(session_id, _banner_sh,
+                                                    task_id=_task_sh)
                             if _banner_sh:
                                 _sh_rec = _sdb.build_banner_record(
                                     "shadow", _task_sh,
@@ -1216,7 +1218,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     # park the banner for the POST transform to append to the
                     # DELIVERED turn (one-shot, this session's next delivery).
                     try:
-                        _db.park_anchor_banner(session_id, _banner)
+                        _db.park_anchor_banner(
+                            session_id, _banner,
+                            task_id=str(rec.get("task_id") or ""))
                         _log_route("PRE", event_detail="anchor_banner_parked",
                                    session_id=session_id)
                     except Exception:
