@@ -52,14 +52,26 @@ def test_2_disabled_silent(banner_cfg):
     assert out == "ANSWER"
 
 
-def test_3_default_off(banner_cfg, monkeypatch):
-    # config without the key at all -> OFF (absence must not enable)
+@pytest.mark.live_router_config
+def test_3_default_L1_r8c(banner_cfg, monkeypatch):
+    # R8c (2026-09-13): config WITHOUT the key at all -> L1 (code default
+    # changed from 0/off to 1/one-liner; fleet config flip handled by
+    # conductor separately). Explicit 0/false still disables.
     import hermes_cli.config as hcfg
 
     monkeypatch.setattr(hcfg, "load_config",
                         lambda: {"hermes_router": {}}, raising=False)
-    assert db.debug_banner_enabled() is False
+    assert db.debug_banner_level() == 1
+    assert db.debug_banner_enabled() is True
     monkeypatch.setattr(hcfg, "load_config", lambda: {}, raising=False)
+    assert db.debug_banner_level() == 1
+    assert db.debug_banner_enabled() is True
+    # explicit off still wins
+    monkeypatch.setattr(hcfg, "load_config",
+                        lambda: {"hermes_router": {"debug_banner": 0}}, raising=False)
+    assert db.debug_banner_enabled() is False
+    monkeypatch.setattr(hcfg, "load_config",
+                        lambda: {"hermes_router": {"debug_banner": False}}, raising=False)
     assert db.debug_banner_enabled() is False
 
 

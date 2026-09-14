@@ -72,10 +72,12 @@ def _banner_section() -> Dict[str, Any]:
 
 def debug_banner_level() -> int:
     """debug_banner verbosity: 0=off, 1=one-liner, 2=+context, 3=maximum.
-    Legacy bool values: true->1, false->0. One config lookup (via
-    config_access). Never raises."""
+    Legacy bool values: true->1, false->0. R8c (2026-09-13): the CODE
+    default is now L1 (one-liner) so profiles with no explicit knob get the
+    compact banner; an explicit `debug_banner: 0/false` still disables.
+    One config lookup (via config_access). Never raises."""
     try:
-        raw = _banner_section().get("debug_banner", False)
+        raw = _banner_section().get("debug_banner", 1)
         if isinstance(raw, bool):
             return 1 if raw else 0
         if isinstance(raw, (int, float)):

@@ -222,7 +222,10 @@ def _isolate_router_config(monkeypatch, request):
         return
 
     def _empty_section():
-        return {}
+        # R8c (2026-09-13): the CODE default for debug_banner is now L1, so
+        # an empty section no longer means OFF. Suite isolation still wants
+        # the banner silent unless a test opts in — pin the explicit 0.
+        return {"debug_banner": 0}
 
     monkeypatch.setattr(_dbg, "_banner_section", _empty_section, raising=True)
     monkeypatch.setattr(_dbg, "_LAST_GOOD_SECTION", {}, raising=False)
