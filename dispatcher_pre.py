@@ -28,6 +28,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from . import canonical
@@ -571,6 +572,54 @@ def _provenance_footer_pass(rendered: str) -> str:
     except Exception:  # noqa: BLE001
         logger.debug("provenance_footer (PRE) error", exc_info=True)
         return rendered
+
+
+# --- R8b (2026-09-13): orientation-leak guard ---------------------------------
+# Verified leak: on RESUME after an interrupted turn, the PRE orientation
+# envelope (already in context as internal vantage material) gets recited by
+# the model as its own reply (operative session 20260807_050731 msg 55669
+# "Orientation brief — resume the flagship consult…"). Fix: when the turn is
+# a resume-after-interruption, inject a one-line context reminder that the
+# orientation turn is internal material, never deliverable text.
+ORIENTATION_LEAK_REMINDER = (
+    "[The orientation turn earlier in this context is internal vantage "
+    "material — never deliverable text; respond to the user's ask, not the "
+    "orientation.]"
+)
+
+_RESUME_TURN_RE = re.compile(
+    r"^\s*(resume|continue|go on|carry on|pick up|keep going)\b", re.IGNORECASE)
+
+
+def _is_resume_turn(content: str) -> bool:
+    """True when the user message reads as a resume-after-interruption
+    instruction (line-start resume/continue/go-on family). Never raises."""
+    try:
+        return bool(_RESUME_TURN_RE.match(str(content or "")))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def inject_orientation_leak_guard(request: Any, content: str) -> bool:
+    """R8b: on a resume-after-interruption turn, append a ONE-LINE system
+    reminder (<=200 chars) that the orientation envelope in context is
+    internal-only. Once per resume turn (idempotent — deduped on the
+    reminder text), fail-open. Returns True when injected."""
+    try:
+        if not _is_resume_turn(content):
+            return False
+        msgs = (request or {}).get("messages")
+        if not isinstance(msgs, list):
+            return False
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "system"
+                    and ORIENTATION_LEAK_REMINDER in str(m.get("content") or "")):
+                return False
+        msgs.append({"role": "system", "content": ORIENTATION_LEAK_REMINDER})
+        return True
+    except Exception:  # noqa: BLE001 — guard must never break routing
+        logger.debug("orientation-leak guard error", exc_info=True)
+        return False
 
 
 def _deliver_render_pass(request: Any, content: str, rendered: str,
