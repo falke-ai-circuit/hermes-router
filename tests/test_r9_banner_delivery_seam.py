@@ -87,7 +87,7 @@ def test_benign_consume_appends_to_delivered_string(r9_reset):
         response_text="the agent's own visible reply", session_id=SID,
         model="minimax-m3")
     assert out and "· router ·" in out
-    assert "higher-self" in out
+    assert "higher-self (frontier)" in out
     assert "openai/gpt-6-astra-pro-flex" in out  # named-model case
     assert "$0.075300" in out                    # real price in banner
     assert "the agent's own visible reply" in out
