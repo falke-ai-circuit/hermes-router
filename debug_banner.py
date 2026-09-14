@@ -228,21 +228,27 @@ _ANCHOR_BANNERS: Dict[str, str] = {}
 _ANCHOR_BANNER_MAX = 32
 
 
-def park_anchor_banner(session_id: str, banner_text: str) -> None:
+def park_anchor_banner(session_id: str, banner_text: str,
+                       task_id: str = "") -> None:
     """Park an anchor banner for delivery on this session's next turn.
-    Bounded map (32 sessions, FIFO eviction). Never raises."""
+    Bounded map (32 sessions, FIFO eviction). Never raises.
+    R9d (Goran 09-14): one LLM call = exactly one banner. A re-park for the
+    SAME task_id REPLACES (the call retried/re-emitted); a park for a NEW
+    task_id accumulates (multiple distinct calls in one turn stay visible),
+    bounded 3x as before."""
     try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
         sid = str(session_id or "")
         txt = str(banner_text or "")[:MAX_BANNER_CHARS]
-        # Spend visibility (Goran 2026-09-09): multiple frontier/uncensored
-        # calls in ONE turn must ALL be visible — accumulate with separator
-        # (bounded 3x) instead of overwriting the parked banner.
         prev = _ANCHOR_BANNERS.get(sid, "")
         if prev and txt and txt not in prev:
-            combined = (prev + chr(10) + txt)[:MAX_BANNER_CHARS * 3]
-            _ANCHOR_BANNERS[sid] = combined
+            _tid = str(task_id or "")
+            if _tid and _tid in prev:
+                _ANCHOR_BANNERS[sid] = txt  # same call re-emitting: replace
+            else:
+                combined = (prev + chr(10) + txt)[:MAX_BANNER_CHARS * 3]
+                _ANCHOR_BANNERS[sid] = combined
         else:
             _ANCHOR_BANNERS[sid] = txt
     except Exception:  # noqa: BLE001
