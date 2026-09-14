@@ -1,3 +1,29 @@
+## 4.1.1 — 2026-09-14 (R9: banner delivery-seam fix — parked banners now land in the delivered turn)
+
+Live matrix (analyst 2026-09-14, all post-bounce) showed every park → consume
+chain completing while the banner never reached the delivered reply. Three
+seam defects fixed in `on_transform_llm_output`:
+
+- audit_gate SYNC bypass: when the POST completion audit returned its own
+  banner text, the benign-branch parked-banner consume was never reached —
+  a banner parked during the SAME turn (frontier PRE consult, shadow render)
+  was silently dropped (one-shot consume = unrecoverable). The audit's
+  return is now a real delivery edge: the parked banner merges into it
+  (`anchor_banner_consume ... edge=audit_sync`).
+- equality-drop: the benign branch returned the appended text only when
+  `append_banner(...) != response_text`; an unchanged return discarded the
+  already-consumed banner. The consume now always returns the append result.
+- POST render-path consume referenced `_db` outside its banner-build try —
+  NameError (swallowed) whenever the build block failed/skipped; local
+  import makes the consume self-sufficient.
+- `append_banner` calls at the delivery edges dropped `_knob_checked=True`:
+  the debug_banner knob is read LIVE per dispatch (R8c semantics; OFF →
+  consumed and dropped, never appended from a stale park).
+- Tests: `tests/test_r9_banner_delivery_seam.py` (7) — delivered-string
+  presence per lane, named-model override fields, audit-sync merge,
+  no-double-append across PRE+POST, oversize omit, render-path
+  self-sufficiency. Suite 835 green.
+
 ## 4.1.0 — 2026-09-12 (Phase 1 request_routing: unified cascade route gate + aux intent classification)
 
 - New `route_gate.py`: single decision point (gate-before-classification cascade). Claim precedence:
