@@ -96,15 +96,18 @@ def _zero_network_guard(monkeypatch):
     monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
     monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
 
-    # R10: the provider-catalog seam (provider_prices.provider_catalog_ids)
-    # is a curl-backed provider lane — default tests to an empty catalog
+    # R10/R10b: the provider-catalog seam (provider_prices
+    # .provider_catalog_entries — the lane-scoped single fetch path) is a
+    # curl-backed provider lane — default tests to an empty catalog
     # (fail-open) so declared-path flows never reach live egress. Tests of
     # catalog resolution override this seam explicitly.
     try:
         import hermes_router.provider_prices as _pp
 
-        monkeypatch.setattr(_pp, "provider_catalog_ids", lambda: (),
-                            raising=True)
+        monkeypatch.setattr(_pp, "provider_catalog_entries",
+                            lambda lane: (), raising=True)
+        monkeypatch.setattr(_pp, "provider_catalog_ids",
+                            lambda lane="uncensored": (), raising=True)
     except ImportError:
         pass
 

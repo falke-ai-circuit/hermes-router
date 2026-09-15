@@ -34,6 +34,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -188,27 +189,51 @@ def load_anchor_chain() -> AnchorChainCfg:
 # path. provider_prices._CACHE_FILENAME lives under the profile hermes home.
 
 _CATALOG_IDS_TTL_S = 12 * 3600
-_CATALOG_IDS_MEM: Any = (0.0, ())  # (ts, tuple of ids) — process-lvl memo
+# R10b: per-lane process-level memos {'frontier': (ts, entries),
+# 'uncensored': (ts, entries)} — one 12h TTL memo PER LANE, same single
+# fetch path underneath (provider_prices.provider_catalog_entries).
+_CATALOG_IDS_MEM: Any = {}
+
+# R10b: per-lane catalog entries memo. provider_prices.provider_catalog_
+# entries(lane) yields (id, source_host) pairs over the SAME single fetch
+# path; we memoize entries (id + host) so the primary-host tiebreak works
+# WITHOUT any second fetch. ids/hosts memoized together, one 12h TTL per
+# lane, {'frontier': (ts, entries), 'uncensored': (ts, entries)}.
 
 
-def _catalog_model_ids() -> Tuple[str, ...]:
-    """Model ids from the providers' live catalogs. SINGLE fetch path:
-    provider_prices.provider_catalog_ids (curl + chain-entry key auth, same
-    machinery as pricing). R10 adds NO second fetch path — this is a thin
-    TTL memo over that one seam. Fail-open: any failure -> empty tuple
-    (resolution falls through to None / primary). Never raises."""
+def _catalog_entries(lane: str) -> Tuple[Tuple[str, str], ...]:
+    """(id, source_host) pairs from the LANE's providers' live catalogs.
+    SINGLE fetch path: provider_prices.provider_catalog_entries(lane)
+    (curl + chain-entry key auth, same machinery as pricing). lane='frontier'
+    -> nous catalog only; lane='uncensored' -> abliteration+venice catalogs
+    only. Fail-open: any failure -> empty tuple (resolution falls through
+    to None / primary). Never raises."""
     global _CATALOG_IDS_MEM
     try:
-        ts, ids = _CATALOG_IDS_MEM
-        if ids and time.time() - ts <= _CATALOG_IDS_TTL_S:
-            return ids
+        lane_norm = str(lane or "").strip().lower()
+        if lane_norm not in ("frontier", "uncensored"):
+            return ()
+        mem = _CATALOG_IDS_MEM if isinstance(_CATALOG_IDS_MEM, dict) else {}
+        ts, entries = mem.get(lane_norm, (0.0, ()))
+        if entries and time.time() - ts <= _CATALOG_IDS_TTL_S:
+            return entries
         from . import provider_prices as _pp
 
-        ids = tuple(_pp.provider_catalog_ids())
-        if ids:
-            _CATALOG_IDS_MEM = (time.time(), ids)
-        return ids
+        entries = tuple(_pp.provider_catalog_entries(lane_norm))
+        if entries:
+            mem[lane_norm] = (time.time(), entries)
+            _CATALOG_IDS_MEM = mem
+        return entries
     except Exception:  # noqa: BLE001 — fail-open, catalog never breaks routing
+        return ()
+
+
+def _catalog_model_ids(lane: str) -> Tuple[str, ...]:
+    """Model ids (R10 shape) from the LANE's providers' live catalogs —
+    thin view over _catalog_entries. Never raises."""
+    try:
+        return tuple(eid for eid, _host in _catalog_entries(lane))
+    except Exception:  # noqa: BLE001
         return ()
 
 
@@ -238,11 +263,14 @@ def anchor_models() -> Dict[str, str]:
         return {}
 
 
-def _resolve_with_source(name: str) -> Optional[Tuple[str, str, str]]:
+def _resolve_with_source(name: str,
+                         lane: str = "frontier") -> Optional[Tuple[str, str, str]]:
     """Resolution core — returns (alias, model_id, source) where source is
     'alias' (config table), 'primary' (explicit primary ask) or 'catalog'
-    (R10 provider-catalog fallback). None when nothing matches. Never
-    raises."""
+    (R10 provider-catalog fallback). lane ('frontier'|'uncensored') scopes
+    the R10b catalog step: frontier asks match ONLY nous catalog ids,
+    uncensored asks ONLY the uncensored chain's catalogs. None when nothing
+    matches. Never raises."""
     try:
         if not isinstance(name, str):
             return None
@@ -271,24 +299,51 @@ def _resolve_with_source(name: str) -> Optional[Tuple[str, str, str]]:
             p_low = primary.lower()
             if norm in p_low or p_low in norm:
                 return (primary, primary, "primary")
-        # 4. R10: FINAL fallback — provider CATALOG match (zero-maintenance:
-        # the provider's live /models catalog is the source of truth; no
-        # config alias entry needed). Same normalization, same >=4-char FP
-        # guard, same bidirectional substring rule as steps 1-3, matched
-        # against the provider's model ids. Fail-open to None on fetch
-        # failure (no override — primary is used).
+        # 4. R10/R10b: FINAL fallback — provider CATALOG match, scoped by
+        #    LANE (Goran 09-15: 'consult frontier using fable' must match
+        #    nous's catalog — 'anthropic/claude-fable-5.1' — NEVER venice's
+        #    bare 'claude-fable-5'; uncensored asks never match nous ids).
+        #    Same normalization, same >=4-char FP guard, same bidirectional
+        #    substring rule as steps 1-3. Deterministic tiebreak among
+        #    multiple lane-catalog matches: (a) id whose provider host
+        #    matches the lane's PRIMARY endpoint host, then (b) LONGEST
+        #    match ('fable 5.1' beats 'fable 5'), then (c) provider-prefixed
+        #    id over bare id. Fail-open to None on fetch failure (no
+        #    override — primary is used).
         if len(norm) >= 4:
-            for catalog_id in _catalog_model_ids():
+            primary_host = ""
+            try:
+                chain0 = load_anchor_chain()
+                prim0 = (chain0.endpoint_for("primary") if chain0 is not None
+                         else None)
+                if prim0 is not None and getattr(prim0, "base_url", ""):
+                    primary_host = str(urlparse(
+                        prim0.base_url).hostname or "").lower()
+            except Exception:  # noqa: BLE001
+                primary_host = ""
+            matches: list = []
+            for catalog_id, src_host in _catalog_entries(lane):
                 cid_norm = " ".join(
                     str(catalog_id).strip().lower().replace("-", " ").split())
                 if cid_norm and (norm in cid_norm or cid_norm in norm):
-                    return (str(catalog_id), str(catalog_id), "catalog")
+                    host_ok = 1 if (primary_host and src_host
+                                    and primary_host == src_host) else 0
+                    matches.append((str(catalog_id), host_ok))
+            if matches:
+                # Deterministic tiebreak: (a) source host == lane primary
+                # host, (b) LONGEST match ('fable 5.1' beats 'fable 5'),
+                # (c) provider-prefixed id over bare id, (d) stable id order.
+                matches.sort(key=lambda m: (m[1], len(m[0]), "/" in m[0]),
+                             reverse=True)
+                best = matches[0][0]
+                return (best, best, "catalog")
         return None
     except Exception:  # noqa: BLE001
         return None
 
 
-def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
+def resolve_model_alias(name: str,
+                        lane: str = "frontier") -> Optional[Tuple[str, str]]:
     """Resolve a user-named model ('astra', 'luna', 'astra pro', a full
     model id, or the configured primary model id itself) to
     (alias, model_id). Resolution order:
@@ -296,12 +351,15 @@ def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
       2. substring/normalized match against alias names AND the configured
          primary model id
       3. the configured primary model id itself
-      4. R10: provider CATALOG match (final fallback — zero-maintenance;
-         the provider's live catalog is the source of truth for ANY model
-         name, no config alias entry required)
+      4. R10/R10b: provider CATALOG match (final fallback —
+         zero-maintenance; the provider's live catalog is the source of
+         truth for ANY model name, no config alias entry required),
+         LANE-SCOPED (Goran 09-15): lane='frontier' consults ONLY the nous
+         catalog, lane='uncensored' ONLY the uncensored chain's catalogs
+         (abliteration + venice).
     None when nothing matches (no override — primary is used). Never
     raises."""
-    got = _resolve_with_source(name)
+    got = _resolve_with_source(name, lane)
     return (got[0], got[1]) if got is not None else None
 
 
