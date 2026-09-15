@@ -274,9 +274,13 @@ def provider_catalog_entries(lane: str) -> tuple:
                 if not isinstance(m, dict):
                     continue
                 mid = str(m.get("id") or "").strip()
-                if mid and mid not in seen:
-                    seen.add(mid)
-                    out.append((mid, host))
+                # R10c: only directly-servable ids — skip ':batch' variants
+                # (different billing/SLA, invalid for a sync consult) and
+                # '~'-prefixed hidden catalog entries.
+                if not mid or mid in seen or ":" in mid or mid.startswith("~"):
+                    continue
+                seen.add(mid)
+                out.append((mid, host))
         return tuple(out)
     except Exception:  # noqa: BLE001
         return ()
