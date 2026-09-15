@@ -18,9 +18,11 @@ import json
 import os
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 PRICING_TTL_S = 12 * 3600
+NOUS_MODELS_URL = "https://inference-api.nousresearch.com/v1/models"
 _CACHE_FILENAME = "hermes-router-provider-prices.json"
 _FETCH_TIMEOUT_S = 15
 
@@ -91,10 +93,43 @@ def _chain_models_urls() -> Dict[str, str]:
     # Nous catalog (Goran 09-09: cost FROM THE PROVIDER). Main workhorse +
     # flagship lanes bill through nous; its /v1/models carries per-model
     # pricing. Register the known nous-served models explicitly.
-    nous_models_url = "https://inference-api.nousresearch.com/v1/models"
     for m in ("z-ai/glm-5.3-flash", "glm-5.3-flash", "openai/gpt-5.6-luna-pro"):
-        out.setdefault(m, nous_models_url)
+        out.setdefault(m, NOUS_MODELS_URL)
     return out
+
+
+def _lane_model_urls(lane: str) -> Dict[str, str]:
+    """R10b: /models urls scoped by LANE. 'frontier' -> the nous frontier
+    /models endpoint ONLY (the frontier chain's provider; uncensored-chain
+    catalogs are never consulted for frontier names). 'uncensored' -> the
+    uncensored chain entries' /models urls ONLY (abliteration + venice per
+    config chain urls; nous is never consulted for uncensored names).
+    Unknown/empty lane -> {} (fail-open). Never raises."""
+    try:
+        lane_norm = str(lane or "").strip().lower()
+        if lane_norm == "frontier":
+            return {"nous": NOUS_MODELS_URL}
+        if lane_norm == "uncensored":
+            out: Dict[str, str] = {}
+            try:
+                from .config_access import router_section
+
+                chain = router_section().get("chain")
+            except Exception:  # noqa: BLE001
+                chain = None
+            if isinstance(chain, list):
+                for e in chain:
+                    if not isinstance(e, dict):
+                        continue
+                    url = str(e.get("url") or "")
+                    if not url:
+                        continue
+                    out[str(e.get("model") or url)] = (
+                        url.rsplit("/chat/completions", 1)[0] + "/models")
+            return out
+        return {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _fetch(url: str, key_file: str, key_env: str) -> Optional[Dict[str, Any]]:
@@ -195,14 +230,18 @@ def provider_price_for(model: str) -> Optional[Dict[str, float]]:
         return None
 
 
-def provider_catalog_ids() -> tuple:
-    """R10: ALL model ids from the providers' catalogs, through the SAME
-    single fetch path as pricing (curl + chain-entry key auth). Verbatim
-    catalog ids, de-duplicated, order-stable. Empty tuple on any
-    failure (fail-open — the catalog is an optional resolution source).
-    Never raises."""
+def provider_catalog_entries(lane: str) -> tuple:
+    """R10b: (id, source_host) pairs from the LANE-SCOPED providers'
+    catalogs, through the SAME single fetch path as pricing. One fetch per
+    provider url; each id is attributed the host it was actually fetched
+    from. lane='frontier' -> nous /models ONLY; lane='uncensored' -> the
+    uncensored chain entries' catalogs ONLY (abliteration + venice).
+    Deterministic order (sorted urls, catalog order within each). Empty
+    tuple on any failure (fail-open). Unknown lane -> (). Never raises."""
     try:
-        urls = _chain_models_urls()
+        urls = _lane_model_urls(lane)
+        if not urls:
+            return ()
         try:
             from .config_access import router_section
 
@@ -215,10 +254,19 @@ def provider_catalog_ids() -> tuple:
             if isinstance(e, dict) and str(e.get("model") or "") in urls:
                 keyinfo[urls[str(e.get("model"))]] = (
                     str(e.get("key_file") or ""), str(e.get("key_env") or ""))
+        if lane == "frontier":
+            # nous catalog: NOUS_API_KEY env (same credential the frontier
+            # chain's provider bills under).
+            keyinfo.setdefault(NOUS_MODELS_URL, ("", "NOUS_API_KEY"))
         out: list = []
         seen = set()
         for url in sorted(set(urls.values())):
             kf, ke = keyinfo.get(url, ("", ""))
+            host = ""
+            try:
+                host = str(urlparse(url).hostname or "").lower()
+            except Exception:  # noqa: BLE001
+                host = ""
             data = _fetch(url, kf, ke)
             if not isinstance(data, dict):
                 continue
@@ -228,7 +276,18 @@ def provider_catalog_ids() -> tuple:
                 mid = str(m.get("id") or "").strip()
                 if mid and mid not in seen:
                     seen.add(mid)
-                    out.append(mid)
+                    out.append((mid, host))
         return tuple(out)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def provider_catalog_ids(lane: str = "uncensored") -> tuple:
+    """R10/R10b: model ids from the LANE-SCOPED providers' catalogs (see
+    provider_catalog_entries for the lane scoping). Verbatim catalog ids,
+    de-duplicated, order-stable. Empty tuple on any failure (fail-open —
+    the catalog is an optional resolution source). Never raises."""
+    try:
+        return tuple(eid for eid, _host in provider_catalog_entries(lane))
     except Exception:  # noqa: BLE001
         return ()

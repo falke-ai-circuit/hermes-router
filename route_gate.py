@@ -184,20 +184,31 @@ _MODEL_OVERRIDE_PHRASES = (
     "second opinion",
 )
 
+# R10b (Goran 09-15): the UNCENSORED consult family — 'consult uncensored
+# using venice qwen3.8' — resolves against the UNCENSORED chain's catalogs
+# (abliteration + venice) ONLY, and routes LANE_SHADOW. Nous is never
+# consulted for uncensored names.
+_UNCENSORED_OVERRIDE_PHRASES = (
+    "consult uncensored using",
+    "consult uncensored with",
+    "consult uncensored via",
+)
+
 _MODEL_OVERRIDE_EVENT = "model_override_detected"
 
 
 def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
-    """R6 leg 1 + R10: named-model override detection over the directive
-    surface. Returns (lane, alias, model_id, source) when a frontier/consult
-    phrase with a resolvable named model fired; None otherwise (behave
-    exactly as today). Line-start shapes only; quoted/fenced lines inert
-    (the _directive_lines echo guard). Lane follows the phrase family:
-    consult/frontier phrases -> LANE_HIGHER_PRE; 'second opinion' ->
-    LANE_HIGHER_PRE; 'ask <model> about ...' -> LANE_HIGHER_PRE. source is
-    the resolution origin: 'alias' (config table), 'primary' (explicit
-    primary ask) or 'catalog' (R10 provider-catalog fallback). Never
-    raises."""
+    """R6 leg 1 + R10/R10b: named-model override detection over the
+    directive surface. Returns (lane, alias, model_id, source) when a
+    frontier/uncensored consult phrase with a resolvable named model fired;
+    None otherwise (behave exactly as today). Line-start shapes only;
+    quoted/fenced lines inert (the _directive_lines echo guard). Lane
+    follows the phrase family: consult/frontier phrases -> LANE_HIGHER_PRE;
+    'second opinion' -> LANE_HIGHER_PRE; 'ask <model> about ...' ->
+    LANE_HIGHER_PRE; R10b uncensored consult phrases -> LANE_SHADOW.
+    source is the resolution origin: 'alias' (config table), 'primary'
+    (explicit primary ask) or 'catalog' (R10 provider-catalog fallback,
+    scoped to the phrase family's lane). Never raises."""
     try:
         from . import anchor_chain as _ac
 
@@ -205,6 +216,17 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
             norm = _normalize_directive_line(raw)
             if not norm:
                 continue
+            for head in _UNCENSORED_OVERRIDE_PHRASES:
+                head_norm = " ".join(head.split())
+                if not norm.startswith(head_norm):
+                    continue
+                rest = norm[len(head_norm):].strip()
+                if not rest:
+                    continue
+                alias_model = _ac._resolve_with_source(rest, "uncensored")
+                if alias_model is not None:
+                    alias, model_id, source = alias_model
+                    return (LANE_SHADOW, alias, model_id, source)
             for head in _MODEL_OVERRIDE_PHRASES:
                 head_norm = " ".join(head.split())
                 if head == "ask":
@@ -223,7 +245,9 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
                     continue
                 # Trailing-word boundary on the head is implicit — rest is
                 # everything after the head; <model> is the next token run.
-                alias_model = _ac._resolve_with_source(rest)
+                # R10b: frontier phrases resolve against the FRONTIER lane's
+                # catalog (nous only).
+                alias_model = _ac._resolve_with_source(rest, "frontier")
                 if alias_model is None:
                     continue
                 alias, model_id, source = alias_model
@@ -248,7 +272,9 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
                              for n in range(1, min(4, len(words)) + 1)]
                     alias_model = None
                     for run in runs:
-                        alias_model = _ac._resolve_with_source(run)
+                        # R10b: 'second opinion' family resolves against the
+                        # FRONTIER lane's catalog (nous only).
+                        alias_model = _ac._resolve_with_source(run, "frontier")
                         if alias_model is not None:
                             break
                     if alias_model is not None:

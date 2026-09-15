@@ -47,13 +47,15 @@ def _cfg(monkeypatch, models=None, primary="nous://z-ai/glm-5.3"):
         "hermes_cli.config.load_config", lambda: cfg, raising=False)
 
 
-def _catalog(monkeypatch, models=CATALOG_MODELS):
-    """Override the SINGLE fetch seam (provider_prices.provider_catalog_ids,
-    conftest-defaulted to empty) — no live net."""
+def _catalog(monkeypatch, models=CATALOG_MODELS, lane="frontier",
+             host="inference-api.nousresearch.com"):
+    """Override the SINGLE fetch seam (R10b: provider_prices
+    .provider_catalog_entries, conftest-defaulted to empty) — no live net."""
+    entries = tuple((m["id"], host) for m in models)
     monkeypatch.setattr(
-        "hermes_router.provider_prices.provider_catalog_ids",
-        lambda: tuple(m["id"] for m in models), raising=True)
-    anchor_chain._CATALOG_IDS_MEM = (0.0, ())  # bust the memo
+        "hermes_router.provider_prices.provider_catalog_entries",
+        lambda l: entries if l == lane else (), raising=True)
+    anchor_chain._CATALOG_IDS_MEM = {}  # bust the memo
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +75,7 @@ def _reset(monkeypatch):
     plugin.state.clear()
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
-    anchor_chain._CATALOG_IDS_MEM = (0.0, ())
+    anchor_chain._CATALOG_IDS_MEM = {}
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +142,9 @@ def test_fp_guard_no_match_none(monkeypatch):
 def test_fetch_failure_fail_open(monkeypatch):
     _cfg(monkeypatch, models=None)
     monkeypatch.setattr(
-        "hermes_router.provider_prices.provider_catalog_ids",
-        lambda: (), raising=True)
-    anchor_chain._CATALOG_IDS_MEM = (0.0, ())
+        "hermes_router.provider_prices.provider_catalog_entries",
+        lambda lane: (), raising=True)
+    anchor_chain._CATALOG_IDS_MEM = {}
     assert anchor_chain.resolve_model_alias("fable 5.1") is None
 
 
@@ -151,9 +153,9 @@ def test_fetch_exception_fail_open(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("net down")
     monkeypatch.setattr(
-        "hermes_router.provider_prices.provider_catalog_ids", _boom,
+        "hermes_router.provider_prices.provider_catalog_entries", _boom,
         raising=True)
-    anchor_chain._CATALOG_IDS_MEM = (0.0, ())
+    anchor_chain._CATALOG_IDS_MEM = {}
     assert anchor_chain.resolve_model_alias("fable 5.1") is None
 
 
@@ -238,6 +240,140 @@ def test_alias_detection_reports_alias_source(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 8. R10b — LANE-SCOPED catalog resolution (Goran 09-15)
+# ---------------------------------------------------------------------------
+
+FRONTIER_MODELS = [
+    {"id": "anthropic/claude-fable-5.1"},
+    {"id": "anthropic/claude-fable-5"},
+    {"id": "openai/gpt-5.6-luna-pro"},
+]
+
+# venice-style bare-id catalog — the R10 cross-lane false-match culprit
+UNCENSORED_MODELS = [
+    {"id": "claude-fable-5"},
+    {"id": "qwen-3-8-27b"},
+    {"id": "abliterated-model-large-v2"},
+]
+
+
+def test_frontier_ask_never_matches_uncensored_catalog(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=UNCENSORED_MODELS, lane="uncensored",
+             host="api.venice.ai")
+    # frontier lane catalog is EMPTY here -> fail-open, no override
+    assert anchor_chain.resolve_model_alias("fable 5.1", "frontier") is None
+    # and via the gate phrase
+    assert route_gate.detect_model_override(
+        "consult frontier using fable 5.1") is None
+
+
+def test_uncensored_ask_never_matches_nous_catalog(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=FRONTIER_MODELS, lane="frontier")
+    # uncensored lane catalog is EMPTY here -> fail-open, no override
+    assert anchor_chain.resolve_model_alias("fable 5.1", "uncensored") is None
+
+
+def test_frontier_fable_resolves_prefixed_nous_id(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=FRONTIER_MODELS, lane="frontier")
+    got = anchor_chain.resolve_model_alias("fable 5.1", "frontier")
+    assert got == ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5.1")
+
+
+def test_uncensored_fable_bare_id_from_uncensored_catalog(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=UNCENSORED_MODELS, lane="uncensored",
+             host="api.venice.ai")
+    got = anchor_chain.resolve_model_alias("fable 5", "uncensored")
+    assert got == ("claude-fable-5", "claude-fable-5")
+
+
+def test_uncensored_consult_phrase_routes_shadow_lane(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=UNCENSORED_MODELS, lane="uncensored",
+             host="api.venice.ai")
+    got = route_gate.detect_model_override("consult uncensored using fable 5")
+    assert got is not None
+    lane, alias, model_id, source = got
+    assert lane == route_gate.LANE_SHADOW
+    assert model_id == "claude-fable-5"
+    assert source == "catalog"
+
+
+def test_longest_match_tiebreak(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=FRONTIER_MODELS, lane="frontier")
+    # 'fable 5' matches both 'claude-fable-5' and 'claude-fable-5.1' —
+    # longest normalized match wins
+    got = anchor_chain.resolve_model_alias("fable 5", "frontier")
+    assert got == ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5.1")
+
+
+def test_provider_prefix_tiebreak(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch, models=[
+        {"id": "claude-fable-5.1"},
+        {"id": "anthropic/claude-fable-5.1"},
+    ], lane="frontier")
+    got = anchor_chain.resolve_model_alias("fable 5.1", "frontier")
+    assert got == ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5.1")
+
+
+def test_primary_host_tiebreak(monkeypatch):
+    # primary is nous; both hosts carry the same id — nous-hosted id wins
+    _cfg(monkeypatch)
+    _catalog(monkeypatch, models=[
+        {"id": "anthropic/claude-fable-5.1"},
+    ], lane="frontier", host="other-provider.example.com")
+    monkeypatch.setattr(
+        "hermes_router.provider_prices.provider_catalog_entries",
+        lambda lane: (("anthropic/claude-fable-5.1",
+                       "other-provider.example.com"),)
+        if lane == "frontier" else
+        (("anthropic/claude-fable-5.1",
+          "inference-api.nousresearch.com"),),
+        raising=True)
+    anchor_chain._CATALOG_IDS_MEM = {}
+    got = anchor_chain.resolve_model_alias("fable 5.1", "frontier")
+    assert got == ("anthropic/claude-fable-5.1", "anthropic/claude-fable-5.1")
+
+
+def test_lane_memo_is_per_lane(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    calls = []
+
+    def _entries(lane):
+        calls.append(lane)
+        if lane == "frontier":
+            return (("anthropic/claude-fable-5.1",
+                     "inference-api.nousresearch.com"),)
+        return (("qwen-3-8-27b", "api.venice.ai"),)
+
+    monkeypatch.setattr(
+        "hermes_router.provider_prices.provider_catalog_entries", _entries,
+        raising=True)
+    anchor_chain._CATALOG_IDS_MEM = {}
+    a = anchor_chain._catalog_model_ids("frontier")
+    b = anchor_chain._catalog_model_ids("uncensored")
+    assert a == ("anthropic/claude-fable-5.1",)
+    assert b == ("qwen-3-8-27b",)
+    # memo hit — no second fetch per lane
+    anchor_chain._catalog_model_ids("frontier")
+    anchor_chain._catalog_model_ids("uncensored")
+    assert calls.count("frontier") == 1
+    assert calls.count("uncensored") == 1
+
+
+def test_unknown_lane_fail_open(monkeypatch):
+    _cfg(monkeypatch, models=None)
+    _catalog(monkeypatch)
+    assert anchor_chain._catalog_model_ids("garbage") == ()
+    assert anchor_chain.resolve_model_alias("fable 5.1", "garbage") is None
+
+
+# ---------------------------------------------------------------------------
 # 7. version bump consistent
 # ---------------------------------------------------------------------------
 
@@ -245,4 +381,4 @@ def test_version_bumped():
     import yaml
     with open(os.path.join(PLUGIN_DIR, "plugin.yaml")) as fh:
         manifest = yaml.safe_load(fh)
-    assert manifest["version"] == "4.2.0"
+    assert manifest["version"] == "4.2.1"
