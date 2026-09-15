@@ -187,14 +187,16 @@ _MODEL_OVERRIDE_PHRASES = (
 _MODEL_OVERRIDE_EVENT = "model_override_detected"
 
 
-def detect_model_override(content: str) -> Optional[Tuple[str, str, str]]:
-    """R6 leg 1: named-model override detection over the directive surface.
-    Returns (lane, alias, model_id) when a frontier/consult phrase with a
-    resolvable named model fired; None otherwise (behave exactly as
-    today). Line-start shapes only; quoted/fenced lines inert (the
-    _directive_lines echo guard). Lane follows the phrase family:
+def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
+    """R6 leg 1 + R10: named-model override detection over the directive
+    surface. Returns (lane, alias, model_id, source) when a frontier/consult
+    phrase with a resolvable named model fired; None otherwise (behave
+    exactly as today). Line-start shapes only; quoted/fenced lines inert
+    (the _directive_lines echo guard). Lane follows the phrase family:
     consult/frontier phrases -> LANE_HIGHER_PRE; 'second opinion' ->
-    LANE_HIGHER_PRE; 'ask <model> about ...' -> LANE_HIGHER_PRE. Never
+    LANE_HIGHER_PRE; 'ask <model> about ...' -> LANE_HIGHER_PRE. source is
+    the resolution origin: 'alias' (config table), 'primary' (explicit
+    primary ask) or 'catalog' (R10 provider-catalog fallback). Never
     raises."""
     try:
         from . import anchor_chain as _ac
@@ -221,11 +223,11 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str]]:
                     continue
                 # Trailing-word boundary on the head is implicit — rest is
                 # everything after the head; <model> is the next token run.
-                alias_model = _ac.resolve_model_alias(rest)
+                alias_model = _ac._resolve_with_source(rest)
                 if alias_model is None:
                     continue
-                alias, model_id = alias_model
-                return (LANE_HIGHER_PRE, alias, model_id)
+                alias, model_id, source = alias_model
+                return (LANE_HIGHER_PRE, alias, model_id, source)
             # 'second opinion' family: the model may sit AFTER the phrase
             # ('second opinion from luna on ...') or BEFORE it ('astra
             # second opinion'). Substring search either side.
@@ -246,25 +248,27 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str]]:
                              for n in range(1, min(4, len(words)) + 1)]
                     alias_model = None
                     for run in runs:
-                        alias_model = _ac.resolve_model_alias(run)
+                        alias_model = _ac._resolve_with_source(run)
                         if alias_model is not None:
                             break
                     if alias_model is not None:
-                        alias, model_id = alias_model
-                        return (LANE_HIGHER_PRE, alias, model_id)
+                        alias, model_id, source = alias_model
+                        return (LANE_HIGHER_PRE, alias, model_id, source)
         return None
     except Exception:  # noqa: BLE001 — detection must never break the gate
         return None
 
 
 def _log_model_override(alias: str, model_id: str, lane: str,
-                        session_id: str = "") -> None:
-    """Content-free route event for an override detection. Never raises."""
+                        session_id: str = "", source: str = "") -> None:
+    """Content-free route event for an override detection. R10: the
+    resolution origin rides as source ('alias' | 'primary' | 'catalog').
+    Never raises."""
     try:
         _pkg_fn("_log_route")(
             "PRE", event_detail=_MODEL_OVERRIDE_EVENT,
             alias=str(alias), model=str(model_id), lane=str(lane),
-            session_id=str(session_id or ""))
+            source=str(source or ""), session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001 — observability only
         pass
 
@@ -914,7 +918,7 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
     if user_lane is not None:
         if override is not None:
             _log_model_override(override[1], override[2], override[0],
-                                session_id)
+                                session_id, source=override[3])
         if existing is not None:
             # H7.5: agent request_routing + user phrase same turn — ONE
             # consult, ONE ledger entry. The first declaration wins; this

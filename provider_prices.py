@@ -193,3 +193,42 @@ def provider_price_for(model: str) -> Optional[Dict[str, float]]:
         return norm
     except Exception:  # noqa: BLE001
         return None
+
+
+def provider_catalog_ids() -> tuple:
+    """R10: ALL model ids from the providers' catalogs, through the SAME
+    single fetch path as pricing (curl + chain-entry key auth). Verbatim
+    catalog ids, de-duplicated, order-stable. Empty tuple on any
+    failure (fail-open — the catalog is an optional resolution source).
+    Never raises."""
+    try:
+        urls = _chain_models_urls()
+        try:
+            from .config_access import router_section
+
+            chain = router_section().get("chain") or []
+        except Exception:  # noqa: BLE001
+            chain = []
+        # key info per chain entry (same rule as provider_price_for)
+        keyinfo: Dict[str, tuple] = {}
+        for e in chain:
+            if isinstance(e, dict) and str(e.get("model") or "") in urls:
+                keyinfo[urls[str(e.get("model"))]] = (
+                    str(e.get("key_file") or ""), str(e.get("key_env") or ""))
+        out: list = []
+        seen = set()
+        for url in sorted(set(urls.values())):
+            kf, ke = keyinfo.get(url, ("", ""))
+            data = _fetch(url, kf, ke)
+            if not isinstance(data, dict):
+                continue
+            for m in data.get("data", []):
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id") or "").strip()
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    out.append(mid)
+        return tuple(out)
+    except Exception:  # noqa: BLE001
+        return ()

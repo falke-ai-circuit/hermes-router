@@ -96,6 +96,18 @@ def _zero_network_guard(monkeypatch):
     monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
     monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
 
+    # R10: the provider-catalog seam (provider_prices.provider_catalog_ids)
+    # is a curl-backed provider lane — default tests to an empty catalog
+    # (fail-open) so declared-path flows never reach live egress. Tests of
+    # catalog resolution override this seam explicitly.
+    try:
+        import hermes_router.provider_prices as _pp
+
+        monkeypatch.setattr(_pp, "provider_catalog_ids", lambda: (),
+                            raising=True)
+    except ImportError:
+        pass
+
     yield
     # introspection hook for the zero-network proof test
     assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
