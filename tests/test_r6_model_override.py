@@ -119,7 +119,7 @@ def test_detect_override_phrases(monkeypatch):
                  "astra second opinion"):
         got = route_gate.detect_model_override(line)
         assert got is not None, line
-        lane, alias, model_id = got
+        lane, alias, model_id, _source = got
         assert lane == route_gate.LANE_HIGHER_PRE
         assert model_id == MODELS_BLOCK[alias]
 

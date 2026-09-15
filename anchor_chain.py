@@ -179,6 +179,39 @@ def load_anchor_chain() -> AnchorChainCfg:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# R10: provider CATALOG resolution (final fallback, zero-maintenance)
+# ---------------------------------------------------------------------------
+
+# Single fetch path: provider_prices already owns /models fetching with a
+# 12h disk cache + freshness stamp — R10 reuses it, adds NO second fetch
+# path. provider_prices._CACHE_FILENAME lives under the profile hermes home.
+
+_CATALOG_IDS_TTL_S = 12 * 3600
+_CATALOG_IDS_MEM: Any = (0.0, ())  # (ts, tuple of ids) — process-lvl memo
+
+
+def _catalog_model_ids() -> Tuple[str, ...]:
+    """Model ids from the providers' live catalogs. SINGLE fetch path:
+    provider_prices.provider_catalog_ids (curl + chain-entry key auth, same
+    machinery as pricing). R10 adds NO second fetch path — this is a thin
+    TTL memo over that one seam. Fail-open: any failure -> empty tuple
+    (resolution falls through to None / primary). Never raises."""
+    global _CATALOG_IDS_MEM
+    try:
+        ts, ids = _CATALOG_IDS_MEM
+        if ids and time.time() - ts <= _CATALOG_IDS_TTL_S:
+            return ids
+        from . import provider_prices as _pp
+
+        ids = tuple(_pp.provider_catalog_ids())
+        if ids:
+            _CATALOG_IDS_MEM = (time.time(), ids)
+        return ids
+    except Exception:  # noqa: BLE001 — fail-open, catalog never breaks routing
+        return ()
+
+
 def anchor_models() -> Dict[str, str]:
     """Read anchor_chain.models: {<alias>: <model id>} from config.
     {} default, fail-open, tolerant of a missing/malformed block. Aliases
@@ -205,14 +238,10 @@ def anchor_models() -> Dict[str, str]:
         return {}
 
 
-def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
-    """Resolve a user-named model ('astra', 'luna', 'astra pro', a full
-    model id, or the configured primary model id itself) to
-    (alias, model_id). Resolution order:
-      1. exact alias (case/hyphen/space-insensitive key match)
-      2. substring/normalized match against alias names AND the configured
-         primary model id
-    None when nothing matches (no override — primary is used). Never
+def _resolve_with_source(name: str) -> Optional[Tuple[str, str, str]]:
+    """Resolution core — returns (alias, model_id, source) where source is
+    'alias' (config table), 'primary' (explicit primary ask) or 'catalog'
+    (R10 provider-catalog fallback). None when nothing matches. Never
     raises."""
     try:
         if not isinstance(name, str):
@@ -224,7 +253,7 @@ def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
         # 1. exact alias (normalized: hyphens/spaces equivalent)
         for alias, model_id in table.items():
             if " ".join(alias.replace("-", " ").split()) == norm:
-                return (alias, model_id)
+                return (alias, model_id, "alias")
         # 2. substring match in EITHER direction: the name may be a prefix
         #    of an alias ('astra' -> 'astra-pro') or a SPOKEN LONG FORM
         #    whose alias is a prefix of it ('astra 6 pro flex' -> 'astra').
@@ -234,17 +263,46 @@ def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
             alias_norm = " ".join(alias.replace("-", " ").split())
             if norm and len(norm) >= 4 and \
                     (norm in alias_norm or alias_norm in norm):
-                return (alias, model_id)
+                return (alias, model_id, "alias")
         # 3. the configured primary model id itself (explicit primary ask)
         chain = load_anchor_chain()
         primary = str(chain.primary.model if chain.primary is not None else "")
         if primary and len(norm) >= 4:
             p_low = primary.lower()
             if norm in p_low or p_low in norm:
-                return (primary, primary)
+                return (primary, primary, "primary")
+        # 4. R10: FINAL fallback — provider CATALOG match (zero-maintenance:
+        # the provider's live /models catalog is the source of truth; no
+        # config alias entry needed). Same normalization, same >=4-char FP
+        # guard, same bidirectional substring rule as steps 1-3, matched
+        # against the provider's model ids. Fail-open to None on fetch
+        # failure (no override — primary is used).
+        if len(norm) >= 4:
+            for catalog_id in _catalog_model_ids():
+                cid_norm = " ".join(
+                    str(catalog_id).strip().lower().replace("-", " ").split())
+                if cid_norm and (norm in cid_norm or cid_norm in norm):
+                    return (str(catalog_id), str(catalog_id), "catalog")
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+def resolve_model_alias(name: str) -> Optional[Tuple[str, str]]:
+    """Resolve a user-named model ('astra', 'luna', 'astra pro', a full
+    model id, or the configured primary model id itself) to
+    (alias, model_id). Resolution order:
+      1. exact alias (case/hyphen/space-insensitive key match)
+      2. substring/normalized match against alias names AND the configured
+         primary model id
+      3. the configured primary model id itself
+      4. R10: provider CATALOG match (final fallback — zero-maintenance;
+         the provider's live catalog is the source of truth for ANY model
+         name, no config alias entry required)
+    None when nothing matches (no override — primary is used). Never
+    raises."""
+    got = _resolve_with_source(name)
+    return (got[0], got[1]) if got is not None else None
 
 
 def override_endpoint(base: AnchorEndpoint, model: str) -> AnchorEndpoint:
