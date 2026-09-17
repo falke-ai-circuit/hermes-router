@@ -117,6 +117,21 @@ DECLARED_USER_VARIANTS: Dict[str, str] = {
     "ask your shadow": LANE_SHADOW,
     "ask the shadow": LANE_SHADOW,
     "shadow self read": LANE_SHADOW,
+    # R11 (Goran 09-17): frontier imperative-consult family. "ask frontier
+    # her consult" (operative incident 20260807_050731, ids 62195-62206)
+    # named the frontier as the TARGET of an ask — the higher-self table
+    # missed it and the aux classifier had no class for it, so the agent
+    # hand-rolled a provider curl. Surface-form directives -> strict table
+    # (Conductor-approved Option B); R7 named-model overrides ride the
+    # declared_user source for free. Payload after the phrase rides the
+    # existing _PHRASE_PAYLOAD_SEPARATORS / boundary machinery.
+    "ask frontier": LANE_HIGHER_PRE,
+    "ask the frontier": LANE_HIGHER_PRE,
+    "ask your frontier": LANE_HIGHER_PRE,
+    "consult frontier": LANE_HIGHER_PRE,
+    "consult the frontier": LANE_HIGHER_PRE,
+    "consult your higher self": LANE_HIGHER_PRE,
+    "frontier consult": LANE_HIGHER_PRE,
 }
 
 # LEG 12 FIX 1 (Goran FP doctrine): the 'uncensored take' family is NARROW —
@@ -1023,11 +1038,21 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
         lane = verdict.get("lane")
         confidence = float(verdict.get("confidence") or 0.0)
         if lane == "none" or confidence < 0.75:
+            # R11: closest-class hint — the routing vocabulary that made
+            # the turn a near-miss suspect, so intent_none misses stay
+            # auditable ('ask frontier her consult' -> hint=frontier).
+            hint = ""
+            try:
+                from .intent_classifier import _vocab_hit as _vh
+
+                hint = str(_vh(" ".join(str(content).lower().split())) or "")
+            except Exception:  # noqa: BLE001 — observability only
+                hint = ""
             try:
                 _pkg_fn("_log_route")(
                     "PRE", event_detail="intent_none",
                     lane=str(lane), confidence=confidence,
-                    session_id=session_id)
+                    hint=hint, session_id=session_id)
             except Exception:  # noqa: BLE001 — observability only
                 pass
             return None

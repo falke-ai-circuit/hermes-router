@@ -1,3 +1,41 @@
+## 4.3.0 — 2026-09-17 (R11: frontier imperative-consult family declared detection + aux prompt extension)
+
+Incident (operative 20260807_050731, conductor-verified): user turn
+"ask frontier her consult" fired NO lane — the strict variant tables had no
+frontier family and the aux intent prompt had no class for imperative
+consult directives (it answered intent_none @0.95) — so the agent
+hand-rolled a raw provider curl against inference-api.nousresearch.com
+(unrouted, uncapped, unbannered ~$0.0115 spend, "Frontier consult
+delivered"). Zero router events for the window.
+
+Fix (Conductor-approved Option B — surface-form directives belong in the
+strict table, not the semantic classifier):
+
+- route_gate DECLARED_USER_VARIANTS: new frontier imperative family, all
+  -> LANE_HIGHER_PRE, SOURCE_DECLARED_USER: 'ask frontier', 'ask the
+  frontier', 'ask your frontier', 'consult frontier', 'consult the
+  frontier', 'consult your higher self', 'frontier consult'. Payload
+  after the phrase rides the existing _PHRASE_PAYLOAD_SEPARATORS /
+  boundary machinery; longest-variant-wins unchanged.
+- R7 rides for free: named-model overrides ('consult frontier using
+  luna: ...') attach via detect_model_override on the declared_user
+  claim exactly as for higher-self phrases. Agent-initiated consults
+  gain nothing.
+- Aux prompt (secondary net, one-line extension): imperative forms where
+  the frontier/higher self is NAMED AS THE TARGET of an ask classify
+  higher/pre — closes the paraphrase residue the strict table can't see.
+- intent_none events now carry hint=<closest routing vocabulary> so
+  classifier misses stay auditable ('ask frontier ...' -> hint=frontier).
+- Fail-open unchanged: aux down -> strict path still routes; both miss ->
+  today's behavior.
+- Echo guard unchanged: quoted/fenced/meta lines inert (FP doctrine).
+
+Tests: tests/test_r11_frontier_family.py (14) — incident phrase, family
+sweep, payload ride, R7 override via mocked anchor_models, aux-down
+fail-open, quoted/fenced/meta inertness, intent_none hint. Three aux
+tests re-probed (their lines are now declared phrases — the fix working).
+Suite 873 green (+3 pre-existing env-drift fails on clean tree).
+
 ## 4.1.1 — 2026-09-14 (R9: banner delivery-seam fix — parked banners now land in the delivered turn)
 
 Live matrix (analyst 2026-09-14, all post-bounce) showed every park → consume

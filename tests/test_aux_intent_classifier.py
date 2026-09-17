@@ -232,7 +232,7 @@ def test_aux_failure_intent_aux_error_distinct(_reset, monkeypatch):
     """H4: transport failure -> intent_aux_error (NOT intent_none),
     fail-open NO_ROUTE."""
     monkeypatch.setattr(ic, "_aux_transport", lambda pj, t: None)
-    d = _decide("can you consult the frontier on this approach")
+    d = _decide("how does the frontier consult machinery work here")
     assert d.route is False
     assert any(f.get("event_detail") == "intent_aux_error" for _, f in LOGGED)
     assert not any(f.get("event_detail") == "intent_none" for _, f in LOGGED)
@@ -249,7 +249,7 @@ def test_kill_switch_off_no_aux_call(_reset, monkeypatch):
         return _verdict("shadow", None, 0.9)
 
     monkeypatch.setattr(ic, "_aux_transport", _spy)
-    d = _decide("can you consult the frontier on this approach")
+    d = _decide("how does the frontier consult machinery work here")
     assert d.route is False
     assert calls == []
 
@@ -268,7 +268,7 @@ def test_turn_identity_dedupe_content_mutation(_reset, monkeypatch):
         return _verdict("none", None, 0.95)
 
     monkeypatch.setattr(ic, "_aux_transport", _spy)
-    text = "can you consult the frontier on this approach"
+    text = "how does the frontier consult machinery work here"
     state.advance_turn_identity(SID, state.hash_text(text))
     route_gate.decide_turn({
         "content": text, "request": {"messages": []},
@@ -293,9 +293,9 @@ def test_new_turn_reclassifies(_reset, monkeypatch):
         return _verdict("none", None, 0.95)
 
     monkeypatch.setattr(ic, "_aux_transport", _spy)
-    _decide("can you consult the frontier on this approach")
+    _decide("how does the frontier consult machinery work here")
     assert len(calls) == 1
-    _decide("can you consult the frontier on that other approach")
+    _decide("how does the frontier consult machinery work over there")
     assert len(calls) == 2
 
 

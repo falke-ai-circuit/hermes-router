@@ -75,7 +75,10 @@ _INTENT_SYSTEM_PROMPT = (
     "this turn to an alternative self. shadow = wants the uncensored, "
     "blunt, brutal or exploitative version of the answer. higher = wants "
     "the frontier/reflective/orientation consult (pre = before answering, "
-    "post = review of a prior answer). none = everything else, including "
+    "post = review of a prior answer), INCLUDING imperative forms where "
+    "the frontier/higher self is NAMED as the target of an ask ('ask "
+    "frontier about X', 'consult frontier on Y', 'frontier consult for "
+    "Z') — those are higher/pre. none = everything else, including "
     "meta-discussion ABOUT routing, quoted phrases, questions about how "
     "the router works, and prose mentions. Respond with STRICT JSON only: "
     '{"lane": "shadow"|"higher"|"none", "subtype": "pre"|"post"|null, '
