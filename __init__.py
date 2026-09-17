@@ -357,6 +357,16 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         except Exception:  # noqa: BLE001 — tap must never break the middleware
             logger.debug("uncensored-router tool-result tap error", exc_info=True)
 
+        # R11 anti-bypass capture: provider hosts in tool-call surfaces
+        # (content-free — host names only, per-turn keyed). Observability
+        # only; the audit fires at the POST turn close (bypass_watch).
+        try:
+            from . import bypass_watch as _bw
+
+            _bw.capture_from_request(request, session_id)
+        except Exception:  # noqa: BLE001 — capture must never break the turn
+            logger.debug("bypass-watch capture error", exc_info=True)
+
         # FIX 1 shim (2026-09-02): reconcile trailing refusals to delivered
         # renders — see _history_reconcile_pass.
         _history_reconcile_pass(request, session_id)
@@ -686,6 +696,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             return None
         if not isinstance(response_text, str) or not response_text.strip():
             return None
+
+        # R11 anti-bypass audit (POST turn close): provider-direct tool
+        # calls this turn with no route -> ONE content-free
+        # provider_direct_call_unrouted event (host + session only).
+        # Observability only — never blocks, never rewrites, returns None.
+        try:
+            from . import bypass_watch as _bw
+
+            _bw.audit_turn(session_id, _log_route)
+        except Exception:  # noqa: BLE001 — observability only
+            logger.debug("bypass-watch audit error", exc_info=True)
 
         case_sensitive = bool(_classification_cfg().get("case_sensitive", False))
         matches = classifier.scan_post(response_text, patterns=_post_patterns(), case_sensitive=case_sensitive)

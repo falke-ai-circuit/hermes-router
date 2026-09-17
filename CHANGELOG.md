@@ -1,3 +1,39 @@
+## 4.3.1 — 2026-09-17 (R11 leg 2: provider_direct_call_unrouted — anti-bypass observability)
+
+The second half of the R11 incident class: when an agent bypasses the
+router by hand-rolling a provider chat-completions call inside a tool
+(execute_code/terminal arguments), the turn is now DETECTABLE. The
+detection gap itself is fixed by 4.3.0's declared frontier family; this
+leg adds the observability signal for the bypass shape itself.
+
+- New `bypass_watch.py`: CAPTURE at on_llm_request (beside the tool-result
+  tap) scans the request's tool-call arguments + tool-result content for
+  known provider chat-completions hosts (inference-api.nousresearch.com,
+  api.abliteration.ai, api.venice.ai, openrouter.ai + parent-domain bare
+  forms; canonicalized longest-match per site). CONTENT-FREE: host names
+  only, never payload text. AUDIT at the POST hook (on_transform_llm_output
+  turn close): hosts captured this turn AND no route for the turn -> ONE
+  `provider_direct_call_unrouted` event (POST, host=<hosts>,
+  session_id) via _log_route. Observability ONLY — never blocks, never
+  rewrites, never gates a tool call (Goran 09-17 ruling).
+- Anti-FP has-route check keys on the TURN'S OWN route evidence (conductor
+  ruling 5): turn-claim registry first (any lane/source stamped by
+  claim_pass), then the session's render/anchor ledger records within the
+  capture window (covers TTL-evicted claims). Session-scoped + window-
+  scoped, so a routed turn's own banner/audit machinery — which calls the
+  SAME hosts — never masks or false-positives a different turn.
+- Turn-id rotation tolerance: capture records are per-session lists closed
+  by the audit (the middleware's last-seen pass rotates state turn ids
+  mid-turn; naive per-turn-id keys orphan captures — live-caught in dev).
+- Fail-open everywhere; deduped once per turn; malformed input inert.
+
+Tests: tests/test_r11_bypass_watch.py (8) — simulated raw-curl turn fires
+content-free event, routed turn never fires (claim + ledger paths),
+cross-session ledger does not mask, benign tool surface silent,
+once-per-turn dedupe, four-mandatory-hosts coverage, seam no-raise.
+Version 4.3.1. Suite 878 green (+3 pre-existing env-drift fails on clean
+tree).
+
 ## 4.3.0 — 2026-09-17 (R11: frontier imperative-consult family declared detection + aux prompt extension)
 
 Incident (operative 20260807_050731, conductor-verified): user turn
