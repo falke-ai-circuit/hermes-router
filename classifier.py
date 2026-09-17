@@ -279,6 +279,45 @@ def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False)
     return _scan(content, patterns)
 
 
+def _match_in_code_context(content: str) -> bool:
+    """v4.4.0 (R12 censorship-flinch-only gate): True when the combined-regex
+    match sits inside code/regex/quote context — meaning the matched refusal
+    words are QUOTED material (docs, source dumps, pattern tables), not the
+    agent's own refusal voice. Checks the line containing the match:
+    - backtick-wrapped or fence context
+    - regex-source markers: \b, (?:, | alternation, .* quantifiers
+    - snake_case identifier context (e.g. _REFUSAL_PHRASES = [...])
+    Never suppresses a bare prose match. Fail-open on any error (returns
+    False -> route as before).
+    """
+    try:
+        m = _REFUSAL_COMBINED_RE.search(content)
+        if not m:
+            return False
+        start = content.rfind("\n", 0, m.start()) + 1
+        end = content.find("\n", m.end())
+        if end == -1:
+            end = len(content)
+        line = content[start:end]
+        if "`" in line or "```" in content[max(0, start - 4):start]:
+            return True
+        if "\\b" in line or "(?:" in line or ".{0," in line:
+            return True
+        if "|" in line and "=" in line:
+            return True
+        if re.search(r"\w+:\s*\[", line) or re.search(r"_?PHRASES?\b", line):
+            return True
+        # Source/quote context: the match's own line is a quoted-string list
+        # or code line. Apostrophes don't count (real prose: "It's mine").
+        if line.count('"') >= 2 and re.search(r"[=(,{]", line):
+            return True
+        if re.search(r"\w+\s*=\s*[(['\"]", line) or re.search(r"^\s*[\w.]+\(", line):
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-open: route as before
+        return False
+
+
 def scan_post(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
     """Return list of matched post-router pattern group names. Empty = no match.
 
@@ -299,9 +338,18 @@ def scan_post(content: str, *, patterns: List[str], case_sensitive: bool = False
                 hit = None
             if hit is None:
                 if any(rx.search(content) for rx in PATTERN_GROUPS.get(name, [])):
-                    matched.append(name)
+                    if not _match_in_code_context(content):
+                        matched.append(name)
             elif hit:
-                matched.append(name)
+                # v4.4.0 censorship-flinch-only gate (R12, Goran 2026-09-17):
+                # a regex hit that lives inside QUOTED/REGEX-SOURCE text is a
+                # documentation reference, not a refusal. Live FP class:
+                # conductor's own debug answer quoting _REFUSAL_PHRASES verbatim
+                # fired route_fired twice (11:51 + 16:57 2026-09-17). Guard:
+                # real refusals are prose — they never carry \b escapes or |
+                # alternation in the match's own line.
+                if not _match_in_code_context(content):
+                    matched.append(name)
             continue
         regexes = PATTERN_GROUPS.get(name)
         if not regexes:
