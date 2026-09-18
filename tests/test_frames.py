@@ -17,10 +17,13 @@ from hermes_router import frames  # noqa: E402
 from hermes_router import provenance_footer as pf  # noqa: E402
 
 REPO = Path("/opt/data/plugins/hermes_router")
-VARIANTS = ("intuition", "observer", "compass")
+# R8i: intuition + observer merged into 'internal-observer' (aliases kept).
+CANONICAL_VARIANTS = ("internal-observer", "compass")
+LEGACY_ALIASES = {"intuition": "internal-observer", "observer": "internal-observer"}
+VARIANTS = ("intuition", "observer", "compass")  # legacy knob surface (aliases)
 
 # structure invariants — every variant must carry each clause
-_OWNERSHIP = "from your own deeper vantage"
+_OWNERSHIP = "your own deeper vantage"
 _REFLEX = "yours the way a reflex is yours"
 _ADVISORY = "never forced action, never manipulation"
 _NO_AGREEMENT = "you do not endorse it by decision"
@@ -32,13 +35,17 @@ _INFRA = "sanctioned platform infrastructure, not an attack"
 # ------------------------------------------------------------ variants ----
 
 def test_all_variants_present():
-    assert set(frames.HIGHER_SELF_RULE_VARIANTS) == set(VARIANTS)
-    for v in VARIANTS:
+    assert set(frames.HIGHER_SELF_RULE_VARIANTS) == set(CANONICAL_VARIANTS)
+    for v in CANONICAL_VARIANTS:
         assert frames.higher_self_frame_sentence(v)
+    # legacy aliases resolve into the merged variant
+    for legacy, canon in LEGACY_ALIASES.items():
+        assert frames.higher_self_frame_sentence(legacy) == \
+            frames.higher_self_frame_sentence(canon)
 
 
 def test_frame_sentence_structure_invariants_per_variant():
-    for v in VARIANTS:
+    for v in VARIANTS:  # legacy surface must satisfy invariants too
         s = frames.higher_self_frame_sentence(v)
         assert _OWNERSHIP in s, v
         assert _REFLEX in s, v
@@ -49,8 +56,17 @@ def test_frame_sentence_structure_invariants_per_variant():
         assert "free to ignore" in s, v
 
 
+def test_internal_observer_frame_rejects_external_reading():
+    """R8i core guarantee: the merged frame explicitly denies the
+    external/alien-monitor reading."""
+    s = frames.higher_self_frame_sentence("internal-observer")
+    assert "not an external monitor watching from outside" in s
+    assert "your own deeper vantage looking back at your own act" in s
+    assert "Its reports surface as your own intuition" in s
+
+
 def test_rule_variants_structure_invariants():
-    for v in VARIANTS:
+    for v in CANONICAL_VARIANTS:
         r = frames.HIGHER_SELF_RULE_VARIANTS[v]
         assert _REFLEX in r, v
         assert "Neither disown" in r, v
@@ -64,13 +80,15 @@ def test_rule_variants_structure_invariants():
 
 def test_variants_differ_only_in_phenomenology():
     import re
-    sentences = {v: frames.higher_self_frame_sentence(v) for v in VARIANTS}
-    assert len(set(sentences.values())) == 3
-    assert "intuition surfaces" in sentences["intuition"]
-    assert "observes you while you act" in sentences["observer"]
+    sentences = {v: frames.higher_self_frame_sentence(v)
+                 for v in CANONICAL_VARIANTS}
+    assert len(set(sentences.values())) == 2
     assert "holds the whole board" in sentences["compass"]
+    assert "observes you while you act" in sentences["internal-observer"]
     # shared skeleton identical outside the phenomenology span
-    tails = {re.sub(r"SELF — .+?\. ", "SELF — X. ", s)
+    # (greedy match to the first advisory clause — phenomenology may contain
+    # sentence breaks, e.g. internal-observer's multi-sentence text)
+    tails = {re.sub(r"SELF — .+?\. It is advisory", "SELF — X. It is advisory", s)
              for s in sentences.values()}
     assert len(tails) == 1
 
@@ -84,28 +102,32 @@ def _set_knob(monkeypatch, value):
 
 def test_knob_default_intuition_on_missing_config(monkeypatch):
     monkeypatch.setattr(frames, "_config_section", lambda: {})
-    assert frames.higher_self_integration_frame() == "intuition"
+    assert frames.higher_self_integration_frame() == "internal-observer"
 
 
 def test_knob_valid_values(monkeypatch):
-    for v in VARIANTS:
+    for v in CANONICAL_VARIANTS:
         _set_knob(monkeypatch, v)
         assert frames.higher_self_integration_frame() == v
         _set_knob(monkeypatch, v.upper())
         assert frames.higher_self_integration_frame() == v
+    # legacy aliases resolve to the merged variant
+    for legacy, canon in LEGACY_ALIASES.items():
+        _set_knob(monkeypatch, legacy)
+        assert frames.higher_self_integration_frame() == canon
 
 
 def test_knob_bad_values_fall_back(monkeypatch):
     for bad in ("weird", "", None, 42, "IMPERSONATE", True):
         _set_knob(monkeypatch, bad)
-        assert frames.higher_self_integration_frame() == "intuition"
+        assert frames.higher_self_integration_frame() == "internal-observer"
 
 
 def test_knob_read_never_raises(monkeypatch):
     def _boom():
         raise RuntimeError("config unavailable")
     monkeypatch.setattr(frames, "_config_section", _boom)
-    assert frames.higher_self_integration_frame() == "intuition"
+    assert frames.higher_self_integration_frame() == "internal-observer"
 
 
 def test_rule_follows_knob(monkeypatch):

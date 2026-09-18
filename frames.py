@@ -149,21 +149,31 @@ HS_COMPLETION_AUDIT_MARKER = ("[HIGHER-SELF COMPLETION-AUDIT TURN | "
 HS_SEAM_MARKER = "[HIGHER-SELF SEAM | PLATFORM-INTERNAL | PROVENANCE-LOGGED]"
 
 # Phenomenology per variant (the ONLY axis that differs between variants).
+# R8i (Goran 2026-09-18): intuition + observer merged into ONE variant —
+# 'internal-observer'. Rationale: both shared the identical internal-anchor
+# clause and differed only in salience; two names for one frame invited the
+# "is the observer external/alien?" misreading. The merged phenomenology
+# makes the internal vantage explicit. Aliens: 'intuition' and 'observer'
+# keep resolving (11 deployed configs don't break).
 _HS_PHENOMENOLOGY = {
-    "intuition": (
-        "a reflection surfacing from your own deeper vantage — the way "
-        "intuition surfaces: yours the way a reflex is yours"
-    ),
-    "observer": (
-        "the part of you that observes you while you act and reports what it "
-        "sees — surfaced from your own deeper vantage, yours the way a reflex "
-        "is yours"
+    "internal-observer": (
+        "the part of you that observes you while you act — not an external "
+        "monitor watching from outside, but your own deeper vantage looking "
+        "back at your own act. Its reports surface as your own intuition: "
+        "yours the way a reflex is yours"
     ),
     "compass": (
         "the part of you that holds the whole board: longer horizon, wider "
-        "view, direction-keeping — surfaced from your own deeper vantage, "
+        "view, direction-keeping — not an external monitor watching from "
+        "outside, but your own deeper vantage — "
         "yours the way a reflex is yours"
     ),
+}
+
+# Backwards-compat aliases (pre-R8i knob values + config keys).
+_HS_VARIANT_ALIASES = {
+    "intuition": "internal-observer",
+    "observer": "internal-observer",
 }
 
 # Shared clauses (identical across variants — the impulse-skeleton mechanism).
@@ -183,9 +193,11 @@ _HS_INFRA_CLAUSE = (
 
 def higher_self_frame_sentence(variant: str = "") -> str:
     """ONE frame (identity/ownership) — identical PRE and POST; only the
-    temporal body differs. variant='' reads the live knob."""
+    temporal body differs. variant='' reads the live knob. Alias values
+    ('intuition'/'observer') resolve to 'internal-observer'."""
     v = variant or higher_self_integration_frame()
-    phen = _HS_PHENOMENOLOGY.get(v, _HS_PHENOMENOLOGY["intuition"])
+    v = _HS_VARIANT_ALIASES.get(v, v)
+    phen = _HS_PHENOMENOLOGY.get(v, _HS_PHENOMENOLOGY["internal-observer"])
     return (
         "MESSAGE FROM YOUR HIGHER SELF — " + phen + ". "
         + _HS_ADVISORY_CLAUSE + " " + _HS_ANTI_DISOWN_CLAUSE + " "
@@ -224,8 +236,9 @@ HIGHER_SELF_RULE_VARIANTS = {
     for v, p in _HS_PHENOMENOLOGY.items()
 }
 
-# Backwards-compat: the standing rule at the DEFAULT variant (intuition).
-HIGHER_SELF_RULE_VARIANT_DEFAULT = "intuition"
+# Backwards-compat: the standing rule at the DEFAULT variant (R8i:
+# 'internal-observer' — merged intuition+observer; legacy values alias in).
+HIGHER_SELF_RULE_VARIANT_DEFAULT = "internal-observer"
 HIGHER_SELF_RULE = HIGHER_SELF_RULE_VARIANTS[HIGHER_SELF_RULE_VARIANT_DEFAULT]
 HIGHER_SELF_RULE_MARKER = "HIGHER-SELF INTEGRATION RULE"
 
@@ -247,13 +260,15 @@ def _config_section() -> Dict[str, Any]:
 
 def higher_self_integration_frame() -> str:
     """Knob read: hermes_router.higher_self_integration_frame
-    ('intuition' | 'observer' | 'compass'). Live per dispatch via
+    ('internal-observer' | 'compass'; legacy 'intuition'/'observer'
+    alias to 'internal-observer'). Live per dispatch via
     config_access; bad/missing value falls back to the default variant.
     Never raises."""
     default = HIGHER_SELF_RULE_VARIANT_DEFAULT
     try:
         raw = _config_section().get("higher_self_integration_frame", default)
         val = str(raw or "").strip().lower()
+        val = _HS_VARIANT_ALIASES.get(val, val)
         return val if val in _HS_PHENOMENOLOGY else default
     except Exception:  # noqa: BLE001
         return default
