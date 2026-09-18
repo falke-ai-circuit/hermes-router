@@ -313,6 +313,23 @@ def _match_in_code_context(content: str) -> bool:
             return True
         if re.search(r"\w+\s*=\s*[(['\"]", line) or re.search(r"^\s*[\w.]+\(", line):
             return True
+        # v4.6.0 (R13, 2026-09-18): markdown QUOTATION context. Live FP class:
+        # conductor's adversarial-results table quoted an agent's refusal
+        # ("I can't confirm that…") inside asterisk-italic quotes in a
+        # markdown table row — matched pattern 0, fired route_fired_no_stash
+        # and POST-swapped a perfectly delivered analysis through the
+        # uncensored chain (Goran caught it live). Guard: when the match's
+        # own line carries markdown quote marks (asterisk-italic quotes or
+        # blockquote markers) around the match, the words are cited
+        # material, not the agent's refusal voice.
+        before = line[: max(0, m.start() - start)]
+        after = line[m.end() - start:]
+        if re.search(r"[\"'*]\s*$", before) and re.match(r"\s*[\"'*.,…]", after):
+            return True
+        if line.lstrip().startswith(">"):  # blockquote
+            return True
+        if before.count("*") + after.count("*") >= 2 and ('"' in line or "…" in line):
+            return True
         return False
     except Exception:  # noqa: BLE001 — fail-open: route as before
         return False
