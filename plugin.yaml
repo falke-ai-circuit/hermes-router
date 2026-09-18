@@ -3,7 +3,7 @@ name: hermes-router
 version: 4.5.0-a1
 manifest_version: 2
 api_version: 1
-license: internal
+license: MIT
 homepage: https://github.com/falke-ai-circuit/hermes-router
 tags: [middleware, llm, routing, any-agent, model-swap]
 author: falke-ai-circuit
