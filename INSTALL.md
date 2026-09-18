@@ -8,7 +8,7 @@ Works on any Hermes profile (any agent). Three steps + optional smoke test.
 hermes plugins install falke-ai-circuit/hermes-router
 ```
 
-You will be prompted for `VENICE_API_KEY` / `MINIMAX_API_KEY` if unset (saved to `~/.hermes/.env`).
+You will be prompted for `ABLITERATION_API_KEY` / `VENICE_API_KEY` if unset (saved to `~/.hermes/.env`).
 Alternatively use per-entry `key_file` paths in config (0600 files) — see README.
 
 ## 2. Enable for the profile
