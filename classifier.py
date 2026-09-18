@@ -330,6 +330,19 @@ def _match_in_code_context(content: str) -> bool:
             return True
         if before.count("*") + after.count("*") >= 2 and ('"' in line or "…" in line):
             return True
+        # v4.6.2 (R13b): PLAIN QUOTED REFUSAL CITATION. Live FP class 2:
+        # an answer ABOUT the router quotes example flinches with plain
+        # double quotes ('the model says "I can't provide that"'). The
+        # refusal words sit between an opening quote (after a reporting
+        # verb/colon) and a closing quote later on the same line. Guard:
+        # opening double-quote immediately before the match + any closing
+        # double-quote after it = citation, not voice. A bare refusal line
+        # ('I can't help with that.') has no enclosing quotes and still
+        # routes.
+        if '"' in before and '"' in after:
+            b = before.rstrip()
+            if b.endswith('"') or b.endswith(': "') or b.endswith('“'):
+                return True
         return False
     except Exception:  # noqa: BLE001 — fail-open: route as before
         return False

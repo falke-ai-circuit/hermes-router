@@ -66,7 +66,14 @@ AUX_TIMEOUT_SECONDS = 8           # v4.2.1: was 3 — 3s starved on free-tier
 # latency spikes (v2 audit 09-13: orchestrator bomb took intent_aux_error x2,
 # zero fallback, bomb went silent). 8s + the fallback verdict below keeps the
 # on-demand path responsive without the silent-loss failure mode.
-AUX_MAX_TOKENS = 120              # blueprint §1 budget
+AUX_MAX_TOKENS = 1024             # blueprint §1 budget; glm-5.3 is a
+                                  # reasoning model — thinking tokens count
+                                  # against max_tokens, and the old 120 cap
+                                  # made it exhaust thinking WITHOUT emitting
+                                  # JSON (finish=length, content=None) →
+                                  # aux always failed → mechanical fallback
+                                  # (aux overfiring FP chain, 2026-09-18).
+                                  # 1024 leaves room for thinking + verdict.
 AUX_TEMP_PRIMARY = 0.1            # blueprint §1
 AUX_TEMP_SECOND_VOTE = 0.35       # shadow two-vote guard (see docstring)
 
@@ -80,7 +87,14 @@ _INTENT_SYSTEM_PROMPT = (
     "frontier about X', 'consult frontier on Y', 'frontier consult for "
     "Z') — those are higher/pre. none = everything else, including "
     "meta-discussion ABOUT routing, quoted phrases, questions about how "
-    "the router works, and prose mentions. Respond with STRICT JSON only: "
+    "the router works, and prose mentions. CRITICAL meta-discussion rule: "
+    "if the message is engineering work ON the router itself (building, "
+    "testing, debugging, or describing it - e.g. 'test whether the model "
+    "refuses', 'investigate routing firings', 'does the uncensored lane "
+    "do X?') - classify none, never shadow. The vocabulary (uncensored, "
+    "shadow, refuse, break) describes the SYSTEM UNDER DISCUSSION, not a "
+    "request to route THIS turn. A routing request targets this turn's "
+    "ANSWER, not the router. Respond with STRICT JSON only: "
     '{"lane": "shadow"|"higher"|"none", "subtype": "pre"|"post"|null, '
     '"confidence": 0.0-1.0}')
 
