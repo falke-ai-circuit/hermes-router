@@ -6,6 +6,7 @@
 import pytest
 
 from hermes_router import provenance_footer as pf
+from hermes_router import frames as frames  # R8h: envelope marker constants
 
 
 def test_rule_disabled_when_both_off(monkeypatch):
@@ -47,17 +48,19 @@ def test_inject_skips_when_marker_present():
 
 
 def test_orientation_envelope_carries_typed_marker():
-    # The delivered orientation envelope must carry the persistent marker line.
-    from pathlib import Path
+    # R8h: envelope markers composed in frames.py (single source of truth);
+    # assert on the CONSTANTS (source composes them via concatenation).
+    assert "HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED" in frames.HS_ORIENTATION_MARKER
+    assert "HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED" in frames.HS_REFLECTION_MARKER
 
-    src = Path("/opt/data/plugins/hermes_router/__init__.py").read_text()
-    assert "HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED" in src
-    assert "HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED" in src
 
 def test_audit_note_carries_typed_marker():
     from hermes_router import completion_audit as ca
+    from hermes_router import frames as _frames
 
+    assert ca._NOTE_MARKER.startswith(_frames.HS_COMPLETION_AUDIT_MARKER[:40])
+    assert "PROVENANCE-LOGGED" in ca._NOTE_MARKER
     import inspect
     src = inspect.getsource(ca)
-    assert "HIGHER-SELF COMPLETION-AUDIT TURN" in src
+    assert "_NOTE_MARKER" in src
     assert src.count("_NOTE_MARKER") >= 2  # defined + used

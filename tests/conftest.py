@@ -228,6 +228,7 @@ def _isolate_router_config(monkeypatch, request):
     _banner_section()/load_config + the _LAST_GOOD_SECTION cache."""
     from hermes_router import debug_banner as _dbg
     from hermes_router import provenance_footer as _pf
+    from hermes_router import frames as _frames  # R8h: rule injection lives here
     from hermes_router import router_core as _rc
     from hermes_router import persona_card as _pcard
 
@@ -246,6 +247,9 @@ def _isolate_router_config(monkeypatch, request):
     monkeypatch.setattr(_dbg, "_LAST_GOOD_SECTION", {}, raising=False)
     monkeypatch.setattr(_rc, "_complexity_cfg", lambda: {}, raising=True)
     monkeypatch.setattr(_pf, "higher_self_rule_enabled", lambda: False, raising=True)
+    # R8h: injection now dispatches through frames.py — pin BOTH bindings so
+    # the legacy pf re-export and the live frames import are both silenced.
+    monkeypatch.setattr(_frames, "higher_self_rule_enabled", lambda: False, raising=True)
     # 2026-09-09 leak fix: fleet config sets provenance_footer: true, which
     # appended live footers to every exact-delivery assertion (45 failures).
     # Same isolation class as the debug_banner/higher-self pins above.

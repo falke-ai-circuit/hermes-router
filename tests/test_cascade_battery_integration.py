@@ -169,10 +169,10 @@ def test_consult_output_carries_higher_self_frame(monkeypatch, caps_tmp):
 
     def _fake_stage(sid, rd, role="primary"):
         captured["orientation"] = rd.orientation
-        # The __init__ envelope builder composes this exact marker for an
-        # orientation consult (verbatim from the production template).
-        captured["frame"] = ("[HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED | "
-                             "INTERNAL | USER-INVISIBLE]" if rd.orientation else "")
+        # The __init__ envelope builder composes the orientation marker via
+        # frames.py (R8h: PROVENANCE-LOGGED metadata).
+        from hermes_router.frames import HS_ORIENTATION_MARKER
+        captured["frame"] = HS_ORIENTATION_MARKER if rd.orientation else ""
         return {"route_id": rd.route_id}
 
     monkeypatch.setattr(router_core, "stage_model_swap", _fake_stage)
