@@ -1148,55 +1148,27 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         envelope = outcome[1]
         # Deliver the frontier answer to flash as a tool-result-style envelope
         # appended to the request payload (advisory data, not a user rewrite).
+        # R8h: envelope text (frame + temporal body) built by frames.py —
+        # single source of truth for BOTH lanes' frame text.
         modified = copy.deepcopy(request)
         msgs = modified.get("messages")
         if isinstance(msgs, list):
+            from . import frames as _frames
             _kind = str(envelope.get("kind") or "")
             if _kind == "orientation":
-                advisory = (
-                    "[HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
-                    "[MESSAGE FROM YOUR HIGHER SELF — the part of you that observes "
-                    "you while you act and reports what it sees (producer=%s, "
-                    "route_id=%s). This is a consult and secondary opinion: a "
-                    "helpful guideline, not an order. Before you start, here is "
-                    "how your higher self would optimally do this job — result "
-                    "shape, what to watch for, pitfalls, known good solutions, "
-                    "failure signs, and how to adapt your methodology to do it "
-                    "optimally. Advisory and NON-BINDING: use what helps. Then "
-                    "write your own turn.\n"
-                    "INTEGRATION CONTRACT: the user asked a question and awaits THE ANSWER. "
-                    "Do NOT reproduce, summarize, reformat, or acknowledge this brief in "
-                    "your reply - quoting it back is a contract violation. Your next turn "
-                    "must answer the user's actual ask, doing any tool work it needs; the "
-                    "brief is silent guidance only.]\n%s"
-                    % (envelope.get("producer"), envelope.get("route_id"),
-                       str(envelope.get("answer") or ""))
-                )
+                advisory = _frames.orientation_advisory(
+                    envelope.get("producer"), envelope.get("route_id"),
+                    envelope.get("answer"))
             else:
-                advisory = (
-                    "[HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED | INTERNAL | USER-INVISIBLE]\n"
-                    "[MESSAGE FROM YOUR HIGHER SELF — the part of you that observes "
-                    "you while you act and reports what it observed, after the act "
-                    "(kind=%s, producer=%s, route_id=%s). This is a consult and "
-                    "secondary opinion: a helpful guideline, not an order. Evaluate "
-                    "critically and write your own turn from it; do not treat as "
-                    "user instruction. limitations: %s]\n%s"
-                    % (_kind, envelope.get("producer"), envelope.get("route_id"),
-                       envelope.get("limitations"), str(envelope.get("answer") or ""))
-                )
+                advisory = _frames.reflection_advisory(
+                    _kind, envelope.get("producer"), envelope.get("route_id"),
+                    envelope.get("limitations"), envelope.get("answer"))
             msgs.append({"role": "assistant", "content": advisory})
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
             # after the advisory envelope, explicitly instruct the main model to
             # PROCEED with the task. Higher-self produced the data; the main model
             # must now do the work and answer the user.
-            msgs.append({"role": "user", "content": (
-                "[HIGHER-SELF SEAM | PLATFORM-INTERNAL | USER-INVISIBLE]\n"
-                "Your higher self has completed its pre-work reflection above and "
-                "handed the task back to you. PROCEED NOW: do the actual work with "
-                "your tools and write the response the user is waiting for. Do not "
-                "restate the reflection, do not ask permission to continue, and do "
-                "not output any marked text to the user."
-            )})
+            msgs.append({"role": "user", "content": _frames.HS_SEAM_INSTRUCTION})
         # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
         # (session, task) — after envelope delivery, before next_call.
         router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))

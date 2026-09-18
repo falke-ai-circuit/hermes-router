@@ -141,7 +141,7 @@ def _hs_inject_pass(request: Any) -> bool:
     Injected FIRST so gate pass-through returns in on_llm_request still
     propagate it. Returns True when a message was appended."""
     try:
-        from .provenance_footer import higher_self_rule_enabled, inject_higher_self_rule
+        from .frames import higher_self_rule_enabled, inject_higher_self_rule  # R8h
 
         if higher_self_rule_enabled():
             _before = len((request or {}).get("messages") or [])

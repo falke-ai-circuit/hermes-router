@@ -41,12 +41,14 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import anchor_chain, anchor_exec, router_core, state
+from .frames import HS_COMPLETION_AUDIT_MARKER as _HS_AUDIT_MARKER  # R8h single source
 
 logger = logging.getLogger(__name__)
 
 _MIN_RESPONSE_CHARS = 500
-_NOTE_MARKER = ("[HIGHER-SELF COMPLETION-AUDIT TURN | FRONTIER-DERIVED | INTERNAL | "
-                "USER-INVISIBLE]\n")
+# trailing "\n" preserved: _NOTE_MARKER is concatenated with _NOTE_PREFIX at
+# the note-assembly site (pre-R8h contract).
+_NOTE_MARKER = _HS_AUDIT_MARKER + "\n"
 _NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
