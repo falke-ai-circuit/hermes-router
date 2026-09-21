@@ -267,6 +267,21 @@ def detect_model_override(content: str) -> Optional[Tuple[str, str, str, str]]:
                     continue
                 alias, model_id, source = alias_model
                 return (LANE_HIGHER_PRE, alias, model_id, source)
+            # R15 LEG 2 (Goran 09-21): bare 'consult <alias>' — the model
+            # name rides directly after the consult verb ('consult glm 5.3
+            # she is fromtier'). The phrase table above only had
+            # 'consult frontier using/with/via'; the alias phrasing fell
+            # through to NO ROUTE and the agent improvised a direct
+            # provider call. Resolve the post-verb payload against the
+            # frontier alias table; unknown alias -> None (silent fallback
+            # to primary, R7 rule preserved).
+            if norm.startswith("consult "):
+                rest = norm[len("consult "):].strip()
+                if rest:
+                    alias_model = _ac._resolve_with_source(rest, "frontier")
+                    if alias_model is not None:
+                        alias, model_id, source = alias_model
+                        return (LANE_HIGHER_PRE, alias, model_id, source)
             # 'second opinion' family: the model may sit AFTER the phrase
             # ('second opinion from luna on ...') or BEFORE it ('astra
             # second opinion'). Substring search either side.
@@ -590,7 +605,12 @@ def detect_declared_user(content: str) -> Optional[str]:
     (after normalization); prose mentioning a phrase mid-line/mid-sentence
     (echo/meta) never matches. A line beginning with a LONGER variant wins
     over a shorter prefix so 'route this through your shadow: x' never
-    half-matches a shorter phrase. Never raises."""
+    half-matches a shorter phrase. Never raises.
+
+    R15 LEG 2: (a) edit-distance <=2 fuzzy match on the consult-verb
+    families (consult/ask/frontier variants, words length >=5) — the
+    operative 'Vonsult frontier' typo previously fell through to the
+    complexity lane; (b) the strict path is unchanged and still wins."""
     try:
         best_lane: Optional[str] = None
         best_len = 0
@@ -623,7 +643,77 @@ def detect_declared_user(content: str) -> Optional[str]:
                         if len(phrase) > best_len or best_lane is None:
                             best_lane = pl
                             best_len = len(phrase)
+            # R15 LEG 2 fuzzy: only when the strict pass found nothing on
+            # this line AND nothing earlier. Directive-shaped line (starts
+            # with a fuzzy variant) with a consult/frontier family member
+            # within edit distance 2. Mixed-family lines (higher/shadow
+            # words present) stay with the aux intent classifier — its
+            # semantic vote owns family arbitration.
+            if best_lane is None and not _detect_declared_intent_loose(raw):
+                fuzzy = _fuzzy_declared_lane(norm)
+                if fuzzy is not None:
+                    return fuzzy
         return best_lane
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Fuzzy declared matching (R15 LEG 2): consult-verb + frontier-token only.
+# Conservative: max edit distance 2, words >=5 chars, single-line directive
+# shapes only (the _directive_lines echo guard already stripped quotes and
+# fences). A fuzzy hit is logged as declared_user_fuzzy for auditability.
+_FUZZY_MAX_DISTANCE = 2
+_FUZZY_MIN_WORD_LEN = 5
+# Family members eligible for fuzzy matching (consult/ask verbs + frontier
+# anchor token). Deliberately EXCLUDES the higher/shadow families — those
+# names are short and collision-prone ('higher' vs 'heights'); the frontier
+# incident class is the consult verb.
+_FUZZY_FAMILY_TOKENS = ("consult", "frontier")
+
+
+def _edit_distance_le(a: str, b: str, k: int) -> bool:
+    """True when levenshtein(a, b) <= k (banded DP, small strings only).
+    Never raises."""
+    try:
+        if abs(len(a) - len(b)) > k:
+            return False
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            best = i
+            for j, cb in enumerate(b, 1):
+                cost = 0 if ca == cb else 1
+                v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                cur.append(v)
+                best = min(best, v)
+            if best > k:
+                return False  # banded prune
+            prev = cur
+        return prev[-1] <= k
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fuzzy_declared_lane(norm: str) -> Optional[str]:
+    """R15 LEG 2 fuzzy match: a line whose FIRST word is within edit
+    distance 2 of 'consult' (or is a fuzzy 'frontier' token) claims the
+    higher-pre consult lane. Word length >=5; typo coverage is per the
+    fleet comms doctrine ('vonsult frontier' -> consult frontier). Never
+    raises."""
+    try:
+        if not isinstance(norm, str) or not norm:
+            return None
+        words = norm.split()
+        if not words or len(words[0]) < _FUZZY_MIN_WORD_LEN:
+            return None
+        head = words[0]
+        for token in _FUZZY_FAMILY_TOKENS:
+            if head == token:
+                continue  # strict path already handled exact words
+            if _edit_distance_le(head, token, _FUZZY_MAX_DISTANCE):
+                # 'vonsult frontier and dig deeper' — consult family.
+                return LANE_HIGHER_PRE
+        return None
     except Exception:  # noqa: BLE001
         return None
 

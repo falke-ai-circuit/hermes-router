@@ -46,6 +46,10 @@ PROVIDER_HOSTS = (
 )
 
 _EVENT_DETAIL = "provider_direct_call_unrouted"
+# R15 LEG 2 (Goran 09-21): one-line visibility banner appended to the
+# DELIVERED turn when the audit fires. Enforcement stays Goran's call —
+# this is provenance, not a block.
+UNROUTED_BANNER = "router: direct provider call detected, unrouted"
 # Turn window: audit state older than this is GC'd (a turn's tool bursts
 # complete well inside it; the POST fire is the same turn's close).
 _TURN_TTL_SECONDS = 1800.0
@@ -194,18 +198,26 @@ def _gc_locked(now: float) -> None:
             _TURNS.pop(sid, None)
 
 
-def audit_turn(session_id: str, log_route: Any) -> None:
+def audit_turn(session_id: str, log_route: Any) -> str:
     """POST-side audit: one content-free provider_direct_call_unrouted
     event per turn when provider hosts were used with no route. Closes
     every unaudited capture record for the session (turn id may have
-    rotated mid-turn). Never raises; never blocks."""
+    rotated mid-turn).
+
+    R15 LEG 2 (Goran 09-21): escalation from log-only to a one-line banner
+    append on the DELIVERED turn — "router: direct provider call detected,
+    unrouted". VISIBILITY ONLY: no enforcement, no blocking, no rewrite of
+    the turn's content beyond the appended line. Returns the banner string
+    ('' when nothing fired); the caller appends it to the delivered text.
+    Never raises; never blocks."""
+    banner = ""
     try:
         sid = _session_key(session_id)
         with _LOCK:
             _gc_locked(time.time())
             records = _TURNS.get(sid) or []
             if not records:
-                return
+                return ""
             pending = [r for r in records if not r.get("audited")]
             for r in records:
                 r["audited"] = True
@@ -215,16 +227,19 @@ def audit_turn(session_id: str, log_route: Any) -> None:
             hosts = sorted(set(hosts) | (r.get("hosts") or set()))
             start = float(r.get("start") or 0.0) if not start else start
         if not hosts:
-            return
+            return ""
         if _routed_this_turn(session_id, start):
-            return
+            return ""
+        banner = UNROUTED_BANNER
         try:
             log_route("POST", event_detail=_EVENT_DETAIL,
                       host=",".join(hosts), session_id=sid)
         except Exception:  # noqa: BLE001 — observability only
             pass
+        return banner
     except Exception:  # noqa: BLE001
         logger.debug("bypass_watch audit error", exc_info=True)
+        return banner
 
 
 def reset() -> None:

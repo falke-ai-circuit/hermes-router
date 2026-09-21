@@ -1,6 +1,6 @@
 # hermes-router — generic two-lane Hermes router plugin (manifest v2)
 name: hermes-router
-version: 4.6.2
+version: 4.7.0
 manifest_version: 2
 api_version: 1
 license: MIT
@@ -45,6 +45,9 @@ provides_tools:
   - router_status
   - router_control
 config_schema:
+  risk:
+    type: dict
+    description: "R15 risk-triggered consults: {enabled: bool (default true), mode: consult|audit_only|off (default consult), pre_lexicon: bool, semantic_stage2: bool, post_audit: bool}"
   endpoint:
     type: dict
     description: "Single render endpoint (legacy shape; chain supersedes) — LANE 1"

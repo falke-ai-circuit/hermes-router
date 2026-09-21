@@ -1,3 +1,55 @@
+## 4.7.0 — 2026-09-21 (R15: risk-triggered consults + on-demand consult fixes)
+
+Two legs, one release (spec: r15_risk_consult_spec, conductor go 09-21).
+
+LEG 1 — risk-triggered frontier consults (new `risk.py`):
+
+- Principle: risk = impact x reversibility, detected by the LANGUAGE of
+  consequential ops, never fleet-specific paths. R2 execution-risk (one
+  agent, recoverable) -> PRE consult; R3 irreversible/fleet -> PRE consult
+  + POST audit always; R1 advisory (propose/plan/analyze/design) = NOT
+  risk (complexity lane already owns those).
+- L1 deterministic lexicon (PRE, regex, zero cost, English): co-occurrence
+  rule — action verb AND (scope|target|irreversibility); two independent
+  marker classes required, a single verb never fires. Guards: meta/
+  hypothetical phrasing (`should we`, `what if`, `how risky`, ...) is
+  never risk; quoted/fenced lines stripped (R13 discipline); advisory
+  shapes (`design the production failover`) suppress the hit.
+- L2 semantic stage-2 on the EXISTING aux lane (hint-level L1 only):
+  "does this turn request a change that is hard to reverse or affects
+  multiple agents/systems?" -> risky/safe. Fail-open to NO-risk on any
+  aux error. Single semantic vote, R2 ceiling.
+- L3 POST complement: the completion-audit gate also fires when the
+  COMPLETED turn REPORTS R2/R3 actions against a live/fleet/config target
+  (applied/deployed/promoted/rotated/wrote to live...) and no PRE consult
+  fired — the "Proceed"-pattern catch. Existing higher-self machinery,
+  same budget/fail-open; turn-claim + once-per-task markers prevent
+  double-fire.
+- Consult mechanics identical to complexity: MODE_CONSULT, orientation
+  brief, advisory non-binding, never blocks execution (not a permission
+  system). Config block `risk: {enabled: true, mode: consult|audit_only|
+  off, pre_lexicon, semantic_stage2, post_audit}` — zero-config default ON.
+
+LEG 2 — on-demand consult fixes (route_gate / bypass_watch):
+
+- Fuzzy declared matching: edit-distance <=2 on the consult/frontier
+  family head word (>=5 chars) — 'vonsult frontier and dig deeper' now
+  claims the higher-pre lane instead of falling through to complexity.
+  Strict tables always win; higher/shadow families deliberately excluded
+  from fuzzy (collision-prone).
+- Bare 'consult <alias>' family ('consult glm 5.3 she is fromtier'):
+  resolves the post-verb payload against the frontier alias table and
+  routes a named-model override (declared_user, R7 user-only semantics).
+  Unknown alias -> silent fallback to primary.
+- bypass_watch escalation: provider_direct_call_unrouted now also appends
+  a one-line visibility banner to the DELIVERED turn ("router: direct
+  provider call detected, unrouted"). Provenance only — no enforcement,
+  no blocking (Goran 09-21 ruling).
+
+Tests: tests/test_r15_risk_consults.py (L1 matrix, L2 mock, L3 audit
+trigger, dispatch wiring, leg-2 fuzzy + alias + banner). Complexity lane
+behavior unchanged (regression suite green).
+
 ## 4.3.1 — 2026-09-17 (R11 leg 2: provider_direct_call_unrouted — anti-bypass observability)
 
 The second half of the R11 incident class: when an agent bypasses the

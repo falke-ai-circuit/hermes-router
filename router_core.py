@@ -945,6 +945,41 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "override_anchor", override)
 
+        # R15 LEG 1 — risk-triggered frontier consult (PRE). After the
+        # complexity lane: risk detection is orthogonal to complexity and
+        # the complexity lane must stay byte-identical. Consult mechanics
+        # identical (MODE_CONSULT, orientation brief, advisory, non-
+        # binding); reason carries the risk class. "audit_only"/"off"
+        # modes never PRE-consult. Never blocks: this returns a consult
+        # decision, not a block — fail-open on any error.
+        try:
+            from . import risk as _risk
+
+            if _risk.risk_enabled() and override != "anchor":
+                _rcfg = _risk.risk_cfg()
+                _rmode = str(_rcfg.get("mode") or "consult").strip().lower()
+                if _rmode == "consult" and bool(_rcfg.get("pre_lexicon", True)):
+                    _rcls, _rmeta = _risk.classify(
+                        user_text,
+                        pre_lexicon=True,
+                        semantic_stage2=bool(_rcfg.get("semantic_stage2", True)),
+                    )
+                    if _rcls in ("r2", "r3"):
+                        try:
+                            from hermes_router import _log_route as _lr
+                            _lr("PRE", session_id=session_id,
+                                event_detail="risk_consult_fire",
+                                risk_class=_rcls,
+                                stage=str(_rmeta.get("stage") or "stage1"),
+                                task_id=task_id)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
+                        return _dec(LANE_COMPLEXITY, MODE_CONSULT,
+                                    _primary_model(),
+                                    "risk_" + str(_rcls), orientation=True)
+        except Exception:  # noqa: BLE001 — risk lane must never break dispatch
+            pass
+
         # 3/4. Default: flash direct. Uncensored PRE match (if any) is applied
         # by the caller's existing path — lane recorded as uncensored.
         lane = LANE_UNCENSORED if uncensored_matched else LANE_UNCENSORED

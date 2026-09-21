@@ -701,12 +701,27 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # calls this turn with no route -> ONE content-free
         # provider_direct_call_unrouted event (host + session only).
         # Observability only — never blocks, never rewrites, returns None.
+        # R15 LEG 2: escalated from log-only to a one-line visibility banner
+        # appended to the DELIVERED turn (no enforcement, no blocking).
         try:
             from . import bypass_watch as _bw
 
-            _bw.audit_turn(session_id, _log_route)
+            _unrouted_banner = _bw.audit_turn(session_id, _log_route)
         except Exception:  # noqa: BLE001 — observability only
             logger.debug("bypass-watch audit error", exc_info=True)
+            _unrouted_banner = ""
+
+        def _attach_unrouted(text: str) -> str:
+            """R15 LEG 2: append the unrouted direct-call visibility banner
+            to the DELIVERED representation when one fired this turn. Empty
+            banner / empty text -> unchanged. Never raises."""
+            try:
+                b = str(_unrouted_banner or "")
+                if b and isinstance(text, str) and text.strip():
+                    return text + "\n\n" + b
+                return text
+            except Exception:  # noqa: BLE001
+                return text
 
         case_sensitive = bool(_classification_cfg().get("case_sensitive", False))
         matches = classifier.scan_post(response_text, patterns=_post_patterns(), case_sensitive=case_sensitive)
@@ -778,7 +793,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     return _dbp.append_banner(response_text, "\n" + _parked)
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
-            return None
+            # R15 LEG 2: benign pass-through is still a delivery edge —
+            # attach the unrouted direct-call banner when one fired. No
+            # banner -> None (pass-through contract unchanged).
+            return _attach_unrouted(response_text) if _unrouted_banner else None
 
         session_id = session_id or ""
         model = model or ""
@@ -1064,7 +1082,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 rendered = _dbp2.append_banner(rendered, "\n" + _parked)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
-        return rendered
+        # R15 LEG 2: render delivery edge — attach the unrouted direct-call
+        # visibility banner when one fired this turn.
+        return _attach_unrouted(rendered)
     except Exception as exc:  # noqa: BLE001 — hook must never raise
         logger.debug("uncensored-router post-router error: %s", exc)
         return None

@@ -470,6 +470,33 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _closure = False
             _fire = _closure
         if not _fire:
+            # R15 LEG 1 L3 (2026-09-21): the completed turn REPORTS R2/R3
+            # actions against a live/fleet/config target → audit fires
+            # regardless of the counter (the "Proceed"-pattern catch: terse
+            # ingress has no PRE signal, but the execution turn's content
+            # does). Double-fire is impossible: eligible()'s
+            # pre_consult_this_turn exclusion + the once-per-task marker +
+            # the turn-claim registry all still bind below. R3 actions
+            # audit ALWAYS; R2 reports only when no PRE consult fired this
+            # turn (same exclusion). audit_only/off risk modes still fire
+            # the L3 audit (it is the mode's whole purpose); the risk
+            # master switch is the only kill.
+            try:
+                from . import risk as _risk
+
+                if _risk.risk_enabled():
+                    _rcfg = _risk.risk_cfg()
+                    if bool(_rcfg.get("post_audit", True)) and \
+                            _risk.reports_consequential(response_text):
+                        _fire = True
+                        try:
+                            _log("risk_report_audit_trigger",
+                                 session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+            except Exception:  # noqa: BLE001 — L3 must never break the gate
+                pass
+        if not _fire:
             # >=3 tool-role messages in the outbound payload → audited even
             # on turn 1 (heavy work turn).
             try:
