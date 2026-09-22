@@ -381,4 +381,4 @@ def test_version_bumped():
     import yaml
     with open(os.path.join(PLUGIN_DIR, "plugin.yaml")) as fh:
         manifest = yaml.safe_load(fh)
-    assert manifest["version"] == "4.7.0"
+    assert manifest["version"] == "4.7.1"

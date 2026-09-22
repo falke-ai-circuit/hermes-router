@@ -466,6 +466,161 @@ def post_audit_min_turns() -> int:
 
 
 # ---------------------------------------------------------------------------
+# R16 (2026-09-22): N-turn consult cooldown keyed by normalized content hash.
+# Auto-lane consults (complexity_orientation + risk_r2/r3) on the same task
+# payload are suppressed until the session has done N turns of genuinely
+# different work. Cooldown key = (session_id, sha1(normalize(ingress)));
+# normalize(): lowercase, collapse whitespace runs, digits -> '#'. Work
+# counting = ingress turns whose OWN cooldown hash differs from K (repeated
+# same-hash watcher pings must NOT advance the counter — the motivating bug).
+# Declared/manual asks never reach the consult arms -> structural bypass.
+# Fail-open everywhere: advisory lane, never blocks a turn.
+# ---------------------------------------------------------------------------
+_COOLDOWN_LOCK = threading.Lock()
+_COOLDOWN_STATE: Dict[str, Dict[str, List]] = {}  # session -> hash -> [fire_ts, fire_turn]
+_COOLDOWN_MAX_KEYS = 256          # bounded dict per session (_ANCHOR_BANNERS pattern)
+_COOLDOWN_TTL_SECONDS = 24 * 3600
+
+
+def _cooldown_normalize(text: str) -> str:
+    """lowercase, collapse whitespace runs to single space, digits -> '#'.
+    Never raises."""
+    try:
+        t = re.sub(r"[0-9]+", "#", str(text or "").lower())
+        return re.sub(r"\s+", " ", t).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _cooldown_hash(session_id: str, text: str) -> str:
+    """sha1(normalize(text))[:12] — cooldown key half. Never raises."""
+    try:
+        import hashlib
+        return hashlib.sha1(
+            (str(session_id or "") + "\x00" + _cooldown_normalize(text))
+            .encode("utf-8", "replace")).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def consult_cooldown_turns() -> int:
+    """complexity.consult_cooldown_turns (int, default 5, 0=disabled) via
+    the canonical dual-block reader (legacy uncensored_router wins).
+    Public knob accessor — patchable in tests, same shape as
+    pre_cooldown_seconds/post_audit_min_turns. Never raises."""
+    try:
+        block = _complexity_cfg() or {}
+        return max(0, int(block.get("consult_cooldown_turns", 5)))
+    except Exception:  # noqa: BLE001
+        return 5
+
+
+def _consult_cooldown_knob() -> int:
+    """Internal alias — fail-open to 5 on accessor error."""
+    try:
+        return consult_cooldown_turns()
+    except Exception:  # noqa: BLE001
+        return 5
+
+
+def _record_cooldown_fire(session_id: str, cd_hash: str,
+                          ts: Optional[float] = None) -> None:
+    """Record a consult FIRE for key K: [ts, current_work_seq]. Bounded
+    256 keys per session, FIFO eviction (the internal "\x00seq" marker is
+    never evicted). Never raises."""
+    try:
+        if not cd_hash:
+            return
+        now = float(ts if ts is not None else time.time())
+        with _COOLDOWN_LOCK:
+            sess = _COOLDOWN_STATE.setdefault(str(session_id or ""), {})
+            marker = sess.get("\x00seq")
+            if cd_hash not in sess and len(sess) >= _COOLDOWN_MAX_KEYS:
+                for k in list(sess.keys()):
+                    if k != "\x00seq":
+                        sess.pop(k, None)  # FIFO: oldest real key evicted
+                        break
+            sess[cd_hash] = [now, int(marker[1]) if marker else 0]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _register_ingress(session_id: str, cd_hash: str) -> None:
+    """Advance the session's ingress-work sequence ONLY when this ingress's
+    cooldown hash differs from the previous registered one — repeated
+    same-hash watcher pings must NOT advance the counter (the motivating
+    bug). Registered for EVERY dispatch pass (plain work turns count too).
+    Never raises."""
+    try:
+        if not cd_hash:
+            return
+        with _COOLDOWN_LOCK:
+            sess = _COOLDOWN_STATE.setdefault(str(session_id or ""), {})
+            marker = sess.get("\x00seq")
+            if marker is None or marker[0] != cd_hash:
+                nxt = (marker[1] + 1) if marker else 1
+                sess["\x00seq"] = [cd_hash, nxt]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cooldown_turns_since(session_id: str, cd_hash: str) -> Optional[int]:
+    """Hash-different ingress turns since the last fire for key K, or None
+    when no live (TTL 24h) fire record exists. Never raises."""
+    try:
+        if not cd_hash:
+            return None
+        with _COOLDOWN_LOCK:
+            sess = _COOLDOWN_STATE.get(str(session_id or ""), {})
+            entry = sess.get(cd_hash)
+            marker = sess.get("\x00seq")
+        if not entry:
+            return None
+        fire_ts, fire_seq = entry
+        if (time.time() - float(fire_ts)) > _COOLDOWN_TTL_SECONDS:
+            return None  # TTL expired
+        cur_seq = int(marker[1]) if marker else 0
+        return max(0, cur_seq - int(fire_seq))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _consult_cooldown_active(session_id: str, user_text: str) -> bool:
+    """True when the auto-lane consult candidate must be suppressed.
+    Registers the candidate's ingress in the work sequence FIRST (a
+    suppressed same-hash ping must not corrupt the sequence), then checks
+    the fire record. Logs consult_cooldown_suppressed on a hit.
+    Fail-open False."""
+    try:
+        needed = _consult_cooldown_knob()
+        if needed <= 0:
+            return False
+        cd_hash = _cooldown_hash(session_id, user_text)
+        if not cd_hash:
+            return False
+        _register_ingress(session_id, cd_hash)
+        turns_since = _cooldown_turns_since(session_id, cd_hash)
+        if turns_since is None or turns_since >= needed:
+            return False
+        try:
+            from hermes_router import _log_route as _lr  # deferred - import cycle
+            _lr("PRE", session_id=session_id,
+                event_detail="consult_cooldown_suppressed",
+                cd_hash=cd_hash[:8], turns_since=turns_since, needed=needed)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return True
+    except Exception:  # noqa: BLE001 — advisory lane never blocks
+        return False
+
+
+def _cooldown_test_reset() -> None:
+    """Tests-only: clear cooldown state."""
+    with _COOLDOWN_LOCK:
+        _COOLDOWN_STATE.clear()
+
+
+# ---------------------------------------------------------------------------
 # Router tuning A1 (2026-09-09, Goran: "consults must be periodic, not
 # per-turn") — VERIFY-CLASS EXEMPT: short imperative confirm/status asks skip
 # PRE orientation entirely. Override ("anchor this") beats the exempt.
@@ -826,6 +981,11 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
     """
     task_id = task_id_for(session_id, user_text, model)
     now = time.time()
+    # R16: register every dispatch pass in the cooldown work sequence
+    # (hash-different turns advance; same-hash re-fires hold). Knob=0 is a
+    # cheap no-op short-circuit.
+    if _consult_cooldown_knob() > 0:
+        _register_ingress(session_id, _cooldown_hash(session_id, user_text))
 
     def _dec(lane: str, mode: str, target: Optional[str], reason: str,
              override: Optional[str] = None, orientation: bool = False) -> RouteDecision:
@@ -931,6 +1091,13 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                                 "complexity_" + str(meta.get("stage", "stage1")),
                                 override, orientation=False)
+                # R16: auto-lane consult candidate — cooldown check on the
+                # normalized content hash (declared/manual never reaches here).
+                if _consult_cooldown_active(session_id, user_text):
+                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                "consult_cooldown_suppressed")
+                _record_cooldown_fire(session_id,
+                                      _cooldown_hash(session_id, user_text))
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "complexity_orientation",
                             orientation=True)
@@ -965,6 +1132,13 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         semantic_stage2=bool(_rcfg.get("semantic_stage2", True)),
                     )
                     if _rcls in ("r2", "r3"):
+                        # R16: risk auto-consult inherits the same cooldown
+                        # map (same normalized-hash keying; risk_r2/r3 only).
+                        if _consult_cooldown_active(session_id, user_text):
+                            return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                        None, "consult_cooldown_suppressed")
+                        _record_cooldown_fire(
+                            session_id, _cooldown_hash(session_id, user_text))
                         try:
                             from hermes_router import _log_route as _lr
                             _lr("PRE", session_id=session_id,

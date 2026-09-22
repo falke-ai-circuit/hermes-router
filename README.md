@@ -147,6 +147,7 @@ hermes_router:
     enabled: true
     level: 3                          # 0-3, see table above; omit the block → auto level 2
     pre_mode: route                   # PRE orientation consults on complex-shaped asks
+    consult_cooldown_turns: 5         # R16: N hash-different turns before the same auto-lane consult re-bills (0=off)
     audit_mode: complex               # POST completion audits
     audit_topology: sync              # sync (45s fail-open budget) | async (next-turn)
     audit_sync_seconds: 45

@@ -259,5 +259,8 @@ def _isolate_router_config(monkeypatch, request):
     monkeypatch.setattr(_pcard, "persona_card_chars_budget", lambda: 0, raising=True)
     monkeypatch.setattr(_rc, "pre_cooldown_seconds", lambda: 0, raising=True)
     monkeypatch.setattr(_rc, "post_audit_min_turns", lambda: 1, raising=True)
+    # R16 (2026-09-22): consult cooldown pinned to legacy behavior (0=off)
+    # suite-wide unless a test enables it (same isolation class as above).
+    monkeypatch.setattr(_rc, "consult_cooldown_turns", lambda: 0, raising=True)
     yield
     _dbg._LAST_GOOD_SECTION.clear()

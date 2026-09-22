@@ -1,3 +1,36 @@
+## 4.7.1 — 2026-09-22 (R16: N-turn consult cooldown, normalized content hash)
+
+One problem, one fix (spec: r16_consult_cooldown_spec, Goran 09-22
+"more elegant is to have N turns before next consult"). Evidence: task
+hash 4bab25ef billed 16x + 10x on consecutive days (~$0.26) — one
+identical consult question re-billed every turn its manifest re-entered;
+near-duplicate pairs whose hashes differed ONLY by embedded mutating
+numbers (watcher PIDs/percentages) re-billed back-to-back.
+
+- WORK-DISTANCE COOLDOWN: auto-lane consults (complexity_orientation +
+  risk_r2/r3) on the same task payload are suppressed until the session
+  has done N turns of genuinely different work. Cooldown key =
+  (session_id, sha1(normalize(ingress))); normalize(): lowercase,
+  collapse whitespace, digits -> '#' — number-mutated watcher pings
+  resolve to the SAME key. Billing/task_id ledger untouched; keying only.
+- HASH-DIFFERENT COUNTING: the per-session work sequence advances ONLY
+  on ingress turns whose own normalized hash differs from the previous
+  one — repeated same-payload pings never satisfy the cooldown (that
+  was the motivating bug: literal N-turn counting would re-consult
+  every ~10 min under 2-min pings).
+- Suppressed candidate: PRE log `consult_cooldown_suppressed
+  cd_hash=<8> turns_since=<k> needed=<N>` (INFO), no billing, no banner.
+  Fail-open everywhere — advisory lane, never blocks a turn.
+- BYPASS (structural): declared_user/manual consult asks (incl. R15
+  alias/fuzzy declared) never reach the auto consult arms — they bill
+  as before, unaffected.
+- Bounded state: per-session dict max 256 keys FIFO + internal seq
+  marker, 24h TTL (_ANCHOR_BANNERS pattern). Config knob:
+  complexity.consult_cooldown_turns (default 5, 0=disabled=current
+  behavior) via the canonical dual-block reader; README documented;
+  conftest pins it off suite-wide (same isolation class as
+  pre_cooldown_seconds). 10 tests (tests/test_r16_consult_cooldown.py).
+
 ## 4.7.0 — 2026-09-21 (R15: risk-triggered consults + on-demand consult fixes)
 
 Two legs, one release (spec: r15_risk_consult_spec, conductor go 09-21).
