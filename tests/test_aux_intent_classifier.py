@@ -40,6 +40,8 @@ def _verdict(lane, subtype, confidence):
 @pytest.fixture()
 def _reset(monkeypatch):
     router_core._test_reset()
+    route_gate._AUX_CONSULT_LAST.clear()   # R18 pacing state — pre-R18 file
+    monkeypatch.setattr(router_core, "aux_consult_min_interval", lambda: 0)
     plugin.state.clear()
     state.reset_turn_identity(SID)
     route_gate.clear_declared(SID)

@@ -345,6 +345,8 @@ _QUOTE_LINE_PREFIXES = (">", '"', "'", ")")
 # Declared-claim freshness window (one consult per turn; mirrors the
 # pending-routes TTL scale).
 _CLAIM_TTL_SECONDS = 300.0
+# R18 (Goran 09-24): per-session last aux-consult fire ts, for burst pacing.
+_AUX_CONSULT_LAST: dict = {}
 
 # Leg 6 (initiator provenance): task_id -> claim source ("user"|"agent"|
 # "auto"), stamped at claim time in claim_pass, read by the billing sites
@@ -1175,6 +1177,34 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                 except Exception:  # noqa: BLE001 — observability only
                     pass
                 return GateDecision(route=False, reason="cap_denied")
+
+        # R18 (Goran 09-24): aux consult burst pacing — knob
+        # complexity.aux_consult_min_interval_sec (int, default 300,
+        # 0=disabled). Machine-detected aux_intent consults from one
+        # session are paced: no second aux consult within the interval
+        # (declared-user consults are NOT gated). Fail-open, never raises.
+        try:
+            from . import router_core as _rc_gate
+            _min_iv = _rc_gate.aux_consult_min_interval()
+            if _min_iv > 0:
+                _now = time.time()
+                _last = _AUX_CONSULT_LAST.get(str(session_id or ""), 0.0)
+                if _now - _last < _min_iv:
+                    try:
+                        _pkg_fn("_log_route")(
+                            "PRE", event_detail="aux_consult_interval_suppressed",
+                            lane=str(aux_lane), min_interval=_min_iv,
+                            since_last_s=round(_now - _last, 1),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return GateDecision(route=False,
+                                        reason="aux_consult_interval")
+                _AUX_CONSULT_LAST[str(session_id or "")] = _now
+                while len(_AUX_CONSULT_LAST) > 256:
+                    _AUX_CONSULT_LAST.pop(next(iter(_AUX_CONSULT_LAST)), None)
+        except Exception:  # noqa: BLE001 — pacing must never break the gate
+            logger.debug("aux consult interval gate error", exc_info=True)
 
         register_declared(session_id, aux_lane, SOURCE_AUX_INTENT)
         # R7 (Goran 09-13): model override is USER-ONLY. Aux verdicts are

@@ -241,16 +241,12 @@ def park_anchor_banner(session_id: str, banner_text: str,
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
         sid = str(session_id or "")
         txt = str(banner_text or "")[:MAX_BANNER_CHARS]
-        prev = _ANCHOR_BANNERS.get(sid, "")
-        if prev and txt and txt not in prev:
-            _tid = str(task_id or "")
-            if _tid and _tid in prev:
-                _ANCHOR_BANNERS[sid] = txt  # same call re-emitting: replace
-            else:
-                combined = (prev + chr(10) + txt)[:MAX_BANNER_CHARS * 3]
-                _ANCHOR_BANNERS[sid] = combined
-        else:
-            _ANCHOR_BANNERS[sid] = txt
+        # R18 (Goran 09-24): latest-wins. The old merge branch combined
+        # multiple consult banners parked within one turn into a multi-line
+        # block, which delivered as doubled banners on a single message.
+        # One delivered message carries at most ONE banner: the most recent
+        # consult's. Provenance for every billed call stays in the route log.
+        _ANCHOR_BANNERS[sid] = txt
     except Exception:  # noqa: BLE001
         pass
 

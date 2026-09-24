@@ -1,4 +1,28 @@
-## 4.7.1 — 2026-09-22 (R16: N-turn consult cooldown, normalized content hash)
+## 4.8.0 — 2026-09-24 (R18: single-banner delivery + aux consult burst pacing)
+
+Two fixes from evol's live behavior (Goran: "double frontier banners or
+calls god knows what" — both approved):
+
+1. **Latest-wins banner park** (`debug_banner.py`). The old park merged
+   multiple consult banners parked within one turn into a combined
+   multi-line block, delivering as doubled `· router ·` banners on a
+   single message. Now one delivered message carries at most ONE banner —
+   the most recent consult's. Full per-call provenance stays in the route
+   log; nothing is hidden, only deduplicated at the delivery seam.
+
+2. **Aux consult burst pacing** (`route_gate.py` + `router_core.py`).
+   Evidence: 6 machine-detected aux_intent consults in 19 minutes on one
+   session (~$0.05), R16's content-hash cooldown structurally unable to
+   catch it (her turns all differ). New knob
+   `complexity.aux_consult_min_interval_sec` (default 300, 0=disabled):
+   no second aux_intent consult per session within the interval.
+   Declared-user consults are NEVER gated. Suppression logged
+   (`aux_consult_interval_suppressed`), fail-open, bounded 256-key state.
+
+Tests: 951 passed / 2 skipped / 1 deselected. New:
+tests/test_r18_aux_pacing.py (7).
+
+
 
 One problem, one fix (spec: r16_consult_cooldown_spec, Goran 09-22
 "more elegant is to have N turns before next consult"). Evidence: task

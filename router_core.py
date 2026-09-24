@@ -523,6 +523,20 @@ def _consult_cooldown_knob() -> int:
         return 5
 
 
+def aux_consult_min_interval() -> int:
+    """complexity.aux_consult_min_interval_sec (int, default 300, 0=disabled)
+    via the canonical dual-block reader (legacy uncensored_router wins).
+    R18 (Goran 09-24): machine-detected aux_intent consults are paced per
+    session — no second aux consult within the interval. Declared-user
+    consults are never gated. Public knob accessor — patchable in tests.
+    Never raises."""
+    try:
+        block = _complexity_cfg() or {}
+        return max(0, int(block.get("aux_consult_min_interval_sec", 300)))
+    except Exception:  # noqa: BLE001
+        return 300
+
+
 def _record_cooldown_fire(session_id: str, cd_hash: str,
                           ts: Optional[float] = None) -> None:
     """Record a consult FIRE for key K: [ts, current_work_seq]. Bounded
