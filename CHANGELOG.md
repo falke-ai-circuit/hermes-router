@@ -1,3 +1,51 @@
+## 4.9.1 — 2026-09-26 (R19 step 2: decision_miner + POST leg, spec v1.1 §10)
+
+Build step 2 of the user-directed decision-lane extension. Still ships
+**dark** (`decision.enabled: false` AND `decision.post_audit: false`
+defaults).
+
+- `decision_miner.py` (new): bounded, resumable walk of the loading
+  profile's own session history (state.db messages — read-only URI,
+  sqlite_master-guarded, 2s timeout) + evol.jsonl, extracting
+  decision-shaped episodes into `decision_records` {id, ts,
+  situation_text (500c), options, chosen, outcome, outcome_ts|null,
+  source, provenance_tag ∈ mined|live|post_audit}. Detection reuses
+  `decision.detect()` marker families (aggressive semantics for sparse
+  historical prose) + outcome heuristics (error/undo/continue signals;
+  explicit user corrections weigh most). Storage: plugin-OWN state DB
+  (`hermes_router_state.db` — no core schema change) with FTS5 index +
+  resume cursors (sessions:last_ts, evol:offset) so re-runs dedupe and
+  only new rows are walked. Scan caps: `decision.miner_max_records`
+  (5000) + `decision.miner_scan_days` (90). Fail-open throughout —
+  corrupt DBs, missing tables and rotated ledgers all degrade to fewer
+  records, never raise.
+- Echo-loop guard at miner level: `lane_advisory`-tagged items are
+  rejected at write time AND excluded from retrieval in the SQL WHERE
+  clause and again in Python — the lane can never retrieve its own
+  advisories, by construction.
+- POST leg (spec §10.2): turn-close scan on the `transform_llm_output`
+  boundary (same seam as the R15 L3 completion audit) identifies
+  decision-shaped ACTIONS taken during the run (branch choices, retries,
+  aborts, option picks — bounded to 4/turn), frames+scores each via the
+  existing async worker, parks an advisory at the next delivery boundary
+  when the agent's choice contradicts strong precedent (high-confidence
+  apply_precedent against a retry/abort action), and writes EVERY
+  POST-audited decision to `decision_records` with
+  `provenance_tag=post_audit` — the precedent memory grows as a side
+  effect of operation. Level-gated on `decision.enabled` AND
+  `decision.post_audit`; dark default = total no-op.
+- Config additions (dual-block, documented in README):
+  `decision.post_audit: false`, `decision.miner_max_records: 5000`,
+  `decision.miner_scan_days: 90`.
+- tests/test_r19_decision_miner.py (new, 16 tests): fixture-DB extraction,
+  non-decision skip, evol mining, resume cursor (no duplicates + new-row
+  pickup), store cap, fail-open on corrupt/missing sources,
+  lane_advisory write rejection + retrieval exclusion, POST action
+  detection on a synthetic autonomous run, post_audit record write,
+  parked advisory on contradiction, dark-default no-op, garbage-input
+  fail-open.
+- Manifest bumped to 4.9.1; catalog pin test updated.
+
 ## 4.9.0 — 2026-09-26 (R19: Lane 3 `decision` — v0 DARK)
 
 New lane (spec v1.0-RC: research + analyst audit B1-B4 + frontier consult

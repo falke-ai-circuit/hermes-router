@@ -195,6 +195,9 @@ hermes_router:
     max_frame_chars: 4000
     max_snippet_chars: 500
     max_precedent_age_days: 90  # older precedents kept only when nothing recent exists, with an explicit no-recent-precedent signal
+    post_audit: false         # R19 step 2: POST turn-close scan of decision-shaped ACTIONS — dark default
+    miner_max_records: 5000   # decision_records store cap (plugin state DB)
+    miner_scan_days: 90       # miner walk window + retrieval age cap
 ```
 
 Semantics: precedents come from the profile's own state.db FTS (top-8,
@@ -207,6 +210,33 @@ can never cite itself. Precedents are shown as ids+timestamps only.
 Suppression is reason-coded (`breaker_open|cap_exhausted|timeout|
 parse_fail|no_frame`) with per-hour fire/None counters. Any error
 fail-opens to flash-direct.
+
+### Decision memory + POST leg (R19 step 2, spec §10, v4.9.1 — dark by default)
+
+- `decision_miner.py` — bounded, resumable walk of the profile's own
+  session history (state.db messages, read-only URI, sqlite_master-guarded)
+  plus evol.jsonl, extracting decision-shaped episodes into `decision_records`
+  in the plugin's OWN state DB (`hermes_router_state.db` — no core schema
+  change). Records carry {id, ts, situation_text (500c cap), options,
+  chosen, outcome, outcome_ts|null, source, provenance_tag ∈
+  mined|live|post_audit} with an FTS5 index and a resume cursor
+  (re-runnable, no duplicates). Detection reuses `decision.detect()`
+  marker families plus outcome heuristics (error/undo/continue signals;
+  explicit user corrections weigh most). Caps: `miner_max_records`
+  (5000) and `miner_scan_days` (90). Fail-open throughout.
+- The echo-loop guard applies at miner level too: `lane_advisory`-tagged
+  items are never stored and excluded from retrieval in both the WHERE
+  clause and Python.
+- POST leg — turn-close scan on the `transform_llm_output` boundary (same
+  seam as the R15 L3 completion audit): identifies decision-shaped ACTIONS
+  taken during the run (branch choices, retries, aborts, option picks),
+  frames+scores each via the existing async worker, parks an advisory at
+  the next delivery boundary when the agent's choice contradicts strong
+  precedent, and writes every POST-audited decision to
+  `decision_records` with `provenance_tag=post_audit` — the memory grows
+  as a side effect of operation. Level-gated: fires only when BOTH
+  `decision.enabled: true` AND `decision.post_audit: true` (default false
+  — dark, consistent with v0).
 
 ## Decision heads (optional)
 

@@ -65,6 +65,10 @@ DEFAULTS: Dict[str, Any] = {
     "max_snippet_chars": 500,
     "max_precedent_age_days": 90,
     "evol_tail_lines": 30,
+    # R19 step 2 (spec §10): POST leg + miner knobs
+    "post_audit": False,        # POST turn-close scan — dark default (v0)
+    "miner_max_records": 5000,  # decision_records store cap
+    "miner_scan_days": 90,      # miner walk window (also retrieval age cap)
 }
 
 # Provenance tag: stamped on every delivered advisory envelope AND excluded

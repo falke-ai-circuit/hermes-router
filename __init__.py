@@ -711,6 +711,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             logger.debug("bypass-watch audit error", exc_info=True)
             _unrouted_banner = ""
 
+        # R19 step 2 (spec §10.2): decision POST leg — turn-close scan for
+        # decision-shaped ACTIONS (branch choices, retries, aborts, option
+        # picks), frame+score via the existing async worker, parked advisory
+        # at the next delivery boundary on precedent contradiction, every
+        # audited decision written to decision_records (post_audit tag).
+        # Level-gated (decision.enabled AND decision.post_audit, both default
+        # false) — total no-op in the v0 dark default.
+        try:
+            from . import decision_miner as _dminer
+
+            _dminer.post_audit_scan(session_id, response_text, model=model,
+                                    context=context, log_route=_log_route)
+        except Exception:  # noqa: BLE001 — POST leg never breaks delivery
+            logger.debug("decision post-audit error", exc_info=True)
+
         def _attach_unrouted(text: str) -> str:
             """R15 LEG 2: append the unrouted direct-call visibility banner
             to the DELIVERED representation when one fired this turn. Empty
