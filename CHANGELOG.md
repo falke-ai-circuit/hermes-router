@@ -1,3 +1,43 @@
+## 4.9.0 — 2026-09-26 (R19: Lane 3 `decision` — v0 DARK)
+
+New lane (spec v1.0-RC: research + analyst audit B1-B4 + frontier consult
+fixes). Ships **disabled** (`decision.enabled: false` default) — dark
+build per the R19 pilot protocol, no deployment in this task.
+
+- `decision.py` (new): stage-1 detect (>=2 marker families at level 2;
+  level semantics mirror complexity LEVELS), build_frame (state.db FTS
+  top-8, same-git_repo_root preference, structured per-precedent
+  timestamps, 90d age cap + no-recent-precedent signal, 500c/4000c caps,
+  sqlite_master-guarded, read-only timeout 2s, bounded evol.jsonl tail,
+  all fail-open to {}), score() via a forked call path — NOT
+  aux_raw_call (no 45s timeout, no sleep-retry) — with own module-state
+  breaker (3 fails / 600s) + 20/h cap + 8s timeout. Async default
+  (worker off the turn path, advisory parked to next banner); sync only
+  as explicit level-3 opt-in.
+- Single-threshold ladder: conf >= 0.60 → advisory; below → escalate
+  into the existing MODE_CONSULT flow. No dead zone.
+- Injection hardening: delimiter + DATA-not-instruction framing,
+  JSON-substring stripping, decision validated against the lane-built
+  option set, confidence clamped [0,1], verdicts rejected when cited
+  precedent ids are not in the frame, precedents delivered as
+  ids+timestamps only.
+- Provenance: envelopes tagged `[decision-lane advisory]` and excluded
+  from future build_frame retrieval (echo loop impossible by
+  construction); every route-log line carries provenance.
+- Observability (analyst B4): reason-coded suppression logs
+  (breaker_open|cap_exhausted|timeout|parse_fail|no_frame) + per-hour
+  fire/None counters.
+- router_core: LANE_DECISION + MODE_DECISION_SCORE, `_decision_cfg()`
+  dual-block reader, `_lane_enabled` extended to honor
+  `decision.enabled` (default false — silent-dead trap closed), dispatch
+  branch AFTER complexity, fail-open to flash-direct.
+- tests/test_r19_decision_lane.py: 24 tests (default-OFF no-route,
+  fire-gate, async advisory, escalation, fail-open, single-banner,
+  forked-breaker independence + reason codes, injection rejections,
+  FTS-missing fail-open, provenance filter).
+- Housekeeping: stale version pin in test_r10_catalog_resolution (left
+  at 4.7.1 by the v4.8.0 release) updated; manifest bumped to 4.9.0.
+
 ## 4.8.0 — 2026-09-24 (R18: single-banner delivery + aux consult burst pacing)
 
 Two fixes from evol's live behavior (Goran: "double frontier banners or

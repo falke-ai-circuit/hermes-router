@@ -49,12 +49,14 @@ logger = logging.getLogger(__name__)
 
 LANE_UNCENSORED = "uncensored"
 LANE_COMPLEXITY = "complexity"
+LANE_DECISION = "decision"  # R19 Lane 3 (v0 dark: decision.enabled default false)
 
 MODE_FLASH_DIRECT = "flash_direct"
 MODE_PLAN = "plan"
 MODE_CONSULT = "consult"
+MODE_DECISION_SCORE = "decision_score"
 
-VALID_MODES = (MODE_FLASH_DIRECT, MODE_PLAN, MODE_CONSULT)
+VALID_MODES = (MODE_FLASH_DIRECT, MODE_PLAN, MODE_CONSULT, MODE_DECISION_SCORE)
 
 # Struggle thresholds (locked v3.0.0 subset)
 SAME_FAILURE_ESCALATE_N = 3      # (a) refusals/failures on same task-hash
@@ -719,6 +721,20 @@ def _complexity_cfg() -> Dict[str, Any]:
         return {}
 
 
+def _decision_cfg() -> Dict[str, Any]:
+    """Read the decision block (R19 Lane 3) — same dual-section discipline as
+    _complexity_cfg (debug_banner._banner_section profile-co-located fallback).
+    {} on miss. Never raises."""
+    try:
+        from . import debug_banner as _dbg
+
+        section = _dbg._banner_section()
+        block = (section or {}).get("decision") if isinstance(section, dict) else None
+        return dict(block) if isinstance(block, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def complexity_mode() -> str:
     """complexity.mode: "static" (default, v3.2.3 behavior) | "adaptive"
     (Phase 2). Unknown values degrade to static. Never raises."""
@@ -936,6 +952,13 @@ def _lane_enabled(lane: str) -> bool:
     Uncensored lane keeps its own _enabled() in __init__. Never raises.
     Reads via _complexity_cfg() (profile-co-located fallback, fix 2026-09-07)."""
     try:
+        if lane == LANE_DECISION:
+            # R19 Lane 3: decision.enabled is the ONLY switch and defaults
+            # FALSE (v0 ships dark) — without this explicit branch the
+            # legacy `lane != LANE_COMPLEXITY → True` fall-through silently
+            # enabled the lane for anyone setting any complexity knob.
+            block = _decision_cfg()
+            return bool(isinstance(block, dict) and block.get("enabled") is True)
         if lane != LANE_COMPLEXITY:
             return True
         block = _complexity_cfg()
@@ -1166,6 +1189,42 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                     _primary_model(),
                                     "risk_" + str(_rcls), orientation=True)
         except Exception:  # noqa: BLE001 — risk lane must never break dispatch
+            pass
+
+        # R19 Lane 3 — decision (v0 DARK). After complexity (complexity keeps
+        # precedence) and after the risk leg: cheap regex detection only; the
+        # scorer runs off the turn path (decision.handle_decision is invoked
+        # by dispatcher_pre._dispatch_pass on this lane/mode). Single ladder:
+        # the advisory escalates into MODE_CONSULT on low confidence — no
+        # dead zone (frontier #1). Any error -> fail-open to flash-direct.
+        try:
+            from . import decision as _dlane
+
+            if (_lane_enabled(LANE_DECISION)
+                    and override != "anchor"
+                    and not _is_system_injected_turn(user_text)):
+                _dcfg = _decision_cfg()
+                _dhit = _dlane.detect(user_text, int(_dcfg.get("level") or 2))
+                if _dhit:
+                    if _consult_cooldown_active(session_id, user_text):
+                        return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                    None, "consult_cooldown_suppressed")
+                    _record_cooldown_fire(
+                        session_id, _cooldown_hash(session_id, user_text))
+                    try:
+                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        _lr("PRE", session_id=session_id,
+                            event_detail="decision_detect_fire",
+                            lane=LANE_DECISION,
+                            families=",".join(_dhit["families"]),
+                            level=int(_dhit.get("level") or 2),
+                            task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    return _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
+                                "decision_detected:"
+                                + ",".join(_dhit["families"]))
+        except Exception:  # noqa: BLE001 — decision lane must never break dispatch
             pass
 
         # 3/4. Default: flash direct. Uncensored PRE match (if any) is applied

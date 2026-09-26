@@ -173,6 +173,41 @@ date-keyed under the profile home (`hermes-router-spend.json`). At/over cap → 
 anchored call is skipped (overflow), `cap_blocked` logged, spend visible in
 `router_status`. The cap is raise-only via `router_control`; lowering it is rejected.
 
+## Lane 3 — decision (R19, v0 DARK)
+
+Precedent-qualified advisory at decision points. v0 ships **dark**:
+`decision.enabled` defaults to **false** and the lane never routes unless
+explicitly enabled. Both dual config blocks (canonical `hermes_router:` and
+legacy `uncensored_router:`) honor the `decision` sub-block, mirroring the
+`complexity` block reader.
+
+```yaml
+hermes_router:
+  decision:
+    enabled: false            # v0 ships DARK — set true only for the pilot
+    level: 2                  # 0 off / 1 manual-only / 2 conservative (2+ marker families) / 3 aggressive (1 family)
+    mode: async               # async (default): scorer off the turn path, advisory parked to next banner. sync = explicit level-3 opt-in
+    confidence_threshold: 0.60  # single ladder: >= threshold → advisory; below → escalate to frontier consult (no dead zone)
+    score_timeout_seconds: 8  # scorer deadline; own call path, no retry
+    calls_per_hour: 20        # forked cap (does not share stage-2 counters)
+    breaker_fails: 3          # forked consecutive-failure breaker
+    breaker_cooldown_s: 600
+    max_frame_chars: 4000
+    max_snippet_chars: 500
+    max_precedent_age_days: 90  # older precedents kept only when nothing recent exists, with an explicit no-recent-precedent signal
+```
+
+Semantics: precedents come from the profile's own state.db FTS (top-8,
+same-git_repo_root preferred, per-snippet 500c / total 4000c caps,
+read-only timeout 2s) plus a bounded evol.jsonl tail. Advisories are
+non-binding envelopes delivered via the v4.8.0 parked-banner path
+(`lane="decision"`, one banner per delivery), tagged
+`[decision-lane advisory]` and excluded from future retrieval so the lane
+can never cite itself. Precedents are shown as ids+timestamps only.
+Suppression is reason-coded (`breaker_open|cap_exhausted|timeout|
+parse_fail|no_frame`) with per-hour fire/None counters. Any error
+fail-opens to flash-direct.
+
 ## Decision heads (optional)
 
 `decision_head.backend` selects how complexity is scored:

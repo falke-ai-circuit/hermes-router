@@ -416,6 +416,45 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
                            task_id=_decision.task_id,
                            session_id=session_id)
         return True  # flash proceeds; the anchored call happens at llm_execution
+    if _decision.lane == router_core.LANE_DECISION:
+        # R19 Lane 3 (v0 dark): advisory-only — the turn proceeds unchanged
+        # (flash direct); the scorer runs off the turn path (async default)
+        # and delivers via the parked-banner path. Fail-open: any error here
+        # degrades to legacy flash-direct (return False falls through).
+        try:
+            _plugin()._log_route("PRE", event_detail="decision_route_fired",
+                       lane=_decision.lane, mode=_decision.mode,
+                       reason=_decision.reason,
+                       route_id=_decision.route_id,
+                       task_id=_decision.task_id, session_id=session_id)
+            from . import decision as _dm
+
+            _esc = _dm.handle_decision(
+                session_id=session_id, task_id=_decision.task_id,
+                task_text=content, model=model,
+                log_route=_plugin()._log_route)
+            if _esc == "escalate":
+                # sync level-3 opt-in, low confidence: escalate into the
+                # EXISTING MODE_CONSULT flow (single threshold, no dead zone).
+                _consult = router_core.RouteDecision(
+                    task_id=_decision.task_id,
+                    lane=router_core.LANE_COMPLEXITY,
+                    mode=router_core.MODE_CONSULT,
+                    model_target=router_core._primary_model(),
+                    reason="decision_escalate_low_confidence",
+                    ts=_decision.ts, route_id=_decision.route_id,
+                    orientation=True)
+                if router_core.stage_model_swap(session_id, _consult) is not None:
+                    _plugin()._log_route(
+                        "PRE", event_detail="anchor_route_fired",
+                        lane=_consult.lane, mode=_consult.mode,
+                        model_target=_consult.model_target,
+                        reason=_consult.reason, override_used=None,
+                        route_id=_consult.route_id,
+                        content_chars=len(content), session_id=session_id)
+        except Exception:  # noqa: BLE001 — decision lane must never break PRE
+            logger.debug("decision lane dispatch error", exc_info=True)
+        return True
     if _decision.override_used:
         _plugin()._log_route("PRE", event_detail="override_skip",
                    route_id=_decision.route_id, session_id=session_id)
