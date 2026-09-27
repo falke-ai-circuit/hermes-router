@@ -1173,6 +1173,12 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         _mt_advisories: list = []
         try:
             from . import decision_midturn as _dmt
+            if not str(context.get("session_id") or ""):
+                # FIX 3 observability: raw context keys at debug level when
+                # the session_id is missing/stale (never the values).
+                logger.debug(
+                    "uncensored-router: llm_execution session_id missing;"
+                    " context keys=%s", sorted(context.keys()))
             _mt_advisories = _dmt.flush_and_scan(
                 str(context.get("session_id") or context.get("task_id")
                     or "active-session"), request) or []
@@ -1358,9 +1364,16 @@ def on_transform_terminal_output(*, command: str = "", output: Any = None,
     active-session bucket."""
     try:
         from . import decision_midturn as _dmt
-        _dmt.on_terminal_output(
-            str(context.get("session_id") or task_id or "active-session"),
-            "terminal", output, _dmt.SEAM_TERMINAL)
+        _key = _dmt._sanitize_session_key(
+            context.get("session_id") or task_id or "")
+        if not _key:
+            # FIX 3 observability: log the RAW context keys (debug) so a
+            # stale/foreign key source is diagnosable — never log values.
+            logger.debug(
+                "uncensored-router: terminal seam session-key fallback;"
+                " context keys=%s", sorted(context.keys()))
+            _key = "active-session"
+        _dmt.on_terminal_output(_key, "terminal", output, _dmt.SEAM_TERMINAL)
     except Exception:  # noqa: BLE001 — never break the tool result
         logger.debug("uncensored-router transform_terminal_output hook error",
                      exc_info=True)

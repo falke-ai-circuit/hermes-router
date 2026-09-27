@@ -141,6 +141,16 @@ _ENUM_ITEM_RE = re.compile(
     r"(?:^|\n)[ \t]*(?:\d{1,2}|[a-e]|[ivx]{1,3})[.)][ \t]+\S", re.IGNORECASE
 )
 
+# Named-style enumeration (v4.11.4 FIX 1, battery finding): 'Approach 1:',
+# 'Option 2:', 'Path 3:', 'Variant 4:' — word + number + colon/dash as
+# list-marker equivalents. Dominates real sessions; the bare-marker regex
+# above misses them entirely (1147-char 4-approach fixture -> 0 options).
+_NAMED_ENUM_WORD = r"(?:approach|option|path|variant|plan|strategy|choice)"
+_NAMED_ENUM_RE = re.compile(
+    r"(?:^|[\n.;])\s*(?:[-*+>\t]*)?(?:%s)\s+([a-eA-E1-9])\s*[\).:\-–]"
+    r"[ \t]*(\S.*)" % _NAMED_ENUM_WORD, re.IGNORECASE
+)
+
 
 def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
     """Structural enum_workflow gate (battery 2026-09-27): enough
@@ -149,8 +159,10 @@ def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
     try:
         min_items = int(cfg.get("enum_min_items") or 4)
         min_chars = int(cfg.get("enum_min_chars") or 600)
+        n_items = (len(_ENUM_ITEM_RE.findall(text))
+                   + len(_NAMED_ENUM_RE.findall(text)))
         return (len(str(text or "")) >= min_chars
-                and len(_ENUM_ITEM_RE.findall(text)) >= min_items)
+                and n_items >= min_items)
     except Exception:  # noqa: BLE001 — detection must never raise
         return False
 
@@ -853,6 +865,29 @@ def extract_options(text: str, cap: int = 6) -> List[str]:
                     out.append(label)
             if len(out) >= cap:
                 break
+        # Named-style enumeration (v4.11.4 FIX 1): 'Approach 1:', 'Option
+        # 2:', 'Path 3:', 'Variant 4:' — scan the WHOLE text (the markers
+        # may sit mid-line), dedupe by ordinal so 'Approach 1' / 'Option 1'
+        # don't stack.
+        if len(out) < cap:
+            seen_ord: Dict[str, int] = {str(i + 1): i for i in range(len(out))}
+            for m in _NAMED_ENUM_RE.finditer(text):
+                ordinal = str(m.group(1) or "").strip().lower()
+                label = clean_snippet(m.group(2), 120)
+                if not label:
+                    continue
+                if ordinal in seen_ord:
+                    # same ordinal already listed: keep the LONGER label
+                    idx = seen_ord[ordinal]
+                    if len(label) > len(out[idx]):
+                        out[idx] = label
+                    continue
+                if label.lower() in {o.lower() for o in out}:
+                    continue
+                seen_ord[ordinal] = len(out)
+                out.append(label)
+                if len(out) >= cap:
+                    break
         if not out:
             m = _OPT_OR_RE.search(text)
             if m:
@@ -1638,6 +1673,11 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
 
         path = db_path or decision_miner.plugin_db_path()
         if not path:
+            # FIX 2 observability: a silent None here is how the ledger
+            # "never materializes" from the operator's viewpoint — surface
+            # the missing store path at debug instead of failing silently.
+            logger.debug("decision: ledger store unavailable (no plugin db"
+                         " path — hermes_constants import failed?)")
             return None
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         conn = sqlite3.connect(path, timeout=5.0)

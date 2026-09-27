@@ -1,3 +1,27 @@
+## 4.11.4 — 2026-09-27 (battery findings: enumeration coverage + ledger observability + session-key sanitization)
+
+- FIX 1 (HIGH) — extract_options enumeration coverage: named-style
+  markers 'Approach 1:', 'Option 2:', 'Path 3:', 'Variant 4:' (plus
+  plan/strategy/choice) now enumerate as list-marker equivalents, scanned
+  across the WHOLE text (markers may sit mid-line), deduped by ordinal.
+  Also counted by the enum_workflow structural gate (enum_min_items /
+  enum_min_chars semantics unchanged). Evidence: a 1147-char 4-approach
+  fixture previously yielded 0 options -> now 4.
+- FIX 2 (HIGH) — ledger 'never materializes' root cause: the ledger write
+  path was never broken — decision_ledger / decision_counters live in
+  hermes_home/hermes_router_state.db (per profile), NOT the profile
+  state.db the operator inspected (analyst's store held 45 rows at
+  diagnosis time). Observability hardened: _ledger_connect logs at debug
+  when the store path is unavailable instead of returning a silent None;
+  creation+write unit tests added (fresh sqlite file -> one parked
+  verdict -> both tables exist, row + counters land).
+- FIX 3 (MEDIUM) — session-key sanitization: flush_and_scan and the
+  terminal seam accept only platform-shaped session keys (bounded, no
+  whitespace/control chars); stale/foreign keys fall back to the shared
+  active-session bucket with the RAW key logged at debug, and the
+  llm_execution path logs the raw context KEYS (never values) when
+  session_id is missing — the bleed source is now diagnosable.
+
 ## 4.11.2 — 2026-09-27 (R19.2 addendum 4: two-seam midturn detection)
 
 Conductor forensics: transform_tool_result is dead-from-birth on 0.21.4 —

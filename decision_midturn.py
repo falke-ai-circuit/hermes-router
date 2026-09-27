@@ -395,16 +395,42 @@ def flush(session_id: str) -> List[str]:
         return []
 
 
+def _sanitize_session_key(raw: Any) -> str:
+    """v4.11.4 FIX 3: accept only keys matching the platform session-id
+    shape (non-empty, bounded, no whitespace/control chars — a stale or
+    foreign context key like a repr-bleed string must never become ledger
+    state). Returns the sanitized key or "" (caller falls back)."""
+    try:
+        s = str(raw or "").strip()
+        if not s or len(s) > 128:
+            return ""
+        if re.search(r"[\s\x00-\x1f]", s):
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9._:@/\-+=]+", s):
+            return ""
+        return s
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
     """SEAM 2 entry — called from on_llm_execution (once per turn): first
     the turn-start sweep (previous-turn tool results + user ingress,
     seam=turn_boundary), then the pending-advisory flush (a verdict staged
     by SEAM 1 last turn, or by this scan in 'on' mode) rides into the
     in-flight request. Shadow mode: sweep logs + ledgers only, flush
-    returns []. Never raises."""
+    returns []. Session key is sanitized (FIX 3) — invalid keys fall back
+    to the shared active-session bucket with a debug log of the raw key.
+    Never raises."""
     try:
-        sweep_turn_start(session_id, request)
-        return flush(session_id)
+        key = _sanitize_session_key(session_id)
+        if not key:
+            logger.debug(
+                "decision_midturn: unsanitized session key fallback"
+                " raw=%r", str(session_id)[:200])
+            key = "active-session"
+        sweep_turn_start(key, request)
+        return flush(key)
     except Exception:  # noqa: BLE001
         return []
 
