@@ -92,6 +92,10 @@ DEFAULTS: Dict[str, Any] = {
     "enum_min_items": 4,
     "enum_min_chars": 600,
     "provenance_window_chars": 80,  # R19.1 LEG 1: marker scan window
+    # R19.2 midturn decision hook (on_llm_execution seam): off | shadow | on.
+    # Ships DARK fleet-wide (off = fully silent). shadow = detect+log+ledger
+    # (calibration data, first-class rows). on = dispatch + advisory append.
+    "midturn": "off",
 }
 
 # Provenance tag: stamped on every delivered advisory envelope AND excluded
@@ -783,7 +787,11 @@ def pending_workers() -> int:
 REASON_SKIP = "skip_decision"
 STAND_DOWN_CHOICE = "stand_down"  # §7(d): lane-injected escape option
 TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
-                 "manual": "on_demand", "midturn": "on_demand"}
+                 "manual": "on_demand", "midturn": "on_demand",
+                 # R19.2: the midturn HOOK (on_llm_execution seam) gets its
+                 # own ledger trigger kind — distinct from the declared
+                 # midturn on_demand claim.
+                 "midturn_hook": "midturn_hook"}
 
 
 def trigger_kind(trigger: str) -> str:
@@ -1608,7 +1616,11 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   verdict_json TEXT NOT NULL DEFAULT '',
   envelope_hash TEXT NOT NULL DEFAULT '',
   follow_verdict INTEGER NOT NULL DEFAULT 0,
-  trigger_kind TEXT NOT NULL DEFAULT ''
+  trigger_kind TEXT NOT NULL DEFAULT '',
+  delta_source TEXT NOT NULL DEFAULT '',
+  fork_signature TEXT NOT NULL DEFAULT '',
+  midturn_mode TEXT NOT NULL DEFAULT '',
+  envelope_ids TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -1635,6 +1647,13 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
                 conn.execute("ALTER TABLE decision_ledger"
                              " ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT ''")
                 conn.commit()
+            # R19.2 midturn hook columns (drift migration, best-effort)
+            for _ncol in ("delta_source", "fork_signature", "midturn_mode",
+                          "envelope_ids"):
+                if _ncol not in cols:
+                    conn.execute("ALTER TABLE decision_ledger ADD COLUMN %s"
+                                 " TEXT NOT NULL DEFAULT ''" % _ncol)
+                    conn.commit()
         except Exception:  # noqa: BLE001 — migration best-effort
             pass
         return conn
@@ -1689,7 +1708,9 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
         cols = ("ts", "session_id", "task_id", "trigger", "trigger_kind",
                 "fork_class", "options_hash", "model", "model_version", "choice",
                 "confidence", "fail_open_reason", "actual_choice", "outcome",
-                "verdict_json", "envelope_hash", "follow_verdict")
+                "verdict_json", "envelope_hash", "follow_verdict",
+                "delta_source", "fork_signature", "midturn_mode",
+                "envelope_ids")
         vals = []
         for c in cols:
             v = row.get(c)

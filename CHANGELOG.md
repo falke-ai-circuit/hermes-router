@@ -1,3 +1,41 @@
+## 4.11.0 — 2026-09-27 (R19.2: midturn decision hook at on_llm_execution)
+
+Zero-agency midturn detection: agent-initiated reflex was proven dead
+(0/3 live tasks), so the hook watches the traffic that ALREADY flows —
+every in-run LLM call passes the `on_llm_execution` seam. Ships **dark**
+(`decision.midturn: off` default fleet-wide).
+
+- LEG 1 DETECTION (`decision_midturn.py`): per-(session, run) delta
+  tracking — only NEW messages since the previous LLM call of the same
+  run are scanned; the target surface is TOOL RESULTS (harness verdicts,
+  candidate lists, conflicting evidence). Reuses the R19.1 provenance
+  filter (bracketed platform envelopes skipped) and the decision
+  detect() options-structure regex. Config gate `decision.midturn`:
+  `shadow` (detect+log+ledger, never appends) | `on` | `off`.
+- COOLDOWN + CAPS: 600s cooldown per normalized fork signature (R16
+  normalized-hash machinery); max 50 verdicts per run (ledger rows
+  beyond the cap still recorded, calls not made); global decision
+  breaker unchanged.
+- LEG 2 DISPATCH (mode `on` only): fork detected -> causal envelope
+  (agent frame, options from the tool result, ledger priors) ->
+  backend -> typed verdict -> ONE advisory envelope appended to the
+  in-flight request context with provenance-stamped header
+  '[ROUTER ADVISORY — decision lane; banner at turn close; may ignore]'
+  + verdict + why_not. Never rewrites model/tool content, never blocks,
+  fail-open on any error (reason-coded).
+- LEG 3 AGGREGATE BANNER (turn close): midturn verdicts never emit
+  their own banner mid-run; at POST/turn close, >=1 consumed verdict
+  parks ONE aggregate banner via the existing park/consume mechanics:
+  '· router · decision | midturn x<N> | <choice histogram, capped at 4
+  buckets + other> | tok <n/n> | $<total> | initiator=agent'. Exactly
+  1 verdict -> current single-verdict banner format with
+  trigger=midturn. Full per-verdict detail lives only in the ledger +
+  router log.
+- LEG 4 LEDGER: trigger kind `midturn_hook`; new columns `delta_source`
+  (`tool_result`), `fork_signature`, `midturn_mode` (shadow|on),
+  `envelope_ids` (schema + drift migration). Shadow rows are
+  first-class calibration data.
+
 ## 4.10.3 — 2026-09-27 (R19.1: provenance filter + on-demand PRE fix + reason-coded backend failures)
 
 R19.1 fix bundle on live-replay evidence. Still **dark** (no enabled-flip).

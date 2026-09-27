@@ -740,6 +740,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — POST leg never breaks delivery
             logger.debug("decision post-fork-scan error", exc_info=True)
 
+        # R19.2 LEG 3: midturn decision hook — aggregate banner at turn
+        # close. Midturn verdicts NEVER emit their own banner mid-run (no
+        # delivery boundary exists there); when >=1 verdict was consumed
+        # this run, park ONE aggregate banner (or the single-verdict format
+        # for exactly 1) via the existing park/consume mechanics — the
+        # consume sites below deliver it at the turn's actual delivery edge.
+        # Mode-gated upstream (decision.midturn) — total no-op when off.
+        try:
+            from . import decision_midturn as _dmt
+            from . import debug_banner as _dbmt
+
+            _mt_banner = _dmt.close_turn(session_id)
+            if _mt_banner:
+                _dbmt.park_anchor_banner(session_id, _mt_banner,
+                                         task_id="midturn")
+        except Exception:  # noqa: BLE001 — banner must never break delivery
+            logger.debug("decision midturn banner error", exc_info=True)
+
         def _attach_unrouted(text: str) -> str:
             """R15 LEG 2: append the unrouted direct-call visibility banner
             to the DELIVERED representation when one fired this turn. Empty
@@ -1147,8 +1165,29 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
     """
     try:
         session_id = str(context.get("session_id") or "")
+        # R19.2 midturn decision hook — watch the traffic that already flows.
+        # LEG 1 detection on the new-messages delta; LEG 2 (mode 'on' only)
+        # returns advisory envelope texts to append to the in-flight request.
+        # Fail-open: any error -> no advisories, call proceeds unchanged.
+        _mt_advisories: list = []
+        try:
+            from . import decision_midturn as _dmt
+            _mt_advisories = _dmt.on_llm_call(session_id, request) or []
+        except Exception:  # noqa: BLE001 — hook must never break the call
+            _mt_advisories = []
+        if not isinstance(_mt_advisories, list):
+            _mt_advisories = []
         rec = router_core.peek_pending_swap(session_id)
         if rec is None:
+            if _mt_advisories:
+                modified = copy.deepcopy(request)
+                msgs = modified.get("messages")
+                if isinstance(msgs, list):
+                    for _adv in _mt_advisories:
+                        if _adv:
+                            msgs.append({"role": "assistant",
+                                         "content": str(_adv)})
+                    return next_call(modified)
             return next_call(request)
 
         # Consume the staged swap now — exactly-once semantics.
@@ -1218,6 +1257,12 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             # PROCEED with the task. Higher-self produced the data; the main model
             # must now do the work and answer the user.
             msgs.append({"role": "user", "content": _frames.HS_SEAM_INSTRUCTION})
+        # R19.2: merge any midturn advisory envelopes into the anchored
+        # path too (advisory data appended, never a rewrite).
+        if _mt_advisories:
+            for _adv in _mt_advisories:
+                if _adv:
+                    msgs.append({"role": "assistant", "content": str(_adv)})
         # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
         # (session, task) — after envelope delivery, before next_call.
         router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))
