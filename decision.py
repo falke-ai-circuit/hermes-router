@@ -82,6 +82,7 @@ DEFAULTS: Dict[str, Any] = {
     "caps": {"per_run": 20, "per_session": 100, "global_daily": 1000},
     "ledger_max_rows": 5000,    # bounded state: append-only ledger row cap
     "backend_timeout_seconds": 15,
+    "misfire_confidence": 0.9,  # §7(e): POST high-conf answers = misfire class
 }
 
 # Provenance tag: stamped on every delivered advisory envelope AND excluded
@@ -421,6 +422,14 @@ def hourly_counters() -> Dict[str, int]:
                 "none": int(_HOURLY.get("none") or 0)}
 
 
+def breaker_state() -> Dict[str, Any]:
+    """Diagnostic: forked breaker state (tests + conductor inspection)."""
+    with _D_LOCK:
+        return {"fails": int(_D_FAILS),
+                "opened_at": _D_BREAKER_OPENED_AT,
+                "open": _D_BREAKER_OPENED_AT is not None}
+
+
 def reset_limits() -> None:
     """Tests-only: clear forked breaker + cap state."""
     global _D_FAILS, _D_BREAKER_OPENED_AT
@@ -733,6 +742,17 @@ def pending_workers() -> int:
 # ===========================================================================
 
 REASON_SKIP = "skip_decision"
+STAND_DOWN_CHOICE = "stand_down"  # §7(d): lane-injected escape option
+TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
+                 "manual": "on_demand", "midturn": "on_demand"}
+
+
+def trigger_kind(trigger: str) -> str:
+    """§5.7 ledger trigger kind: pre_fork | post_fork_scan | on_demand."""
+    try:
+        return TRIGGER_KINDS.get(str(trigger or ""), "pre_fork")
+    except Exception:  # noqa: BLE001
+        return "pre_fork"
 REASON_ON_DEMAND_DISABLED = "on_demand_disabled"
 REASON_PRE_OFF = "pre_off"
 REASON_NO_OPTIONS = "no_options"
@@ -756,8 +776,9 @@ _FORK_DOC_RE = re.compile(r"\b(doc|document|write ?up|note|log|readme)\b", re.IG
 # "option c: foo" — µs-cheap, closed options FROM THE ASK only (§3.4).
 _OPT_LINE_RE = re.compile(
     r"^[ \t]*(?:[-*+>[ \t]*)?\(?(?:option[ \t]+)?([a-dA-D1-4])[\).:\] \t-][ \t]*(.{1,160})")
-# prose alternative: "X ... or Y" fallback (max 2 options)
-_OPT_OR_RE = re.compile(r"\b([A-Za-z][\w .\-]{1,60}?)\s+or\s+([A-Za-z][\w .\-]{1,60})\b")
+# prose alternative: "X ... or Y" fallback (max 2 options). ')' tolerated in
+# labels so inline "a) kafka or b) rabbitmq" forks enumerate cleanly.
+_OPT_OR_RE = re.compile(r"\b([A-Za-z][\w .\-)]{0,59}?)\s+or\s+([A-Za-z][\w .\-)]{0,59})\b")
 
 OPTION_ID_FMT = "opt-%d"
 
@@ -869,12 +890,18 @@ def detect_v3(text: str, level: Optional[int] = None,
                 return {"trigger": "manual", "families": ["manual_ask"],
                         "options": extract_options(text),
                         "level": int(level or 0)}
-        # heuristic PRE: same conservative family gate as v0 detect()
-        v0 = detect(text, level)
-        if v0 is None:
+        # heuristic PRE — STRUCTURAL default-deny (user-locked §2): the ask
+        # itself must contain the enumerated fork. No options present ->
+        # the lane never fires (68% misfire case unreachable). Cheap regex
+        # on option structure; NO semantic model at the trigger layer.
+        opts = extract_options(text)
+        if not opts:
             return None
-        return {"trigger": "pre", "families": v0["families"],
-                "options": extract_options(text), "level": v0["level"]}
+        families = sorted(
+            name for name, rx in _FAMILIES_RE.items() if rx.search(text))
+        return {"trigger": "pre", "families": families,
+                "options": opts,
+                "level": int(level or 0)}
     except Exception:  # noqa: BLE001 — detection must never raise
         return None
 
@@ -959,8 +986,12 @@ def build_envelope(session_id: str, ask: str, options: List[str],
             "question": {
                 "type": "choose_one_with_confidence",
                 "text": ("Choose exactly one option id. Respond with ONLY JSON: "
-                         '{"choice": "<option id>", "confidence": <0..1>, '
+                         '{"choice": "<option id>" | "stand_down", '
+                         '"confidence": <0..1>, '
                          '"alternatives": [<runner-up option ids>]}. '
+                         'If no decision is actually requested by this fork, '
+                         'respond {"choice": "stand_down", "confidence": 0, '
+                         '"alternatives": []}. '
                          "Alternatives must be option ids other than the choice "
                          "(why-not runner-up ordering); use [] when none apply."),
             },
@@ -1045,8 +1076,10 @@ def render_prompt(envelope: Dict[str, Any]) -> str:
             "[[[ OPTIONS START ]]]\n%s\n[[[ OPTIONS END ]]]\n"
             "[[[ SLICE START ]]]\n%s\n[[[ SLICE END ]]]\n"
             "TASK: choose exactly one option id. Respond with ONLY a JSON "
-            'object: {"choice": "<option id>", "confidence": <0..1>, '
-            '"alternatives": [<option ids, runner-up first>]} — no prose.'
+            'object: {"choice": "<option id>" | "stand_down", '
+            '"confidence": <0..1>, '
+            '"alternatives": [<option ids, runner-up first>]} — no prose. '
+            'If no decision is actually requested, choose "stand_down".'
             % (str(s1.get("frame") or "")[:800], risk, advice,
                str(s1.get("causal_context") or "")[:1200],
                "\n".join(opt_lines) or "(none)",
@@ -1084,6 +1117,14 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
         if not ids:
             return None, REASON_NO_OPTIONS
         choice = data.get("choice")
+        # §7(d): the lane injects ONE escape option — "stand_down" (no
+        # decision actually requested). It is lane-built, never model-sourced.
+        if choice == STAND_DOWN_CHOICE:
+            alts = data.get("alternatives", [])
+            if alts not in (None, []):
+                return None, REASON_MALFORMED
+            return {"choice": STAND_DOWN_CHOICE, "confidence": 0.0,
+                    "alternatives": []}, "ok"
         if not isinstance(choice, str) or choice not in ids:
             return None, REASON_MALFORMED  # not in the lane-built option set
         conf = data.get("confidence")
@@ -1289,7 +1330,8 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   outcome TEXT NOT NULL DEFAULT 'pending',
   verdict_json TEXT NOT NULL DEFAULT '',
   envelope_hash TEXT NOT NULL DEFAULT '',
-  follow_verdict INTEGER NOT NULL DEFAULT 0
+  follow_verdict INTEGER NOT NULL DEFAULT 0,
+  trigger_kind TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -1309,6 +1351,15 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         conn = sqlite3.connect(path, timeout=5.0)
         conn.executescript(_LEDGER_SCHEMA)
+        # schema drift migration: pre-v4.10.1 ledgers lack trigger_kind
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(decision_ledger)")}
+            if "trigger_kind" not in cols:
+                conn.execute("ALTER TABLE decision_ledger"
+                             " ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT ''")
+                conn.commit()
+        except Exception:  # noqa: BLE001 — migration best-effort
+            pass
         return conn
     except Exception:  # noqa: BLE001
         return None
@@ -1358,8 +1409,8 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
         conn = _ledger_connect(db_path)
         if conn is None:
             return None
-        cols = ("ts", "session_id", "task_id", "trigger", "fork_class",
-                "options_hash", "model", "model_version", "choice",
+        cols = ("ts", "session_id", "task_id", "trigger", "trigger_kind",
+                "fork_class", "options_hash", "model", "model_version", "choice",
                 "confidence", "fail_open_reason", "actual_choice", "outcome",
                 "verdict_json", "envelope_hash", "follow_verdict")
         vals = []
@@ -1369,6 +1420,9 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 v = time.time()
             if c == "outcome" and not v:
                 v = "pending"
+            if c == "trigger_kind" and not v:
+                # derive from the trigger when the caller didn't stamp it
+                v = trigger_kind(str(row.get("trigger") or "pre"))
             if v is None and c != "confidence":
                 v = "" if c not in ("follow_verdict",) else 0
             vals.append(v)
@@ -1489,21 +1543,13 @@ def render_advisory(verdict: Dict[str, Any],
         return ""
 
 
-def handle_decision_v3(session_id: str, task_id: str, task_text: str,
-                       model: str = "",
-                       log_route: Optional[Any] = None,
-                       cfg: Optional[Dict[str, Any]] = None,
-                       initiator: str = "user") -> None:
-    """v3 lane entry (PRE heuristic + manual on-demand + midturn declared
-    claim all land here). Shadow-only: detect, call, log, park an advisory
-    — NEVER replaces the turn. Ledger row per attempt (§5.7). Caps, forked
-    breaker, strict verdict validation, fail-open everywhere. Never raises."""
+def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
+            cfg: Dict[str, Any], log_route: Optional[Any],
+            initiator: str = "user") -> None:
+    """Shared post-detection pipeline for every trigger (pre_fork,
+    post_fork_scan, on_demand). Caller has already detected the trigger and
+    extracted options from the ask. Never raises."""
     try:
-        cfg = cfg or _cfg()
-        hit = detect_v3(task_text, int(cfg.get("level") or 2), cfg=cfg)
-        if not hit or hit.get("trigger") == "skip":
-            return  # bypass / no fire — turn proceeds unchanged
-
         def _log(event: str, **fields: Any) -> None:
             try:
                 if log_route is not None:
@@ -1512,33 +1558,33 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
             except Exception:  # noqa: BLE001
                 pass
 
-        trigger = str(hit.get("trigger") or "pre")
         pre_mode = str(cfg.get("pre") or "shadow")
         if trigger == "pre" and pre_mode == "off":
             _log("decision_suppressed", reason=REASON_PRE_OFF)
             return
-        if not on_demand_allowed(trigger, cfg):
+        if trigger in ("manual", "midturn") and \
+                not on_demand_allowed(trigger, cfg):
             _log("decision_suppressed", reason=REASON_ON_DEMAND_DISABLED)
             return
+        opts = extract_options(ask_text)
         cap_reason = caps_check(task_id, session_id, cfg)
         if cap_reason:
             _log("decision_suppressed", reason=cap_reason, trigger=trigger)
             ledger_write({"session_id": session_id, "task_id": task_id,
                           "trigger": trigger,
-                          "fork_class": fork_class(task_text,
-                                                   hit.get("options", [])),
+                          "trigger_kind": trigger_kind(trigger),
+                          "fork_class": fork_class(ask_text, opts),
                           "model": str(cfg.get("model") or ""),
-                          "fail_open_reason": cap_reason}, )
+                          "fail_open_reason": cap_reason})
             return
-        envelope = build_envelope(session_id, task_text,
-                                  hit.get("options", []), trigger, cfg)
+        envelope = build_envelope(session_id, ask_text, opts, trigger, cfg)
         if not envelope:
             _log("decision_suppressed", reason=REASON_NO_OPTIONS,
                  trigger=trigger)
             ledger_write({"session_id": session_id, "task_id": task_id,
                           "trigger": trigger,
-                          "fork_class": fork_class(task_text,
-                                                   hit.get("options", [])),
+                          "trigger_kind": trigger_kind(trigger),
+                          "fork_class": fork_class(ask_text, opts),
                           "model": str(cfg.get("model") or ""),
                           "fail_open_reason": REASON_NO_OPTIONS})
             return
@@ -1547,6 +1593,7 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                  trigger=trigger)
             ledger_write({"session_id": session_id, "task_id": task_id,
                           "trigger": trigger,
+                          "trigger_kind": trigger_kind(trigger),
                           "fork_class": envelope.get("fork_class", ""),
                           "options_hash": options_hash(envelope),
                           "model": str(cfg.get("model") or ""),
@@ -1566,6 +1613,26 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
         _log("decision_v3_dispatched", mode="async", trigger=trigger,
              pre_mode=pre_mode)
     except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
+        logger.debug("decision _invoke error", exc_info=True)
+
+
+def handle_decision_v3(session_id: str, task_id: str, task_text: str,
+                       model: str = "",
+                       log_route: Optional[Any] = None,
+                       cfg: Optional[Dict[str, Any]] = None,
+                       initiator: str = "user") -> None:
+    """v3 lane entry (PRE heuristic + manual on-demand + midturn declared
+    claim all land here). Shadow-only: detect, call, log, park an advisory
+    — NEVER replaces the turn. Ledger row per attempt (§5.7). Caps, forked
+    breaker, strict verdict validation, fail-open everywhere. Never raises."""
+    try:
+        cfg = cfg or _cfg()
+        hit = detect_v3(task_text, int(cfg.get("level") or 2), cfg=cfg)
+        if not hit or hit.get("trigger") == "skip":
+            return  # bypass / no fire — turn proceeds unchanged
+        _invoke(session_id, task_id, task_text, str(hit.get("trigger") or "pre"),
+                cfg, log_route, initiator=initiator)
+    except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
         logger.debug("handle_decision_v3 error", exc_info=True)
 
 
@@ -1577,6 +1644,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             "session_id": ids.get("session_id", ""),
             "task_id": ids.get("task_id", ""),
             "trigger": ids.get("trigger", "pre"),
+            "trigger_kind": trigger_kind(ids.get("trigger", "pre")),
             "fork_class": envelope.get("fork_class", ""),
             "options_hash": options_hash(envelope),
             "model": str(meta.get("model") or cfg.get("model") or ""),
@@ -1599,7 +1667,35 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                       trigger=ids.get("trigger", "pre"))
             ledger_write(dict(base_row, fail_open_reason=str(vreason)))
             return
-        _record_success()
+        if verdict["choice"] == STAND_DOWN_CHOICE:
+            # §7(d): the backend stood down — no decision actually requested.
+            # No advisory, no banner; the ledger records the stand-down.
+            log_route("decision_stand_down", trigger=ids.get("trigger", "pre"),
+                      backend=str(cfg.get("backend") or ""))
+            ledger_write(dict(base_row, outcome="stand_down",
+                              fail_open_reason="stand_down"))
+            return
+        # §7(e) misfire counter: a high-confidence answer on a POST fork scan
+        # (the weakest trigger — the model merely OFFERED options) counts
+        # against the breaker even when the output is well-formed. The
+        # misfire penalty REPLACES the success reset so consecutive
+        # high-conf POST answers accumulate toward the breaker threshold.
+        misfire = False
+        try:
+            if ids.get("trigger") == "post" and float(
+                    verdict["confidence"]) >= float(
+                    cfg.get("misfire_confidence") or 0.9):
+                misfire = True
+        except Exception:  # noqa: BLE001 — misfire accounting never breaks
+            misfire = False
+        if misfire:
+            bump_counter("misfire")
+            _record_failure(cfg)
+            log_route("decision_misfire",
+                      confidence=round(float(verdict["confidence"]), 3),
+                      trigger="post")
+        else:
+            _record_success()
         # §5.7: the tape recorder row — outcome stays pending until the POST
         # run-close audit fills actual_choice (never guessed).
         ledger_write(dict(base_row, choice=str(verdict["choice"]),
@@ -1669,19 +1765,50 @@ def extract_actual_choice(text: str) -> str:
         return ""
 
 
-def post_audit_v3(session_id: str, response_text: str, model: str = "",
-                  log_route: Optional[Any] = None,
-                  cfg: Optional[Dict[str, Any]] = None) -> None:
-    """POST run-close audit (§5.8): fills actual_choice on the session's
-    latest pending ledger row when the response names an option; unknown
-    outcomes stay pending (never guessed). Wrong-and-confident (actual ≠
-    choice at high confidence) bumps the durable counter AND the forked
-    breaker (§5.6). Advisory only; no slice-namespace writes. Never raises."""
-    conn = None
+def post_fork_scan(session_id: str, response_text: str, model: str = "",
+                   log_route: Optional[Any] = None,
+                   cfg: Optional[Dict[str, Any]] = None) -> None:
+    """POST leg (user-locked §2): after the main model's turn, scan the
+    turn text for multiple enumerated options offered / open question /
+    decision point. Options found -> backend call with those as the closed
+    set -> the verdict is APPENDED to the turn as advisory steering
+    (banner-marked, parked-banner mechanics, never replaces delivery).
+    No options -> NO call (structural default-deny applies to the POST
+    scan too). Also fills actual_choice on the session's latest pending
+    ledger row when the response names one (§5.7 tape recorder). Advisory
+    only; no slice-namespace writes. Never raises."""
     try:
         cfg = cfg or _cfg()
         if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
             return
+        # tape recorder: fill actual_choice when the response names an option
+        _record_actual(session_id, response_text, cfg, log_route)
+        opts = extract_options(response_text)
+        if len(opts) < 2:
+            # no fork in the turn -> no call (never guessed)
+            try:
+                if log_route is not None:
+                    log_route("decision_post_fork_scan", outcome="no_options",
+                              lane="decision", session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        from . import router_core as _rc
+
+        task_id = _rc.task_id_for(session_id, response_text, str(model or ""))
+        _invoke(session_id, task_id, response_text, "post", cfg, log_route,
+                initiator="model")
+    except Exception:  # noqa: BLE001 — POST leg never breaks delivery
+        logger.debug("post_fork_scan error", exc_info=True)
+
+
+def _record_actual(session_id: str, response_text: str, cfg: Dict[str, Any],
+                   log_route: Optional[Any]) -> None:
+    """§5.7 tape-recorder tail: actual_choice on the latest pending row when
+    the response names an option; wrong-and-confident at high confidence
+    bumps the durable counter AND the forked breaker (§5.6). Never raises."""
+    conn = None
+    try:
         actual = extract_actual_choice(response_text)
         conn = _ledger_connect()
         if conn is None:
@@ -1696,24 +1823,10 @@ def post_audit_v3(session_id: str, response_text: str, model: str = "",
             conn.close()
             conn = None
         if not row:
-            try:
-                if log_route is not None:
-                    log_route("decision_post_audit", outcome="no_pending",
-                              lane="decision", session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
             return
         rid, choice, conf = int(row[0]), str(row[1] or ""), row[2]
         if not actual:
-            # never guessed — stays pending (§5.8)
-            try:
-                if log_route is not None:
-                    log_route("decision_post_audit", outcome="pending",
-                              ledger_id=rid, lane="decision",
-                              session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
+            return  # never guessed — stays pending
         ledger_update_actual(rid, actual, "recorded")
         try:
             high_conf = conf is not None and float(conf) >= float(
@@ -1732,11 +1845,26 @@ def post_audit_v3(session_id: str, response_text: str, model: str = "",
                           lane="decision", session_id=session_id)
         except Exception:  # noqa: BLE001
             pass
-    except Exception:  # noqa: BLE001 — POST leg never breaks delivery
-        logger.debug("post_audit_v3 error", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("record_actual error", exc_info=True)
     finally:
         try:
             if conn is not None:
                 conn.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def post_audit_v3(session_id: str, response_text: str, model: str = "",
+                  log_route: Optional[Any] = None,
+                  cfg: Optional[Dict[str, Any]] = None) -> None:
+    """Legacy run-close audit (v4.10.0 framing) — kept as a thin wrapper:
+    the POST site now calls post_fork_scan (user-locked §2 addendum); this
+    entry only maintains the tape-recorder tail. Never raises."""
+    try:
+        cfg = cfg or _cfg()
+        if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
+            return
+        _record_actual(session_id, response_text, cfg, log_route)
+    except Exception:  # noqa: BLE001 — POST leg never breaks delivery
+        logger.debug("post_audit_v3 error", exc_info=True)

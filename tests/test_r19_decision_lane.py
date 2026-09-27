@@ -112,8 +112,11 @@ def test_detect_level_semantics(_reset):
 
 def test_dispatch_routes_decision_when_enabled(_reset, monkeypatch):
     _enable(monkeypatch)
+    # v3 structural detection (§2, user-locked): the ask must carry the
+    # enumerated fork — family words alone no longer route the lane.
     d = router_core.dispatch(
-        "which approach should we take? weigh the tradeoffs",
+        "which approach should we take: a) kafka or b) rabbitmq? "
+        "weigh the tradeoffs",
         session_id=SID, model="m")
     assert d.lane == router_core.LANE_DECISION
     assert d.mode == router_core.MODE_DECISION_SCORE

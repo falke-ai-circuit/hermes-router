@@ -110,10 +110,15 @@ def _wait_parked(timeout=5.0):
 # 1. Detection: FPs, negatives, bypass, manual
 # --------------------------------------------------------------------------
 
-def test_detect_v3_pre_fires_two_family(_reset):
-    hit = decision.detect_v3("which approach should we take — weigh the tradeoffs")
+def test_detect_v3_structural_options_required(_reset):
+    # user-locked §2: STRUCTURAL detection — the ask itself must contain
+    # the enumerated fork. Options present -> fires (family words optional).
+    hit = decision.detect_v3("which one should we pick: redis or memcached?")
     assert hit is not None and hit["trigger"] == "pre"
-    assert hit["families"]
+    assert hit["options"] == ["redis", "memcached"]
+    # decision vocabulary WITHOUT enumerated options -> structural default-deny
+    assert decision.detect_v3(
+        "which approach should we take — weigh the tradeoffs") is None
 
 
 def test_detect_v3_negative_non_decision_turns(_reset):
@@ -151,8 +156,8 @@ def test_dispatch_skip_decision_bypass(_reset, monkeypatch):
 
 def test_dispatch_routes_decision_when_enabled(_reset, monkeypatch):
     _enable(monkeypatch)
-    d = router_core.dispatch("which approach should we take — weigh the "
-                             "tradeoffs", session_id=SID, model="m")
+    # structural §2: the ask carries the enumerated fork
+    d = router_core.dispatch(ASK, session_id=SID, model="m")
     assert d.lane == router_core.LANE_DECISION
 
 
@@ -563,3 +568,147 @@ def test_dark_default_no_route(_reset):
     d = router_core.dispatch("which approach? weigh the tradeoffs",
                              session_id=SID, model="m")
     assert d.lane != router_core.LANE_DECISION
+
+
+# --------------------------------------------------------------------------
+# 8. POST fork-scan leg (user-locked §2 addendum)
+# --------------------------------------------------------------------------
+
+POST_TURN = ("Two paths from here:\n- a) migrate the store now\n"
+             "- b) freeze writes first, migrate after the batch")
+
+
+def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
+    _enable(monkeypatch)
+    _mock_nous(monkeypatch, choice="opt-1", confidence=0.8)
+    decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
+                            LOGGED.append((e, dict(f))))
+    assert _wait_parked()
+    parked = debug_banner.consume_parked_banner(SID)
+    assert "choice=opt-1" in parked            # verdict APPENDED as advisory
+    assert "· router · decision |" in parked   # banner-marked
+    assert "initiator=model" in parked         # steering, not user ask
+    row = decision.ledger_recent()[0]
+    assert row["trigger_kind"] == "post_fork_scan"
+
+
+def test_post_fork_scan_no_options_no_call(_reset, monkeypatch):
+    _enable(monkeypatch)
+    called = []
+    monkeypatch.setattr(
+        "hermes_router.semantic_classifier._hermes_aux_call",
+        lambda payload, timeout: called.append(1))
+    decision.post_fork_scan(SID, "the migration completed without incident",
+                            log_route=lambda e, **f:
+                            LOGGED.append((e, dict(f))))
+    assert called == []          # structural default-deny: NO backend call
+    assert debug_banner.consume_parked_banner(SID) == ""
+    ev = _logged("decision_post_fork_scan")
+    assert ev and ev[-1]["outcome"] == "no_options"
+
+
+def test_post_fork_scan_dark_noop(_reset):
+    decision.post_fork_scan(SID, POST_TURN)
+    assert debug_banner.consume_parked_banner(SID) == ""
+
+
+def test_post_scan_misfire_high_conf_counts_against_breaker(_reset, monkeypatch):
+    # §7(e): high-conf answers on POST scans count against the breaker
+    # even when the output is well-formed.
+    cfg = _enable(monkeypatch, breaker_fails=2)
+    _mock_nous(monkeypatch, choice="opt-1", confidence=0.97)
+    for _ in range(2):
+        decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
+                                LOGGED.append((e, dict(f))))
+    deadline = time.time() + 5
+    while time.time() < deadline and len(_logged("decision_misfire")) < 2:
+        time.sleep(0.02)
+    assert decision.get_counter("misfire") >= 2
+    # the second misfire's breaker penalty lands inside its worker
+    deadline = time.time() + 5
+    while time.time() < deadline and not decision.breaker_state()["open"]:
+        time.sleep(0.02)
+    assert decision.breaker_state()["open"]
+    # third POST scan hits the opened breaker
+    decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
+                            LOGGED.append((e, dict(f))))
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        sup = [f for f in _logged("decision_suppressed")
+               if f["reason"] == decision.REASON_BREAKER_OPEN]
+        if sup:
+            break
+        time.sleep(0.02)
+    assert [f for f in _logged("decision_suppressed")
+            if f["reason"] == decision.REASON_BREAKER_OPEN]
+
+
+def test_post_scan_low_conf_not_misfire(_reset, monkeypatch):
+    _enable(monkeypatch)
+    n = decision.get_counter("misfire")
+    _mock_nous(monkeypatch, choice="opt-1", confidence=0.5)
+    decision.post_fork_scan(SID, POST_TURN)
+    assert _wait_parked()
+    assert decision.get_counter("misfire") == n
+
+
+def test_stand_down_escape_no_advisory(_reset, monkeypatch):
+    # §7(d): lane-injected escape — backend stands down, nothing appended
+    _enable(monkeypatch)
+    _mock_nous(monkeypatch, choice="stand_down", confidence=0.0)
+    decision.handle_decision_v3(session_id=SID, task_id=TASK_ID,
+                                task_text=ASK,
+                                log_route=lambda e, **f:
+                                LOGGED.append((e, dict(f))))
+    deadline = time.time() + 3
+    while time.time() < deadline and not _logged("decision_stand_down"):
+        time.sleep(0.02)
+    assert _logged("decision_stand_down")
+    assert debug_banner.consume_parked_banner(SID) == ""  # no advisory appended
+    deadline = time.time() + 3
+    rows = []
+    while time.time() < deadline and not rows:
+        rows = [r for r in decision.ledger_recent()
+                if r["outcome"] == "stand_down"]
+        time.sleep(0.02)
+    row = rows[0]
+    assert row["outcome"] == "stand_down"
+    assert not row["choice"] or row["choice"] == "stand_down"
+
+
+def test_validate_verdict_accepts_stand_down(_reset):
+    env = decision.build_envelope(SID, ASK, [], "pre")
+    v, reason = decision.validate_verdict(
+        json.dumps({"choice": "stand_down", "confidence": 0.0,
+                    "alternatives": []}), env)
+    assert reason == "ok" and v["choice"] == "stand_down"
+    # stand_down with alternatives is malformed
+    v, reason = decision.validate_verdict(
+        json.dumps({"choice": "stand_down", "confidence": 0.0,
+                    "alternatives": ["opt-1"]}), env)
+    assert v is None
+
+
+def test_prompt_carries_stand_down_escape(_reset):
+    env = decision.build_envelope(SID, ASK, [], "pre")
+    prompt = decision.render_prompt(env)
+    assert "stand_down" in prompt
+
+
+def test_ledger_trigger_kinds(_reset, monkeypatch):
+    _enable(monkeypatch)
+    _mock_nous(monkeypatch)
+    decision.handle_decision_v3(session_id=SID, task_id=TASK_ID,
+                                task_text=ASK, log_route=lambda e, **f:
+                                LOGGED.append((e, dict(f))))
+    assert _wait_parked()
+    kinds = {r["trigger_kind"] for r in decision.ledger_recent()}
+    assert kinds == {"pre_fork"}
+    decision.ledger_write({"session_id": SID, "task_id": "tm",
+                           "trigger": "manual"})
+    decision.ledger_write({"session_id": SID, "task_id": "tp",
+                           "trigger": "post"})
+    kinds = {r["task_id"]: r["trigger_kind"]
+             for r in decision.ledger_recent(limit=10)}
+    assert kinds["tm"] == "on_demand"
+    assert kinds["tp"] == "post_fork_scan"

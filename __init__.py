@@ -726,17 +726,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — POST leg never breaks delivery
             logger.debug("decision post-audit error", exc_info=True)
 
-        # R19 v3: decision-lane run-close audit — fills actual_choice on the
-        # session's latest pending decision_ledger row (§5.7/§5.8), advisory
-        # only, wrong-and-confident feeds the forked breaker. Level-gated
+        # R19 v3 (user-locked §2 addendum): POST fork-scan leg — scan the
+        # turn for enumerated options / open decision points; options found
+        # -> backend verdict APPENDED as advisory steering (parked-banner
+        # mechanics, never replaces delivery); no options -> no call. Also
+        # maintains the §5.7 tape-recorder tail (actual_choice). Gated
         # (decision.enabled AND decision.post) — no-op in the dark default.
         try:
             from . import decision as _dlane3
 
-            _dlane3.post_audit_v3(session_id, response_text, model=model,
-                                  log_route=_log_route)
+            _dlane3.post_fork_scan(session_id, response_text, model=model,
+                                   log_route=_log_route)
         except Exception:  # noqa: BLE001 — POST leg never breaks delivery
-            logger.debug("decision post-audit v3 error", exc_info=True)
+            logger.debug("decision post-fork-scan error", exc_info=True)
 
         def _attach_unrouted(text: str) -> str:
             """R15 LEG 2: append the unrouted direct-call visibility banner

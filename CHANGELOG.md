@@ -1,3 +1,40 @@
+## 4.10.1 — 2026-09-27 (R19 step 3b: spec §2 user-locked addendum — structural detection + POST fork-scan)
+
+Spec update addendum on top of v4.10.0 (`r19_decision_lane_SPEC_v3_final.md`
+§2/§7 user-locked 2026-09-27). Still **dark**.
+
+- STRUCTURAL DETECTION (default-deny): `detect_v3` PRE now fires ONLY when
+  the ask itself carries the enumerated fork (`extract_options` >= 1 from
+  the ask — line markers or "X or Y" prose, ')' tolerated for inline
+  "a) kafka or b) rabbitmq" forms). Decision vocabulary without enumerated
+  options never routes the lane — the 68% misfire case is unreachable by
+  construction. No semantic model at the trigger layer. Family markers are
+  still detected for the ledger's observability fields only.
+- POST FORK-SCAN leg (replaces the v4.10.0 run-close-audit framing):
+  `decision.post_fork_scan` on the same `on_transform_llm_output` site —
+  scans the model's turn for multiple enumerated options; options found ->
+  backend call with those as the closed set -> verdict APPENDED as advisory
+  steering (parked-banner mechanics, banner-marked, initiator=model, never
+  replaces delivery); no options -> NO backend call (structural deny).
+  The §5.7 tape-recorder tail (actual_choice + wrong-and-confident) is
+  folded into the same site; `post_audit_v3` remains as a thin wrapper.
+- STAND-DOWN ESCAPE (§7d): the typed question now carries a lane-injected
+  escape option `stand_down` — a stand-down verdict appends nothing and
+  records outcome=stand_down in the ledger.
+- MISFIRE BREAKER (§7e): a high-confidence verdict (>=
+  `decision.misfire_confidence`, default 0.9) on a POST fork scan bumps the
+  durable `misfire` counter AND counts against the forked breaker even when
+  the output is well-formed (the misfire penalty replaces the success
+  reset so consecutive high-conf POST answers accumulate to the threshold).
+- LEDGER: `trigger_kind` column (pre_fork | post_fork_scan | on_demand)
+  with ALTER-TABLE migration for pre-4.10.1 stores; derived from the
+  trigger when the caller doesn't stamp it.
+- Tests: v3 battery updated (structural-detection asserts, v0 dispatch test
+  text now carries the fork) + 9 new POST-leg tests: options-in-turn ->
+  verdict appended, no-options -> no call, dark noop, misfire/breaker,
+  low-conf not misfire, stand-down escape, prompt escape, trigger kinds.
+  Suite: 1038 passed / 2 skipped.
+
 ## 4.10.0 — 2026-09-27 (R19 step 3: Decision Lane v3, frozen spec, DARK)
 
 Build step 3 per the frozen v3 spec
