@@ -429,10 +429,19 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
                        task_id=_decision.task_id, session_id=session_id)
             from . import decision as _dm
 
-            _esc = _dm.handle_decision(
-                session_id=session_id, task_id=_decision.task_id,
-                task_text=content, model=model,
-                log_route=_plugin()._log_route)
+            # R19 v3: the v3 pipeline (envelope v2 + typed verdict + ledger
+            # + banner). v0 handle_decision remains for the legacy path.
+            _hv3 = getattr(_dm, "handle_decision_v3", None)
+            if _hv3 is not None:
+                _hv3(session_id=session_id, task_id=_decision.task_id,
+                     task_text=content, model=model,
+                     log_route=_plugin()._log_route)
+                _esc = None
+            else:
+                _esc = _dm.handle_decision(
+                    session_id=session_id, task_id=_decision.task_id,
+                    task_text=content, model=model,
+                    log_route=_plugin()._log_route)
             if _esc == "escalate":
                 # sync level-3 opt-in, low confidence: escalate into the
                 # EXISTING MODE_CONSULT flow (single threshold, no dead zone).

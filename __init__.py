@@ -726,6 +726,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — POST leg never breaks delivery
             logger.debug("decision post-audit error", exc_info=True)
 
+        # R19 v3: decision-lane run-close audit — fills actual_choice on the
+        # session's latest pending decision_ledger row (§5.7/§5.8), advisory
+        # only, wrong-and-confident feeds the forked breaker. Level-gated
+        # (decision.enabled AND decision.post) — no-op in the dark default.
+        try:
+            from . import decision as _dlane3
+
+            _dlane3.post_audit_v3(session_id, response_text, model=model,
+                                  log_route=_log_route)
+        except Exception:  # noqa: BLE001 — POST leg never breaks delivery
+            logger.debug("decision post-audit v3 error", exc_info=True)
+
         def _attach_unrouted(text: str) -> str:
             """R15 LEG 2: append the unrouted direct-call visibility banner
             to the DELIVERED representation when one fired this turn. Empty

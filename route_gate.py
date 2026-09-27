@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 LANE_HIGHER_PRE = "higher-pre"
 LANE_HIGHER_POST = "higher-post"
 LANE_SHADOW = "shadow"
+LANE_DECISION = "decision"  # R19 v3: decision lane (declared midturn target)
 
 SOURCE_AUTO = "auto"
 SOURCE_DECLARED_USER = "declared_user"
@@ -336,7 +337,8 @@ def _log_model_override(alias: str, model_id: str, lane: str,
 _PHRASE_PAYLOAD_SEPARATORS = (":", " -", " —")
 
 # Lanes a DECLARED claim may target (agent action + user phrase surface).
-VALID_ROUTE_LANES = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW)
+VALID_ROUTE_LANES = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW,
+                     LANE_DECISION)  # R19 v3: on-demand midturn declared claim
 
 # Lines starting with these are quoted/echoed content — never a command
 # surface (echo guard, reviewer H7.2).
@@ -1416,6 +1418,41 @@ def fence_pass(content: str, request: Any, context: Dict[str, Any],
     return None
 
 
+def _decision_lane_claim(content: str, session_id: str, model: str) -> None:
+    """R19 v3: execute a declared on-demand claim targeting the decision
+    lane (agent request_routing lane="decision" — midturn, §2 ON-DEMAND).
+    Runs the lane's async advisory (parked banner — never replaces the
+    turn), consumes the claim (mark executed + clear declared), and the
+    caller returns NO_ROUTE. Gated on decision.enabled AND
+    on_demand.midturn. Never raises."""
+    try:
+        from . import decision as _dm
+        from . import router_core as _rc
+
+        cfg = _dm._cfg()
+        enabled = bool(isinstance(cfg, dict) and cfg.get("enabled") is True)
+        allowed = _dm.on_demand_allowed("midturn", cfg)
+        try:
+            _pkg_fn("_log_route")(
+                "PRE", event_detail="request_routing_executed",
+                lane=LANE_DECISION, source="declared",
+                reason="decision_midturn_claim", staged=False,
+                gated=not (enabled and allowed), session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        mark_turn_claim_executed(session_id)
+        clear_declared(session_id)
+        if not (enabled and allowed):
+            return
+        task_id = _rc.task_id_for(session_id, content, str(model or ""))
+        _dm.handle_decision_v3(
+            session_id=session_id, task_id=task_id, task_text=content,
+            model=str(model or ""),
+            log_route=_pkg_fn("_log_route"), initiator="agent")
+    except Exception:  # noqa: BLE001 — the gate NEVER raises into a turn
+        logger.debug("decision lane claim error", exc_info=True)
+
+
 def claim_pass(content: str, session_id: str, model: str,
                request: Any = None, context: Optional[Dict[str, Any]] = None
                ) -> GateDecision:
@@ -1450,6 +1487,12 @@ def claim_pass(content: str, session_id: str, model: str,
                             "context": context or {}, "session_id": session_id,
                             "model": str(model or ""),
                             "auto_shape": _auto_shape, "claim": True})
+    if decision.route and decision.lane == LANE_DECISION:
+        # R19 v3: on-demand midturn decision claim — explicit claims win
+        # (§5.3). The lane runs as a parked advisory; the turn itself
+        # proceeds (NO_ROUTE) — one lane per turn via the turn claim.
+        _decision_lane_claim(content, session_id, model)
+        return NO_ROUTE
     if decision.route:
         # Leg 7: stamp the turn-scoped claim record on EVERY claim (any
         # lane, any source) — legacy claim sites read claim_state() and

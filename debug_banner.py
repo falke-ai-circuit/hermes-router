@@ -52,7 +52,8 @@ BANNER_TAIL = "·"
 MAX_BANNER_CHARS = 400          # oversized diagnostic -> omit entirely
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
                "consult-pre", "consult-mid", "consult-post",
-               "shadow")  # leg 11: declared shadow lane banner
+               "shadow",  # leg 11: declared shadow lane banner
+               "decision")  # R19 v3: decision lane provenance banner
 
 # Lanes that must never banner (defense-in-depth — callers also gate):
 FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
@@ -103,7 +104,7 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
                   est_cost: Optional[float], latency_s: Optional[float],
                   retries: int = 0, level: Optional[int] = None,
                   task_id: str = "", session_id: str = "", gate: str = "",
-                  route_id: str = "") -> str:
+                  route_id: str = "", initiator: str = "") -> str:
     """Render the banner text. Pure string shaping — no I/O, no state.
     Returns "" when the caller should omit the banner (oversized or invalid
     lane). Never raises."""
@@ -146,11 +147,16 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
             "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
             else lane.split("-", 1)[0])
+        # R19 v3: an empty endpoint renders model-only (decision lane has no
+        # remote host to name); initiator provenance rides the L1 line.
+        model_part = ("%s @ %s" % (model_s, ep_s)) if ep_s else model_s
         banner = (
-            "%s %s | %s | %s @ %s | tok %d/%d | %s%s" % (
-                BANNER_HEAD, _lane_label, trig_s, model_s, ep_s,
+            "%s %s | %s | %s | tok %d/%d | %s%s" % (
+                BANNER_HEAD, _lane_label, trig_s, model_part,
                 ti, to, cost_s, lat_s)
         )
+        if str(initiator or ""):
+            banner += " | initiator=%s" % str(initiator)[:40]
         if lvl >= 2:
             ctx = ("task %s" % str(task_id or "-")[:40]) + (
                 " | sess %s" % str(session_id or "-")[:36] if session_id else "") + (

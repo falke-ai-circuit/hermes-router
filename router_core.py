@@ -1204,7 +1204,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     and override != "anchor"
                     and not _is_system_injected_turn(user_text)):
                 _dcfg = _decision_cfg()
-                _dhit = _dlane.detect(user_text, int(_dcfg.get("level") or 2))
+                # R19 v3: v3 detection (manual on-demand line, skip bypass,
+                # heuristic pre). Complexity already had its chance above —
+                # lane precedence §5.3 (complexity > heuristic PRE).
+                _dhit = _dlane.detect_v3(user_text, int(_dcfg.get("level") or 2),
+                                         cfg=_dcfg)
+                if _dhit is not None and _dhit.get("trigger") == "skip":
+                    # "skip decision" bypass — turn proceeds unchanged.
+                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                None, "decision_skipped")
+                if _dhit is not None and _dhit.get("trigger") == "manual" \
+                        and not _dlane.on_demand_allowed("manual", _dcfg):
+                    _dhit = None
                 if _dhit:
                     if _consult_cooldown_active(session_id, user_text):
                         return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,

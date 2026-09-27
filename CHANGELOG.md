@@ -1,3 +1,64 @@
+## 4.10.0 — 2026-09-27 (R19 step 3: Decision Lane v3, frozen spec, DARK)
+
+Build step 3 per the frozen v3 spec
+(`/opt/data/tmp/r19_decision_lane_SPEC_v3_final.md` — BINDING, all §5 guards).
+Ships **dark**: `decision.enabled: false` is the code default in every
+profile; flipping it ON activates the v3 pipeline (the v0 lane functions
+remain intact for the existing v0 battery).
+
+- `decision.py` v3 section: `detect_v3()` (µs-cheap ingress detection —
+  "skip decision" bypass, standalone "decide this" manual trigger gated on
+  `on_demand.manual`, heuristic pre via the v0 2-family gate),
+  `build_envelope()` (envelope v2 §3: persona-DNA agent frame, scope/risk
+  class with advice-only for high-stakes, bounded causal context, closed
+  lane-assigned option ids opt-1..N extracted FROM the ask, typed question,
+  optional provenance-stamped slice reusing the anti-echo FTS filter),
+  `validate_verdict()` (strict schema {choice, confidence, alternatives};
+  enumerated option ids ONLY; unknown keys/non-numeric confidence/invented
+  ids all fail-open), backend adapters `call_backend()` (backend is a
+  config flip: "jev" = typesafe/jev-router via OpenRouter
+  `OPENROUTER_API_KEY`, pinned model, transport seam `_http_post_json`;
+  "nous" = the profile aux chat endpoint with the same strict typed prompt
+  — plumbing stub only; both share validation/breaker/banner paths),
+  §5.6 caps (per_run/per_session/global_daily, reason-coded) on the forked
+  breaker, and the append-only `decision_ledger` (§5.7: ts, session,
+  trigger, fork class, options hash, model version, choice, confidence,
+  fail-open reason, actual_choice, outcome=pending; bounded
+  ledger_max_rows eviction; durable `decision_counters` for malformed /
+  wrong_and_confident) plus `post_audit_v3()` (§5.8 run-close audit:
+  fills actual_choice only when the response names an option — unknown
+  outcomes stay pending, never guessed; wrong-and-confident at high
+  confidence feeds the breaker).
+- `router_core.py`: decision branch now uses `detect_v3` (skip bypass →
+  `decision_skipped`; manual gated on `on_demand.manual`). Complexity
+  precedence (§5.3) is structural — the complexity lane returns before the
+  decision branch is reached.
+- `dispatcher_pre.py`: LANE_DECISION executes `handle_decision_v3`.
+- `route_gate.py`: `LANE_DECISION` added to `VALID_ROUTE_LANES`;
+  `claim_pass` intercepts a declared decision claim (agent
+  request_routing lane="decision", midturn on-demand gated on
+  `on_demand.midturn`), runs the lane as a parked advisory, consumes the
+  claim (mark executed + clear declared) and returns NO_ROUTE — the turn
+  proceeds, one lane per turn via the turn claim.
+- `__init__.py`: POST leg calls `post_audit_v3` next to the v0 miner scan,
+  gated `enabled AND post` — total no-op dark.
+- `debug_banner.py`: lane "decision" in VALID_LANES; `format_banner` gains
+  `initiator=` (rendered `| initiator=user`) and omits the `@ endpoint`
+  segment when the endpoint is empty. Decision-lane turns park ONE
+  provenance banner (advisory + `· router · decision | <trigger> | <model>
+  | tok n/n | $x.xxxxxx | initiator=user`), latest-wins (v4.8.0 mechanics).
+- Bounded state: in-process cap maps (512/256 keys FIFO) + ledger row cap
+  with oldest-eviction. Fail-open everywhere; never blocks a turn;
+  relative imports only; no slice-namespace writes (ledger lives in the
+  plugin-OWN state DB).
+- Tests: `tests/test_r19_decision_lane_v3.py` (38 tests): detection
+  FPs/negatives, bypass, precedence, envelope shape, verdict fail-open
+  matrix, both backends (mocked HTTP/aux), caps, breaker, ledger
+  schema/eviction/POST audit, banner format + latest-wins, midturn
+  declared claim (enabled + dark), dark default no-route.
+- Housekeeping: version pin in `tests/test_r10_catalog_resolution.py`
+  moved to 4.10.0 with the manifest.
+
 ## 4.9.1 — 2026-09-26 (R19 step 2: decision_miner + POST leg, spec v1.1 §10)
 
 Build step 2 of the user-directed decision-lane extension. Still ships
