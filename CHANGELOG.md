@@ -1,3 +1,42 @@
+## 4.10.3 — 2026-09-27 (R19.1: provenance filter + on-demand PRE fix + reason-coded backend failures)
+
+R19.1 fix bundle on live-replay evidence. Still **dark** (no enabled-flip).
+
+- LEG 1 PROVENANCE FILTER (before detection): platform envelopes are no
+  longer decision-detection substrate — live replay showed 20-26% of
+  detections firing on orchestrator/coder dispatch digests/summaries/
+  batch-notifications wearing user-role costume. `decision.provenance_skip()`
+  reuses the PRE-seam ingress-provenance pattern
+  (`router_core._is_system_injected_turn`) and extends it: a bracketed
+  platform marker ([Durable Summary, [Depth-N Summary, [OUT-OF-BAND USER
+  MESSAGE, [ASYNC DELEGATION BATCH, [System note:, [Your active task list,
+  [Recent Summary, [Session Arc Summary) counts when it STARTS the turn OR
+  appears WITHIN the first 80 chars. Dispatch-shaped plain prefixes (ORCH
+  DIRECTIVE / BUILD TASK / ADDENDUM / CONTINUE —) are NOT treated as
+  platform — real user asks use the same vocabulary; when in doubt,
+  detect. Skips log reason code `decision_provenance_skip` (PRE route-log
+  event + `decision_suppressed` on handle_decision_v3).
+- LEG 2 ON-DEMAND PRE FIX: `on_demand.manual` is the PRIMARY trusted
+  trigger — `manual_ask` now bypasses the multi-family requirement at
+  EVERY level in both detect() and detect_v3(), and the same-line prefix
+  form ("decide this: A or B" at message start) fires at PRE exactly like
+  the standalone-line form. Level gating made explicit in detect_v3:
+  level 0 = lane off (nothing fires, not even manual — the `cfg.get
+  ("level") or 2` coercion that turned an explicit 0 into 2 is fixed);
+  level 1 = manual-only; level 2 = >=2 families OR enum_workflow OR
+  manual_ask; level 3 = any single family. on_demand.manual=false still
+  gates the manual trigger.
+- LEG 3 REASON-CODED BACKEND FAILURES: HTTP 401/402/other-4xx/5xx from the
+  backend call map to distinct reason codes `backend_auth` /
+  `backend_quota` / `backend_http_<code>` (transport seam records the
+  HTTPError status; `_http_reason()` maps it). Stale-key 401s no longer
+  collapse into reason=timeout. Transport-level failures (DNS/refused/
+  timeout) remain `timeout`. (nous/aux path stays opaque — the aux client
+  returns None without a status.)
+- Tests: tests/test_r191_fix_bundle.py (27 tests) covering all three legs.
+  Detection enum gate refactored into shared `_enum_hit()` (no behavior
+  change).
+
 ## 4.10.2 — 2026-09-27 (R19 step 3c: spec §3 addendum 2 — option causal frames + N+1 steer carryover)
 
 User-locked §3 update on top of v4.10.1. Still **dark**.

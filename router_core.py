@@ -1200,19 +1200,49 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         try:
             from . import decision as _dlane
 
-            if (_lane_enabled(LANE_DECISION)
-                    and override != "anchor"
-                    and not _is_system_injected_turn(user_text)):
+            if _lane_enabled(LANE_DECISION) and override != "anchor":
                 _dcfg = _decision_cfg()
-                # R19 v3: v3 detection (manual on-demand line, skip bypass,
-                # heuristic pre). Complexity already had its chance above —
-                # lane precedence §5.3 (complexity > heuristic PRE).
-                _dhit = _dlane.detect_v3(user_text, int(_dcfg.get("level") or 2),
-                                         cfg=_dcfg)
+                # R19.1 LEG 1: platform-provenance guard BEFORE detection —
+                # live replay showed 20-26% of decision detections fired on
+                # orchestrator/coder dispatch digests wearing user-role
+                # costume. Reason-coded log, then flash-direct.
+                _prov_skip = False
+                _dhit = None
+                try:
+                    _prov_skip = bool(_dlane.provenance_skip(user_text, _dcfg))
+                except Exception:  # noqa: BLE001 — when in doubt, detect
+                    _prov_skip = False
+                if _prov_skip or _is_system_injected_turn(user_text):
+                    if _prov_skip:
+                        try:
+                            from hermes_router import _log_route as _lr  # deferred - import cycle
+                            _lr("PRE", session_id=session_id,
+                                event_detail="decision_provenance_skip",
+                                lane=LANE_DECISION, task_id=task_id)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
+                else:
+                    # R19 v3: v3 detection (manual on-demand line, skip bypass,
+                    # heuristic pre). Complexity already had its chance above —
+                    # lane precedence §5.3 (complexity > heuristic PRE).
+                    _dhit = _dlane.detect_v3(user_text,
+                                             int(_dcfg.get("level") or 2),
+                                             cfg=_dcfg)
                 if _dhit is not None and _dhit.get("trigger") == "skip":
                     # "skip decision" bypass — turn proceeds unchanged.
                     return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
                                 None, "decision_skipped")
+                if _dhit is not None and _dhit.get("trigger") == "provenance_skip":
+                    # R19.1 LEG 1: platform envelope — never detect on it.
+                    # Log the reason code and fall through to flash-direct.
+                    try:
+                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        _lr("PRE", session_id=session_id,
+                            event_detail="decision_provenance_skip",
+                            lane=LANE_DECISION, task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    _dhit = None
                 if _dhit is not None and _dhit.get("trigger") == "manual" \
                         and not _dlane.on_demand_allowed("manual", _dcfg):
                     _dhit = None

@@ -83,6 +83,15 @@ DEFAULTS: Dict[str, Any] = {
     "ledger_max_rows": 5000,    # bounded state: append-only ledger row cap
     "backend_timeout_seconds": 15,
     "misfire_confidence": 0.9,  # §7(e): POST high-conf answers = misfire class
+    # Phase-1 battery widening (2026-09-27, reviewer): structural enumeration
+    # family. Real fleet forks arrive as numbered-step handovers with NO decision
+    # vocabulary — phrasing-keyed regexes caught 1/58. enum_workflow keys on
+    # list STRUCTURE instead: >=enum_min_items enumerated siblings AND
+    # >=enum_min_chars total (multi-step workflow floor). Battery: 11/58 recall
+    # (2% -> 19%) at 0/25 negatives FP. Shadow-window safe by measurement.
+    "enum_min_items": 4,
+    "enum_min_chars": 600,
+    "provenance_window_chars": 80,  # R19.1 LEG 1: marker scan window
 }
 
 # Provenance tag: stamped on every delivered advisory envelope AND excluded
@@ -122,6 +131,25 @@ _FAMILIES: Dict[str, str] = {
 
 _FAMILIES_RE = {k: re.compile(v, re.IGNORECASE) for k, v in _FAMILIES.items()}
 
+# Structural enumeration (battery 2026-09-27): numbered/bulleted list items.
+# Not a phrasing family — counted + length-gated inside detect().
+_ENUM_ITEM_RE = re.compile(
+    r"(?:^|\n)[ \t]*(?:\d{1,2}|[a-e]|[ivx]{1,3})[.)][ \t]+\S", re.IGNORECASE
+)
+
+
+def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
+    """Structural enum_workflow gate (battery 2026-09-27): enough
+    enumerated siblings AND enough total text (multi-step floor).
+    Shared by detect() and detect_v3(). Never raises."""
+    try:
+        min_items = int(cfg.get("enum_min_items") or 4)
+        min_chars = int(cfg.get("enum_min_chars") or 600)
+        return (len(str(text or "")) >= min_chars
+                and len(_ENUM_ITEM_RE.findall(text)) >= min_items)
+    except Exception:  # noqa: BLE001 — detection must never raise
+        return False
+
 
 def _cfg() -> Dict[str, Any]:
     """Read the decision block via the dual-block reader. Never raises."""
@@ -150,14 +178,25 @@ def detect(text: str, level: Optional[int] = None) -> Optional[Dict[str, Any]]:
         families = sorted(
             name for name, rx in _FAMILIES_RE.items() if rx.search(text)
         )
+        # Structural enumeration (battery 2026-09-27): catch numbered-step
+        # workflow forks that carry no decision vocabulary. Gate: enough
+        # enumerated siblings AND enough total text (multi-step floor).
+        if _enum_hit(text, _cfg()):
+            families.append("enum_workflow")
+            families.sort()
         if level == 1:
             # manual-only: fires ONLY on explicit user decide-phrasing
             return {"families": families, "level": level} \
                 if "manual_ask" in families else None
         if level == 2:
-            # conservative: >=2 marker families (analyst 1.3 FP budget)
+            # conservative: >=2 phrasing families, OR a structural enum_workflow
+            # hit alone (battery 2026-09-27: 0/25 negatives FP measured, so the
+            # two-family FP budget is met by the structural gate by itself).
+            # R19.1 LEG 2: on_demand.manual is the PRIMARY trusted trigger —
+            # manual_ask bypasses the multi-family requirement at every level.
             return {"families": families, "level": level} \
-                if len(families) >= 2 else None
+                if (len(families) >= 2 or "enum_workflow" in families
+                    or "manual_ask" in families) else None
         # level 3 aggressive: any single family
         return {"families": families, "level": level} if families else None
     except Exception:  # noqa: BLE001 — detection must never raise
@@ -759,6 +798,14 @@ REASON_NO_OPTIONS = "no_options"
 REASON_MALFORMED = "malformed"
 REASON_BACKEND_ERROR = "backend_error"
 REASON_UNKNOWN_BACKEND = "unknown_backend"
+# R19.1 LEG 1: platform-provenance skip (orchestrator/coder dispatch
+# digests wearing user-role costume — live replay evidence 2026-09-27).
+REASON_PROVENANCE_SKIP = "decision_provenance_skip"
+# R19.1 LEG 3: distinct backend HTTP failure codes (live: stale-key 401s
+# were silently mapped to reason=timeout).
+REASON_BACKEND_AUTH = "backend_auth"
+REASON_BACKEND_QUOTA = "backend_quota"
+REASON_BACKEND_HTTP_FMT = "backend_http_%d"
 
 MANUAL_TRIGGER_PREFIX = "decide this"
 SKIP_TRIGGER_PREFIX = "skip decision"
@@ -863,6 +910,46 @@ def on_demand_allowed(trigger: str, cfg: Optional[Dict[str, Any]] = None) -> boo
         return False
 
 
+# ---------------------------------------------------------------------------
+# Platform-provenance guard (R19.1 LEG 1) — reuses the ingress-provenance
+# pattern from router_core._is_system_injected_turn (PRE seam) but extends
+# it: marker may sit WITHIN the first N chars, not only at position 0.
+# Bracketed/marked platform envelopes ONLY — dispatch-shaped plain prefixes
+# ('ORCH DIRECTIVE', 'BUILD TASK', 'ADDENDUM', 'CONTINUE —') are NOT
+# inherently platform (real user asks use the same vocabulary): when in
+# doubt, detect.
+# ---------------------------------------------------------------------------
+
+_PLATFORM_ENVELOPE_MARKERS = (
+    "[ASYNC DELEGATION BATCH",
+    "[Your active task list",
+    "[Depth-3 Summary",
+    "[Depth-2 Summary",
+    "[Recent Summary",
+    "[Session Arc Summary",
+    "[Durable Summary",
+    "[OUT-OF-BAND USER MESSAGE",
+    "[System note:",
+)
+
+
+def provenance_skip(text: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the turn is a platform envelope, not a user ask: starts
+    with a marked platform envelope OR one appears within the first
+    `provenance_window_chars` (default 80). Never raises."""
+    try:
+        cfg = cfg or _cfg()
+        window = max(8, int(cfg.get("provenance_window_chars") or 80))
+        t = str(text or "").lstrip()
+        if not t:
+            return False
+        head = t[:window]
+        return any(t.startswith(m) or m in head
+                   for m in _PLATFORM_ENVELOPE_MARKERS)
+    except Exception:  # noqa: BLE001 — when in doubt, detect
+        return False
+
+
 def detect_v3(text: str, level: Optional[int] = None,
               cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """v3 ingress detection (µs-cheap regex, §2 trigger taxonomy).
@@ -877,6 +964,17 @@ def detect_v3(text: str, level: Optional[int] = None,
         cfg = cfg or _cfg()
         if not isinstance(text, str) or not text.strip():
             return None
+        lvl_raw = cfg.get("level")
+        level = int(level if level is not None
+                    else (2 if lvl_raw is None else lvl_raw))
+        if level <= 0:
+            return None  # lane off — nothing fires, not even manual
+        # R19.1 LEG 1: platform envelopes are not user asks — never detect
+        # on them (20-26% of live misfires were platform digests). Skips are
+        # logged upstream as decision_provenance_skip.
+        if provenance_skip(text, cfg):
+            return {"trigger": "provenance_skip", "families": [],
+                    "options": [], "level": level}
         for raw in text.splitlines():
             low = raw.strip().lower()
             if not low:
@@ -894,14 +992,25 @@ def detect_v3(text: str, level: Optional[int] = None,
         # itself must contain the enumerated fork. No options present ->
         # the lane never fires (68% misfire case unreachable). Cheap regex
         # on option structure; NO semantic model at the trigger layer.
+        # R19.1 LEG 2 level gating: level 1 = manual-only; level 2 =
+        # >=2 families or a structural enum_workflow hit (manual_ask
+        # bypasses — PRIMARY trusted trigger); level 3 = any family.
         opts = extract_options(text)
         if not opts:
             return None
         families = sorted(
             name for name, rx in _FAMILIES_RE.items() if rx.search(text))
+        if _enum_hit(text, cfg):
+            families = sorted(families + ["enum_workflow"])
+        if level == 1:
+            return None
+        if level == 2 and not (len(families) >= 2
+                               or "enum_workflow" in families
+                               or "manual_ask" in families):
+            return None
         return {"trigger": "pre", "families": families,
                 "options": opts,
-                "level": int(level or 0)}
+                "level": level}
     except Exception:  # noqa: BLE001 — detection must never raise
         return None
 
@@ -1284,18 +1393,50 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
 # Backend adapters (§4) — backend is a config flip; shared validation above
 # ---------------------------------------------------------------------------
 
+_HTTP_ERROR_CODE: Optional[int] = None  # last HTTPError status (LEG 3 mapping)
+
+
+def _http_reason() -> str:
+    """R19.1 LEG 3: map the last backend HTTP failure to a distinct reason
+    code — 401 -> backend_auth, 402 -> backend_quota, other 4xx/5xx ->
+    backend_http_<code>. Transport-level failures (DNS/refused/timeout)
+    stay REASON_TIMEOUT. Never raises."""
+    try:
+        code = _HTTP_ERROR_CODE
+        if code == 401:
+            return REASON_BACKEND_AUTH
+        if code == 402:
+            return REASON_BACKEND_QUOTA
+        if isinstance(code, int) and code >= 400:
+            return REASON_BACKEND_HTTP_FMT % code
+        return REASON_TIMEOUT
+    except Exception:  # noqa: BLE001
+        return REASON_TIMEOUT
+
+
 def _http_post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any],
                     timeout: float) -> Optional[Dict[str, Any]]:
-    """Transport seam (test-injectable). One POST, no retry. None on failure."""
+    """Transport seam (test-injectable). One POST, no retry. None on failure;
+    HTTPError status codes recorded for _http_reason() (LEG 3)."""
+    global _HTTP_ERROR_CODE
+    _HTTP_ERROR_CODE = None
     try:
+        import urllib.error
         import urllib.request
 
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),
             headers=dict({"Content-Type": "application/json"}, **(headers or {})),
             method="POST")
-        with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
-            return json.loads(resp.read().decode("utf-8", "replace"))
+        try:
+            with urllib.request.urlopen(req, timeout=float(timeout)) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:  # noqa: BLE001 — status mapped, not swallowed
+            try:
+                _HTTP_ERROR_CODE = int(e.code)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
     except Exception:  # noqa: BLE001 — transport fail-open
         return None
 
@@ -1335,7 +1476,7 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             meta = dict(meta, model=model, endpoint=endpoint,
                         latency_s=round(time.time() - t0, 2))
             if not isinstance(data, dict):
-                return None, meta, REASON_TIMEOUT
+                return None, meta, _http_reason()
             try:
                 meta["tokens_in"] = (data.get("usage") or {}).get("prompt_tokens")
                 meta["tokens_out"] = (data.get("usage") or {}).get("completion_tokens")
@@ -1766,6 +1907,16 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
         hit = detect_v3(task_text, int(cfg.get("level") or 2), cfg=cfg)
         if not hit or hit.get("trigger") == "skip":
             return  # bypass / no fire — turn proceeds unchanged
+        if hit.get("trigger") == "provenance_skip":
+            # R19.1 LEG 1: platform envelope, not a user ask — log + stand down.
+            try:
+                if log_route is not None:
+                    log_route("decision_suppressed",
+                              reason=REASON_PROVENANCE_SKIP, lane="decision",
+                              task_id=task_id, session_id=session_id)
+            except Exception:  # noqa: BLE001 — logging never breaks the lane
+                pass
+            return
         _invoke(session_id, task_id, task_text, str(hit.get("trigger") or "pre"),
                 cfg, log_route, initiator=initiator)
     except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
