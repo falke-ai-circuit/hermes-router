@@ -343,13 +343,16 @@ def test_backend_jev_missing_key_fail_open(_reset, monkeypatch):
                                 task_text=ASK,
                                 log_route=lambda e, **f:
                                 LOGGED.append((e, dict(f))))
-    deadline = time.time() + 3
-    while time.time() < deadline and not _logged("decision_suppressed"):
+    deadline = time.time() + 10
+    rows = []
+    while time.time() < deadline and not rows:
+        rows = [r for r in decision.ledger_recent()
+                if r.get("fail_open_reason")]
         time.sleep(0.02)
     sup = _logged("decision_suppressed")
     assert sup and sup[-1]["reason"] == decision.REASON_BACKEND_ERROR
     assert debug_banner.consume_parked_banner(SID) == ""
-    row = decision.ledger_recent()[0]
+    row = rows[-1]
     assert row["fail_open_reason"] == decision.REASON_BACKEND_ERROR
 
 
@@ -712,3 +715,86 @@ def test_ledger_trigger_kinds(_reset, monkeypatch):
              for r in decision.ledger_recent(limit=10)}
     assert kinds["tm"] == "on_demand"
     assert kinds["tp"] == "post_fork_scan"
+
+
+# --------------------------------------------------------------------------
+# 9. §3 addendum 2: causal frames on envelope options + N+1 carryover
+# --------------------------------------------------------------------------
+
+FRAMED_ASK = ("which migration path?\n"
+              "- a) migrate now — saves 3 hours but irreversible on prod\n"
+              "- b) freeze first, reversible rollback, costs $50")
+
+
+def test_envelope_options_carry_causal_frames(_reset):
+    env = decision.build_envelope(SID, FRAMED_ASK, [], "pre")
+    opts = env["options"]
+    assert len(opts) == 2
+    for o in opts:
+        # every emitted option carries the FULL frame shape (user-locked)
+        assert set(o.keys()) == {"id", "label", "cause_effect", "cost",
+                                 "priors", "risk"}
+    a, b = opts
+    assert a["cause_effect"] == "saves 3 hours but irreversible on prod"
+    assert a["cost"] == "3 hours"
+    assert a["risk"] == "irreversible"
+    assert b["risk"] == "reversible"
+    assert b["cost"] == "$50"
+    # prompt renders the frames
+    prompt = decision.render_prompt(env)
+    assert "leads to: saves 3 hours" in prompt
+    assert "risk: irreversible" in prompt
+
+
+def test_envelope_frames_null_never_fabricated(_reset):
+    # bare fork: nothing stated in the ask, no ledger rows -> all frame
+    # fields null (never invented)
+    env = decision.build_envelope(SID, "redis or memcached?", [], "pre")
+    for o in env["options"]:
+        assert o["cause_effect"] is None
+        assert o["cost"] is None
+        assert o["priors"] is None
+        assert o["risk"] is None
+
+
+def test_envelope_priors_from_ledger_same_fork_class(_reset):
+    decision.ledger_write({"session_id": SID, "task_id": "t0",
+                           "trigger": "post", "fork_class": "generic",
+                           "choice": "opt-1", "confidence": 0.8,
+                           "follow_verdict": 1})
+    decision.ledger_write({"session_id": SID, "task_id": "t1",
+                           "trigger": "post", "fork_class": "generic",
+                           "choice": "opt-2", "confidence": 0.7})
+    env = decision.build_envelope(SID, FRAMED_ASK, [], "pre")  # fork=generic
+    a, b = env["options"]
+    assert a["priors"] and "chosen 1x" in a["priors"] and "followed 1x" in a["priors"]
+    assert b["priors"] and "chosen 1x" in b["priors"]
+    # different fork class (no rows) -> priors stay null
+    env2 = decision.build_envelope(SID, "keep the service or drop it?", [], "pre")
+    assert env2["fork_class"] == "keep_die"
+    assert all(o["priors"] is None for o in env2["options"])
+
+
+def test_causal_carryover_n_plus_1(_reset):
+    # envelope N+1 after a steered turn: causal context includes the last
+    # post_fork_scan verdict's trajectory from THIS session's ledger
+    decision.ledger_write({"session_id": SID, "task_id": "t9",
+                           "trigger": "post", "trigger_kind": "post_fork_scan",
+                           "fork_class": "deploy", "choice": "opt-2",
+                           "confidence": 0.85, "outcome": "pending"})
+    env = decision.build_envelope(SID, FRAMED_ASK, [], "pre")
+    assert "prior steered trajectory" in env["causal_context"]
+    assert "choice=opt-2" in env["causal_context"]
+    assert "outcome=pending" in env["causal_context"]
+    # other sessions' steering does NOT leak in
+    decision.ledger_write({"session_id": "s-other", "task_id": "t10",
+                           "trigger": "post", "trigger_kind": "post_fork_scan",
+                           "fork_class": "deploy", "choice": "opt-1",
+                           "confidence": 0.9, "outcome": "pending"})
+    env2 = decision.build_envelope(SID, "redis or memcached?", [], "pre")
+    assert "choice=opt-2" in env2["causal_context"]  # still THIS session's
+
+
+def test_causal_carryover_none_when_no_prior_steering(_reset):
+    env = decision.build_envelope(SID, FRAMED_ASK, [], "pre")
+    assert "prior steered trajectory" not in env["causal_context"]

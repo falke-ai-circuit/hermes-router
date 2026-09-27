@@ -1,3 +1,29 @@
+## 4.10.2 — 2026-09-27 (R19 step 3c: spec §3 addendum 2 — option causal frames + N+1 steer carryover)
+
+User-locked §3 update on top of v4.10.1. Still **dark**.
+
+- OPTION CAUSAL FRAMES: every envelope option now carries the full frame
+  shape {id, label, cause_effect, cost, priors, risk}. Sources: the
+  ask/turn text itself (cause_effect read off the option's own line after
+  a —/->/:/because/so/but separator; cost via money/time/token patterns;
+  risk via irreversible/reversible/blast-radius keywords) and prior ledger
+  rows for the same fork class (priors: "N prior verdicts in class X:
+  opt-k chosen Mx, followed Mx" — this is what the ledger is FOR).
+  Unknown fields emit as null — never fabricated.
+- N+1 CARRYOVER (steer-until-completion chain coherence): envelope N+1's
+  CAUSAL CONTEXT includes the previously steered trajectory, read from the
+  ledger row of the LAST post_fork_scan verdict in THIS session
+  (choice/confidence/fork/outcome appended as "|| prior steered
+  trajectory: ..."). Session-scoped — other sessions' steering never
+  leaks in.
+- render_prompt renders the frames inline ("- opt-1 :: label | leads to:
+  ... | cost: ... | priors: ... | risk: ..."), null fields omitted.
+- Tests: +5 (frames on all options with full shape, null-never-fabricated
+  on a bare fork, priors from ledger by fork class incl. null for an
+  unrepresented class, N+1 carryover incl. session isolation, none when no
+  prior steering). Hardened the jev-missing-key wait against load flakes.
+  Suite: 1043 passed / 2 skipped.
+
 ## 4.10.1 — 2026-09-27 (R19 step 3b: spec §2 user-locked addendum — structural detection + POST fork-scan)
 
 Spec update addendum on top of v4.10.0 (`r19_decision_lane_SPEC_v3_final.md`

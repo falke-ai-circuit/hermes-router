@@ -975,14 +975,34 @@ def build_envelope(session_id: str, ask: str, options: List[str],
             return {}
         ids = option_ids(opts)
         rc = risk_class(ask)
+        fc = fork_class(ask, opts)
+        # §3 addendum 2: every option carries a causal frame sourced from
+        # the ask/turn text + ledger priors. Unknown fields -> None, never
+        # fabricated.
+        framed = []
+        for i, label in enumerate(opts):
+            frame = _option_frame(label, ask, i, fc, cfg)
+            framed.append({"id": ids[i], "label": label,
+                           "cause_effect": frame["cause_effect"],
+                           "cost": frame["cost"],
+                           "priors": frame["priors"],
+                           "risk": frame["risk"]})
+        # §3 addendum 2 N+1 carryover: causal context includes the previously
+        # steered trajectory (last post_fork_scan verdict in this session).
+        causal = _causal_context(session_id, ask, cfg)
+        traj = _prior_trajectory(session_id)
+        if traj:
+            causal = ("%s || prior steered trajectory: choice=%s "
+                      "confidence=%s fork=%s outcome=%s"
+                      % (causal, traj["choice"], traj["confidence"],
+                         traj["fork_class"], traj["outcome"]))[:1600]
         envelope: Dict[str, Any] = {
             "schema": ENVELOPE_SCHEMA,
             "agent_frame": _agent_frame(cfg),
             "scope": {"risk_class": rc,
                       "advice_only": rc == "high"},  # §5.2 high-stakes: advice only
-            "causal_context": _causal_context(session_id, ask, cfg),
-            "options": [{"id": oid, "label": label}
-                        for oid, label in zip(ids, opts)],
+            "causal_context": causal,
+            "options": framed,
             "question": {
                 "type": "choose_one_with_confidence",
                 "text": ("Choose exactly one option id. Respond with ONLY JSON: "
@@ -1012,6 +1032,116 @@ def build_envelope(session_id: str, ask: str, options: List[str],
         return envelope
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _ledger_priors(fork_cls: str, option_index: int, cfg: Dict[str, Any],
+                   db_path: str = "") -> Optional[str]:
+    """§3 priors source: known prior outcomes of this option class from the
+    decision ledger (same fork class, same option ordinal). None when the
+    ledger has nothing — never fabricated."""
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return None
+        try:
+            want = OPTION_ID_FMT % (option_index + 1)
+            rows = conn.execute(
+                "SELECT choice, outcome, follow_verdict FROM decision_ledger"
+                " WHERE fork_class = ? AND choice != '' AND choice != ?"
+                " ORDER BY id DESC LIMIT 50", (str(fork_cls),
+                                               STAND_DOWN_CHOICE)).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return None
+        chosen = sum(1 for r in rows if r[0] == want)
+        if not chosen:
+            return None
+        followed = sum(1 for r in rows if r[0] == want and r[2])
+        return ("%d prior %s verdict(s) in class %s: opt-%d chosen %dx, "
+                "followed %dx" % (len(rows), "post_fork_scan", fork_cls,
+                                  option_index + 1, chosen, followed))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_CAUSE_SEP_RE = re.compile(r"\s(?:—|->|=>|:)\s*|\s+(?:because|so|but|then)\s+",
+                           re.IGNORECASE)
+_COST_RE = re.compile(
+    r"\$\d[\d.,]*|\b\d+\s*(?:min(?:ute)?s?|hours?|hrs?|days?|tokens?|"
+    r"k?\s?tokens?|req(?:uest)?s?/s)\b", re.IGNORECASE)
+_RISK_IRREV_RE = re.compile(r"\b(irreversible|permanent|destructive|one[- ]way)\b",
+                            re.IGNORECASE)
+_RISK_REV_RE = re.compile(r"\b(reversible|rollback|undoable|easily reverted)\b",
+                          re.IGNORECASE)
+_RISK_BLAST_RE = re.compile(
+    r"\b(production|fleet[- ]wide|delete|drop|all (users|nodes|agents)|"
+    r"every (user|node|agent))\b", re.IGNORECASE)
+
+
+def _option_frame(label: str, ask: str, option_index: int, fork_cls: str,
+                  cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Causal frame for ONE envelope option (§3 user-locked addendum 2).
+    Sources: the ask/turn text itself (cause_effect/cost/risk read off the
+    option's own line) and prior ledger rows for the same fork class
+    (priors). Unknown -> None — never fabricated. Never raises."""
+    frame: Dict[str, Any] = {"cause_effect": None, "cost": None,
+                             "priors": None, "risk": None}
+    try:
+        low_label = str(label).strip().lower()
+        line = ""
+        for raw in str(ask or "").splitlines():
+            if low_label and low_label in raw.lower():
+                line = raw
+                break
+        if line:
+            m = _CAUSE_SEP_RE.search(line)
+            if m and str(line[m.end():] or "").strip():
+                frame["cause_effect"] = clean_snippet(line[m.end():], 160)
+            cm = _COST_RE.search(line)
+            if cm:
+                frame["cost"] = clean_snippet(cm.group(0), 40)
+            if _RISK_IRREV_RE.search(line):
+                frame["risk"] = "irreversible"
+            elif _RISK_BLAST_RE.search(line):
+                frame["risk"] = "wide blast radius"
+            elif _RISK_REV_RE.search(line):
+                frame["risk"] = "reversible"
+        priors = _ledger_priors(fork_cls, option_index, cfg)
+        if priors:
+            frame["priors"] = priors
+        return frame
+    except Exception:  # noqa: BLE001
+        return frame
+
+
+def _prior_trajectory(session_id: str, db_path: str = ""
+                      ) -> Optional[Dict[str, Any]]:
+    """N+1 carryover (§3 user-locked addendum 2): the last post_fork_scan
+    verdict in THIS session, read from the ledger — the previously steered
+    trajectory that envelope N+1's causal context must include. None when
+    the session has no prior steering. Never fabricated."""
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT choice, confidence, fork_class, outcome, ts"
+                " FROM decision_ledger WHERE session_id = ?"
+                " AND trigger_kind = 'post_fork_scan'"
+                " AND choice != '' AND choice != ?"
+                " ORDER BY id DESC LIMIT 1",
+                (str(session_id or ""), STAND_DOWN_CHOICE)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return {"choice": str(row[0]), "confidence": row[1],
+                "fork_class": str(row[2] or ""), "outcome": str(row[3] or ""),
+                "ts": row[4]}
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def envelope_hash(envelope: Dict[str, Any]) -> str:
@@ -1059,8 +1189,14 @@ def render_prompt(envelope: Dict[str, Any]) -> str:
     framing; closed option ids; JSON-only contract."""
     try:
         s1 = _systemone(envelope)
-        opt_lines = ["- %s :: %s" % (o["id"], o["label"])
-                     for o in s1.get("options", [])]
+        opt_lines = []
+        for o in s1.get("options", []):
+            parts = ["- %s :: %s" % (o["id"], o["label"])]
+            for key, tag in (("cause_effect", "leads to"), ("cost", "cost"),
+                             ("priors", "priors"), ("risk", "risk")):
+                if o.get(key):
+                    parts.append("%s: %s" % (tag, o[key]))
+            opt_lines.append(" | ".join(parts))
         slice_lines = ["- id=%s ts=%s :: %s" % (s["id"], s["ts"], s["snippet"])
                        for s in s1.get("slice", [])]
         risk = s1.get("scope", {}).get("risk_class", "normal")
