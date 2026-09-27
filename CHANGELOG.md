@@ -1,3 +1,19 @@
+## 4.11.5 — 2026-09-27 (FIX 1 follow-up: extract_options cfg-positional repro)
+
+Conductor isolated: extract_options(TXT, cfg) returned [] on named-only
+texts that PASS the enum gate. Root cause: extract_options has no cfg
+parameter — the cfg dict landed in `cap`, TypeError'd inside the loop and
+the fail-open except swallowed it into an empty list, so the live
+turn_sweep scored real 'Approach 1:' forks at 0 options while the raw
+regex found 4.
+
+- FIX: extract_options(text, cap=6, cfg=None) — a dict in the cap
+  position is normalized as cfg; the cfg-gated path extracts options from
+  BOTH marker styles (bare line markers + named-style markers, same
+  ordinal dedupe), so gate pass == options found.
+- Tests: cfg-positional repro (>=4 options on the Approach fixture),
+  no-cfg path unchanged, mixed bare+named markers merge without stacking.
+
 ## 4.11.4 — 2026-09-27 (battery findings: enumeration coverage + ledger observability + session-key sanitization)
 
 - FIX 1 (HIGH) — extract_options enumeration coverage: named-style

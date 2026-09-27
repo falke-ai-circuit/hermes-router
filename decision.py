@@ -850,10 +850,26 @@ _OPT_OR_RE = re.compile(r"\b([A-Za-z][\w .\-)]{0,59}?)\s+or\s+([A-Za-z][\w .\-)]
 OPTION_ID_FMT = "opt-%d"
 
 
-def extract_options(text: str, cap: int = 6) -> List[str]:
+def extract_options(text: str, cap: int = 6,
+                    cfg: Optional[Dict[str, Any]] = None) -> List[str]:
     """Closed option enumeration FROM the ask (§3.4 — never invented).
-    Line markers first, then an 'X or Y' prose fallback. Never raises."""
+    Line markers + named-style markers first, then an 'X or Y' prose
+    fallback. v4.11.5: a cfg dict passed positionally (the live-sweep
+    calling shape extract_options(TXT, cfg)) is accepted and normalized —
+    previously it landed in `cap` and TypeError'd into a silent empty
+    list, so named-only texts passed the enum gate yet scored 0 options.
+    Never raises."""
     try:
+        if isinstance(cap, dict):
+            # conductor repro shape: extract_options(TXT, cfg) — treat the
+            # dict as cfg, keep the default cap
+            cfg = cap
+            cap = 6
+        if cfg is not None and isinstance(cfg, dict):
+            # cfg-gated extraction (live turn_sweep shape): bounds stay the
+            # enum floors' semantics — cap unaffected; both marker styles
+            # feed `out` below.
+            cap = max(2, min(6, int(cfg.get("extract_cap") or cap)))
         out: List[str] = []
         if not isinstance(text, str) or not text.strip():
             return out

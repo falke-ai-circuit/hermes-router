@@ -101,7 +101,34 @@ def test_named_enumeration_variants(_env):
     assert len(opts) >= 4
 
 
-def test_named_enumeration_below_floor_still_quiet(_env):
+def test_extract_options_cfg_positional_shape(_env):
+    """Conductor repro: extract_options(TXT, cfg) — a cfg dict passed
+    positionally must normalize, not TypeError into an empty list."""
+    cfg = {"enum_min_items": 4, "enum_min_chars": 600}
+    opts = decision.extract_options(_approach_fixture(), cfg)
+    assert len(opts) >= 4
+
+
+def test_extract_options_no_cfg_unchanged(_env):
+    opts = decision.extract_options(_approach_fixture())
+    assert len(opts) >= 4
+
+
+def test_extract_options_mixed_markers_no_stacking(_env):
+    text = ("Migration fork — pick one.\n"
+            "1. Roll forward now with the current tooling.\n"
+            "Approach 1: roll forward now with the current tooling.\n"
+            "2. Pause and re-baseline everything first.\n"
+            "Path 2: pause and re-baseline everything first.\n"
+            "3. Split the fleet and migrate half.\n"
+            "Variant 3: split the fleet and migrate half.\n")
+    opts = decision.extract_options(text)
+    assert len(opts) == 3  # same ordinals merged, not stacked to 6
+    low = [o.lower() for o in opts]
+    assert len(set(low)) == 3
+
+
+def test_extract_options_below_floor_still_quiet(_env):
     """Short text with named markers must NOT trip the structural gate."""
     short = "Approach 1: do X.\nApproach 2: do Y.\n"
     cfg = _v3_cfg()
