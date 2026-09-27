@@ -20,6 +20,36 @@ from hermes_router import decision, decision_midturn as dmt
 SID = "s-r19mt4"
 
 
+def _calls(monkeypatch, body=None, fail=False):
+    """Mock the decision backend; returns the call list."""
+    calls = []
+
+    def _backend(envelope, cfg):
+        calls.append(envelope)
+        if fail:
+            raise RuntimeError("backend exploded")
+        meta = {"model": str(cfg.get("model") or "m"),
+                "endpoint": "e", "tokens_in": 10, "tokens_out": 5,
+                "latency_s": 0.1}
+        return (json.dumps(body), meta, "ok") if body else (None, meta, "timeout")
+
+    monkeypatch.setattr(decision, "call_backend", _backend)
+    return calls
+
+
+def _rows(path):
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM decision_ledger ORDER BY id")]
+    conn.close()
+    return rows
+
+
+TOOL_FORK = ("harness verdict — which one should we pick?\n"
+             "a) redis\nb) memcached\nc) sqlite — weigh the tradeoffs")
+
+
 def _v3_cfg(**over):
     cfg = dict(decision.DEFAULTS)
     cfg["enabled"] = True
@@ -232,3 +262,88 @@ def test_flush_and_scan_valid_key_untouched(_env, monkeypatch):
     # the valid key's own bucket exists (no fallback bleed)
     assert SID in dmt.runs_state()
     assert "active-session" not in dmt.runs_state()
+
+
+# ------------------------------------------------------------------
+# v4.11.6 — JSON-blob tool-content decode
+# ------------------------------------------------------------------
+
+def _json_blob(inner: str) -> str:
+    """Real-session shape: the stored string is a JSON object whose output
+    value contains LITERAL backslash-n sequences (not real newlines)."""
+    return json.dumps({"output": inner})  # json.dumps escapes \n -> \\n
+
+
+def test_json_wrapped_tool_blob_decoded_via_sweep(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    blob = _json_blob(_approach_fixture())  # literal \n inside the value
+    assert "\\nApproach 1:" in blob  # sanity: NOT real newlines
+    # pre-fix: raw blob scored 0; post-fix: decoded -> >=4 options
+    request = {"messages": [
+        {"role": "user", "content": "go"},
+        {"role": "tool", "content": blob},
+    ]}
+    adv = dmt.flush_and_scan(SID, request)
+    assert len(calls) == 1
+    assert len(adv) == 1
+    row = _rows(_env)[-1]
+    assert row["seam"] == "turn_boundary"
+
+
+def test_json_wrapped_blob_via_terminal_seam(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    dmt.on_terminal_output(SID, "terminal", _json_blob(TOOL_FORK))
+    assert len(calls) == 1
+    assert dmt.flush(SID)
+
+
+def test_plain_text_tool_result_unchanged(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    dmt.on_terminal_output(SID, "terminal", TOOL_FORK)  # plain, not JSON
+    assert len(calls) == 1
+
+
+def test_malformed_json_falls_back_no_exception(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    bad = '{"output": "AUDIT RESULTS Approach 1: x'  # truncated JSON, no }
+    dmt.on_terminal_output(SID, "terminal", bad)  # must NOT raise
+    # raw string used as-is (fallback): marker is mid-line after a quote,
+    # so the anchored regex finds nothing -> suppressed, zero calls
+    assert len(calls) == 0
+    assert dmt.flush(SID) == []
+    # decode helper unit checks
+    assert dmt._decode_content('{"a": [1,2}') == '{"a": [1,2}'
+    assert dmt._decode_content('{"output": {"nested": true}}') \
+        == '{"output": {"nested": true}}'  # non-string value: raw fallback
+    # alternate keys decode too
+    assert dmt._decode_content('{"result": "Approach 1: x\\nApproach 2: y"}') \
+        .startswith("Approach 1:")
+
+
+def test_provenance_filter_applies_to_decoded_text(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    # platform envelope HIDING inside a JSON blob must still be skipped
+    blob = _json_blob("[Durable Summary] Approach 1: a\nApproach 2: b")
+    dmt.on_terminal_output(SID, "terminal", blob)
+    dmt.on_terminal_output(SID, "terminal", _approach_fixture())
+    assert len(calls) == 1  # only the clean fixture fired

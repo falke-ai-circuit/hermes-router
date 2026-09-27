@@ -1,3 +1,23 @@
+## 4.11.6 — 2026-09-27 (conductor live repro: JSON-blob tool-content decode)
+
+Real-session tool content is a JSON blob: the stored string is
+'{"output": "AUDIT RESULTS...\\nApproach 1: ..."}' with LITERAL backslash-n
+sequences inside the value, not real newlines — line-anchored markers never
+matched, so EVERY JSON-wrapped tool result scored 0 options (live repro:
+raw blob 0, decoded output 4, plain text 4).
+
+- FIX: `_decode_content` helper in decision_midturn — if content parses as
+  a JSON object, the first present key of ('output','result','content',
+  'text') is the scan text (json.loads handles unescaping; never manual);
+  else content as-is. Wired into BOTH midturn scan paths (sweep_turn_start
+  message scan + terminal-output seam). Provenance skip filters unchanged
+  and applied to the DECODED text (an envelope hiding inside the blob is
+  still skipped).
+- Tests: JSON-wrapped 4-approach blob via sweep (>=4 options, was 0),
+  blob via terminal seam, plain text unchanged, malformed JSON falls back
+  raw with no exception, alternate keys decode, provenance-inside-blob
+  skipped.
+
 ## 4.11.5 — 2026-09-27 (FIX 1 follow-up: extract_options cfg-positional repro)
 
 Conductor isolated: extract_options(TXT, cfg) returned [] on named-only

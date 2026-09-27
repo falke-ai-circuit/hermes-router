@@ -175,6 +175,40 @@ def _state(session_id: str) -> Dict[str, Any]:
 # LEG 1 — detection at the transform_tool_result seam
 # -----------------------------------------------------------------------
 
+def _decode_content(content: Any) -> str:
+    """v4.11.6 FIX: tool content in real sessions is a JSON blob — the
+    stored string is '{"output": "AUDIT RESULTS...\\nApproach 1: ..."}'
+    where the newlines INSIDE the value are literal backslash-n sequences,
+    not real newlines. Line-anchored markers never match against that raw
+    blob. If content parses as a JSON object, take the first present key
+    of ('output','result','content','text') as the scan text (json.loads
+    handles unescaping — never unescape manually); else use content
+    as-is. Never raises."""
+    try:
+        text = content if isinstance(content, str) else str(content or "")
+        if not text:
+            return ""
+        s = text.strip()
+        if not (s.startswith("{") and s.endswith("}")):
+            return text
+        try:
+            data = json.loads(s)
+        except Exception:  # noqa: BLE001 — malformed JSON: raw fallback
+            return text
+        if isinstance(data, dict):
+            for key in ("output", "result", "content", "text"):
+                val = data.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val
+                if val is not None and not isinstance(val, (dict, list)):
+                    sv = str(val)
+                    if sv.strip():
+                        return sv
+        return text
+    except Exception:  # noqa: BLE001 — decode must never break the scan
+        return content if isinstance(content, str) else str(content or "")
+
+
 def on_terminal_output(session_id: str, tool_name: str, result: Any,
                        seam: str = SEAM_TERMINAL) -> None:
     """SEAM 1 entry — called from the plugin's transform_terminal_output
@@ -188,6 +222,9 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         if mode == "off" or not str(session_id or ""):
             return
         text = result if isinstance(result, str) else str(result or "")
+        if not text:
+            return
+        text = _decode_content(text)  # v4.11.6: JSON-blob decode
         if not text:
             return
         if _dec.provenance_skip(text, cfg):
@@ -255,6 +292,9 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             if not _msg_is_scan_target(msg):
                 continue
             text = _msg_text(msg.get("content"))
+            if not text:
+                continue
+            text = _decode_content(text)  # v4.11.6: JSON-blob decode
             if not text:
                 continue
             if _dec.PROVENANCE_TAG in text:
