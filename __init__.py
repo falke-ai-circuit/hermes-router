@@ -1173,7 +1173,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         _mt_advisories: list = []
         try:
             from . import decision_midturn as _dmt
-            _mt_advisories = _dmt.flush_and_scan(session_id, request) or []
+            _mt_advisories = _dmt.flush_and_scan(
+                str(context.get("session_id") or context.get("task_id")
+                    or "active-session"), request) or []
         except Exception:  # noqa: BLE001 — hook must never break the call
             _mt_advisories = []
         if not isinstance(_mt_advisories, list):
