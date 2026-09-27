@@ -1,26 +1,35 @@
-"""R19.2 — MIDTURN DECISION HOOK (on_llm_execution).
+"""R19.2 — MIDTURN DECISION HOOK (ADDENDUM 3 rewiring: transform_tool_result).
 
-Agent-initiated midturn REFLEX was proven dead (0/3 live tasks): detection
-here needs ZERO agency — it watches the traffic that already flows. LEG 1
-scans ONLY the new messages since the previous LLM call of the same run
-(tool results are the target surface: harness verdicts, candidate lists,
-conflicting evidence), reusing the R19.1 provenance filter and the decision
-detect() options-structure regex. LEG 2 (mode 'on' only) dispatches a causal
-envelope -> backend -> typed verdict and appends ONE advisory envelope to
-the in-flight request context — never rewrites model/tool content, never
-blocks, fail-open on any error. LEG 3: midturn verdicts NEVER emit their own
-banner mid-run; at POST/turn close a single aggregate decision banner is
-emitted via the existing park/consume mechanics. Shadow mode is detect +
-log + ledger only (calibration data, first-class rows).
+Live-probed root cause: the llm_execution middleware fires ONCE per turn,
+not per LLM call — a delta-scan at that seam never sees tool results.
+Detection therefore moved to the `transform_tool_result` platform hook,
+which core fires after EVERY tool execution (timeout-bounded hook class in
+plugins_dispatch._HOOK_TIMEOUT_BOUNDED_HOOKS). The single tool output passed
+to the hook IS the delta — no run-state last_n tracking needed.
 
-Ships DARK (decision.midturn: off everywhere, default off fleet-wide).
+DELIVERY: 'on' mode queues the advisory per session; the llm_execution
+middleware (once per turn is fine — the verdict lands in the request that
+follows the fork) flushes it into the in-flight request. If the run ends
+before a flush, the verdict is ledger-only. Never blocks the tool result
+itself (the hook caller returns None; the platform filters non-string
+returns, so the result passes through untouched).
+
+LEG 1 detection: tool output text + tool_name, R19.1 provenance filter,
+decision extract_options regex. Config gate decision.midturn: shadow
+(detect+log+ledger, never appends) | on | off (default, DARK).
+LEG 2: causal envelope -> backend -> typed verdict -> pending advisory.
+LEG 3: aggregate banner at POST/turn close (one banner, park/consume).
+LEG 4: ledger trigger kind 'midturn_hook' with delta_source='tool_result',
+tool_name, fork signature, mode. 600s signature cooldown; 50/run cap (rows
+beyond cap still recorded); global decision breaker unchanged.
+
 Every public entry is fail-open and never raises.
 """
 import json
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from . import decision as _dec
 
@@ -35,8 +44,8 @@ VALID_MODES = ("shadow", "on", "off")
 # Cooldown: per normalized fork signature, 600s (R16 normalized-hash pattern).
 COOLDOWN_SECONDS = 600.0
 
-# Run cap: max verdicts (backend calls) per (session, run). Ledger rows beyond
-# the cap are still recorded; calls are not.
+# Run cap: max verdicts (backend calls) per run. Ledger rows beyond the cap
+# are still recorded; calls are not.
 RUN_CAP = 50
 
 TRIGGER = "midturn"
@@ -58,8 +67,8 @@ REASON_RUN_CAP = "midturn_run_cap"
 
 _LOCK = threading.Lock()
 # (session_id) -> run state:
-#   {"run": int, "last_n": int, "count": int, "consumed": [ {choice,tokens_in,
-#    tokens_out,cost,model} ], "seen_run": set(int) — runs already closed}
+#   {"count": int, "consumed": [ {choice,tokens_in,tokens_out,cost,model} ],
+#    "pending": [advisory texts awaiting the next llm_execution flush]}
 _RUNS: Dict[str, Dict[str, Any]] = {}
 # fork signature hash -> last-fire ts
 _COOLDOWN: Dict[str, float] = {}
@@ -76,7 +85,8 @@ def reset_midturn() -> None:
 def runs_state() -> Dict[str, Dict[str, Any]]:
     """Diagnostic snapshot (copy). Never raises."""
     with _LOCK:
-        return {k: dict(v, consumed=list(v.get("consumed", [])))
+        return {k: dict(v, consumed=list(v.get("consumed", [])),
+                        pending=list(v.get("pending", [])))
                 for k, v in _RUNS.items()}
 
 
@@ -115,129 +125,48 @@ def _norm_hash(text: str) -> str:
         return ""
 
 
-def _msg_text(content: Any) -> str:
-    """Flatten a message content (string or OpenAI parts list). Never raises."""
-    try:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for p in content:
-                if isinstance(p, str):
-                    parts.append(p)
-                elif isinstance(p, dict):
-                    parts.append(str(p.get("text") or p.get("content") or ""))
-            return "\n".join(x for x in parts if x)
-    except Exception:  # noqa: BLE001
-        pass
-    return ""
-
-
-def _is_tool_result(msg: Dict[str, Any]) -> bool:
-    """The target surface is tool results only (harness verdicts, candidate
-    lists, conflicting evidence). OpenAI wire format: role 'tool'. Some
-    harnesses relay tool results as user-role content with an explicit
-    tool_result envelope — accept only an explicit marker, never plain user
-    prose."""
-    try:
-        role = str(msg.get("role") or "")
-        if role == "tool":
-            return True
-        if role == "user":
-            head = _msg_text(msg.get("content"))[:200].lstrip().lower()
-            return head.startswith("tool_result") or \
-                head.startswith("[tool result")
-        return False
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _is_user_turn(msg: Dict[str, Any]) -> bool:
-    """A real (non-tool, non-advisory) user message marks a new run boundary.
-    Never raises."""
-    try:
-        if str(msg.get("role") or "") != "user":
-            return False
-        t = _msg_text(msg.get("content"))
-        if not t:
-            return False
-        if _is_tool_result(msg):
-            return False
-        if _dec is not None and _dec.PROVENANCE_TAG in t:
-            return False  # our own advisory echo
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _reset_run(state: Dict[str, Any]) -> None:
-    state["run"] = int(state.get("run") or 0) + 1
-    state["count"] = 0
-    state["consumed"] = []
+def _state(session_id: str) -> Dict[str, Any]:
+    return _RUNS.setdefault(session_id, {"count": 0, "consumed": [],
+                                         "pending": []})
 
 
 # -----------------------------------------------------------------------
-# LEG 1 — detection at the on_llm_execution seam
+# LEG 1 — detection at the transform_tool_result seam
 # -----------------------------------------------------------------------
 
-def on_llm_call(session_id: str, request: Dict[str, Any]) -> List[str]:
-    """Called from __init__.on_llm_execution on EVERY in-run LLM call, BEFORE
-    next_call. Scans only NEW messages since the previous call of the same
-    run; in mode 'on' returns advisory envelope texts to append to the
-    in-flight request (shadow returns [], off returns [] immediately).
-    Never raises; fail-open on any error."""
+def on_tool_result(session_id: str, tool_name: str, result: Any) -> None:
+    """Called from the plugin's transform_tool_result hook after EVERY tool
+    execution. The single tool output IS the delta. Shadow: detect + log +
+    ledger, never appends. Off: fully silent. The tool result itself is
+    never touched (the hook caller returns None). Never raises."""
     try:
         cfg = _cfg()
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
-            return []
-        if _dec is None:
-            return []
-        msgs = request.get("messages") if isinstance(request, dict) else None
-        if not isinstance(msgs, list):
-            return []
-
-        key = str(session_id)
-        advisories: List[str] = []
-        with _LOCK:
-            st = _RUNS.setdefault(key, {"run": 0, "last_n": 0, "count": 0,
-                                        "consumed": []})
-            n = len(msgs)
-            last_n = int(st.get("last_n") or 0)
-            if n < last_n:
-                # context rolled/trimmed: reset the run baseline, skip the
-                # re-scan (conservative — avoids duplicate detections).
-                _reset_run(st)
-                st["last_n"] = n
-                return []
-            delta = msgs[last_n:]
-            st["last_n"] = n
-            # run boundary: a fresh user turn starts a new run (reset caps +
-            # consumed accumulator so the banner aggregates one run only).
-            if any(_is_user_turn(m) for m in delta
-                   if isinstance(m, dict)):
-                _reset_run(st)
-        for msg in delta:
-            if not isinstance(msg, dict) or not _is_tool_result(msg):
-                continue
-            text = _msg_text(msg.get("content"))
-            if not text or _dec.provenance_skip(text, cfg):
-                continue
-            adv = _handle_hit(key, text, cfg, mode)
-            if adv:
-                advisories.append(adv)
-        return advisories
-    except Exception:  # noqa: BLE001 — fail-open, never break the provider call
-        logger.debug("decision_midturn.on_llm_call error", exc_info=True)
-        return []
+            return
+        text = result if isinstance(result, str) else str(result or "")
+        if not text:
+            return
+        if _dec.provenance_skip(text, cfg):
+            return
+        opts = _dec.extract_options(text)
+        if not opts:
+            _log(session_id, "midturn_suppressed",
+                 reason=_dec.REASON_NO_OPTIONS, mode=mode,
+                 tool=str(tool_name or ""))
+            return
+        _handle_hit(str(session_id), str(tool_name or ""), text, opts, cfg,
+                    mode)
+    except Exception:  # noqa: BLE001 — fail-open, never break the tool result
+        logger.debug("decision_midturn.on_tool_result error", exc_info=True)
 
 
-def _handle_hit(session_id: str, text: str, cfg: Dict[str, Any],
-                mode: str) -> str:
-    """One detected tool-result fork: provenance already cleared. Cooldown +
-    run cap + (mode 'on') envelope -> backend -> verdict -> ledger + advisory.
-    Shadow: detect + log + ledger only. Returns the advisory text (mode 'on',
-    verdict landed) or "". Never raises."""
+def _handle_hit(session_id: str, tool_name: str, text: str,
+                opts: List[str], cfg: Dict[str, Any], mode: str) -> None:
+    """One detected tool-result fork: provenance already cleared, options
+    extracted. Cooldown + run cap + (mode 'on') envelope -> backend ->
+    verdict -> ledger + pending advisory. Shadow: detect + log + ledger
+    only. Never raises."""
     try:
         sig = _norm_hash(text)
         now = time.time()
@@ -245,97 +174,112 @@ def _handle_hit(session_id: str, text: str, cfg: Dict[str, Any],
             last = _COOLDOWN.get(sig)
             if last is not None and (now - last) < COOLDOWN_SECONDS:
                 _log(session_id, "midturn_suppressed", reason=REASON_COOLDOWN,
-                     sig=sig, mode=mode)
-                return ""
+                     sig=sig, mode=mode, tool=tool_name)
+                return
             _COOLDOWN[sig] = now
             while len(_COOLDOWN) > _COOLDOWN_MAX_KEYS:
                 _COOLDOWN.pop(next(iter(_COOLDOWN)))
-            st = _RUNS.get(session_id) or {"run": 0, "count": 0,
-                                           "consumed": []}
+            st = _state(session_id)
             over_cap = int(st.get("count") or 0) >= RUN_CAP
-
-        opts = _dec.extract_options(text)
-        if not opts:
-            _log(session_id, "midturn_suppressed",
-                 reason=_dec.REASON_NO_OPTIONS, sig=sig, mode=mode)
-            return ""
 
         fork_cls = _dec.fork_class(text, opts)
         if mode == "shadow" or over_cap:
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
-                    fail_open_reason=reason)
+                    tool_name=tool_name, fail_open_reason=reason)
             _log(session_id, "midturn_suppressed", reason=reason, sig=sig,
-                 mode=mode, fork_class=fork_cls)
-            return ""
+                 mode=mode, tool=tool_name, fork_class=fork_cls)
+            return
 
         # mode 'on'
         if _dec._breaker_open(cfg):
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
+                    tool_name=tool_name,
                     fail_open_reason=_dec.REASON_BREAKER_OPEN)
             _log(session_id, "midturn_suppressed",
-                 reason=_dec.REASON_BREAKER_OPEN, sig=sig, mode=mode)
-            return ""
+                 reason=_dec.REASON_BREAKER_OPEN, sig=sig, mode=mode,
+                 tool=tool_name)
+            return
         envelope = _dec.build_envelope(session_id, text, opts, TRIGGER, cfg)
         if not envelope:
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
+                    tool_name=tool_name,
                     fail_open_reason=_dec.REASON_NO_OPTIONS)
             _log(session_id, "midturn_suppressed",
-                 reason=_dec.REASON_NO_OPTIONS, sig=sig, mode=mode)
-            return ""
+                 reason=_dec.REASON_NO_OPTIONS, sig=sig, mode=mode,
+                 tool=tool_name)
+            return
         content, meta, reason = _dec.call_backend(envelope, cfg)
-        base = _ledger_base(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls)
+        base = _ledger_base(session_id, cfg, sig=sig, mode=mode,
+                            fork_cls=fork_cls, tool_name=tool_name)
         base["envelope_hash"] = _dec.envelope_hash(envelope)
         base["model"] = str(meta.get("model") or cfg.get("model") or "")
         base["model_version"] = str(meta.get("model") or "")
         if content is None:
             _dec.ledger_write(dict(base, fail_open_reason=str(reason)))
             _log(session_id, "midturn_suppressed", reason=str(reason),
-                 sig=sig, mode=mode, backend=str(cfg.get("backend") or ""))
-            return ""
+                 sig=sig, mode=mode, tool=tool_name,
+                 backend=str(cfg.get("backend") or ""))
+            return
         verdict, vreason = _dec.validate_verdict(content, envelope)
         if verdict is None:
             _dec.bump_counter("malformed")
             _dec.ledger_write(dict(base, fail_open_reason=str(vreason)))
             _log(session_id, "midturn_suppressed", reason=str(vreason),
-                 sig=sig, mode=mode)
-            return ""
+                 sig=sig, mode=mode, tool=tool_name)
+            return
         if verdict["choice"] == _dec.STAND_DOWN_CHOICE:
             _dec.ledger_write(dict(base, outcome="stand_down",
                                    fail_open_reason="stand_down"))
-            _log(session_id, "midturn_stand_down", sig=sig, mode=mode)
-            return ""
+            _log(session_id, "midturn_stand_down", sig=sig, mode=mode,
+                 tool=tool_name)
+            return
         rid = _dec.ledger_write(dict(
             base, choice=str(verdict["choice"]),
             confidence=round(float(verdict["confidence"]), 4),
             verdict_json=json.dumps(verdict, default=str)))
-        _record_success_cfg(cfg)
+        _dec._record_success()
         _record_consumed(session_id, verdict, meta, cfg)
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
              confidence=round(float(verdict["confidence"]), 3),
-             sig=sig, mode=mode, ledger_id=rid,
+             sig=sig, mode=mode, tool=tool_name, ledger_id=rid,
              backend=str(cfg.get("backend") or ""))
-        return _render_midturn_advisory(verdict, envelope, meta)
+        adv = _render_midturn_advisory(verdict, envelope, meta)
+        if adv:
+            with _LOCK:
+                _state(session_id).setdefault("pending", []).append(adv)
     except Exception:  # noqa: BLE001 — fail-open on any backend/hook error
         logger.debug("decision_midturn._handle_hit error", exc_info=True)
         try:
             _ledger(session_id, cfg, sig=_norm_hash(text), mode=mode,
-                    fork_cls="", fail_open_reason="hook_error")
+                    fork_cls="", tool_name=tool_name,
+                    fail_open_reason="hook_error")
         except Exception:  # noqa: BLE001
             pass
-        return ""
 
 
-def _record_success_cfg(cfg: Dict[str, Any]) -> None:
+# -----------------------------------------------------------------------
+# Delivery — pending-advisory queue flushed at the next llm_execution fire
+# -----------------------------------------------------------------------
+
+def flush(session_id: str) -> List[str]:
+    """Called from on_llm_execution (once per turn is fine — the verdict
+    lands in the request that follows the fork). Returns and clears the
+    session's pending advisory envelopes. Never raises."""
     try:
-        _dec._record_success()
+        with _LOCK:
+            st = _RUNS.get(str(session_id or ""))
+            pending = list(st.get("pending") or []) if st else []
+            if st:
+                st["pending"] = []
+        return pending
     except Exception:  # noqa: BLE001
-        pass
+        return []
 
 
 def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
-                 fork_cls: str = "") -> Dict[str, Any]:
+                 fork_cls: str = "", tool_name: str = "") -> Dict[str, Any]:
     return {
         "session_id": str(session_id or ""),
         "task_id": "midturn",
@@ -347,14 +291,16 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
         "delta_source": DELTA_SOURCE,
         "fork_signature": sig,
         "midturn_mode": mode,
+        "tool_name": str(tool_name or ""),
     }
 
 
 def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
-            fork_cls: str = "", fail_open_reason: str = "") -> None:
+            fork_cls: str = "", tool_name: str = "",
+            fail_open_reason: str = "") -> None:
     try:
         _dec.ledger_write(dict(_ledger_base(session_id, cfg, sig, mode,
-                                            fork_cls),
+                                            fork_cls, tool_name),
                                fail_open_reason=str(fail_open_reason)))
     except Exception:  # noqa: BLE001 — ledger must never break the lane
         pass
@@ -376,9 +322,9 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
 def _render_midturn_advisory(verdict: Dict[str, Any],
                              envelope: Dict[str, Any],
                              meta: Dict[str, Any]) -> str:
-    """ONE advisory envelope appended to the in-flight request context:
-    provenance-stamped header + verdict + why_not (alternatives). Never
-    rewrites model/tool content; non-binding."""
+    """ONE advisory envelope for the in-flight request queue: provenance-
+    stamped header + verdict + why_not (alternatives). Never rewrites
+    model/tool content; non-binding."""
     try:
         alts = [str(a) for a in (verdict.get("alternatives") or [])]
         why_not = ("why_not: %s" % ", ".join(alts)) if alts else \
@@ -395,7 +341,7 @@ def _render_midturn_advisory(verdict: Dict[str, Any],
 def _record_consumed(session_id: str, verdict: Dict[str, Any],
                      meta: Dict[str, Any], cfg: Dict[str, Any]) -> None:
     """LEG 3 accumulator: remember the verdict for the turn-close aggregate
-    banner. Bounded by RUN_CAP + FIFO pruning. Never raises."""
+    banner. Bounded by RUN_CAP. Never raises."""
     try:
         model = str(meta.get("model") or cfg.get("model") or "")
         ti, to = meta.get("tokens_in"), meta.get("tokens_out")
@@ -409,10 +355,7 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
                "tokens_out": to if isinstance(to, int) else 0,
                "cost": float(cost or 0.0), "model": model}
         with _LOCK:
-            st = _RUNS.get(session_id)
-            if st is None:
-                st = _RUNS[session_id] = {"run": 0, "last_n": 0, "count": 0,
-                                          "consumed": []}
+            st = _state(session_id)
             st["count"] = int(st.get("count") or 0) + 1
             st.setdefault("consumed", []).append(rec)
     except Exception:  # noqa: BLE001
@@ -430,13 +373,17 @@ def close_turn(session_id: str) -> str:
     """Called from the POST/turn-close hook exactly once per turn. Returns
     the aggregate decision banner (>=1 midturn verdict consumed this run) or
     "" — ONE banner, not 50. 1 verdict -> current single-verdict banner
-    format with trigger=midturn. Never raises; drains the accumulator."""
+    format with trigger=midturn. Drains the accumulator AND resets the run
+    counter (turn close = run boundary; unflushed pending advisories die
+    here — the verdict stays ledger-only). Never raises."""
     try:
         with _LOCK:
             st = _RUNS.get(str(session_id or ""))
             consumed = list(st.get("consumed") or []) if st else []
             if st:
                 st["consumed"] = []
+                st["count"] = 0
+                st["pending"] = []
         if not consumed:
             return ""
         n = len(consumed)

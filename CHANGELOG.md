@@ -1,3 +1,27 @@
+## 4.11.1 — 2026-09-27 (R19.2 addendum 3: midturn detection rewired to transform_tool_result)
+
+Live-probed root cause: the llm_execution middleware fires ONCE per turn,
+not per LLM call — the v4.11.0 delta-scan at that seam never saw tool
+results (structurally blind). Conductor-verified rewiring:
+
+- DETECTION SEAM MOVED: `transform_tool_result` platform hook (core fires
+  it after EVERY tool execution; timeout-bounded hook class
+  `plugins_dispatch._HOOK_TIMEOUT_BOUNDED_HOOKS`). The single tool output
+  passed to the hook IS the delta — no run-state last_n tracking.
+  Detection inputs: tool output text, session_id, tool name (new ledger
+  column `tool_name`). provenance_skip + extract_options unchanged.
+- DELIVERY: 'on' mode queues the advisory per session; the
+  llm_execution middleware (once per turn is fine) flushes the queue into
+  the in-flight request. Run ends unflushed -> verdict is ledger-only.
+  The hook NEVER returns a string (platform would replace the tool
+  result) and never blocks.
+- Run-cap boundary: turn close (close_turn) resets the per-run counter
+  and kills unflushed pending advisories.
+- Removed the conductor's temporary `llm_execution_fired` debug probe
+  from __init__.py.
+- Test battery rewritten to the new seam (18 tests), incl. the core pin:
+  detection fires with ZERO llm_execution activations.
+
 ## 4.11.0 — 2026-09-27 (R19.2: midturn decision hook at on_llm_execution)
 
 Zero-agency midturn detection: agent-initiated reflex was proven dead

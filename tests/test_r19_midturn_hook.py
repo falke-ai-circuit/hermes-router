@@ -1,10 +1,13 @@
-"""R19.2 — MIDTURN DECISION HOOK (on_llm_execution seam) test battery.
+"""R19.2 ADDENDUM 3 — MIDTURN DECISION HOOK (transform_tool_result seam)
+test battery.
 
-Covers: delta-scan only sees new messages; platform envelopes skipped;
-shadow mode never appends; signature cooldown dedupes; run cap respected;
-aggregate banner format (0/1/N verdicts, >4 buckets); fail-open kills the
-hook on backend error without touching the run; ledger rows complete
-(delta_source / fork_signature / midturn_mode).
+Live-probed root cause: llm_execution fires ONCE per turn, not per LLM
+call — detection as originally wired was structurally blind. These tests
+pin the rewiring: detection triggers off transform_tool_result REGARDLESS
+of middleware fire-count; shadow -> ledger row, never appends; no-options
+-> suppressed; 'on' -> pending advisory flushed into the next request by
+on_llm_execution. Cooldown, run cap, provenance skip, fail-open, ledger
+fields (incl. tool_name), aggregate banner format all covered.
 """
 import json
 import sqlite3
@@ -15,13 +18,8 @@ from hermes_router import decision, decision_midturn as dmt
 
 SID = "s-r19mt"
 
-TOOL_FORK = {
-    "role": "tool",
-    "content": "which one should we pick: redis or memcached? "
-               "weigh the tradeoffs between the two options",
-}
-TOOL_PLAIN = {"role": "tool", "content": "build ok, 3 files changed"}
-USER_TURN = {"role": "user", "content": "please continue the migration"}
+TOOL_FORK = ("harness verdict — which one should we pick?\n"
+             "a) redis\nb) memcached\nc) sqlite — weigh the tradeoffs")
 
 
 def _v3_cfg(**over):
@@ -87,60 +85,89 @@ def test_off_mode_is_fully_silent(_env, monkeypatch):
     calls = _calls(monkeypatch, body={"choice": "opt-1",
                                       "confidence": 0.9,
                                       "alternatives": []})
-    req = {"messages": [USER_TURN, TOOL_FORK]}
-    assert dmt.on_llm_call(SID, req) == []
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)
+    assert dmt.flush(SID) == []
     assert calls == []
     assert _rows(_env) == []
 
 
 # ------------------------------------------------------------------
-# LEG 1: delta scan — only NEW messages
+# LEG 1: detection off transform_tool_result — fire-count irrelevant
 # ------------------------------------------------------------------
 
-def test_delta_scan_only_new_messages(_env, monkeypatch):
+def test_detection_triggers_off_tool_result_not_middleware(
+        _env, monkeypatch):
+    """The addendum's core pin: llm_execution fires once per turn —
+    detection must come from transform_tool_result and must NOT depend on
+    the middleware firing at all."""
     calls = _calls(monkeypatch, body={"choice": "opt-1",
                                       "confidence": 0.9,
                                       "alternatives": []})
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_PLAIN]
-    assert dmt.on_llm_call(SID, {"messages": msgs}) == []
-    assert calls == []
-    # tool fork arrives AFTER the previous call -> detected
-    msgs.append(TOOL_FORK)
-    adv = dmt.on_llm_call(SID, {"messages": msgs})
+    # ZERO llm_execution fires: detection still lands via the tool hook
+    dmt.on_tool_result(SID, "bash", "build ok, 3 files changed")  # suppressed
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)                    # verdict
     assert len(calls) == 1
-    assert any("ROUTER ADVISORY" in a for a in adv)
-    # same messages again -> NO re-scan (nothing new)
-    adv2 = dmt.on_llm_call(SID, {"messages": msgs})
-    assert calls == calls
-    assert adv2 == []
+    # middleware never fires again -> advisory stays queued (ledger-only
+    # if the run ends); ONE flush delivers it.
+    pending = dmt.flush(SID)
+    assert len(pending) == 1
+    assert pending[0].startswith(dmt.ADVISORY_HEADER)
+    assert "opt-1" in pending[0]
+    assert "why_not: (no viable alternative" in pending[0]
+    assert dmt.flush(SID) == []
 
 
-def test_user_turn_resets_run(_env, monkeypatch):
-    calls = _calls(monkeypatch, body={"choice": "opt-1",
-                                      "confidence": 0.9,
-                                      "alternatives": []})
+def test_flush_via_on_llm_execution_middleware(_env, monkeypatch):
+    import hermes_router as plugin
+
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_FORK]
-    dmt.on_llm_call(SID, {"messages": msgs})
-    assert len(calls) == 1
-    # a fresh user turn starts a new run: cooldown must not block the
-    # same fork again, but delta baseline means the tool msg is NOT new.
-    msgs2 = msgs + [dict(USER_TURN, content="next phase please"),
-                    TOOL_FORK]
-    msgs2[-1] = dict(TOOL_FORK)  # new list element, same content
-    adv = dmt.on_llm_call(SID, {"messages": msgs2})
-    # msgs2 has the fork at a NEW index (after the second user turn) and
-    # the run reset cleared the cooldown-independent run counter — but the
-    # signature cooldown still dedupes the identical fork within 600s.
-    assert adv == []
-    assert len(calls) == 1
+    _calls(monkeypatch, body={"choice": "opt-1", "confidence": 0.9,
+                              "alternatives": []})
+    monkeypatch.setattr(plugin.router_core, "peek_pending_swap",
+                        lambda sid: None)
+    seen = {}
+
+    def _next_call(req):
+        seen["msgs"] = req.get("messages")
+        return "RESULT"
+
+    # tool result lands FIRST (mid-run, middleware silent), then the
+    # middleware fires once — the advisory flushes into THAT request.
+    ret = plugin.on_transform_tool_result(tool_name="bash", result=TOOL_FORK,
+                                          session_id=SID)
+    assert ret is None  # never replaces / blocks the tool result
+    request = {"messages": [{"role": "user", "content": "go"}]}
+    out = plugin.on_llm_execution(request=request, next_call=_next_call,
+                                  session_id=SID)
+    assert out == "RESULT"
+    msgs = seen["msgs"]
+    assert msgs[-1]["role"] == "assistant"
+    assert dmt.ADVISORY_HEADER in msgs[-1]["content"]
+    # original request untouched (advisory appended to a COPY)
+    assert len(request["messages"]) == 1
+
+
+def test_no_tool_results_no_advisory(_env, monkeypatch):
+    import hermes_router as plugin
+
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    _calls(monkeypatch, body={"choice": "opt-1", "confidence": 0.9,
+                              "alternatives": []})
+    monkeypatch.setattr(plugin.router_core, "peek_pending_swap",
+                        lambda sid: None)
+    request = {"messages": [{"role": "user", "content": "go"}]}
+    out = plugin.on_llm_execution(request=request, next_call=lambda r: "OK",
+                                  session_id=SID)
+    assert out == "OK"
+    assert dmt.flush(SID) == []
 
 
 # ------------------------------------------------------------------
-# LEG 1: platform envelopes skipped (R19.1 provenance filter)
+# LEG 1: provenance + no-options suppression
 # ------------------------------------------------------------------
 
 def test_platform_envelope_tool_result_skipped(_env, monkeypatch):
@@ -149,33 +176,29 @@ def test_platform_envelope_tool_result_skipped(_env, monkeypatch):
                                       "alternatives": []})
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN,
-            {"role": "tool",
-             "content": "[System note: which option should we use: "
-                        "a) redis or b) memcached — decide"},
-            {"role": "tool",
-             "content": "[OUT-OF-BAND USER MESSAGE] pick between "
-                        "option a and option b"}]
-    assert dmt.on_llm_call(SID, {"messages": msgs}) == []
+    dmt.on_tool_result(SID, "bash",
+                       "[System note: which option should we use: "
+                       "a) redis or b) memcached — decide")
+    dmt.on_tool_result(SID, "bash",
+                       "[OUT-OF-BAND USER MESSAGE] pick between "
+                       "option a and option b")
+    assert dmt.flush(SID) == []
     assert calls == []
     assert _rows(_env) == []
 
 
-def test_non_tool_roles_never_scanned(_env, monkeypatch):
-    calls = _calls(monkeypatch, body={"choice": "opt-1",
-                                      "confidence": 0.9,
-                                      "alternatives": []})
+def test_no_options_suppressed(_env, monkeypatch):
+    calls = _calls(monkeypatch)
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [{"role": "assistant",
-             "content": "which one should we pick: redis or memcached? "
-                        "weigh the tradeoffs"}]
-    assert dmt.on_llm_call(SID, {"messages": msgs}) == []
+    dmt.on_tool_result(SID, "bash", "tests green, 12 passed")
+    assert dmt.flush(SID) == []
     assert calls == []
+    assert _rows(_env) == []  # no-options = log-only suppression
 
 
 # ------------------------------------------------------------------
-# LEG 2: shadow never appends; on appends exactly the advisory
+# LEG 2: shadow never appends; ledger rows first-class
 # ------------------------------------------------------------------
 
 def test_shadow_detects_logs_ledgers_never_appends(_env, monkeypatch):
@@ -184,8 +207,8 @@ def test_shadow_detects_logs_ledgers_never_appends(_env, monkeypatch):
                                       "alternatives": []})
     cfg = _v3_cfg(midturn="shadow")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_FORK]
-    assert dmt.on_llm_call(SID, {"messages": msgs}) == []
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)
+    assert dmt.flush(SID) == []
     assert calls == []  # NO backend dispatch in shadow
     rows = _rows(_env)
     assert len(rows) == 1
@@ -193,70 +216,26 @@ def test_shadow_detects_logs_ledgers_never_appends(_env, monkeypatch):
     assert rows[0]["trigger_kind"] == "midturn_hook"
     assert rows[0]["midturn_mode"] == "shadow"
     assert rows[0]["delta_source"] == "tool_result"
+    assert rows[0]["tool_name"] == "bash"
     assert rows[0]["fork_signature"]
     assert rows[0]["fail_open_reason"] == "shadow"
-    # shadow rows are first-class: choice empty (no call made)
-    assert rows[0]["choice"] == ""
-
-
-def test_on_mode_appends_one_advisory_with_header(_env, monkeypatch):
-    calls = _calls(monkeypatch, body={"choice": "opt-1",
-                                      "confidence": 0.9,
-                                      "alternatives": ["opt-2"]})
-    cfg = _v3_cfg(midturn="on")
-    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_FORK]
-    adv = dmt.on_llm_call(SID, {"messages": msgs})
-    assert len(adv) == 1
-    assert adv[0].startswith(dmt.ADVISORY_HEADER)
-    assert "opt-1" in adv[0]
-    assert "why_not: opt-2" in adv[0]
-    rows = _rows(_env)
-    assert rows[0]["midturn_mode"] == "on"
-    assert rows[0]["choice"] == "opt-1"
+    assert rows[0]["choice"] == ""  # no call made
 
 
 def test_fail_open_on_backend_error(_env, monkeypatch):
     calls = _calls(monkeypatch, fail=True)
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_FORK]
-    # must NOT raise; no advisory touches the run
-    adv = dmt.on_llm_call(SID, {"messages": msgs})
-    assert adv == []
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)  # must NOT raise
+    assert dmt.flush(SID) == []
     rows = _rows(_env)
     assert len(rows) == 1
     assert rows[0]["fail_open_reason"] == "hook_error"
 
 
-def test_no_options_never_dispatches(_env, monkeypatch):
-    calls = _calls(monkeypatch)
-    cfg = _v3_cfg(midturn="on")
-    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, {"role": "tool", "content": "tests green, 12 passed"}]
-    assert dmt.on_llm_call(SID, {"messages": msgs}) == []
-    assert calls == []
-
-
 # ------------------------------------------------------------------
 # Cooldown + run cap
 # ------------------------------------------------------------------
-
-def test_signature_cooldown_dedupes(_env, monkeypatch):
-    calls = _calls(monkeypatch, body={"choice": "opt-1",
-                                      "confidence": 0.9,
-                                      "alternatives": []})
-    cfg = _v3_cfg(midturn="on")
-    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    msgs = [USER_TURN, TOOL_FORK]
-    assert dmt.on_llm_call(SID, {"messages": msgs})
-    # different run (new user turn) + DIFFERENT earlier content so the
-    # delta index shifts, but the SAME fork text -> signature dedupe.
-    msgs2 = [USER_TURN, TOOL_PLAIN, dict(TOOL_FORK)]
-    assert dmt.on_llm_call(SID, {"messages": msgs2}) == []
-    assert len(calls) == 1
-    assert len(_rows(_env)) == 1
-
 
 _WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
           "hotel", "india", "juliet", "kilo", "lima", "mike", "november",
@@ -266,8 +245,8 @@ _WORDS = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
 
 def _fork_text(i: int) -> str:
     """Distinct fork text WITHOUT digits — the R16 normalized hash folds
-    digits to '#', so digit-variants would collide in the cooldown. Three
-    enumerated line options (line-marker format -> opt-1..opt-3)."""
+    digits to '#', so digit-variants would collide in the cooldown. Four
+    enumerated line options (line-marker format -> opt-1..opt-4)."""
     w1 = _WORDS[i % 26] + _WORDS[(i // 26) % 26]
     w2 = _WORDS[(i + 1) % 26] + _WORDS[(i + 7) % 26]
     w3 = _WORDS[(i + 3) % 26] + _WORDS[(i + 11) % 26]
@@ -277,28 +256,54 @@ def _fork_text(i: int) -> str:
             % (w1, w2, w3, w4))
 
 
+def test_signature_cooldown_dedupes(_env, monkeypatch):
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)
+    assert dmt.flush(SID)
+    # identical fork again -> signature dedupe, no second call
+    dmt.on_tool_result(SID, "bash", TOOL_FORK)
+    assert dmt.flush(SID) == []
+    assert len(calls) == 1
+    assert len(_rows(_env)) == 1
+
+
 def test_run_cap_respected_rows_still_recorded(_env, monkeypatch):
     calls = _calls(monkeypatch, body={"choice": "opt-1",
                                       "confidence": 0.9,
                                       "alternatives": []})
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    # RUN_CAP distinct forks inside one run (single user turn, growing delta)
-    msgs = [dict(USER_TURN)]
     for i in range(dmt.RUN_CAP):
-        msgs.append({"role": "tool", "content": _fork_text(i)})
-        adv = dmt.on_llm_call(SID, {"messages": msgs})
-        assert adv, "verdict %d should fire" % i
+        dmt.on_tool_result(SID, "bash", _fork_text(i))
     assert len(calls) == dmt.RUN_CAP
+    dmt.flush(SID)  # drain pending; cap accounting unaffected
     # 51st distinct fork: NO call, ledger row still recorded
-    msgs.append({"role": "tool", "content": _fork_text(dmt.RUN_CAP + 1)})
-    adv = dmt.on_llm_call(SID, {"messages": msgs})
-    assert adv == []
+    dmt.on_tool_result(SID, "bash", _fork_text(dmt.RUN_CAP + 1))
     assert len(calls) == dmt.RUN_CAP
     rows = _rows(_env)
     assert len(rows) == dmt.RUN_CAP + 1
     assert rows[-1]["fail_open_reason"] == "midturn_run_cap"
     assert rows[-1]["delta_source"] == "tool_result"
+    assert rows[-1]["tool_name"] == "bash"
+
+
+def test_close_turn_resets_run_counter(_env, monkeypatch):
+    """Turn close is the run boundary: the cap accumulator resets."""
+    calls = _calls(monkeypatch, body={"choice": "opt-1",
+                                      "confidence": 0.9,
+                                      "alternatives": []})
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    dmt.on_tool_result(SID, "bash", _fork_text(0))
+    assert dmt.close_turn(SID)  # single-verdict banner + run reset
+    # same signature is cooldown-blocked, but a NEW fork fires fine and
+    # the run cap starts from zero again
+    dmt.on_tool_result(SID, "bash", _fork_text(1))
+    assert len(calls) == 2
 
 
 # ------------------------------------------------------------------
@@ -306,12 +311,10 @@ def test_run_cap_respected_rows_still_recorded(_env, monkeypatch):
 # ------------------------------------------------------------------
 
 def _feed_verdicts(monkeypatch, cfg, choices):
-    msgs = [dict(USER_TURN)]
     for n, ch in enumerate(choices):
         _calls(monkeypatch, body={"choice": ch, "confidence": 0.9,
                                   "alternatives": []})
-        msgs.append({"role": "tool", "content": _fork_text(n)})
-        assert dmt.on_llm_call(SID, {"messages": msgs})
+        dmt.on_tool_result(SID, "bash", _fork_text(n))
 
 
 def test_close_turn_zero_verdicts(_env, monkeypatch):
@@ -329,8 +332,7 @@ def test_close_turn_single_verdict_format(_env, monkeypatch):
     assert "midturn" in banner
     assert "initiator=agent" in banner
     assert "tok 10/5" in banner
-    # drained: second close is empty
-    assert dmt.close_turn(SID) == ""
+    assert dmt.close_turn(SID) == ""  # drained
 
 
 def test_close_turn_aggregate_format(_env, monkeypatch):
@@ -344,7 +346,7 @@ def test_close_turn_aggregate_format(_env, monkeypatch):
     assert banner.endswith("initiator=agent")
 
 
-def test_close_turn_histogram_capped_at_4_buckets(_env, monkeypatch):
+def test_close_turn_four_buckets_within_cap(_env, monkeypatch):
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
     _feed_verdicts(monkeypatch, cfg,
@@ -370,51 +372,32 @@ def test_aggregate_histogram_5th_bucket_folds_into_other():
 
 
 # ------------------------------------------------------------------
-# wiring: on_llm_execution appends advisories without touching content
+# LEG 4: ledger row complete + unflushed-pending death
 # ------------------------------------------------------------------
-
-def test_on_llm_execution_appends_advisory_and_calls_through(
-        _env, monkeypatch):
-    import hermes_router as plugin
-
-    cfg = _v3_cfg(midturn="on")
-    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
-    _calls(monkeypatch, body={"choice": "opt-1", "confidence": 0.9,
-                              "alternatives": []})
-    seen = {}
-
-    def _next_call(req):
-        seen["msgs"] = req.get("messages")
-        return "RESULT"
-
-    orig = plugin.router_core.peek_pending_swap
-    monkeypatch.setattr(plugin.router_core, "peek_pending_swap",
-                        lambda sid: None)
-    request = {"messages": [{"role": "user", "content": "go"},
-                            dict(TOOL_FORK)]}
-    out = plugin.on_llm_execution(request=request, next_call=_next_call,
-                                  session_id=SID)
-    assert out == "RESULT"
-    msgs = seen["msgs"]
-    assert msgs[-1]["role"] == "assistant"
-    assert dmt.ADVISORY_HEADER in msgs[-1]["content"]
-    # original request untouched (advisory is appended to a COPY)
-    assert len(request["messages"]) == 2
-    assert orig  # keep reference alive for clarity
-
 
 def test_ledger_row_complete_field_set(_env, monkeypatch):
     cfg = _v3_cfg(midturn="on")
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
     _calls(monkeypatch, body={"choice": "opt-1", "confidence": 0.9,
                               "alternatives": []})
-    msgs = [USER_TURN, TOOL_FORK]
-    dmt.on_llm_call(SID, {"messages": msgs})
+    dmt.on_tool_result(SID, "tester", TOOL_FORK)
     row = _rows(_env)[0]
     assert row["trigger_kind"] == "midturn_hook"
     assert row["delta_source"] == "tool_result"
+    assert row["tool_name"] == "tester"
     assert len(row["fork_signature"]) == 12
     assert row["midturn_mode"] == "on"
     assert row["outcome"] == "pending"
     v = json.loads(row["verdict_json"])
     assert v["choice"] == "opt-1"
+
+
+def test_unflushed_pending_dies_at_turn_close_ledger_only(_env, monkeypatch):
+    cfg = _v3_cfg(midturn="on")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    _calls(monkeypatch, body={"choice": "opt-1", "confidence": 0.9,
+                              "alternatives": []})
+    dmt.on_tool_result(SID, "bash", _fork_text(2))
+    dmt.close_turn(SID)  # run ends before any flush
+    assert dmt.flush(SID) == []  # verdict is ledger-only
+    assert len(_rows(_env)) == 1

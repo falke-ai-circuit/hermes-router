@@ -1620,7 +1620,8 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   delta_source TEXT NOT NULL DEFAULT '',
   fork_signature TEXT NOT NULL DEFAULT '',
   midturn_mode TEXT NOT NULL DEFAULT '',
-  envelope_ids TEXT NOT NULL DEFAULT ''
+  envelope_ids TEXT NOT NULL DEFAULT '',
+  tool_name TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -1649,7 +1650,7 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
                 conn.commit()
             # R19.2 midturn hook columns (drift migration, best-effort)
             for _ncol in ("delta_source", "fork_signature", "midturn_mode",
-                          "envelope_ids"):
+                          "envelope_ids", "tool_name"):
                 if _ncol not in cols:
                     conn.execute("ALTER TABLE decision_ledger ADD COLUMN %s"
                                  " TEXT NOT NULL DEFAULT ''" % _ncol)
@@ -1710,7 +1711,7 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 "confidence", "fail_open_reason", "actual_choice", "outcome",
                 "verdict_json", "envelope_hash", "follow_verdict",
                 "delta_source", "fork_signature", "midturn_mode",
-                "envelope_ids")
+                "envelope_ids", "tool_name")
         vals = []
         for c in cols:
             v = row.get(c)
