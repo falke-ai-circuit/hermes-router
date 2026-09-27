@@ -7,12 +7,29 @@ which core fires after EVERY tool execution (timeout-bounded hook class in
 plugins_dispatch._HOOK_TIMEOUT_BOUNDED_HOOKS). The single tool output passed
 to the hook IS the delta — no run-state last_n tracking needed.
 
-DELIVERY: 'on' mode queues the advisory per session; the llm_execution
-middleware (once per turn is fine — the verdict lands in the request that
-follows the fork) flushes it into the in-flight request. If the run ends
-before a flush, the verdict is ledger-only. Never blocks the tool result
-itself (the hook caller returns None; the platform filters non-string
-returns, so the result passes through untouched).
+TWO-SEAM wiring (ADDENDUM 4, replaces the v4.11.1 seam; conductor
+forensics: transform_tool_result is dead-from-birth on 0.21.4 — its only
+invoke_hook site lives in the harness tool module, which NOTHING in the
+agent execution path imports; this plugin NEVER imports hermes core):
+
+  SEAM 1 — transform_terminal_output hook (same-turn latency): core fires
+  it after EVERY terminal tool result, mid-run. Scans ONLY the tool
+  output text (that IS the delta) with the options-structure regex +
+  R19.1 provenance filter. Fork found -> causal envelope -> backend ->
+  verdict staged in the per-session pending queue (max 1, latest-wins) +
+  ledger row seam=terminal. Never blocks or modifies the tool result.
+
+  SEAM 2 — llm_execution turn-start sweep (one-turn latency, full
+  coverage): at the once-per-turn middleware fire, scan the request's
+  message slice since the last scanned marker (bounded: last 30
+  messages, 60KB) — sees execute_code / read_file / patch / write_file
+  results from the previous turn and the user ingress. Ledger rows
+  seam=turn_boundary.
+
+DELIVERY: 'on' mode stages the advisory per session (max 1 pending,
+latest-wins); the middleware flushes it into the in-flight request. If
+the run ends before a flush, the verdict is ledger-only. Never blocks
+or modifies any tool result.
 
 LEG 1 detection: tool output text + tool_name, R19.1 provenance filter,
 decision extract_options regex. Config gate decision.midturn: shadow
@@ -52,6 +69,11 @@ TRIGGER = "midturn"
 # §5.7 ledger trigger kind for the midturn hook.
 TRIGGER_KIND = "midturn_hook"
 DELTA_SOURCE = "tool_result"
+SEAM_TERMINAL = "terminal"          # SEAM 1: transform_terminal_output
+SEAM_TURN_BOUNDARY = "turn_boundary"  # SEAM 2: llm_execution sweep
+# SEAM 2 bounds: scan at most the last 30 messages / 60KB of text.
+SWEEP_MAX_MESSAGES = 30
+SWEEP_MAX_BYTES = 60 * 1024
 
 ADVISORY_HEADER = ("[ROUTER ADVISORY — decision lane; banner at turn close; "
                    "may ignore]")
@@ -68,7 +90,8 @@ REASON_RUN_CAP = "midturn_run_cap"
 _LOCK = threading.Lock()
 # (session_id) -> run state:
 #   {"count": int, "consumed": [ {choice,tokens_in,tokens_out,cost,model} ],
-#    "pending": [advisory texts awaiting the next llm_execution flush]}
+#    "pending": [advisory text awaiting the next flush]  # max 1, latest-wins
+#    "last_n": int  # SEAM 2: messages already scanned at a prior turn start}
 _RUNS: Dict[str, Dict[str, Any]] = {}
 # fork signature hash -> last-fire ts
 _COOLDOWN: Dict[str, float] = {}
@@ -125,20 +148,40 @@ def _norm_hash(text: str) -> str:
         return ""
 
 
+def _msg_text(content: Any) -> str:
+    """Flatten a message content (string or OpenAI parts list). Never raises."""
+    try:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for p in content:
+                if isinstance(p, str):
+                    parts.append(p)
+                elif isinstance(p, dict):
+                    parts.append(str(p.get("text") or p.get("content") or ""))
+            return "\n".join(x for x in parts if x)
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def _state(session_id: str) -> Dict[str, Any]:
     return _RUNS.setdefault(session_id, {"count": 0, "consumed": [],
-                                         "pending": []})
+                                         "pending": [], "last_n": 0})
 
 
 # -----------------------------------------------------------------------
 # LEG 1 — detection at the transform_tool_result seam
 # -----------------------------------------------------------------------
 
-def on_tool_result(session_id: str, tool_name: str, result: Any) -> None:
-    """Called from the plugin's transform_tool_result hook after EVERY tool
-    execution. The single tool output IS the delta. Shadow: detect + log +
-    ledger, never appends. Off: fully silent. The tool result itself is
-    never touched (the hook caller returns None). Never raises."""
+def on_terminal_output(session_id: str, tool_name: str, result: Any,
+                       seam: str = SEAM_TERMINAL) -> None:
+    """SEAM 1 entry — called from the plugin's transform_terminal_output
+    hook after EVERY terminal tool execution. The single tool output IS
+    the delta. Shadow: detect + log + ledger, never stages. Off: fully
+    silent. The tool result itself is never touched (the hook caller
+    returns None). Never raises."""
     try:
         cfg = _cfg()
         mode = _mode(cfg)
@@ -153,16 +196,89 @@ def on_tool_result(session_id: str, tool_name: str, result: Any) -> None:
         if not opts:
             _log(session_id, "midturn_suppressed",
                  reason=_dec.REASON_NO_OPTIONS, mode=mode,
-                 tool=str(tool_name or ""))
+                 tool=str(tool_name or ""), seam=seam)
             return
         _handle_hit(str(session_id), str(tool_name or ""), text, opts, cfg,
-                    mode)
+                    mode, seam)
     except Exception:  # noqa: BLE001 — fail-open, never break the tool result
-        logger.debug("decision_midturn.on_tool_result error", exc_info=True)
+        logger.debug("decision_midturn.on_terminal_output error", exc_info=True)
+
+
+# Back-compat alias for the (dead-from-birth) tool-result seam name.
+on_tool_result = on_terminal_output
+
+
+def _msg_is_scan_target(msg: Any) -> bool:
+    """SEAM 2 scan surface: tool results (any harness tool) + user ingress.
+    Assistant/model content is never scanned (that is the POST lane)."""
+    try:
+        if not isinstance(msg, dict):
+            return False
+        return str(msg.get("role") or "") in ("tool", "user")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
+    """SEAM 2 — called from on_llm_execution (once per turn, BEFORE the
+    flush). Scans the request's message slice SINCE the last scanned
+    marker (per-session, bounded: last 30 messages, 60KB), running the
+    identical detection on tool results from the previous turn and user
+    ingress. Ledger rows: seam=turn_boundary. Never raises."""
+    try:
+        cfg = _cfg()
+        mode = _mode(cfg)
+        if mode == "off" or not str(session_id or ""):
+            return
+        msgs = request.get("messages") if isinstance(request, dict) else None
+        if not isinstance(msgs, list):
+            return
+        key = str(session_id)
+        with _LOCK:
+            st = _state(key)
+            n = len(msgs)
+            last_n = int(st.get("last_n") or 0)
+            if n < last_n:
+                last_n = 0  # context rolled/trimmed: rescan conservatively
+            lo = max(last_n, n - SWEEP_MAX_MESSAGES)
+            st["last_n"] = n
+        # budget the scan: newest-first until the 60KB cap
+        budget = SWEEP_MAX_BYTES
+        window: List[Any] = []
+        for m in reversed(msgs[lo:]):
+            size = len(str(m))
+            if budget - size < 0 and window:
+                break
+            budget -= size
+            window.append(m)
+        for msg in reversed(window):
+            if not _msg_is_scan_target(msg):
+                continue
+            text = _msg_text(msg.get("content"))
+            if not text:
+                continue
+            if _dec.PROVENANCE_TAG in text:
+                continue  # our own advisory echo — never re-scan
+            if _dec.provenance_skip(text, cfg):
+                continue  # [Durable Summary / [Depth- / bracketed envelopes
+            if str(msg.get("role")) == "user":
+                # user ingress = run boundary: reset the cap accumulator
+                with _LOCK:
+                    rst = _state(key)
+                    rst["count"] = 0
+                    rst["consumed"] = []
+            opts = _dec.extract_options(text)
+            if not opts:
+                continue
+            _handle_hit(key, str(msg.get("name") or "turn_sweep"), text,
+                        opts, cfg, mode, SEAM_TURN_BOUNDARY)
+    except Exception:  # noqa: BLE001 — fail-open, never break the provider call
+        logger.debug("decision_midturn.sweep_turn_start error", exc_info=True)
 
 
 def _handle_hit(session_id: str, tool_name: str, text: str,
-                opts: List[str], cfg: Dict[str, Any], mode: str) -> None:
+                opts: List[str], cfg: Dict[str, Any], mode: str,
+                seam: str = SEAM_TERMINAL) -> None:
     """One detected tool-result fork: provenance already cleared, options
     extracted. Cooldown + run cap + (mode 'on') envelope -> backend ->
     verdict -> ledger + pending advisory. Shadow: detect + log + ledger
@@ -174,7 +290,7 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             last = _COOLDOWN.get(sig)
             if last is not None and (now - last) < COOLDOWN_SECONDS:
                 _log(session_id, "midturn_suppressed", reason=REASON_COOLDOWN,
-                     sig=sig, mode=mode, tool=tool_name)
+                     sig=sig, mode=mode, tool=tool_name, seam=seam)
                 return
             _COOLDOWN[sig] = now
             while len(_COOLDOWN) > _COOLDOWN_MAX_KEYS:
@@ -186,39 +302,40 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         if mode == "shadow" or over_cap:
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
-                    tool_name=tool_name, fail_open_reason=reason)
+                    tool_name=tool_name, seam=seam, fail_open_reason=reason)
             _log(session_id, "midturn_suppressed", reason=reason, sig=sig,
-                 mode=mode, tool=tool_name, fork_class=fork_cls)
+                 mode=mode, tool=tool_name, fork_class=fork_cls, seam=seam)
             return
 
         # mode 'on'
         if _dec._breaker_open(cfg):
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
-                    tool_name=tool_name,
+                    tool_name=tool_name, seam=seam,
                     fail_open_reason=_dec.REASON_BREAKER_OPEN)
             _log(session_id, "midturn_suppressed",
                  reason=_dec.REASON_BREAKER_OPEN, sig=sig, mode=mode,
-                 tool=tool_name)
+                 tool=tool_name, seam=seam)
             return
         envelope = _dec.build_envelope(session_id, text, opts, TRIGGER, cfg)
         if not envelope:
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
-                    tool_name=tool_name,
+                    tool_name=tool_name, seam=seam,
                     fail_open_reason=_dec.REASON_NO_OPTIONS)
             _log(session_id, "midturn_suppressed",
                  reason=_dec.REASON_NO_OPTIONS, sig=sig, mode=mode,
-                 tool=tool_name)
+                 tool=tool_name, seam=seam)
             return
         content, meta, reason = _dec.call_backend(envelope, cfg)
         base = _ledger_base(session_id, cfg, sig=sig, mode=mode,
-                            fork_cls=fork_cls, tool_name=tool_name)
+                            fork_cls=fork_cls, tool_name=tool_name,
+                            seam=seam)
         base["envelope_hash"] = _dec.envelope_hash(envelope)
         base["model"] = str(meta.get("model") or cfg.get("model") or "")
         base["model_version"] = str(meta.get("model") or "")
         if content is None:
             _dec.ledger_write(dict(base, fail_open_reason=str(reason)))
             _log(session_id, "midturn_suppressed", reason=str(reason),
-                 sig=sig, mode=mode, tool=tool_name,
+                 sig=sig, mode=mode, tool=tool_name, seam=seam,
                  backend=str(cfg.get("backend") or ""))
             return
         verdict, vreason = _dec.validate_verdict(content, envelope)
@@ -226,13 +343,13 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _dec.bump_counter("malformed")
             _dec.ledger_write(dict(base, fail_open_reason=str(vreason)))
             _log(session_id, "midturn_suppressed", reason=str(vreason),
-                 sig=sig, mode=mode, tool=tool_name)
+                 sig=sig, mode=mode, tool=tool_name, seam=seam)
             return
         if verdict["choice"] == _dec.STAND_DOWN_CHOICE:
             _dec.ledger_write(dict(base, outcome="stand_down",
                                    fail_open_reason="stand_down"))
             _log(session_id, "midturn_stand_down", sig=sig, mode=mode,
-                 tool=tool_name)
+                 tool=tool_name, seam=seam)
             return
         rid = _dec.ledger_write(dict(
             base, choice=str(verdict["choice"]),
@@ -243,17 +360,18 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
              confidence=round(float(verdict["confidence"]), 3),
-             sig=sig, mode=mode, tool=tool_name, ledger_id=rid,
+             sig=sig, mode=mode, tool=tool_name, seam=seam, ledger_id=rid,
              backend=str(cfg.get("backend") or ""))
         adv = _render_midturn_advisory(verdict, envelope, meta)
         if adv:
             with _LOCK:
-                _state(session_id).setdefault("pending", []).append(adv)
+                # max 1 pending, latest-wins
+                _state(session_id)["pending"] = [adv]
     except Exception:  # noqa: BLE001 — fail-open on any backend/hook error
         logger.debug("decision_midturn._handle_hit error", exc_info=True)
         try:
             _ledger(session_id, cfg, sig=_norm_hash(text), mode=mode,
-                    fork_cls="", tool_name=tool_name,
+                    fork_cls="", tool_name=tool_name, seam=seam,
                     fail_open_reason="hook_error")
         except Exception:  # noqa: BLE001
             pass
@@ -264,9 +382,8 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
 # -----------------------------------------------------------------------
 
 def flush(session_id: str) -> List[str]:
-    """Called from on_llm_execution (once per turn is fine — the verdict
-    lands in the request that follows the fork). Returns and clears the
-    session's pending advisory envelopes. Never raises."""
+    """Returns and clears the session's pending advisory envelopes
+    (max 1, latest-wins). Never raises."""
     try:
         with _LOCK:
             st = _RUNS.get(str(session_id or ""))
@@ -278,8 +395,23 @@ def flush(session_id: str) -> List[str]:
         return []
 
 
+def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
+    """SEAM 2 entry — called from on_llm_execution (once per turn): first
+    the turn-start sweep (previous-turn tool results + user ingress,
+    seam=turn_boundary), then the pending-advisory flush (a verdict staged
+    by SEAM 1 last turn, or by this scan in 'on' mode) rides into the
+    in-flight request. Shadow mode: sweep logs + ledgers only, flush
+    returns []. Never raises."""
+    try:
+        sweep_turn_start(session_id, request)
+        return flush(session_id)
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
-                 fork_cls: str = "", tool_name: str = "") -> Dict[str, Any]:
+                 fork_cls: str = "", tool_name: str = "",
+                 seam: str = SEAM_TERMINAL) -> Dict[str, Any]:
     return {
         "session_id": str(session_id or ""),
         "task_id": "midturn",
@@ -292,15 +424,17 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
         "fork_signature": sig,
         "midturn_mode": mode,
         "tool_name": str(tool_name or ""),
+        "seam": str(seam or ""),
     }
 
 
 def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
-            fork_cls: str = "", tool_name: str = "",
+            fork_cls: str = "", tool_name: str = "", seam: str = "",
             fail_open_reason: str = "") -> None:
     try:
         _dec.ledger_write(dict(_ledger_base(session_id, cfg, sig, mode,
-                                            fork_cls, tool_name),
+                                            fork_cls, tool_name,
+                                            seam or SEAM_TERMINAL),
                                fail_open_reason=str(fail_open_reason)))
     except Exception:  # noqa: BLE001 — ledger must never break the lane
         pass

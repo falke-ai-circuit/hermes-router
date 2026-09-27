@@ -1,3 +1,33 @@
+## 4.11.2 — 2026-09-27 (R19.2 addendum 4: two-seam midturn detection)
+
+Conductor forensics: transform_tool_result is dead-from-birth on 0.21.4 —
+its only invoke_hook site lives in a core module the agent execution path
+never imports. Replaced the v4.11.1 detection wiring with TWO live-verified
+seams (plugin-only, no core changes):
+
+- SEAM 1 — transform_terminal_output hook (same-turn latency): core fires
+  it after EVERY terminal tool result, mid-run. Scans ONLY the tool
+  output text (that IS the delta) with the options-structure regex + R19.1
+  provenance filter. Fork found -> causal envelope -> backend -> verdict
+  staged in the per-session pending queue (max 1, LATEST-WINS) + ledger
+  row seam=terminal. Never blocks/modifies the result (returns None).
+- SEAM 2 — llm_execution turn-start sweep (one-turn latency, full
+  coverage): at the once-per-turn middleware fire, scan the request's
+  message slice since the last scanned marker (bounded: last 30 messages,
+  60KB), detecting forks in previous-turn execute_code / read_file /
+  patch / write_file results and user ingress. Ledger rows
+  seam=turn_boundary. Platform-provenance filter skips [Durable Summary /
+  [Depth- / bracketed envelopes and our own advisory echoes.
+- FLUSH: sweep first, then the pending verdict (staged by seam 1 last
+  turn or by this scan in 'on' mode) appends to the in-flight request via
+  the existing provenance-stamped advisory envelope; queue cleared.
+  Shadow: log + ledger only. Run ends unflushed -> ledger-only.
+- DEAD SEAM REMOVED: transform_tool_result hook registration + manifest
+  entry deleted; ledger gains a `seam` column (terminal | turn_boundary).
+- Tests: 22-test battery incl. turn-boundary coverage beyond terminal,
+  latest-wins, provenance-wrapper skip, and a guard test asserting the
+  plugin never imports core/model code nor wires the dead seam.
+
 ## 4.11.1 — 2026-09-27 (R19.2 addendum 3: midturn detection rewired to transform_tool_result)
 
 Live-probed root cause: the llm_execution middleware fires ONCE per turn,

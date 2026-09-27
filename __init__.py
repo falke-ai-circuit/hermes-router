@@ -1165,15 +1165,15 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
     """
     try:
         session_id = str(context.get("session_id") or "")
-        # R19.2 midturn decision hook (ADDENDUM 3): detection moved to the
-        # transform_tool_result hook (llm_execution fires once per turn, not
-        # per LLM call). This seam now only FLUSHES the per-session pending
-        # advisory queue into the in-flight request. Fail-open: any error ->
-        # no advisories, call proceeds unchanged.
+        # R19.2 midturn decision hook (ADDENDUM 4, two-seam wiring): SEAM 2
+        # turn-start sweep (previous-turn tool results + user ingress,
+        # seam=turn_boundary) then SEAM 1's pending-advisory flush rides
+        # into this in-flight request. Fail-open: any error -> no
+        # advisories, call proceeds unchanged.
         _mt_advisories: list = []
         try:
             from . import decision_midturn as _dmt
-            _mt_advisories = _dmt.flush(session_id) or []
+            _mt_advisories = _dmt.flush_and_scan(session_id, request) or []
         except Exception:  # noqa: BLE001 — hook must never break the call
             _mt_advisories = []
         if not isinstance(_mt_advisories, list):
@@ -1342,20 +1342,25 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             return None
 
 
-def on_transform_tool_result(*, tool_name: str = "", result: Any = None,
-                             **context) -> None:
-    """R19.2 ADDENDUM 3: transform_tool_result platform hook — DETECTION
-    seam for the midturn decision hook. Core fires this after EVERY tool
-    execution (timeout-bounded hook class); the single tool output IS the
-    delta. Detection + ledger + pending-advisory queue only: NEVER returns
-    a string (the platform replaces the result with the first string
-    return), never blocks. Fail-open on any error."""
+def on_transform_terminal_output(*, command: str = "", output: Any = None,
+                                 returncode: int = 0, task_id: str = "",
+                                 env_type: str = "",
+                                 **context) -> None:
+    """R19.2 ADDENDUM 4 — SEAM 1: transform_terminal_output platform hook.
+    Core fires this after EVERY terminal tool result, mid-run (live-verified
+    seam; transform_tool_result is dead-from-birth on 0.21.4). The single
+    tool output IS the delta. Detection + ledger (seam=terminal) + pending-
+    advisory staging only: NEVER returns a string (the platform replaces
+    the result with the first string return), never blocks. Fail-open on
+    any error. Session key: task_id when core provides one, else a shared
+    active-session bucket."""
     try:
         from . import decision_midturn as _dmt
-        _dmt.on_tool_result(str(context.get("session_id") or ""),
-                            str(tool_name or ""), result)
+        _dmt.on_terminal_output(
+            str(context.get("session_id") or task_id or "active-session"),
+            "terminal", output, _dmt.SEAM_TERMINAL)
     except Exception:  # noqa: BLE001 — never break the tool result
-        logger.debug("uncensored-router transform_tool_result hook error",
+        logger.debug("uncensored-router transform_terminal_output hook error",
                      exc_info=True)
         return None
     return None
@@ -1382,13 +1387,16 @@ def register(ctx) -> None:
         ctx.register_hook("transform_llm_output", on_transform_llm_output)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: register_hook(transform_llm_output) failed: %s", exc)
-    # R19.2 ADDENDUM 3: midturn decision hook DETECTION seam — fires after
-    # every tool execution. Registration failure never disables other lanes.
+    # R19.2 ADDENDUM 4: midturn decision hook SEAM 1 — fires after every
+    # terminal tool result, mid-run. Registration failure never disables
+    # other lanes.
     try:
-        ctx.register_hook("transform_tool_result", on_transform_tool_result)
+        ctx.register_hook("transform_terminal_output",
+                          on_transform_terminal_output)
     except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: register_hook(transform_tool_result)"
-                     " failed: %s", exc)
+        logger.error("uncensored-router: "
+                     "register_hook(transform_terminal_output) failed: %s",
+                     exc)
     # v3.0.0: router control tools (phase 3) — registered defensively so a
     # tool registration failure never disables the middleware lanes.
     try:
