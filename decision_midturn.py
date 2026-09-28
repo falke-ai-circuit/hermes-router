@@ -309,6 +309,8 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                     rst = _state(key)
                     rst["count"] = 0
                     rst["consumed"] = []
+            try: open("/opt/data/tmp/swprobe3.log","a").write("SWPROBE3 role=%r declen=%s prov=%s\n" % (msg.get("role"), len(text), _dec.provenance_skip(text, cfg)))
+            except Exception: pass
             opts = _dec.extract_options(text)
             if not opts:
                 continue
