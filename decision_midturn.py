@@ -330,6 +330,8 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
     verdict -> ledger + pending advisory. Shadow: detect + log + ledger
     only. Never raises."""
     try:
+        try: open("/opt/data/tmp/swprobe5.log","a").write("SWPROBE5 entry sid=%r mode=%r\n" % (session_id, mode))
+        except Exception: pass
         sig = _norm_hash(text)
         now = time.time()
         with _LOCK:
@@ -349,6 +351,8 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
                     tool_name=tool_name, seam=seam, fail_open_reason=reason)
+            try: open("/opt/data/tmp/swprobe5.log","a").write("SWPROBE5 ledger-done\n")
+            except Exception: pass
             _log(session_id, "midturn_suppressed", reason=reason, sig=sig,
                  mode=mode, tool=tool_name, fork_class=fork_cls, seam=seam)
             return
