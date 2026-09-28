@@ -1,3 +1,28 @@
+## 4.11.11 — 2026-09-27 (R19.11: decision-banner loss on two-lane turns + Jev JSON hardening)
+
+- FIX 1 (live, reviewer session 20260803_140900_48d4d030): on a turn that
+  fires BOTH the decision lane and another banner lane, the decision banner
+  was consumed at an early benign/audit delivery edge, then a subsequent
+  uncensored-render/anchor POST transform REPLACED the turn tail — the
+  delivered message lost the '· router · decision' banner (Jev billed,
+  display lost). Fix: option (b) re-emit — the consumed decision-lane
+  banner is HELD per session (120s TTL, bounded 32 sessions); any later
+  delivery edge whose text does NOT carry the decision marker re-emits it
+  exactly once via the existing append_banner gate. §10.4-H preserved:
+  canonical event never contains the banner (hold is delivery-edge only);
+  MAX_BANNER_CHARS respected; banner_cap per run unchanged; fail-open.
+  Wired at all three delivery edges: audit_sync, benign, uncensored-render.
+- FIX 2: Jev backend parse_fail was 2/5 in that session. decision.py Jev
+  response parsing hardened: markdown-fence stripping + first-JSON-object
+  regex extraction (validated: parses to a dict with a 'choice' key),
+  then ONE strict retry ('respond ONLY with the JSON object') before
+  failing open. Fail-open preserved on second failure.
+- Tests: two-lane regression (benign consume -> render replacement ->
+  decision banner still delivered), hold mechanics (delivered edge, TTL
+  expiry, non-decision banners never held, MAX_BANNER_CHARS), Jev
+  robustness (fenced, prose-wrapped, garbage -> fail-open after exactly
+  one retry).
+
 ## 4.11.6 — 2026-09-27 (conductor live repro: JSON-blob tool-content decode)
 
 Real-session tool content is a JSON blob: the stored string is

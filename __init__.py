@@ -804,6 +804,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     try:
                         from . import debug_banner as _dba
                         _parked_a = _dba.consume_parked_banner(session_id)
+                        _dba.note_consumed_decision(session_id, _parked_a)
                         _log_route("POST", event_detail="anchor_banner_consume",
                                    parked=bool(_parked_a),
                                    edge="audit_sync", session_id=session_id)
@@ -817,6 +818,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 _out_audit = _merged
                     except Exception:  # noqa: BLE001 — banner never breaks delivery
                         pass
+                    # R19.11 FIX 1: final-delivery gate — re-emit a held
+                    # decision banner when this text lacks the marker.
+                    try:
+                        from . import debug_banner as _dbs
+                        _out_audit = _dbs.settle_decision_banner(
+                            session_id, _out_audit)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return _out_audit
             except Exception:  # noqa: BLE001 — audit must never break delivery
                 logger.debug("completion audit gate error", exc_info=True)
@@ -825,6 +834,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             try:
                 from . import debug_banner as _dbp
                 _parked = _dbp.consume_parked_banner(session_id)
+                _dbp.note_consumed_decision(session_id, _parked)
                 _log_route("POST", event_detail="anchor_banner_consume",
                            parked=bool(_parked), edge="benign",
                            session_id=session_id)
@@ -837,7 +847,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # means a dropped append is unrecoverable. Live knob
                     # read via append_banner's own gate (R8c semantics:
                     # read per dispatch; OFF -> consumed and dropped).
-                    return _dbp.append_banner(response_text, "\n" + _parked)
+                    return _dbp.settle_decision_banner(
+                        session_id,
+                        _dbp.append_banner(response_text, "\n" + _parked))
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
             # R15 LEG 2: benign pass-through is still a delivery edge —
@@ -1125,8 +1137,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         try:
             from . import debug_banner as _dbp2
             _parked = _dbp2.consume_parked_banner(session_id)
+            _dbp2.note_consumed_decision(session_id, _parked)
             if _parked:
                 rendered = _dbp2.append_banner(rendered, "\n" + _parked)
+        except Exception:  # noqa: BLE001 — banner must never break delivery
+            pass
+        # R19.11 FIX 1: final-delivery gate — a decision banner consumed at
+        # an EARLIER benign/audit edge must survive this render replacing
+        # the turn tail: re-emit the held banner when the delivered text
+        # lacks the decision marker.
+        try:
+            from . import debug_banner as _dbs2
+            rendered = _dbs2.settle_decision_banner(session_id, rendered)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         # R15 LEG 2: render delivery edge — attach the unrouted direct-call

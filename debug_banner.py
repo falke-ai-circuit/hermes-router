@@ -43,7 +43,8 @@ the knob is off, this module contributes ZERO calls in the delivery path
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -264,3 +265,55 @@ def consume_parked_banner(session_id: str) -> str:
         return _ANCHOR_BANNERS.pop(str(session_id or ""), "")
     except Exception:  # noqa: BLE001
         return ""
+
+
+# --- R19.11 FIX 1: decision-banner loss on two-lane turns ------------------
+# Live evidence (reviewer session 20260803_140900_48d4d030): a decision
+# banner consumed+appended at an early benign edge was wiped when a later
+# uncensored-render/anchor POST transform REPLACED the turn tail. Hold the
+# consumed decision-lane banner briefly (120s TTL): any subsequent delivery
+# edge in the same window whose text does NOT carry the decision marker
+# re-emits it. Bounded 32 sessions, MAX_BANNER_CHARS respected, fail-open.
+_DECISION_MARK = "· router · decision"
+_DECISION_HOLD_TTL = 120.0
+_HELD_DECISIONS: Dict[str, Tuple[str, float]] = {}
+_HELD_DECISIONS_MAX = 32
+
+
+def note_consumed_decision(session_id: str, banner_text: str) -> None:
+    """After a consume, remember a decision-lane banner so a later
+    render-replacement edge can re-emit it. Never raises."""
+    try:
+        b = str(banner_text or "")
+        if _DECISION_MARK not in b:
+            return
+        sid = str(session_id or "")
+        if sid in _HELD_DECISIONS:
+            return  # already holding (first hold wins within the TTL)
+        while len(_HELD_DECISIONS) >= _HELD_DECISIONS_MAX:
+            _HELD_DECISIONS.pop(next(iter(_HELD_DECISIONS)), None)
+        _HELD_DECISIONS[sid] = (b[:MAX_BANNER_CHARS], time.time())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def settle_decision_banner(session_id: str, delivered_text: str) -> str:
+    """Final-delivery gate: if the text already carries the decision
+    marker, leave the hold (it expires via TTL). If it does NOT and a
+    fresh hold exists (render-replacement class), re-emit the banner.
+    Respects append_banner's gate; never raises; never returns None."""
+    try:
+        sid = str(session_id or "")
+        held = _HELD_DECISIONS.get(sid)
+        if not held:
+            return delivered_text if isinstance(delivered_text, str) else ""
+        banner, ts = held
+        if _DECISION_MARK in str(delivered_text or ""):
+            return delivered_text  # delivered on this edge; hold expires
+        if (time.time() - ts) > _DECISION_HOLD_TTL:
+            _HELD_DECISIONS.pop(sid, None)
+            return delivered_text
+        _HELD_DECISIONS.pop(sid, None)  # one re-emit, then done
+        return append_banner(delivered_text, "\n" + banner, _knob_checked=True)
+    except Exception:  # noqa: BLE001
+        return delivered_text if isinstance(delivered_text, str) else ""

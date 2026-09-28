@@ -1508,6 +1508,36 @@ def _http_post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any],
         return None
 
 
+def _robust_json_content(content: str) -> str:
+    """R19.11 FIX 2: harden Jev response parsing. Strips markdown fences,
+    extracts the first JSON object via regex, verifies it at least parses
+    to a dict containing a 'choice' key. Returns the canonical JSON string
+    or "" (caller fails open). Never raises."""
+    try:
+        s = str(content or "").strip()
+        if not s:
+            return ""
+        # strip markdown fences (```json ... ``` / ``` ... ```)
+        fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+        candidates = []
+        if fence:
+            candidates.append(fence.group(1))
+        m = re.search(r"\{.*\}", s, re.DOTALL)  # first object, greedy tail
+        if m:
+            candidates.append(m.group(0))
+        candidates.append(s)
+        for cand in candidates:
+            try:
+                data = json.loads(cand)
+            except Exception:  # noqa: BLE001
+                continue
+            if isinstance(data, dict) and "choice" in data:
+                return json.dumps(data)
+        return ""
+    except Exception:  # noqa: BLE001 — fail-open
+        return ""
+
+
 def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                  ) -> Tuple[Optional[str], Dict[str, Any], str]:
     """Run the envelope through the configured backend. Returns
@@ -1556,7 +1586,30 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                 content = None
             if not content or not str(content).strip():
                 return None, meta, REASON_PARSE_FAIL
-            return str(content), meta, "ok"
+            content = str(content)
+            # R19.11 FIX 2: Jev parse hardening — live session showed a
+            # 2/5 parse_fail rate (markdown fences, prose-wrapped JSON).
+            # Robust extract first; if nothing parseable, ONE strict retry
+            # ('respond ONLY with JSON') before failing open.
+            extracted = _robust_json_content(content)
+            if extracted:
+                return extracted, meta, "ok"
+            data2 = _http_post_json(endpoint, {"Authorization": "Bearer %s" % key}, {
+                "model": model, "temperature": 0.0, "max_tokens": 512,
+                "response_format": {"type": "json_object"},
+                "messages": [{"role": "user",
+                              "content": prompt + "\n\nRespond ONLY with "
+                                         "the JSON object."}],
+            }, timeout)
+            content2 = None
+            try:
+                content2 = data2["choices"][0]["message"]["content"]
+            except Exception:  # noqa: BLE001
+                content2 = None
+            extracted2 = _robust_json_content(str(content2 or ""))
+            if extracted2:
+                return extracted2, meta, "ok"
+            return None, meta, REASON_PARSE_FAIL
         if backend == "nous":
             # OpenAI-compatible chat endpoint via the profile's aux path —
             # the plumbing stub for conductor live tests (NO Jev credits).
