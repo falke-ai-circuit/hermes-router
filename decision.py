@@ -823,6 +823,8 @@ def trigger_kind(trigger: str) -> str:
 REASON_ON_DEMAND_DISABLED = "on_demand_disabled"
 REASON_PRE_OFF = "pre_off"
 REASON_NO_OPTIONS = "no_options"
+REASON_MANUAL_VERBATIM = "manual_verbatim_passthrough"
+REASON_POST_GATE = "post_gate_insufficient_structure"
 REASON_MALFORMED = "malformed"
 REASON_BACKEND_ERROR = "backend_error"
 REASON_UNKNOWN_BACKEND = "unknown_backend"
@@ -922,6 +924,105 @@ def extract_options(text: str, cap: int = 6,
         return out[:max(2, min(6, cap))]
     except Exception:  # noqa: BLE001
         return []
+
+
+def _manual_verbatim_options(ask_text: str, cap: int = 6) -> List[str]:
+    """R19.12 FIX 1: on-demand manual trigger — options-verbatim
+    passthrough. The trusted manual ask must not fail-closed on parser
+    limitations. Extracts the user's literally-stated options VERBATIM:
+    lettered A)/B), numbered 1./2), or bulleted -/* forms (including
+    INLINE same-line shapes the strict line-marker regex misses); if no
+    enumerable structure exists, a 2-option binary fork is derived ONLY
+    from an explicit either/or connective. Never-invent holds: no
+    synthesis beyond what the user literally stated. Never raises."""
+    try:
+        t = str(ask_text or "").strip()
+        if not t:
+            return []
+        out: List[str] = []
+        # inline lettered/numbered markers: 'A) x ... or B) y ...' — split
+        # the text on marker boundaries and keep the verbatim segments.
+        marker_re = re.compile(
+            r"(?:^|(?<=[\s.(]))(?:[-*+]\s+)?(?:option|approach|path|variant"
+            r"|plan|strategy|choice)?\s*\(?\s*([A-Da-d1-9])\s*[\).:]\s+",
+            re.IGNORECASE)
+        matches = list(marker_re.finditer(t))
+        seen_ord: set = set()
+        for i, m in enumerate(matches):
+            ordinal = m.group(1).lower()
+            if ordinal in seen_ord:
+                continue
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
+            seg = t[start:end].strip(" \t\n\r-—:;")
+            # trim a trailing 'or X)' style tail of the NEXT marker
+            seg = re.sub(r"\s+(?:or|and)\s+[A-Da-d1-9]\s*[\).:].*$", "",
+                         seg, flags=re.IGNORECASE).strip(" \t\n\r-—:;")
+            if len(seg) < 3:
+                continue
+            seen_ord.add(ordinal)
+            out.append(clean_snippet(seg, 120))
+            if len(out) >= cap:
+                break
+        if len(out) >= 2:
+            return out[:max(2, min(6, cap))]
+        # binary fork ONLY on an explicit either/or connective
+        m = re.search(r"\beither\b(.{1,200}?)\bor\b(.{1,200})",
+                      t, re.IGNORECASE | re.DOTALL)
+        if m:
+            left = clean_snippet(m.group(1).strip(" \t\n\r-—:,;"), 120)
+            right = clean_snippet(re.split(r"\.\s|\n", m.group(2))[0]
+                                  .strip(" \t\n\r-—:,;"), 120)
+            if left and right and left.lower() != right.lower():
+                return [left, right]
+        return []
+    except Exception:  # noqa: BLE001 — passthrough must never raise
+        return []
+
+
+def _post_gate_ok(text: str) -> bool:
+    """R19.12 FIX 2: POST pseudo-fire gate. The POST leg fires ONLY when
+    the source turn contains >= 2 DISTINCT named options WITH consequence
+    markers — numbered list items, lettered A)/a) items, or explicit
+    option labels (Option N / Approach N), each followed by >= 20 chars
+    of consequence-bearing text (because/since/so that/risk/cost/impact
+    or a comma+verb clause). Tightens the structural default-deny on the
+    POST leg ONLY. Never raises."""
+    try:
+        t = str(text or "")
+        if not t:
+            return False
+        count = 0
+        seen_labels: set = set()
+        for line in t.splitlines():
+            m = (_OPT_LINE_RE.match(line) or _NAMED_ENUM_RE.search(line))
+            if not m:
+                continue
+            # label identity: the marker ordinal + first 30 chars
+            try:
+                label = str(m.group(2) or "")[:30].lower()
+            except Exception:  # noqa: BLE001
+                label = line[:30].lower()
+            if label in seen_labels:
+                continue
+            body = str(m.group(2) or "") if m.lastindex and m.lastindex >= 2 \
+                else line
+            if len(body) < 20:
+                continue
+            if not re.search(
+                    r"\b(because|since|so that|risk|cost|impact)\b"
+                    r"|,\s+\w+(?:ing|es|s)\b"
+                    r"|,\s+(?:is|are|will|would|can|may|requires|adds|gives"
+                    r"|means|keeps|avoids)\b",
+                    body, re.IGNORECASE):
+                continue
+            seen_labels.add(label)
+            count += 1
+            if count >= 2:
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — gate failure must never crash
+        return False
 
 
 def option_ids(options: List[str]) -> List[str]:
@@ -1995,6 +2096,18 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
             _log("decision_suppressed", reason=REASON_ON_DEMAND_DISABLED)
             return
         opts = extract_options(ask_text)
+        if trigger == "manual" and len(opts) < int(
+                (cfg.get("enum_min_items") or 4)):
+            # R19.12 FIX 1: the trusted manual trigger must not fail-closed
+            # on parser limitations — pass the user's literally-stated
+            # options through VERBATIM (never-invent still holds; a binary
+            # fork is derived ONLY from an explicit either/or connective).
+            verbatim = _manual_verbatim_options(ask_text)
+            if verbatim:
+                opts = verbatim
+                _log("manual_verbatim_passthrough",
+                     n_options=len(opts),
+                     reason=REASON_MANUAL_VERBATIM)
         cap_reason = caps_check(task_id, session_id, cfg)
         if cap_reason:
             _log("decision_suppressed", reason=cap_reason, trigger=trigger)
@@ -2221,6 +2334,20 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
             return
         # tape recorder: fill actual_choice when the response names an option
         _record_actual(session_id, response_text, cfg, log_route)
+        # R19.12 FIX 2: POST pseudo-fire gate — the POST leg fires ONLY on
+        # >= 2 DISTINCT named options WITH consequence markers (strict
+        # structural regex). Ordinary delivery turns never reach the
+        # backend (no billing, no ledger pollution). PRE/midturn/on-demand
+        # legs unchanged.
+        if not _post_gate_ok(response_text):
+            try:
+                if log_route is not None:
+                    log_route("decision_post_fork_scan",
+                              outcome=REASON_POST_GATE, lane="decision",
+                              session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
         opts = extract_options(response_text)
         if len(opts) < 2:
             # no fork in the turn -> no call (never guessed)

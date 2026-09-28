@@ -1,3 +1,30 @@
+## 4.11.12 — 2026-09-27 (R19.12: manual verbatim passthrough + POST pseudo-fire gate)
+
+- FIX 1 (P1, reviewer session evidence): a manual 'decide this:' ask fired
+  detection (manual_ask) but was suppressed reason=no_options because the
+  inline 'A) batch-append ... or B) synchronous ...' options weren't
+  extracted. The trusted manual trigger no longer fails closed on parser
+  limitations: `_manual_verbatim_options` passes the user's literally-
+  stated options through VERBATIM (inline lettered/numbered/bulleted
+  markers the strict line-marker regex misses, ids opt-1..n by order of
+  appearance); a 2-option binary fork is derived ONLY from an explicit
+  either/or connective; no structure + no connective keeps the no_options
+  suppression. Never-invent holds — no synthesis beyond what the user
+  stated. Logged reason=manual_verbatim_passthrough.
+- FIX 2 (3 misfire specimens in reviewer's battery ledger): the POST leg
+  now fires ONLY when the source turn contains >= 2 DISTINCT named
+  options WITH consequence markers — numbered list items, lettered A)/a)
+  items, or explicit option labels (Option N / Approach N), each followed
+  by >= 20 chars of consequence-bearing text (because/since/so that/
+  risk/cost/impact or a comma+verb clause). Ordinary delivery turns =
+  no POST scan (reason=post_gate_insufficient_structure): no billing, no
+  ledger pollution. PRE / midturn / on-demand legs unchanged.
+- Tests: 9-test battery (verbatim engages + Jev receives both options,
+  no-structure stays suppressed, either/or binary, never-invent; gate
+  blocks one-named / bare-bullets / ordinary delivery turns, fires on
+  2 options + consequences, gate is POST-only). v3 POST fixtures updated
+  to the tightened gate shape (mechanics tests unchanged in intent).
+
 ## 4.11.11 — 2026-09-27 (R19.11: decision-banner loss on two-lane turns + Jev JSON hardening)
 
 - FIX 1 (live, reviewer session 20260803_140900_48d4d030): on a turn that

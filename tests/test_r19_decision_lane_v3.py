@@ -577,8 +577,11 @@ def test_dark_default_no_route(_reset):
 # 8. POST fork-scan leg (user-locked §2 addendum)
 # --------------------------------------------------------------------------
 
-POST_TURN = ("Two paths from here:\n- a) migrate the store now\n"
-             "- b) freeze writes first, migrate after the batch")
+POST_TURN = ("Two paths from here:\n"
+             "- a) migrate the store now, because the rollback script is "
+             "rehearsed and the window is free tonight\n"
+             "- b) freeze writes first, migrate after the batch, since "
+             "each step stays independently reversible at a small cost\n")
 
 
 def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
@@ -607,7 +610,9 @@ def test_post_fork_scan_no_options_no_call(_reset, monkeypatch):
     assert called == []          # structural default-deny: NO backend call
     assert debug_banner.consume_parked_banner(SID) == ""
     ev = _logged("decision_post_fork_scan")
-    assert ev and ev[-1]["outcome"] == "no_options"
+    # R19.12 FIX 2: the POST gate fires BEFORE extraction on ordinary
+    # turns — the reason is now post_gate_insufficient_structure.
+    assert ev and ev[-1]["outcome"] == "post_gate_insufficient_structure"
 
 
 def test_post_fork_scan_dark_noop(_reset):
