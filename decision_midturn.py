@@ -289,6 +289,8 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             budget -= size
             window.append(m)
         for msg in reversed(window):
+            try: open("/opt/data/tmp/swprobe2.log","a").write("SWPROBE2 role=%r textlen=%s target=%s\n" % (msg.get("role"), len(str(msg.get("content") or "")), _msg_is_scan_target(msg)))
+            except Exception: pass
             if not _msg_is_scan_target(msg):
                 continue
             text = _msg_text(msg.get("content"))
