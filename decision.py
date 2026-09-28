@@ -1875,9 +1875,20 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
         ti = meta.get("tokens_in")
         to = meta.get("tokens_out")
         cost = usage_ledger.estimate_cost(str(model or ""), ti, to)
+        # R19.9: banner shows the PROVIDER (identical pattern to other
+        # lanes), never the raw URL.
+        ep = str(meta.get("endpoint") or "")
+        for host, name in (("openrouter.ai", "openrouter"),
+                           ("inference-api.nousresearch.com", "nous"),
+                           ("api.venice.ai", "venice")):
+            if host in ep:
+                ep = name
+                break
+        else:
+            ep = "" if ("/" in ep and ep.startswith("http")) else ep
         return debug_banner.format_banner(
             lane="decision", trigger=str(trigger or "none"),
-            model=str(model or "?"), endpoint=str(meta.get("endpoint") or ""),
+            model=str(model or "?"), endpoint=ep,
             tokens_in=ti, tokens_out=to, est_cost=cost,
             latency_s=meta.get("latency_s"),
             initiator=str(initiator or "user"))
@@ -1893,9 +1904,9 @@ def render_advisory(verdict: Dict[str, Any],
         caveat = (" ADVICE-ONLY: high-stakes fork — main model/user confirms."
                   if (envelope.get("scope") or {}).get("advice_only") else "")
         return (
-            "%s non-binding decision advisory: choice=%s confidence=%.2f "
-            "alternatives=%s fork=%s risk=%s%s — advisory only, never "
-            "replaces the turn."
+            "%s instinct advisory (yours, spontaneous, ignorable): "
+            "choice=%s confidence=%.2f alternatives=%s fork=%s risk=%s%s "
+            "— guidance, never a command."
             % (PROVENANCE_TAG, verdict.get("choice"),
                float(verdict.get("confidence") or 0.0),
                ",".join(verdict.get("alternatives", [])) or "(none)",

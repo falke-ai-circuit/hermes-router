@@ -146,6 +146,7 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # not plumbing.
         _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
             "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
+            else "instinct-self (decision)" if lane == "decision"
             else lane.split("-", 1)[0])
         # R19 v3: an empty endpoint renders model-only (decision lane has no
         # remote host to name); initiator provenance rides the L1 line.

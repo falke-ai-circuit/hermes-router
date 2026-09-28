@@ -82,6 +82,11 @@ def _calls(monkeypatch, body=None, fail=False):
 # ------------------------------------------------------------------
 
 def test_off_mode_is_fully_silent(_env, monkeypatch):
+    # R19.9: pin cfg — this test must not read the live profile config
+    # (conductor's decision block is now genuinely 'on').
+    cfg = _v3_cfg(midturn="off")
+    monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
+    monkeypatch.setattr(decision, "_cfg", lambda: cfg)
     calls = _calls(monkeypatch, body={"choice": "opt-1",
                                       "confidence": 0.9,
                                       "alternatives": []})

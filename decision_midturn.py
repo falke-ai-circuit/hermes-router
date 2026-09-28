@@ -556,7 +556,8 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
         rec = {"choice": str(verdict.get("choice") or ""),
                "tokens_in": ti if isinstance(ti, int) else 0,
                "tokens_out": to if isinstance(to, int) else 0,
-               "cost": float(cost or 0.0), "model": model}
+               "cost": float(cost or 0.0), "model": model,
+               "endpoint": str(meta.get("endpoint") or "")}
         with _LOCK:
             st = _state(session_id)
             st["count"] = int(st.get("count") or 0) + 1
@@ -597,7 +598,8 @@ def close_turn(session_id: str) -> str:
             c = consumed[0]
             banner = _dec.render_decision_banner(
                 "midturn", c.get("model") or "",
-                {"tokens_in": ti, "tokens_out": to, "endpoint": ""},
+                {"tokens_in": ti, "tokens_out": to,
+                 "endpoint": str(c.get("endpoint") or "")},
                 initiator="agent")
             return banner or _aggregate_line(n, ti, to, total, consumed)
         return _aggregate_line(n, ti, to, total, consumed)
