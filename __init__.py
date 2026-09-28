@@ -1143,8 +1143,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
 
 def on_llm_execution(*, request, next_call, **context) -> Any:
-    try: open("/opt/data/tmp/llexeprobe.log","a").write("LLEXEPROBE sid=%r\n" % (context.get("session_id"),))
-    except Exception: pass
     """LLM EXECUTION middleware for the anchored call. When a model swap was
     staged for this session (PRE dispatcher pass), run the FULL request
     against the anchor endpoint via a per-call client:
