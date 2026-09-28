@@ -289,8 +289,6 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             budget -= size
             window.append(m)
         for msg in reversed(window):
-            try: open("/opt/data/tmp/swprobe2.log","a").write("SWPROBE2 role=%r textlen=%s target=%s\n" % (msg.get("role"), len(str(msg.get("content") or "")), _msg_is_scan_target(msg)))
-            except Exception: pass
             if not _msg_is_scan_target(msg):
                 continue
             text = _msg_text(msg.get("content"))
@@ -309,11 +307,7 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                     rst = _state(key)
                     rst["count"] = 0
                     rst["consumed"] = []
-            try: open("/opt/data/tmp/swprobe3.log","a").write("SWPROBE3 role=%r declen=%s prov=%s\n" % (msg.get("role"), len(text), _dec.provenance_skip(text, cfg)))
-            except Exception: pass
             opts = _dec.extract_options(text)
-            try: open("/opt/data/tmp/swprobe4.log","a").write("SWPROBE4 opts=%s first=%r\n" % (len(opts), (opts[0][:60] if opts else None)))
-            except Exception: pass
             if not opts:
                 continue
             _handle_hit(key, str(msg.get("name") or "turn_sweep"), text,
@@ -330,8 +324,6 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
     verdict -> ledger + pending advisory. Shadow: detect + log + ledger
     only. Never raises."""
     try:
-        try: open("/opt/data/tmp/swprobe5.log","a").write("SWPROBE5 entry sid=%r mode=%r\n" % (session_id, mode))
-        except Exception: pass
         sig = _norm_hash(text)
         now = time.time()
         with _LOCK:
@@ -351,8 +343,6 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
                     tool_name=tool_name, seam=seam, fail_open_reason=reason)
-            try: open("/opt/data/tmp/swprobe5.log","a").write("SWPROBE5 ledger-done\n")
-            except Exception: pass
             _log(session_id, "midturn_suppressed", reason=reason, sig=sig,
                  mode=mode, tool=tool_name, fork_class=fork_cls, seam=seam)
             return
@@ -520,7 +510,10 @@ def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
 
 def _log(session_id: str, event: str, **fields: Any) -> None:
     try:
-        from hermes_router import _log_route as _lr
+        try:
+            from . import _log_route as _lr  # relative: gateway-safe
+        except ImportError:
+            from hermes_router import _log_route as _lr
         _lr(event, lane="decision", trigger=TRIGGER,
             session_id=str(session_id or ""), **fields)
     except Exception:  # noqa: BLE001 — logging never breaks the lane
