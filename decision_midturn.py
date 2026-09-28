@@ -454,6 +454,8 @@ def _sanitize_session_key(raw: Any) -> str:
 
 
 def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
+    try: open("/opt/data/tmp/swprobe.log","a").write("SWPROBE sid=%r isdict=%s nmsgs=%s\n" % (session_id, isinstance(request,dict), len((request.get("messages") or []) if isinstance(request,dict) else [])))
+    except Exception: pass
     """SEAM 2 entry — called from on_llm_execution (once per turn): first
     the turn-start sweep (previous-turn tool results + user ingress,
     seam=turn_boundary), then the pending-advisory flush (a verdict staged
