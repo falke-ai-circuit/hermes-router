@@ -312,6 +312,8 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             try: open("/opt/data/tmp/swprobe3.log","a").write("SWPROBE3 role=%r declen=%s prov=%s\n" % (msg.get("role"), len(text), _dec.provenance_skip(text, cfg)))
             except Exception: pass
             opts = _dec.extract_options(text)
+            try: open("/opt/data/tmp/swprobe4.log","a").write("SWPROBE4 opts=%s first=%r\n" % (len(opts), (opts[0][:60] if opts else None)))
+            except Exception: pass
             if not opts:
                 continue
             _handle_hit(key, str(msg.get("name") or "turn_sweep"), text,
