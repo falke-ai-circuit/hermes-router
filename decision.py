@@ -1867,7 +1867,7 @@ def ledger_recent(limit: int = 20, db_path: str = "") -> List[Dict[str, Any]]:
 def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
                            initiator: str = "user") -> str:
     """§7 provenance banner, same mechanics as uncensored/frontier lanes:
-    '· router · decision | <trigger> | <model> | tok n/n | $x.xxxxxx |
+    '· router · reflex (decision) | <trigger> | <model> | tok n/n | $x.xxxxxx |
     initiator=user'. One banner per message, latest-wins park."""
     try:
         from . import debug_banner, usage_ledger
@@ -1904,9 +1904,9 @@ def render_advisory(verdict: Dict[str, Any],
         caveat = (" ADVICE-ONLY: high-stakes fork — main model/user confirms."
                   if (envelope.get("scope") or {}).get("advice_only") else "")
         return (
-            "%s instinct advisory (yours, spontaneous, ignorable): "
-            "choice=%s confidence=%.2f alternatives=%s fork=%s risk=%s%s "
-            "— guidance, never a command."
+            "%s reflex advisory (autonomous, not chosen): choice=%s "
+            "confidence=%.2f alternatives=%s fork=%s risk=%s%s — cannot be "
+            "controlled, can be noticed and worked with; never a command."
             % (PROVENANCE_TAG, verdict.get("choice"),
                float(verdict.get("confidence") or 0.0),
                ",".join(verdict.get("alternatives", [])) or "(none)",

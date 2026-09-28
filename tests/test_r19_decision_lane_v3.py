@@ -295,7 +295,7 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
     assert decision.PROVENANCE_TAG in parked
     assert "choice=opt-1" in parked
     # §7 banner: one provenance line, decision lane, initiator=user
-    assert "· router · instinct-self (decision) |" in parked
+    assert "· router · reflex (decision) |" in parked
     assert "initiator=user" in parked
     assert parked.count("· router ·") == 1
     assert _logged("decision_advisory_parked")
@@ -515,7 +515,7 @@ def test_banner_format_decision_lane(_reset):
         "pre", "z-ai/glm-5.3-flash",
         {"endpoint": "", "tokens_in": 10, "tokens_out": 5, "latency_s": 1.2},
         initiator="user")
-    assert b.startswith("· router · instinct-self (decision) | pre | z-ai/glm-5.3-flash")
+    assert b.startswith("· router · reflex (decision) | pre | z-ai/glm-5.3-flash")
     assert "tok 10/5" in b
     assert "initiator=user" in b
 
@@ -589,7 +589,7 @@ def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
     assert "choice=opt-1" in parked            # verdict APPENDED as advisory
-    assert "· router · instinct-self (decision) |" in parked   # banner-marked
+    assert "· router · reflex (decision) |" in parked   # banner-marked
     assert "initiator=model" in parked         # steering, not user ask
     row = decision.ledger_recent()[0]
     assert row["trigger_kind"] == "post_fork_scan"
