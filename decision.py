@@ -452,6 +452,7 @@ _D_CALL_TIMES: deque = deque()
 _D_FAILS = 0
 _D_BREAKER_OPENED_AT: Optional[float] = None
 _MAX_WORKERS = 2
+_BANNER_COUNTS: Dict[str, int] = {}  # R19.8: POST advisory banners per session (reviewer rollout condition)
 _WORKER_SEM = threading.BoundedSemaphore(_MAX_WORKERS)
 
 _HOURLY_LOCK = threading.Lock()
@@ -763,6 +764,13 @@ def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
             if envelope:
                 from . import debug_banner
 
+                cap = int(cfg.get("post_banner_cap_per_run") or 3)
+                seen = _BANNER_COUNTS.get(session_id, 0)
+                if seen >= cap:
+                    logger.info("decision_banner_capped session_id=%s seen=%d cap=%d",
+                                session_id, seen, cap)
+                    return None
+                _BANNER_COUNTS[session_id] = seen + 1
                 debug_banner.park_anchor_banner(session_id, envelope,
                                                 task_id=task_id)
                 log_route("decision_advisory_parked",
