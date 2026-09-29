@@ -14,6 +14,7 @@ for _p in (PARENT_DIR, PLUGIN_DIR):
 
 import hermes_router as plugin  # noqa: E402
 from hermes_router import state  # noqa: E402
+from hermes_router import route_gate  # noqa: E402
 
 
 def _cfg(pre=True, post=True):
@@ -34,6 +35,13 @@ def _req(text):
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     state.clear()
+    # hermetic: clear lingering turn-claims from other suites (e.g. cascade
+    # battery registers claims for "s-leg4" that v4.12.3 execute-once then
+    # re-executes in this suite's turns)
+    try:
+        route_gate.clear_turn_claims(None)
+    except Exception:
+        pass
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     monkeypatch.setattr(plugin.router, "_read_key", lambda k: "TESTKEY")
     yield
