@@ -115,6 +115,21 @@ def sub_block(name: str) -> Dict[str, Any]:
         return {}
 
 
+def sub_block_alias(*names: str) -> Dict[str, Any]:
+    """R19.13 reflex modularization: FIRST non-empty named sub-block wins —
+    used so hermes_router.reflex may alias the legacy decision block
+    (reflex first, decision fallback; no config migration required of
+    existing profiles). {} on miss. Never raises."""
+    try:
+        for name in names:
+            block = sub_block(name)
+            if isinstance(block, dict) and block:
+                return block
+        return {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def providers_custom() -> Dict[str, Any]:
     """Top-level providers.custom block (NOT under hermes_router — Hermes
     core providers, read from process config only; no co-located fallback

@@ -729,8 +729,14 @@ def _decision_cfg() -> Dict[str, Any]:
         from . import debug_banner as _dbg
 
         section = _dbg._banner_section()
-        block = (section or {}).get("decision") if isinstance(section, dict) else None
-        return dict(block) if isinstance(block, dict) else {}
+        # R19.13 reflex modularization: hermes_router.reflex may alias the
+        # decision block (reflex wins when present; decision fallback).
+        if isinstance(section, dict):
+            for _name in ("reflex", "decision"):
+                _blk = section.get(_name)
+                if isinstance(_blk, dict) and _blk:
+                    return dict(_blk)
+        return {}
     except Exception:  # noqa: BLE001
         return {}
 

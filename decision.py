@@ -167,12 +167,22 @@ def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
         return False
 
 
+# R19.13 reflex modularization: lane identity 'decision' -> reflex TYPE
+# 'decision' (cosmetic/structural only — ZERO behavior change). The lane
+# id stays 'decision' for route-log/ledger backcompat; reflex.py owns the
+# type registry.
+REFLEX_TYPE = "decision"
+
+
 def _cfg() -> Dict[str, Any]:
-    """Read the decision block via the dual-block reader. Never raises."""
+    """Read the decision block via the dual-block reader. R19.13 reflex
+    modularization: the hermes_router.reflex block MAY alias this block
+    (reflex wins when present; decision is the fallback) — no config
+    migration required of existing profiles. Never raises."""
     try:
         from . import config_access
 
-        block = config_access.sub_block("decision")
+        block = config_access.sub_block_alias("reflex", "decision")
         if isinstance(block, dict) and block:
             merged = dict(DEFAULTS)
             merged.update({k: v for k, v in block.items() if v is not None})
@@ -1356,9 +1366,10 @@ def _ledger_priors(fork_cls: str, option_index: int, cfg: Dict[str, Any],
             want = OPTION_ID_FMT % (option_index + 1)
             rows = conn.execute(
                 "SELECT choice, outcome, follow_verdict FROM decision_ledger"
-                " WHERE fork_class = ? AND choice != '' AND choice != ?"
-                " ORDER BY id DESC LIMIT 50", (str(fork_cls),
-                                               STAND_DOWN_CHOICE)).fetchall()
+                " WHERE fork_class IN (?, ?) AND choice != '' AND choice != ?"
+                " ORDER BY id DESC LIMIT 50",
+                (str(fork_cls), "reflex:" + str(fork_cls),
+                 STAND_DOWN_CHOICE)).fetchall()
         finally:
             conn.close()
         if not rows:

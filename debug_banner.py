@@ -54,7 +54,8 @@ MAX_BANNER_CHARS = 400          # oversized diagnostic -> omit entirely
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
                "consult-pre", "consult-mid", "consult-post",
                "shadow",  # leg 11: declared shadow lane banner
-               "decision")  # R19 v3: decision lane provenance banner
+               "decision",  # R19 v3: decision lane provenance banner
+               "reflex")  # R19.13 reflex modularization: new lane id, same label
 
 # Lanes that must never banner (defense-in-depth — callers also gate):
 FORBIDDEN_LANES = ("aux", "aux-classify", "flash", "cap_blocked", "skipped")
@@ -147,7 +148,7 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # not plumbing.
         _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
             "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
-            else "reflex (decision)" if lane == "decision"
+            else "reflex (decision)" if lane in ("decision", "reflex")
             else lane.split("-", 1)[0])
         # R19 v3: an empty endpoint renders model-only (decision lane has no
         # remote host to name); initiator provenance rides the L1 line.

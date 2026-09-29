@@ -1,3 +1,31 @@
+## 4.12.0-b2 — 2026-09-29 (R19.13 SECOND ADDITION, Goran directive: reflex lane modularization)
+
+- Lane identity: the 'decision' lane becomes the 'reflex' lane; existing
+  decision behavior = reflex TYPE 'decision'. Cosmetic/structural ONLY —
+  ZERO behavior change: same triggers, same Jev calls, same banner label
+  ('reflex (decision)' — legacy lane id 'decision' still recognized),
+  same ledger rows. Lane id stays 'decision' in route logs/ledger for
+  backcompat; decision.REFLEX_TYPE pins the type identity.
+- Type registry: new reflex.py — register_type / registry_lookup /
+  classify_signal / dispatch (detection entry point -> classify ->
+  type-specific handler). Only 'decision' registered (lazy, adapter-pinned
+  to decision.detect_v3 / handle_decision_v3). Unknown/unregistered shapes
+  default to SILENT: no fire, no log spam. Fail-open throughout.
+- Ledger backcompat: fork_class accepts BOTH the legacy base spelling and
+  'reflex:decision' — _ledger_priors matches fork_class IN (base,
+  'reflex:'+base); reflex.normalize_reflex_class() for readers.
+- Config alias: hermes_router.reflex block MAY alias the decision block
+  (reflex wins when present; decision fallback) via
+  config_access.sub_block_alias('reflex','decision') — wired into
+  decision._cfg and router_core._decision_cfg; no config migration
+  required of existing profiles.
+- Banner label map: debug_banner VALID_LANES gains 'reflex' (same
+  'reflex (decision)' label); legacy 'decision' unchanged.
+- Tests: 13-test pin battery (registry parity with direct detect_v3
+  output, silent default for unknown types, banner label parity for both
+  lane ids, priors accept both class spellings, config alias win/
+  fallback/defaults, router_core alias).
+
 ## 4.12.0-b+ — 2026-09-29 (R19.13 ADDENDUM, Goran 2026-09-29: ADVERSARIAL FOLD-IN)
 
 - B+ 5b PRE doubt-seed: when a frontier PRE orientation consult fires on an
