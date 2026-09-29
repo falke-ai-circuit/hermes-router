@@ -1956,6 +1956,11 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
     try:
         conn = _ledger_connect(db_path)
         if conn is None:
+            # R19.13 FIX 4: ledger write failures were SILENT (reviewer audit
+            # fix-first 1: coder tape-recorder gap, 0 rows for hours while the
+            # lane fired) — surface at WARN so the gap is diagnosable.
+            logger.warning("decision_ledger write failed: store unavailable "
+                           "(%s)", db_path or "default")
             return None
         cols = ("ts", "session_id", "task_id", "trigger", "trigger_kind",
                 "fork_class", "options_hash", "model", "model_version", "choice",
@@ -1996,7 +2001,14 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
         except Exception:  # noqa: BLE001 — eviction best-effort
             pass
         return rid
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        # R19.13 FIX 4: never silent — a tape-recorder gap (lane firing,
+        # ledger empty) must be diagnosable from the log alone.
+        try:
+            logger.warning("decision_ledger write failed: %s",
+                           str(_exc)[:200])
+        except Exception:  # noqa: BLE001 — logging never raises
+            pass
         return None
     finally:
         try:
