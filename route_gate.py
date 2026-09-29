@@ -604,6 +604,34 @@ def inject_bare_call_reminder(request: Any) -> bool:
         return False
 
 
+def adversarial_family_hit(content: str) -> bool:
+    """R19.17: ADVERSARIAL on-demand family recall (challenge this / am i
+    missing something) — the aux-error fail-open companion to
+    declared_frontier_hit/_declared_frontier_loose. Echo-guarded: the
+    family wording must sit near the line start and the line must not be a
+    question/meta frame; prose mentioning the phrases stays inert. Never
+    raises."""
+    try:
+        _META_HEADS = ("is ", "are ", "was ", "does ", "do ", "did ",
+                       "what ", "how ", "why ", "when ", "which ", "who ",
+                       "can ", "could ", "should ", "would ", "i wonder",
+                       "she ", "he ", "they ", "the ", "explain ", "tell ")
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            low = norm.lower()
+            for word in ("challenge this", "am i missing",
+                         "missing something"):
+                pos = low.find(word)
+                if 0 <= pos <= 40 and not any(low.startswith(h)
+                                              for h in _META_HEADS):
+                    return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-open False
+        return False
+
+
 def adversarial_declared(content: str) -> bool:
     """R19.13 B+ 5d: True when one of the on-demand adversarial phrases
     ('challenge this' / 'am i missing something') appears as a STANDALONE
@@ -1165,6 +1193,14 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
             # errored => fail-open frontier (LANE_HIGHER_PRE,
             # declared_user). Aux HEALTHY + declared-family detected but
             # not strict = unchanged (aux decides below).
+            # R19.17: the fail-open now covers ALL declared families —
+            # frontier, ADVERSARIAL (challenge this / am i missing
+            # something => higher-pre, adversarial consult type) and
+            # SHADOW/uncensored-take (=> LANE_SHADOW, Leg 8 render chain).
+            # Aux is a health-DEPENDENCY for no family: a dead aux model
+            # (live: meituan/longcat-2.0:free fleet-wide, reviewer
+            # 19:59-20:02 intent_aux_error, ask died silently) can never
+            # again kill an explicitly-declared user ask.
             if declared_frontier_hit(content) or \
                     _declared_frontier_loose(content):
                 try:
@@ -1173,6 +1209,24 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                 except Exception:  # noqa: BLE001 — fail-open
                     pass
                 return GateDecision(route=True, lane=LANE_HIGHER_PRE,
+                                    source=SOURCE_DECLARED_USER,
+                                    reason="declared_user")
+            if adversarial_family_hit(content):
+                try:
+                    register_declared(session_id, LANE_HIGHER_PRE,
+                                      SOURCE_DECLARED_USER)
+                except Exception:  # noqa: BLE001 — fail-open
+                    pass
+                return GateDecision(route=True, lane=LANE_HIGHER_PRE,
+                                    source=SOURCE_DECLARED_USER,
+                                    reason="declared_user")
+            if _detect_uncensored_take(content):
+                try:
+                    register_declared(session_id, LANE_SHADOW,
+                                      SOURCE_DECLARED_USER)
+                except Exception:  # noqa: BLE001 — fail-open
+                    pass
+                return GateDecision(route=True, lane=LANE_SHADOW,
                                     source=SOURCE_DECLARED_USER,
                                     reason="declared_user")
             return None

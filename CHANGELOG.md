@@ -1,3 +1,24 @@
+## 4.12.4 — 2026-09-29 (R19.17: family-wide declared fail-open — aux is a dependency for NO declared family)
+
+- Root cause (Goran): aux model dead fleet-wide (12 configs on
+  meituan/longcat-2.0:free; conductor fixed configs to z-ai/glm-5.3-flash)
+  — but the CODE must not depend on aux health for DECLARED families.
+  R19.16's fail-open covered ONLY the frontier family; the ADVERSARIAL
+  on-demand family (challenge this / am i missing something — v4.12.0
+  declared phrases) routed via aux with no fail-open: aux dead => ask died
+  silently (reviewer log 19:59-20:02 intent_aux_error, no route).
+- FIX: the aux-error fail-open in _aux_intent_decision now covers ALL
+  declared families — frontier (higher-pre), ADVERSARIAL (higher-pre,
+  adversarial consult type: new route_gate.adversarial_family_hit probe,
+  echo-guarded near-line-start like the frontier loose probe; anchor_exec
+  forces the adversarial seed for family-hit asks too), and
+  SHADOW/uncensored-take (LANE_SHADOW, Leg 8 render chain). Aux healthy +
+  family detected but not strict = unchanged (aux decides); no family +
+  aux error = unchanged (inert).
+- Tests: 7-test battery (adversarial + shadow + frontier fail-open with
+  aux RAISING, adversarial-type forced seed, echo guard, no-family inert,
+  full-gate end-to-end with claim registration).
+
 ## 4.12.3 — 2026-09-29 (R19.16: declared-frontier recall + execute-once)
 
 - FIX 1 (recall): the declared family's failure mode must never be silence.

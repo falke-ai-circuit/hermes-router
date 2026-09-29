@@ -545,8 +545,10 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             )
                             from .route_gate import (
                                 adversarial_declared as _adv_decl,
+                                adversarial_family_hit as _adv_family,
                             )
-                            if _irr(_orig) or _adv_decl(_orig):
+                            if _irr(_orig) or _adv_decl(_orig) or \
+                                    _adv_family(_orig):
                                 _frame += _adv_seed()
                         except Exception:  # noqa: BLE001 — seed never breaks the consult
                             pass
