@@ -1118,6 +1118,38 @@ def provenance_skip(text: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
         return False
 
 
+def manual_line_hit(text: str, cfg: Optional[Dict[str, Any]] = None
+                    ) -> Optional[Dict[str, Any]]:
+    """R19.13 FIX 1: manual-trigger-only scope of detect_v3 — the trusted
+    on-demand 'decide this[...]' line ONLY (no heuristic PRE evaluation).
+    Used by router_core.dispatch BEFORE the complexity heuristic so the
+    trusted manual trigger is never swallowed by a complexity consult
+    (live: analyst 2026-09-29 — 'decide this:' turns consumed by
+    complexity risk_r2/orientation consults, zero manual_ask dispatches).
+    Returns the detect_v3-shaped manual dict or None. Never raises."""
+    try:
+        cfg = cfg or _cfg()
+        if not isinstance(text, str) or not text.strip():
+            return None
+        lvl_raw = cfg.get("level")
+        level = int(2 if lvl_raw is None else lvl_raw)
+        if level <= 0:
+            return None
+        if provenance_skip(text, cfg):
+            return None
+        for raw in text.splitlines():
+            low = raw.strip().lower()
+            if low.startswith(MANUAL_TRIGGER_PREFIX):
+                if not on_demand_allowed("manual", cfg):
+                    return None
+                return {"trigger": "manual", "families": ["manual_ask"],
+                        "options": extract_options(text),
+                        "level": level}
+        return None
+    except Exception:  # noqa: BLE001 — detection must never raise
+        return None
+
+
 def detect_v3(text: str, level: Optional[int] = None,
               cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """v3 ingress detection (µs-cheap regex, §2 trigger taxonomy).

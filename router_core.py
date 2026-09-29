@@ -1059,6 +1059,37 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # INERT in Phase 1: dispatch behavior in static mode is byte-identical
         # to v3.2.3 (zero-behavior-change invariant; suppressed struggles would
         # still be re-classified + logged to avoid survivorship bias).
+        # R19.13 FIX 1 (reviewer audit fix-first 2): the TRUSTED manual
+        # on-demand line ('decide this[...]') is checked BEFORE the complexity
+        # heuristic — complexity precedence (§5.3) must not swallow a trusted
+        # manual trigger (live: analyst 'decide this:' turns consumed by
+        # complexity risk_r2/orientation consults; zero manual_ask dispatches
+        # in 24h). Heuristic PRE keeps complexity precedence — only the
+        # manual line is elevated. Cooldowns above still apply (R16 doctrine:
+        # override beats cooldown, manual does not).
+        if _lane_enabled(LANE_DECISION) and override != "anchor":
+            try:
+                from . import decision as _dlane_m
+
+                _dcfg_m = _decision_cfg()
+                _mhit = _dlane_m.manual_line_hit(user_text, _dcfg_m)
+                if _mhit is not None:
+                    _mdec = _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
+                                 "decision_detected:manual_ask")
+                    try:
+                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        _lr("PRE", session_id=session_id,
+                            event_detail="decision_route_fired",
+                            lane=LANE_DECISION, mode=MODE_DECISION_SCORE,
+                            reason="decision_detected:manual_ask",
+                            route_id=_mdec.route_id,
+                            task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    return _mdec
+            except Exception:  # noqa: BLE001 — decision lane must never break dispatch
+                pass
+
         # 2. Complexity detection (stage-1 -> stage-2 on gray zone).
         # pre_mode (Goran 2026-09-08 ruling): "route" = PRE orientation consult
         # on stage-1 regex hit; "shadow" = log-only telemetry — NO PRE consult
