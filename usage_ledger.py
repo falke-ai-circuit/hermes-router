@@ -132,11 +132,22 @@ def record_tokens(lane: str, model: str, session_id: str,
         return False
 
 
+# R19.14 FIX 3 (P3): MEASURED pricing fallback for OpenRouter-hosted reflex
+# models the provider catalog misses. source=measured (Goran-approved):
+# input ~$0.042/1M, output free (earlier measurement). NOT fabricated rates;
+# provider-catalog rates still win when present. Unknown models stay 0.0.
+_MEASURED_PRICING: Dict[str, Dict[str, Any]] = {
+    "typesafe/jev-router": {"input_per_1m": 0.042, "output_per_1m": 0.0,
+                            "source": "measured"},
+}
+
+
 def estimate_cost(model: str, input_tokens: Optional[int],
                   output_tokens: Optional[int]) -> float:
     """Estimate cost from the anchor_chain pricing table (the plugin's only
     price source). Unknown/unpriced model -> 0.0 — no fabricated pricing.
-    Never raises."""
+    R19.14 FIX 3: the MEASURED fallback table covers OpenRouter-hosted
+    reflex models the catalog misses. Never raises."""
     try:
         from . import anchor_chain
 
@@ -150,7 +161,15 @@ def estimate_cost(model: str, input_tokens: Optional[int],
 
             prices = provider_price_for(str(model or ""))
             if not isinstance(prices, dict):
-                return 0.0
+                # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-
+                # hosted reflex models (typesafe/jev-router) were billing
+                # banners at $0.0000 — the reflex consults ARE billed (tiny
+                # but nonzero: measured $0.042/1M input, output free).
+                # MEASURED fallback table (marked source=measured, NOT
+                # fabricated rates); provider rates still win when present.
+                prices = _MEASURED_PRICING.get(str(model or ""))
+                if not isinstance(prices, dict):
+                    return 0.0
         it = max(0, int(input_tokens or 0))
         ot = max(0, int(output_tokens or 0))
         cost = (it / 1_000_000.0) * float(prices.get("input_per_1m", 0.0) or 0.0)

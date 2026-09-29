@@ -1,3 +1,30 @@
+## 4.12.1 — 2026-09-29 (R19.14 HOTFIX: declared-frontier routing + reflex cost)
+
+- FIX 1 (P1, reviewer log 2026-09-29T15:40:32-15:41:27): declared frontier
+  consults route WITHOUT aux. A declared FRONTIER-family phrase hit
+  (route_gate.declared_frontier_hit: strict variant table OR phrase at line
+  start + payload WITHOUT separator — 'consult frontier about the schema',
+  the exact live-miss shape) routes DIRECTLY with R11 declared_user
+  semantics (event declared_frontier_direct); the aux-error fallback in
+  _aux_intent_decision routes the declared ask too. Aux erroring can no
+  longer kill a declared ask — aux remains only for undeclared/fuzzy asks.
+  Line-start echo guard and the on-demand kill-switch unchanged.
+- FIX 2 (P2): a declared ask that still ends unrouted is VISIBLE — one
+  parked failure banner '· router · higher-self (frontier) | consult
+  FAILED (routing) — ask not routed ·' at the delivery edge (event
+  declared_route_failed_visible). Fail-open, never blocks the turn;
+  undeclared asks stay silent (provenance scope unchanged).
+- FIX 3 (P3): reflex banner cost 0.0000 — provider-catalog misses for the
+  OpenRouter-hosted typesafe/jev-router now fall back to the MEASURED
+  table (usage_ledger._MEASURED_PRICING: $0.042/1M input, 0 output,
+  source=measured, marked; provider rates win when present; unknown
+  models still 0.0). Reflex verdict banners render the actual estimate
+  (e.g. tok 1378/58 -> $0.000058).
+- Tests: 11-test battery (payload-without-separator hit shape, echo guard,
+  declared-routes-despite-aux-error pin, aux fallback, undeclared inert,
+  visible failure banner + undeclared-silent scope, measured pricing,
+  unknown-stays-zero, banner renders the estimate).
+
 ## 4.12.0-b2 — 2026-09-29 (R19.13 SECOND ADDITION, Goran directive: reflex lane modularization)
 
 - Lane identity: the 'decision' lane becomes the 'reflex' lane; existing

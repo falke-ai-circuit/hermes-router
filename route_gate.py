@@ -1151,6 +1151,18 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — observability only
                 pass
+            # R19.14 FIX 1 (P1) fallback: a declared FRONTIER-family hit
+            # must NEVER depend on aux — aux erroring still routes the
+            # declared ask directly (R11 declared_user semantics).
+            if declared_frontier_hit(content):
+                try:
+                    register_declared(session_id, LANE_HIGHER_PRE,
+                                      SOURCE_DECLARED_USER)
+                except Exception:  # noqa: BLE001 — fail-open
+                    pass
+                return GateDecision(route=True, lane=LANE_HIGHER_PRE,
+                                    source=SOURCE_DECLARED_USER,
+                                    reason="declared_user")
             return None
         lane = verdict.get("lane")
         confidence = float(verdict.get("confidence") or 0.0)
@@ -1252,6 +1264,32 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
     except Exception:  # noqa: BLE001 — the classifier must never break the gate
         logger.debug("aux intent decision error", exc_info=True)
         return None
+
+
+def declared_frontier_hit(content: str) -> bool:
+    """R19.14 FIX 1: declared FRONTIER-family phrase hit — strict variant
+    table OR phrase at line start followed by a payload WITHOUT a separator
+    ('consult frontier about the migration' — the separator-required strict
+    match misses this shape, it falls to aux, and an aux error then kills
+    the declared ask entirely: reviewer log 2026-09-29T15:40:32-15:41:27,
+    declared_intent_no_route x3 + intent_aux_error x3, nothing routed).
+    A declared hit routes DIRECTLY (R11 declared_user semantics) — aux is
+    never a dependency for declared asks. Line-start discipline kept (echo
+    guard). Never raises."""
+    try:
+        frontier_phrases = (p for p, lane in DECLARED_USER_VARIANTS.items()
+                            if lane == LANE_HIGHER_PRE)
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            for phrase in frontier_phrases:
+                if norm == phrase or norm.startswith(phrase + " ") or \
+                        raw.startswith(phrase + " "):
+                    return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-open False
+        return False
 
 
 def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
@@ -1366,10 +1404,37 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                 return GateDecision(route=False, reason="turn_claim_exists")
 
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
+        _declared_hit = False
         if on_demand_routing_enabled():
+            # R19.14 FIX 2: captured BEFORE the direct route so a FAILED
+            # registration/execution still leaves the declared ask visible.
+            try:
+                _declared_hit = declared_frontier_hit(content)
+            except Exception:  # noqa: BLE001 — fail-open False
+                _declared_hit = False
             declared = _declared_decision(content, session_id)
             if declared.route or declared.reason == "declared_deduped":
                 return declared
+            # R19.14 FIX 1 (P1): a declared FRONTIER-family phrase hit routes
+            # DIRECTLY (R11 declared_user semantics) — aux is NEVER a
+            # dependency for declared asks. Evidence: reviewer log
+            # 2026-09-29T15:40:32-15:41:27 — strict miss ('consult frontier
+            # <payload>' without separator) -> declared_intent_no_route x3
+            # -> intent_aux_error x3 -> nothing routed. Line-start echo
+            # guard kept; on-demand kill-switch still governs.
+            if not declared.route and _declared_hit:
+                try:
+                    register_declared(session_id, LANE_HIGHER_PRE,
+                                      SOURCE_DECLARED_USER)
+                except Exception:  # noqa: BLE001 — fail-open: fall through to FIX 2
+                    pass
+                else:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="declared_frontier_direct",
+                        session_id=session_id)
+                    return GateDecision(route=True, lane=LANE_HIGHER_PRE,
+                                        source=SOURCE_DECLARED_USER,
+                                        reason="declared_user")
             # Leg 10 BUG B-2: family words present but no strict variant
             # matched -> the turn is GREPPABLE (declared_intent_no_route) so
             # near-miss phrases are auditable. Observability signal ONLY —
@@ -1415,6 +1480,25 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
             if isinstance(shaped, GateDecision):
                 return shaped
 
+        # R19.14 FIX 2 (P2): a DECLARED ask that reached the end of the gate
+        # unrouted must be VISIBLE (provenance doctrine — no silent death).
+        # Park a one-line failure banner; it attaches at the delivery edge.
+        # Fail-open, never blocks the turn. Reaching here means sentinel,
+        # override and the declared resolver all passed without routing
+        # while the user explicitly asked — mark it.
+        try:
+            if _declared_hit:
+                from . import debug_banner as _dbg
+
+                _fail = ("· router · higher-self (frontier) | consult "
+                         "FAILED (routing) — ask not routed ·")
+                if hasattr(_dbg, "park_anchor_banner"):
+                    _dbg.park_anchor_banner(session_id, _fail)
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="declared_route_failed_visible",
+                    session_id=session_id)
+        except Exception:  # noqa: BLE001 — banner hygiene only
+            pass
         return NO_ROUTE
     except Exception:  # noqa: BLE001 — the gate NEVER raises into a turn
         logger.debug("route gate decision error", exc_info=True)
