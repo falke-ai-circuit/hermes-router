@@ -2122,10 +2122,31 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
         return ""
 
 
+def choice_label(verdict: Dict[str, Any], envelope: Dict[str, Any]) -> str:
+    """R19.15 MICRO-FIX: human-readable choice for banner/advisory text —
+    the option LABEL from the envelope (id+label since v4.11.4), truncated
+    to 60 chars; falls back to the raw option id when no label exists.
+    Fail-open: never raises, returns the raw id on any miss. Ledger rows
+    stay canonical (ids) — this is display-only."""
+    try:
+        choice = str(verdict.get("choice") or "")
+        for opt in envelope.get("options") or []:
+            if isinstance(opt, dict) and str(opt.get("id") or "") == choice:
+                label = str(opt.get("label") or "").strip()
+                if label:
+                    return label[:60]
+                break
+        return choice
+    except Exception:  # noqa: BLE001 — fail-open to the raw id
+        return str((verdict or {}).get("choice") or "")
+
+
 def render_advisory(verdict: Dict[str, Any],
                     envelope: Dict[str, Any]) -> str:
     """Advisory text (non-binding, provenance-tagged for the anti-echo
-    filter). High-stakes forks carry the advice-only caveat (§5.2)."""
+    filter). High-stakes forks carry the advice-only caveat (§5.2).
+    R19.15: renders the HUMAN-READABLE option label (60c max, id fallback)
+    — 'opt-1' alone is meaningless to the user reading the banner."""
     try:
         caveat = (" ADVICE-ONLY: high-stakes fork — main model/user confirms."
                   if (envelope.get("scope") or {}).get("advice_only") else "")
@@ -2133,7 +2154,7 @@ def render_advisory(verdict: Dict[str, Any],
             "%s reflex advisory (autonomous, not chosen): choice=%s "
             "confidence=%.2f alternatives=%s fork=%s risk=%s%s — cannot be "
             "controlled, can be noticed and worked with; never a command."
-            % (PROVENANCE_TAG, verdict.get("choice"),
+            % (PROVENANCE_TAG, choice_label(verdict, envelope),
                float(verdict.get("confidence") or 0.0),
                ",".join(verdict.get("alternatives", [])) or "(none)",
                envelope.get("fork_class", ""),

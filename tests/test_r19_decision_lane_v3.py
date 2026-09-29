@@ -293,7 +293,8 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
     assert decision.PROVENANCE_TAG in parked
-    assert "choice=opt-1" in parked
+    # R19.15: the banner renders the human-readable option LABEL
+    assert "choice=redis" in parked
     # §7 banner: one provenance line, decision lane, initiator=user
     assert "· router · reflex (decision) |" in parked
     assert "initiator=user" in parked
@@ -330,7 +331,8 @@ def test_backend_jev_pipeline(_reset, monkeypatch):
                                 LOGGED.append((e, dict(f))))
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    assert "choice=opt-2" in parked
+    # R19.15: human-readable label (opt-2 = memcached)
+    assert "choice=memcached" in parked
     assert "typesafe/jev-router@pinned" in parked
     row = decision.ledger_recent()[0]
     assert row["model_version"] == "typesafe/jev-router@pinned"
@@ -531,12 +533,13 @@ def test_banner_latest_wins_one_per_message(_reset, monkeypatch):
         # wait until THIS call's advisory replaced the parked banner
         deadline = time.time() + 5
         while time.time() < deadline:
-            if ("choice=%s" % choice) in debug_banner._ANCHOR_BANNERS.get(SID, ""):
+            _lbl = {"opt-1": "redis", "opt-2": "memcached"}[choice]
+            if ("choice=%s" % _lbl) in debug_banner._ANCHOR_BANNERS.get(SID, ""):
                 break
             time.sleep(0.02)
     out = debug_banner.consume_parked_banner(SID)
     assert out.count("· router ·") == 1
-    assert "choice=opt-2" in out  # latest wins
+    assert "choice=memcached" in out  # latest wins (R19.15: label render)
     assert debug_banner.consume_parked_banner(SID) == ""
 
 
@@ -553,7 +556,8 @@ def test_midturn_declared_claim_runs_lane(_reset, monkeypatch):
     assert d.route is False  # advisory only — turn proceeds
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    assert "choice=opt-1" in parked
+    # R19.15: banner renders the human-readable option label
+    assert "choice=redis" in parked
     assert "initiator=agent" in parked
 
 
@@ -591,7 +595,8 @@ def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
                             LOGGED.append((e, dict(f))))
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    assert "choice=opt-1" in parked            # verdict APPENDED as advisory
+    # R19.15: verdict APPENDED as advisory with the human-readable label
+    assert "choice=migrate the store now" in parked
     assert "· router · reflex (decision) |" in parked   # banner-marked
     assert "initiator=model" in parked         # steering, not user ask
     row = decision.ledger_recent()[0]

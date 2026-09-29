@@ -119,7 +119,10 @@ def test_detection_triggers_off_tool_result_not_middleware(
     pending = dmt.flush(SID)
     assert len(pending) == 1
     assert pending[0].startswith(dmt.ADVISORY_HEADER)
-    assert "opt-1" in pending[0]
+    # R19.15: the advisory renders the human-readable option LABEL —
+    # bare 'opt-N' only when no label exists in the envelope options
+    assert "choice=" in pending[0]
+    assert "choice=opt-1" not in pending[0]
     assert "why_not: (no viable alternative" in pending[0]
     assert dmt.flush(SID) == []
 

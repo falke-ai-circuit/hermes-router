@@ -50,7 +50,9 @@ logger = logging.getLogger(__name__)
 
 BANNER_HEAD = "· router ·"
 BANNER_TAIL = "·"
-MAX_BANNER_CHARS = 400          # oversized diagnostic -> omit entirely
+MAX_BANNER_CHARS = 480          # R19.15: 400 -> 480 (the choice LABEL render
+                                # adds ~50c over the bare opt-N id; oversized
+                                # diagnostics are still omitted entirely)
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
                "consult-pre", "consult-mid", "consult-post",
                "shadow",  # leg 11: declared shadow lane banner

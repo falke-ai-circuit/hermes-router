@@ -1,3 +1,24 @@
+## 4.12.2 — 2026-09-29 (R19.15 MICRO-FIX: reflex banner shows WHAT was chosen)
+
+- Reflex decision banners rendered 'choice=opt-1' — meaningless to the user
+  reading Telegram. render_advisory now renders the HUMAN-READABLE option
+  label via new decision.choice_label() (envelope id+label since v4.11.4;
+  label truncated 60 chars; raw-id fallback when label missing/choice not
+  in options; fail-open never raises). Covers ALL reflex banner emission
+  points (PRE / midturn / POST / on-demand — every advisory routes through
+  render_advisory; midturn _render_midturn_advisory wraps it). Ledger rows
+  UNCHANGED (ids stay canonical there); causal_context prompt-side render
+  unchanged.
+- debug_banner MAX_BANNER_CHARS 400 -> 480: the label render adds ~50c over
+  the bare opt-N id; oversized diagnostics are still omitted entirely and
+  the answer is never truncated (behavior pinned, not the constant).
+- Housekeeping: banner-shape pins in test_r19_decision_lane_v3.py and
+  test_r19_midturn_hook.py updated to the label render (choice=opt-N pins
+  -> label pins / not-bare-opt-N invariant).
+- Tests: 6-test battery (label when available, blank/missing label ->
+  id fallback, unknown choice -> id, 60c truncation, fail-open garbage,
+  midturn wrapper carries label + provenance).
+
 ## 4.12.1 — 2026-09-29 (R19.14 HOTFIX: declared-frontier routing + reflex cost)
 
 - FIX 1 (P1, reviewer log 2026-09-29T15:40:32-15:41:27): declared frontier

@@ -89,9 +89,11 @@ def test_4_token_budget_enforced(banner_cfg):
     assert len(out) == len(canonical) + len(banner) + 2
 
 
-def test_5_oversized_omission(banner_cfg):
+def test_5_oversized_omission(banner_cfg, monkeypatch):
     banner_cfg["on"] = True
-    # huge trigger/model fields inflate the banner past the cap -> omitted
+    # R19.15: cap now 480 (choice-label render) — pin the BEHAVIOR, not the
+    # constant: oversized diagnostic -> omitted entirely, answer intact.
+    monkeypatch.setattr(db, "MAX_BANNER_CHARS", 100)
     text = db.format_banner("uncensored-render", "T" * 500, "M" * 500, "U" * 500,
                             1, 1, 0.0, 1.0, 0)
     assert text == ""  # formatter returns "" (omit entirely)
