@@ -1,3 +1,35 @@
+## 4.12.3 — 2026-09-29 (R19.16: declared-frontier recall + execute-once)
+
+- FIX 1 (recall): the declared family's failure mode must never be silence.
+  When the strict line-start table misses the real phrasing AND the loose
+  declared-family probe hits AND aux raises/errors/times out, the ask now
+  fail-open routes LANE_HIGHER_PRE source=declared_user instead of
+  no-route (live: reviewer 17:18:07/17:30:31/17:31:38 —
+  declared_intent_no_route + intent_aux_error -> nothing routed). The aux
+  RAISE now maps to the same fail-open path as a timeout (it was being
+  swallowed by the outer except before any fallback). Recall probe is
+  FRONTIER-FAMILY ONLY and echo-guarded: family word near the line start,
+  meta/question frames ("what does...", "is...", quoted mentions deep in
+  prose) stay inert — the old broad loose list ("uncensored") matched
+  meta-prose. Aux HEALTHY + family detected but not strict = unchanged
+  (aux decides).
+- FIX 2 (execute-once): a REGISTERED NOT-EXECUTED turn claim (staged
+  executed=False — request_routing tool or declared phrase) now EXECUTES
+  its consult on the next claim pass (event declared_claim_execute_once)
+  instead of being eaten by claim_standdown (live: 17:27:59 staged=True ->
+  17:28:00+ claim_standdown x2+, consult never ran). Standdown applies
+  ONLY to already-EXECUTED claims; the execute branch respects the H7.4
+  on-demand kill-switch; empty/corrupted lane fail-opens to the frontier
+  fallback ('fire' — never silence).
+- FIX 3 (observability): a declared claim consumed WITHOUT executing logs
+  event_detail=declared_claim_standdown_unexecuted (the staging-exception
+  path) — a claim can never be silently eaten again; the turn record stays
+  executed=False so the next pass re-executes via FIX 2.
+- Tests: 8-test battery (loose-family aux-raise/timeout -> route, aux-error
+  without family stays inert, staged-claim next pass fires not standdown,
+  executed claim still stands down, empty-lane fail-open, staging failure
+  logs unexecuted, execute-once holds on the second pass).
+
 ## 4.12.2 — 2026-09-29 (R19.15 MICRO-FIX: reflex banner shows WHAT was chosen)
 
 - Reflex decision banners rendered 'choice=opt-1' — meaningless to the user

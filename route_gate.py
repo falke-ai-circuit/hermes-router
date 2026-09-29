@@ -1139,10 +1139,13 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
 
         if not _intent_suspect(content):
             return None  # heuristic miss — clean turns never pay the aux call
-        verdict = _ic.classify_intent(
-            content, session_id,
-            log_route=lambda *a, **k: _pkg_fn("_log_route")(*a, **k))
-        if verdict is None:
+        try:
+            verdict = _ic.classify_intent(
+                content, session_id,
+                log_route=lambda *a, **k: _pkg_fn("_log_route")(*a, **k))
+        except Exception:  # noqa: BLE001 — R19.16 FIX 1: an aux RAISE must
+            verdict = None  # hit the same fail-open path as a timeout/None,
+        if verdict is None:  # never the outer silent except
             # H4: transport/timeout/parse failure — DISTINCT log from
             # intent_none (frontier condition b).
             try:
@@ -1154,7 +1157,16 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
             # R19.14 FIX 1 (P1) fallback: a declared FRONTIER-family hit
             # must NEVER depend on aux — aux erroring still routes the
             # declared ask directly (R11 declared_user semantics).
-            if declared_frontier_hit(content):
+            # R19.16 FIX 1: extended to the LOOSE declared-family probe —
+            # the strict line-start table can MISS the real phrasing while
+            # the loose probe fires (live: reviewer 17:18:07/17:30:31/
+            # 17:31:38 — declared_intent_no_route + intent_aux_error ->
+            # nothing routed, ask died). Declared-family detected + aux
+            # errored => fail-open frontier (LANE_HIGHER_PRE,
+            # declared_user). Aux HEALTHY + declared-family detected but
+            # not strict = unchanged (aux decides below).
+            if declared_frontier_hit(content) or \
+                    _declared_frontier_loose(content):
                 try:
                     register_declared(session_id, LANE_HIGHER_PRE,
                                       SOURCE_DECLARED_USER)
@@ -1292,6 +1304,46 @@ def declared_frontier_hit(content: str) -> bool:
         return False
 
 
+def _declared_frontier_loose(content: str) -> bool:
+    """R19.16 FIX 1 recall helper — FRONTIER-family loose probe for the
+    aux-error fail-open. Tighter than _detect_declared_intent_loose (whose
+    word list includes 'uncensored' and matches meta-prose — the FP
+    battery): the line must carry a frontier-family word (frontier /
+    higher self) AND read as directive-ish (not a question / meta frame).
+    Aux HEALTHY never reaches this (aux decides); this only widens the
+    aux-error fail-open. Never raises."""
+    try:
+        _META_HEADS = ("is ", "are ", "was ", "does ", "do ", "did ",
+                       "what ", "how ", "why ", "when ", "which ", "who ",
+                       "can ", "could ", "should ", "would ", "i wonder",
+                       "she ", "he ", "they ", "the ", "explain ", "tell ")
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            low = norm.lower()
+            _pos = low.find("higher self")
+            if _pos < 0:
+                _pos = low.find("higher-self")
+            if _pos >= 0:
+                # family word must sit NEAR THE LINE START (echo guard:
+                # prose/quotes mentioning the family deep in a line stay
+                # inert) — and the line must not be a question/meta frame.
+                if _pos > 40:
+                    continue
+                if any(low.startswith(h) for h in _META_HEADS):
+                    continue
+                return True
+            if "frontier" in low and not any(low.startswith(h)
+                                             for h in _META_HEADS):
+                if low.find("frontier") <= 40:
+                    return True
+            continue
+        return False
+    except Exception:  # noqa: BLE001 — fail-open False
+        return False
+
+
 def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
     """THE single claim point. Precedence (reviewer H4):
       sentinel -> skip-anchor -> declared request -> auto-shape.
@@ -1392,7 +1444,7 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                                  str(ctx.get("model") or ""))
         if _turn is not None:
             _pending_declared = peek_declared(session_id)
-            if (_turn.get("executed") is True) or (_pending_declared is None):
+            if _turn.get("executed") is True:
                 try:
                     _pkg_fn("_log_route")(
                         "PRE", event_detail="claim_standdown",
@@ -1402,6 +1454,41 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                 except Exception:  # noqa: BLE001 — observability only
                     pass
                 return GateDecision(route=False, reason="turn_claim_exists")
+            # R19.16 FIX 2: a REGISTERED NOT-EXECUTED claim (staged
+            # executed=False — request_routing tool or declared phrase) must
+            # EXECUTE its one consult on this pass, not stand down. The old
+            # order stood down whenever a turn record existed, eating the
+            # claim before the consult ever fired (live: reviewer
+            # 17:27:59 staged=True -> 17:28:00+ claim_standdown x2+, no
+            # anchor consult). Execute-once: fire the claim's own lane now;
+            # standdown applies only to already-EXECUTED claims.
+            if not on_demand_routing_enabled():
+                # R19.16 refinement: execute-once respects H7.4 — the
+                # on-demand kill-switch blocks ALL declared lanes.
+                return GateDecision(route=False, reason="turn_claim_exists")
+            _xlane = str(_turn.get("lane") or LANE_HIGHER_PRE)
+            _xsource = str(_turn.get("source") or SOURCE_DECLARED_USER)
+            if not _xlane:
+                # R19.16 FIX 3: a claim stood down WITHOUT executing must
+                # never be silent — WARN-visibility route event.
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="declared_claim_standdown_unexecuted",
+                        claim_lane="", claim_source=_xsource,
+                        pending=str(bool(_pending_declared)),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
+                return GateDecision(route=False, reason="turn_claim_exists")
+            try:
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="declared_claim_execute_once",
+                    claim_lane=_xlane, claim_source=_xsource,
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return GateDecision(route=True, lane=_xlane, source=_xsource,
+                                reason="declared_user")
 
         # 4. Declared on-demand input — behind the kill-switch (H7.4).
         _declared_hit = False
@@ -1669,6 +1756,19 @@ def claim_pass(content: str, session_id: str, model: str,
                     task_id=_task, session_id=session_id)
             except Exception:  # noqa: BLE001 — envelope must never break the gate
                 logger.debug("request_routing envelope error", exc_info=True)
+                # R19.16 FIX 3: the declared claim was consumed WITHOUT its
+                # consult executing (staging failed) — never silent. The
+                # turn record stays executed=False, so the next pass
+                # re-executes via the execute-once contract (FIX 2).
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE",
+                        event_detail="declared_claim_standdown_unexecuted",
+                        lane=str(decision.lane or ""),
+                        source=str(decision.source or ""),
+                        reason="staging_failed", session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
         else:
             # LEG 8: declared shadow — execution is the UNCENSORED RENDER
             # chain, performed by on_llm_request's shadow-render branch when
