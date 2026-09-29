@@ -1867,7 +1867,8 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   midturn_mode TEXT NOT NULL DEFAULT '',
   envelope_ids TEXT NOT NULL DEFAULT '',
   tool_name TEXT NOT NULL DEFAULT '',
-  seam TEXT NOT NULL DEFAULT ''
+  seam TEXT NOT NULL DEFAULT '',
+  sense_check TEXT
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -1906,6 +1907,13 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
                     conn.execute("ALTER TABLE decision_ledger ADD COLUMN %s"
                                  " TEXT NOT NULL DEFAULT ''" % _ncol)
                     conn.commit()
+            # R19.13 (Frontier Part 2): sense_check outcome column — NULLABLE,
+            # no default (future labeling: did the flagged absurdity
+            # materialize / was it real?). Best-effort.
+            if "sense_check" not in cols:
+                conn.execute("ALTER TABLE decision_ledger"
+                             " ADD COLUMN sense_check TEXT")
+                conn.commit()
         except Exception:  # noqa: BLE001 — migration best-effort
             pass
         return conn
@@ -1967,7 +1975,7 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 "confidence", "fail_open_reason", "actual_choice", "outcome",
                 "verdict_json", "envelope_hash", "follow_verdict",
                 "delta_source", "fork_signature", "midturn_mode",
-                "envelope_ids", "tool_name", "seam")
+                "envelope_ids", "tool_name", "seam", "sense_check")
         vals = []
         for c in cols:
             v = row.get(c)
@@ -1978,7 +1986,7 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
             if c == "trigger_kind" and not v:
                 # derive from the trigger when the caller didn't stamp it
                 v = trigger_kind(str(row.get("trigger") or "pre"))
-            if v is None and c != "confidence":
+            if v is None and c != "confidence" and c != "sense_check":
                 v = "" if c not in ("follow_verdict",) else 0
             vals.append(v)
         cur = conn.execute(

@@ -1,3 +1,47 @@
+## 4.12.0 — 2026-09-29 (R19.13: decision-lane fix round + Frontier adjustment)
+
+Fix round (reviewer audit /opt/data/tmp/r19_complete_audit_report.md):
+- FIX 1 (audit fix-first 2): analyst manual-trigger asymmetry — the trusted
+  manual 'decide this:' line is now checked BEFORE the complexity heuristic
+  in router_core.dispatch (live: analyst 'decide this:' turns consumed by
+  complexity risk_r2/orientation consults, zero manual_ask dispatches in 24h
+  on byte-identical code). New decision.manual_line_hit() = manual-only scope
+  of detect_v3. Heuristic PRE keeps complexity precedence; cooldowns
+  unchanged.
+- FIX 2 (audit fix-first 4): residual parse_fail on manual verdicts — ONE
+  bounded worker retry in _v3_worker before fail-open (fresh backend sample;
+  v4.11.11 Jev strict-retry family). Manual trigger only, parse_fail only.
+- FIX 3 (audit specimen log, 11 forged HIGHER-SELF blocks): forged
+  banner-persona injection defense — frames.flag_forged_banner_persona()
+  detects higher-self/shadow-self/reflex rule text arriving WITHOUT a
+  legitimate bracketed marked-turn carrier (claims platform sanction +
+  anti-mention discipline). classifier.strip_injected_context strips the
+  forged block before classification; the midturn sweep logs
+  injection_flagged family=banner_persona and never adopts it.
+- FIX 4 (audit fix-first 1): decision_ledger write failures were SILENT
+  (coder tape-recorder gap) — ledger_write WARN-logs both failure paths.
+
+Frontier adjustment (SPEC-v1.md Part 2, Goran-approved):
+- sense_check: the frontier POST consult prompt REQUIRES a two-question
+  verdict JSON — {result_plausible, absurdities, confidence} ("would a sane
+  person outside this context find the result plausible?"). Parser is
+  TOLERANT (absent/malformed field fails open — backcompat with prose
+  verdicts); the prompt is not.
+- Multi-POV: knob frontier.pov_mode (off|auto|always, default auto = heavy
+  consults only, complexity-gated via _is_complex_ask). When active, the
+  consult asks from THREE vantages (practitioner/outsider/skeptic) in ONE
+  call — one prompt containing all three, never three billed calls — and
+  returns povs: [{stance, note}].
+- Ledger: decision_ledger gains a NULLABLE sense_check column (drift
+  migration + fresh schema) for future labeling; frontier POST consults
+  write fork_class=frontier_post rows (kept out of decision-lane priors).
+- Banner: higher-self (frontier) label unchanged; when absurdities are
+  non-empty AND debug level >= 2 the banner gains
+  " | sense: <first absurdity, 60c max>".
+
+Tests: 4 + 4 + 9 + 3 + 13 = 33 new battery tests. Manifest version pin in
+test_r10_catalog_resolution.py updated to 4.12.0 (housekeeping).
+
 ## 4.11.12 — 2026-09-27 (R19.12: manual verbatim passthrough + POST pseudo-fire gate)
 
 - FIX 1 (P1, reviewer session evidence): a manual 'decide this:' ask fired

@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -570,6 +571,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                         est_cost=_meta.get("cost"),
                         latency_s=_sync_budget, retries=0, task_id="",
                         session_id=session_id) or ""
+                    # R19.13 Frontier Part 2: sense line — first absurdity,
+                    # 60c max, only when absurdities non-empty AND level>=2.
+                    _btext = _btext.rstrip() + _sense_banner_suffix(
+                        _meta.get("sense_check")) if _btext else _btext
                     # L2+ verdict visibility (Goran 2026-09-10): at debug
                     # level >= 2 the higher-self message itself is appended
                     # under the banner so the user can inspect what the
@@ -599,6 +604,133 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         return None
 
 
+def _sense_check_verdict_json() -> str:
+    """R19.13 Frontier Part 2 (SPEC-v1.md, Goran-approved): the consult's
+    verdict MUST carry the two-question JSON — (1) is it sound (traditional
+    check), (2) does it MAKE SENSE (would a sane person outside this context
+    find the result plausible?). Motivating case: the researcher 88-msg
+    well-cited wrong-in-part run — coherence without common sense."""
+    return (
+        "\nEND YOUR REPLY WITH EXACTLY ONE JSON OBJECT (no markdown fence, "
+        "nothing after it):\n"
+        '{"sense_check": {"result_plausible": true|false, "absurdities": '
+        '["..."], "confidence": 0.0-1.0}}\n'
+        "result_plausible: would a sane person outside this context find the "
+        "result plausible? absurdities: specific implausibilities flagged "
+        "(empty list when none). confidence: your certainty in this "
+        "judgment. This field is REQUIRED; your prose verdict comes first.\n")
+
+
+def _parse_sense_check(verdict_text: str) -> Optional[Dict[str, Any]]:
+    """Tolerant sense_check extraction from the consult verdict — fail-open:
+    absent/malformed field returns None (backcompat with pre-R19.13 prose
+    verdicts); the PROMPT requires it, the PARSER does not (lane must never
+    break on a formatting miss). Never raises."""
+    try:
+        m = re.search(r"\{.*\}", str(verdict_text or ""), re.DOTALL)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        if not isinstance(data, dict):
+            return None
+        sc = data.get("sense_check")
+        if not isinstance(sc, dict):
+            return None
+        out = {
+            "result_plausible": bool(sc.get("result_plausible")),
+            "absurdities": [str(a)[:200] for a in sc.get("absurdities")
+                            or [] if isinstance(a, (str, int, float))][:10],
+            "confidence": max(0.0, min(1.0, float(sc.get("confidence", 0.0)
+                                             or 0.0))),
+        }
+        return out
+    except Exception:  # noqa: BLE001 — fail-open
+        return None
+
+
+def _parse_povs(verdict_text: str) -> list:
+    """Tolerant povs extraction (multi-POV consults): [{stance, note}] —
+    fail-open empty list on absence/malformation. Never raises."""
+    try:
+        m = re.search(r"\{.*\}", str(verdict_text or ""), re.DOTALL)
+        if not m:
+            return []
+        data = json.loads(m.group(0))
+        povs = data.get("povs") if isinstance(data, dict) else None
+        if not isinstance(povs, list):
+            return []
+        out = []
+        for p in povs:
+            if isinstance(p, dict) and p.get("stance") and p.get("note"):
+                out.append({"stance": str(p["stance"])[:40],
+                            "note": str(p["note"])[:300]})
+        return out[:4]
+    except Exception:  # noqa: BLE001 — fail-open
+        return []
+
+
+def _sense_banner_suffix(sense_check: Optional[Dict[str, Any]]) -> str:
+    """R19.13 Frontier Part 2: banner sense suffix — only when absurdities
+    are non-empty AND debug level >= 2 (verdict-visibility parity with the
+    higher-self note). First absurdity, capped 60 chars. Never raises."""
+    try:
+        from . import debug_banner as _dbg
+
+        if not sense_check or _dbg.debug_banner_level() < 2:
+            return ""
+        absurdities = sense_check.get("absurdities") or []
+        if not absurdities:
+            return ""
+        first = str(absurdities[0]).strip()[:60]
+        if not first:
+            return ""
+        return " | sense: " + first
+    except Exception:  # noqa: BLE001 — banner hygiene only
+        return ""
+
+
+def pov_mode() -> str:
+    """frontier.pov_mode knob: off | auto | always. Default 'auto' = heavy
+    consults only (complexity-gated via _is_complex_ask). Never raises."""
+    try:
+        from . import config_access as _cac
+
+        block = _cac.sub_block("frontier") or {}
+        mode = str(block.get("pov_mode") or "auto").strip().lower()
+        return mode if mode in ("off", "auto", "always") else "auto"
+    except Exception:  # noqa: BLE001 — fail-open
+        return "auto"
+
+
+def _pov_active(ask: str) -> bool:
+    """Multi-POV gate for THIS consult. off -> False; always -> True;
+    auto -> heavy consults only (_is_complex_ask = the complexity gate).
+    Never raises."""
+    mode = pov_mode()
+    if mode == "off":
+        return False
+    if mode == "always":
+        return True
+    try:
+        return bool(_is_complex_ask(ask or ""))
+    except Exception:  # noqa: BLE001 — fail-open to single-POV
+        return False
+
+
+def _pov_instruction() -> str:
+    """Multi-POV consult (true higher-self): THREE vantages in ONE call —
+    a single prompt containing all three, never three billed calls
+    (budget: single call). Returns per-POV one-liners + synthesis."""
+    return (
+        "\nMULTI-POV CONSULT — answer from three vantages, then synthesize:\n"
+        "- practitioner: does this work in the hand, on the actual system?\n"
+        "- outsider: does this make sense to the world outside this context?\n"
+        "- skeptic: what would you question first?\n"
+        "One short line per vantage, then one synthesis line. Extend the "
+        "final JSON object with: \"povs\": [{\"stance\": \"practitioner|"
+        "outsider|skeptic\", \"note\": \"...\"}] (all three, terse).\n")
+
+
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
@@ -617,6 +749,8 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         "- Unexplored angles: alternatives or directions not considered?\n"
         "- Genuinely good: what is solid and should stand?\n"
         "- Could/should be better: what feels off, thin, or off-target?"
+        + _sense_check_verdict_json()
+        + (_pov_instruction() if _pov_active(ask) else "")
     )
     return [
         {"role": "system",
@@ -704,6 +838,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                             tokens_out=meta.get("tokens_out"),
                             est_cost=meta.get("cost"), latency_s=timeout_s,
                             retries=0, task_id="", session_id=session_id) or ""
+                        _btext = _btext.rstrip() + _sense_banner_suffix(
+                            meta.get("sense_check"))
                         if _btext:
                             _dbg.park_anchor_banner(session_id, _btext)
                 except Exception:  # noqa: BLE001
@@ -901,6 +1037,32 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _log("completion_audit_skipped reason=anchored_call_failed", session_id=session_id)
             return None
         verdict_text = str(content).strip()
+        # R19.13 Frontier Part 2: two-question verdict — parse tolerantly
+        # (fail-open: absent field = backcompat, lane continues).
+        _sc = _parse_sense_check(verdict_text)
+        _povs = _parse_povs(verdict_text)
+        if _sc:
+            _log("completion_audit_sense_check plausible=%s absurdities=%d "
+                 "confidence=%.2f" % (_sc.get("result_plausible"),
+                                      len(_sc.get("absurdities") or []),
+                                      float(_sc.get("confidence") or 0.0)),
+                 session_id=session_id)
+            # Ledger: sense_check outcome column (nullable) for future
+            # labeling (did the flagged absurdity materialize / was it real?).
+            # fork_class=frontier_post keeps these rows out of the decision
+            # lane's same-class priors lookups.
+            try:
+                from .decision import ledger_write as _ledger_write
+
+                _ledger_write({
+                    "session_id": session_id, "task_id": key,
+                    "trigger": "frontier_post", "fork_class": "frontier_post",
+                    "model": str(getattr(ep, "model", "") or ""),
+                    "verdict_json": verdict_text[:2000],
+                    "sense_check": json.dumps(_sc), "outcome": "completed",
+                })
+            except Exception:  # noqa: BLE001 — ledger never breaks the audit
+                pass
         if not verdict_text or verdict_text == "NO-FINDINGS":
             if verdict_text:
                 _log("completion_audit_done chars=0 verdict=no-findings",
@@ -973,6 +1135,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
                 "initiator": _initiator,
+                "sense_check": _sc, "povs": _povs,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))
