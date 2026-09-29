@@ -2223,6 +2223,27 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                cfg: Dict[str, Any], log_route: Any) -> None:
     try:
         content, meta, reason = call_backend(envelope, cfg)
+        verdict, vreason = None, ""
+        if content is not None:
+            verdict, vreason = validate_verdict(content, envelope)
+        # R19.13 FIX 2 (reviewer audit fix-first 4): residual parse_fail on
+        # manual verdicts gets ONE bounded worker retry before fail-open —
+        # same hardening family as the v4.11.11 Jev strict-retry (live:
+        # coder 2026-09-29T13:04Z decision_suppressed reason=parse_fail
+        # trigger=manual, and a midturn malformed in the same window).
+        # Trusted trigger only (manual); parse_fail only (malformed shape
+        # validation stays single-shot); retry is a fresh backend sample.
+        if str(ids.get("trigger")) == "manual" and (
+                (content is None and str(reason) == REASON_PARSE_FAIL)
+                or (verdict is None and str(vreason) == REASON_PARSE_FAIL)):
+            try:
+                log_route("decision_parse_retry", trigger="manual",
+                          backend=str(cfg.get("backend") or ""))
+            except Exception:  # noqa: BLE001 — logging never breaks the lane
+                pass
+            content, meta, reason = call_backend(envelope, cfg)
+            verdict, vreason = ((None, "") if content is None
+                                else validate_verdict(content, envelope))
         base_row = {
             "session_id": ids.get("session_id", ""),
             "task_id": ids.get("task_id", ""),
