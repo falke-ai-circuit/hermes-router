@@ -1,3 +1,34 @@
+## 4.12.0-b+ — 2026-09-29 (R19.13 ADDENDUM, Goran 2026-09-29: ADVERSARIAL FOLD-IN)
+
+- B+ 5b PRE doubt-seed: when a frontier PRE orientation consult fires on an
+  irreversible/fleet-risk-shaped ask (_irreversible_risk_ask: destructive
+  verbs + prod/fleet/db scope, irreversibility vocabulary, force-push/
+  reset --hard/push --force), the consult prompt adds the adversarial seed
+  ("first, name the strongest case this fails: strongest_objection +
+  failure_mode + p_failure"). Verdict JSON adversarial block parsed
+  (nullable, fail-open); seed text rides the brief. ONE billed call — the
+  doubt-seed is inside the consult, never a separate render/lane/chain.
+- B+ 5c POST attack: the POST consult prompt adds the attack instruction
+  ("then attack: strongest counterargument — weak points, loopholes,
+  unstated assumptions"); adversarial block parsed tolerantly; banner
+  gains " | doubt: <objection, 60c max>" when strongest_objection non-empty
+  AND debug level >= 2.
+- B+ 5d declared phrases: 'challenge this' / 'am i missing something'
+  (standalone directive lines) added to DECLARED_USER_VARIANTS ->
+  LANE_HIGHER_PRE, adversarial FORCED on even for light consults
+  (route_gate.adversarial_declared line-discipline check; echo guard,
+  fail-open, H7.5 dedupe inherited from the R11 declared_user path).
+- B+ 5e ledger: decision_ledger gains NULLABLE p_failure REAL column
+  (schema + drift migration); adversarial rows fork_class=frontier_adversarial
+  (kept out of decision-lane priors) for future materialization labeling.
+  NO abliterated/Venice chain anywhere — glm-5.3 consult carries the attack.
+- B+ merge rule (5e): when multi-POV is active the SKEPTIC vantage IS the
+  adversarial element — the prompt merges (never double-attacks in one
+  consult); the adversarial JSON block is still required.
+- Tests: 13-test battery (risk shapes, seed/attack instruction contracts,
+  tolerant parsing, banner doubt suffix gate + 60c cap, declared phrases +
+  echo guard, forced-on, nullable p_failure column + migration + writer).
+
 ## 4.12.0 — 2026-09-29 (R19.13: decision-lane fix round + Frontier adjustment)
 
 Fix round (reviewer audit /opt/data/tmp/r19_complete_audit_report.md):

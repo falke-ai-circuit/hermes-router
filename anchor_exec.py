@@ -532,6 +532,24 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             "Advisory only — the agent may deviate.\n\nTHE ASK:\n"
                             + _orig[:orientation_ask_cap()] + _sr_block
                         )
+                        # R19.13 B+ 5b (Goran addendum): PRE doubt-seed — the
+                        # adversarial element rides INSIDE this consult (one
+                        # billed call, never a separate render/lane/chain).
+                        # Fires on irreversible/fleet-risk-shaped asks OR
+                        # when the declared adversarial phrases force it on
+                        # (5d, even light consults). Fail-open.
+                        try:
+                            from .completion_audit import (
+                                _adversarial_seed_instruction as _adv_seed,
+                                _irreversible_risk_ask as _irr,
+                            )
+                            from .route_gate import (
+                                adversarial_declared as _adv_decl,
+                            )
+                            if _irr(_orig) or _adv_decl(_orig):
+                                _frame += _adv_seed()
+                        except Exception:  # noqa: BLE001 — seed never breaks the consult
+                            pass
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):
                         # prepend the profile's own compact persona card so the
@@ -564,6 +582,25 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
         if content is None:
             return None
+        # R19.13 B+ 5b/5e: parse the adversarial block from the PRE verdict
+        # (nullable, fail-open) and write the p_failure ledger row for
+        # materialization labeling. The seed TEXT rides the brief as-is.
+        try:
+            from .completion_audit import (
+                _parse_adversarial as _parse_adv,
+                _adversarial_ledger_row as _adv_row,
+            )
+
+            _adv = _parse_adv(content)
+            if _adv:
+                _log("frontier_pre_adversarial p_failure=%s" %
+                     _adv.get("p_failure"), session_id=str(
+                         rec.get("session_id") or ""))
+                _adv_row(str(rec.get("session_id") or ""),
+                         str(rec.get("task_id") or rec.get("route_id") or ""),
+                         getattr(endpoint, "model", ""), _adv, str(content))
+        except Exception:  # noqa: BLE001 — adversarial never breaks the consult
+            pass
         real_cost = cost if cost is not None else est_cost
         if real_cost > 0:
             anchor_chain.record_spend(real_cost)

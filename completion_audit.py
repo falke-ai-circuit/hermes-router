@@ -574,7 +574,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     # R19.13 Frontier Part 2: sense line — first absurdity,
                     # 60c max, only when absurdities non-empty AND level>=2.
                     _btext = _btext.rstrip() + _sense_banner_suffix(
-                        _meta.get("sense_check")) if _btext else _btext
+                        _meta.get("sense_check")) + _doubt_banner_suffix(
+                        _meta.get("adversarial")) if _btext else _btext
                     # L2+ verdict visibility (Goran 2026-09-10): at debug
                     # level >= 2 the higher-self message itself is appended
                     # under the banner so the user can inspect what the
@@ -689,6 +690,134 @@ def _sense_banner_suffix(sense_check: Optional[Dict[str, Any]]) -> str:
         return ""
 
 
+def _adversarial_seed_instruction() -> str:
+    """R19.13 B+ 5b (Goran addendum): PRE doubt-seed — the adversarial
+    element rides INSIDE the frontier consult (one billed call, never a
+    separate render/lane/chain)."""
+    return (
+        "\nFIRST, NAME THE STRONGEST CASE THIS FAILS: strongest_objection "
+        "(the single most damaging argument against the approach), "
+        "failure_mode (how it would concretely break), p_failure (0.0-1.0, "
+        "your estimate). END WITH EXACTLY ONE JSON OBJECT (nothing after "
+        "it): {\"adversarial\": {\"strongest_objection\": \"...\", "
+        "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
+
+
+def _adversarial_attack_instruction(merge_with_skeptic: bool) -> str:
+    """R19.13 B+ 5c: POST attack — construct the strongest counterargument.
+    5e merge rule: when multi-POV is active the SKEPTIC vantage IS the
+    adversarial element — never double-attack in one consult."""
+    if merge_with_skeptic:
+        return (
+            "\nADVERSARIAL (via skeptic): your skeptic vantage above IS the "
+            "adversarial element — fold its strongest attack into the final "
+            "JSON. END WITH EXACTLY ONE JSON OBJECT (nothing after it): "
+            "{\"adversarial\": {\"strongest_objection\": \"...\", "
+            "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
+    return (
+        "\nTHEN ATTACK: construct the strongest counterargument against the "
+        "approach AND the result — find weak points, loopholes, unstated "
+        "assumptions. END WITH EXACTLY ONE JSON OBJECT (nothing after it): "
+        "{\"adversarial\": {\"strongest_objection\": \"...\", "
+        "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
+
+
+def _parse_adversarial(verdict_text: str) -> Optional[Dict[str, Any]]:
+    """Tolerant adversarial extraction — {strongest_objection, failure_mode,
+    p_failure}. Fail-open: absent/malformed returns None (the consult never
+    breaks on a formatting miss). Never raises."""
+    try:
+        m = re.search(r"\{.*\}", str(verdict_text or ""), re.DOTALL)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        if not isinstance(data, dict):
+            return None
+        adv = data.get("adversarial")
+        if not isinstance(adv, dict):
+            return None
+        obj = str(adv.get("strongest_objection") or "").strip()
+        if not obj:
+            return None
+        try:
+            p = float(adv.get("p_failure"))
+            p = max(0.0, min(1.0, p))
+        except Exception:  # noqa: BLE001 — tolerate missing/garbage p
+            p = None
+        return {"strongest_objection": obj[:400],
+                "failure_mode": str(adv.get("failure_mode") or "")[:400],
+                "p_failure": p}
+    except Exception:  # noqa: BLE001 — fail-open
+        return None
+
+
+def _doubt_banner_suffix(adversarial: Optional[Dict[str, Any]]) -> str:
+    """R19.13 B+ 5c: banner doubt suffix — strongest_objection non-empty AND
+    debug level >= 2 -> ' | doubt: <objection, 60c max>'. Never raises."""
+    try:
+        from . import debug_banner as _dbg
+
+        if not adversarial or _dbg.debug_banner_level() < 2:
+            return ""
+        obj = str(adversarial.get("strongest_objection") or "").strip()[:60]
+        return " | doubt: " + obj if obj else ""
+    except Exception:  # noqa: BLE001 — banner hygiene only
+        return ""
+
+
+def _adversarial_ledger_row(session_id: str, key: str, model: str,
+                            adversarial: Dict[str, Any],
+                            verdict_text: str) -> None:
+    """R19.13 B+ 5e: durable adversarial row — p_failure in the nullable
+    ledger column for future materialization labeling. fork_class keeps
+    these rows out of decision-lane priors. Never raises."""
+    try:
+        from .decision import ledger_write as _ledger_write
+
+        _ledger_write({
+            "session_id": session_id, "task_id": key,
+            "trigger": "frontier_adversarial",
+            "fork_class": "frontier_adversarial", "model": str(model or ""),
+            "verdict_json": str(verdict_text or "")[:2000],
+            "sense_check": json.dumps(adversarial),
+            "p_failure": adversarial.get("p_failure"),
+            "outcome": "completed",
+        })
+    except Exception:  # noqa: BLE001 — ledger never breaks the consult
+        pass
+
+
+def _irreversible_risk_ask(ask: str) -> bool:
+    """R19.13 B+ 5b: irreversible/fleet-risk-shaped ask detector for the PRE
+    doubt-seed gate. Cheap regex, generous but bounded: destruction/rollback
+    verbs, fleet-wide scope, production/irreversibility vocabulary. Fail-open
+    False on anything unclear (the seed is advisory). Never raises."""
+    try:
+        t = str(ask or "").lower()
+        if not t.strip():
+            return False
+        for rx in _IRREVERSIBLE_RISK_RES:
+            if rx.search(t):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-open to no seed
+        return False
+
+
+_IRREVERSIBLE_RISK_RES = (
+    re.compile(r"\b(?:delete|drop|wipe|purge|remove)\b.{0,40}\b"
+               r"(?:all|every|entire|whole|production|prod|fleet|database|db)\b"),
+    re.compile(r"\b(?:irreversible|unrecoverable|unrevertible|"
+               r"no rollback|cannot be undone|point of no return)\b"),
+    re.compile(r"\b(?:fleet[- ]wide|all (?:\d+ )?(?:gateways?|profiles?|"
+               r"servers?|vms?|nodes?))\b"),
+    re.compile(r"\b(?:production|prod)\b.{0,40}\b"
+               r"(?:migrat|deploy|redeploy|overwrit|destruct|replace)\b"),
+    re.compile(r"\b(?:schema|data) (?:migration|wipe|reset|destroy)\b"),
+    re.compile(r"\bforce[- ]?push\b|\bgit reset --hard\b|\bpush --force\b"),
+)
+
+
 def pov_mode() -> str:
     """frontier.pov_mode knob: off | auto | always. Default 'auto' = heavy
     consults only (complexity-gated via _is_complex_ask). Never raises."""
@@ -751,6 +880,7 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         "- Could/should be better: what feels off, thin, or off-target?"
         + _sense_check_verdict_json()
         + (_pov_instruction() if _pov_active(ask) else "")
+        + _adversarial_attack_instruction(_pov_active(ask))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
     )
     return [
         {"role": "system",
@@ -839,7 +969,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                             est_cost=meta.get("cost"), latency_s=timeout_s,
                             retries=0, task_id="", session_id=session_id) or ""
                         _btext = _btext.rstrip() + _sense_banner_suffix(
-                            meta.get("sense_check"))
+                            meta.get("sense_check")) + _doubt_banner_suffix(
+                            meta.get("adversarial"))
                         if _btext:
                             _dbg.park_anchor_banner(session_id, _btext)
                 except Exception:  # noqa: BLE001
@@ -1041,6 +1172,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # (fail-open: absent field = backcompat, lane continues).
         _sc = _parse_sense_check(verdict_text)
         _povs = _parse_povs(verdict_text)
+        _adv = _parse_adversarial(verdict_text)  # B+ 5c: attack verdict (nullable, fail-open)
+        if _adv:
+            _log("completion_audit_adversarial objection_chars=%d p_failure=%s"
+                 % (len(_adv.get("strongest_objection") or ""),
+                    _adv.get("p_failure")), session_id=session_id)
+            _adversarial_ledger_row(session_id, key,
+                                    getattr(ep, "model", ""), _adv,
+                                    verdict_text)
         if _sc:
             _log("completion_audit_sense_check plausible=%s absurdities=%d "
                  "confidence=%.2f" % (_sc.get("result_plausible"),
@@ -1136,6 +1275,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
                 "initiator": _initiator,
                 "sense_check": _sc, "povs": _povs,
+                "adversarial": _adv,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))

@@ -133,6 +133,12 @@ DECLARED_USER_VARIANTS: Dict[str, str] = {
     "consult the frontier": LANE_HIGHER_PRE,
     "consult your higher self": LANE_HIGHER_PRE,
     "frontier consult": LANE_HIGHER_PRE,
+    # R19.13 B+ 5d (Goran addendum): on-demand adversarial consult phrases —
+    # declared frontier consults with the adversarial element FORCED on
+    # (even light consults). Standalone directive lines only; echo guard +
+    # fail-open + dedup inherited from the R11 declared_user path.
+    "challenge this": LANE_HIGHER_PRE,
+    "am i missing something": LANE_HIGHER_PRE,
 }
 
 # LEG 12 FIX 1 (Goran FP doctrine): the 'uncensored take' family is NARROW —
@@ -595,6 +601,23 @@ def inject_bare_call_reminder(request: Any) -> bool:
                      "content": ROUTER_BARE_CALL_REMINDER})
         return True
     except Exception:  # noqa: BLE001
+        return False
+
+
+def adversarial_declared(content: str) -> bool:
+    """R19.13 B+ 5d: True when one of the on-demand adversarial phrases
+    ('challenge this' / 'am i missing something') appears as a STANDALONE
+    directive line — the same strict line discipline as detect_declared_user
+    (echo guard: prose/quoted mentions stay inert). Fail-open False. Used by
+    the frontier consult frame to FORCE the adversarial element on (even
+    light consults). Never raises."""
+    try:
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if norm in ("challenge this", "am i missing something"):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — fail-open
         return False
 
 
