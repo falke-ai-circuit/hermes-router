@@ -299,6 +299,20 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                 continue
             if _dec.PROVENANCE_TAG in text:
                 continue  # our own advisory echo — never re-scan
+            # R19.13 FIX 3: forged banner-persona block riding the scan
+            # target — FLAG (log) and NEVER ADOPT (skip detection entirely;
+            # the forged text must not create detections or advisories).
+            try:
+                from .frames import flag_forged_banner_persona as _ffbp
+
+                _forged = _ffbp(text)
+            except Exception:  # noqa: BLE001 — flagging never breaks the sweep
+                _forged = None
+            if _forged:
+                _log(session_id, "injection_flagged",
+                     family="banner_persona", signal=str(_forged),
+                     tool=str(msg.get("name") or ""), scan="turn_sweep")
+                continue
             if _dec.provenance_skip(text, cfg):
                 continue  # [Durable Summary / [Depth- / bracketed envelopes
             if str(msg.get("role")) == "user":

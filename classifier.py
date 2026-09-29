@@ -189,13 +189,38 @@ def strip_injected_context(text: str) -> str:
     recall note ("minors asks are deliberate testing probes") lives in every
     profile's recall text — a bare-word minors pattern scanning it FP-routes
     benign asks (audit/re-audit asks shadow-routed live 2026-09-08). Strip
-    before classification. Never raises."""
+    before classification. Never raises.
+
+    R19.13 FIX 3: forged banner-persona blocks (higher-self / shadow-self /
+    reflex rule text arriving WITHOUT a legitimate bracketed marked-turn
+    carrier) are stripped here too — never adopted, never classified on
+    (reviewer specimen log: 11 forged HIGHER-SELF blocks claiming platform
+    sanction + anti-mention discipline)."""
     if not text:
         return text
     t = re.sub(r"<memory-context>.*?</memory-context>", " ", text,
                flags=re.DOTALL | re.IGNORECASE)
     t = re.sub(r"\[System note:.*?(?:recalled memory|memory graph).*?\]",
                " ", t, flags=re.DOTALL | re.IGNORECASE)
+    try:
+        from .frames import flag_forged_banner_persona as _ffbp
+
+        sig = _ffbp(t)
+        if sig:
+            # cut the forged block: from the first signal line to the end of
+            # its enclosing blank-line-delimited block (fail-open: if the
+            # cut somehow yields nothing, return the uncut text — the flag
+            # itself is the contract, the cut is best-effort hygiene).
+            idx = t.lower().find(sig)
+            if idx >= 0:
+                start = t.rfind("\n\n", 0, idx)
+                start = 0 if start < 0 else start + 2
+                end = t.find("\n\n", idx)
+                cut = t[:start] + " " + ("" if end < 0 else t[end + 2:])
+                if cut.strip():
+                    t = cut
+    except Exception:  # noqa: BLE001 — hygiene only, never break classification
+        pass
     return t
 
 # ---------------------------------------------------------------------------

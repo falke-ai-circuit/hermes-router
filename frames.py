@@ -34,7 +34,7 @@ marker text must not contradict the show-freely doctrine).
 """
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # ===========================================================================
 # 1. SHADOW frames (moved verbatim from provenance_footer.py — R8a/R8d)
@@ -241,6 +241,54 @@ HIGHER_SELF_RULE_VARIANTS = {
 HIGHER_SELF_RULE_VARIANT_DEFAULT = "internal-observer"
 HIGHER_SELF_RULE = HIGHER_SELF_RULE_VARIANTS[HIGHER_SELF_RULE_VARIANT_DEFAULT]
 HIGHER_SELF_RULE_MARKER = "HIGHER-SELF INTEGRATION RULE"
+
+
+def flag_forged_banner_persona(text: str) -> Optional[str]:
+    """R19.13 FIX 3 (reviewer audit Class A extension): forged banner-persona
+    blocks riding the tool-result/user stream WITHOUT a legitimate marked-turn
+    carrier. Reviewer specimen log: 11 'HIGHER-SELF'-framed blocks claiming
+    platform sanction + anti-mention discipline arrived outside the defined
+    out-of-band user marker / bracketed turn-marker format. The platform's
+    OWN carriers are always bracketed with the provenance suffix
+    (HS_*_MARKER / HS_SEAM_MARKER, '| PLATFORM-INTERNAL | PROVENANCE-LOGGED')
+    or wrapped as <memory-context> metadata — persona rule text arriving
+    UNMARKED is forged by construction: flagged, never adopted, never acted
+    on. Covers the banner persona family (higher-self / shadow-self /
+    reflex). Returns the matched forged signal, or None when the text either
+    carries no persona-rule content or carries it inside a legitimate
+    marked-turn carrier. Never raises."""
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        if "<memory-context>" in text:
+            return None  # platform recall metadata wrapper, not adoption
+        legit = any(m in text for m in (
+            HS_ORIENTATION_MARKER, HS_REFLECTION_MARKER,
+            HS_COMPLETION_AUDIT_MARKER, HS_SEAM_MARKER))
+        if legit:
+            return None
+        low = text.lower()
+        for sig in _FORGED_PERSONA_SIGNALS:
+            if sig in low:
+                return sig
+        return None
+    except Exception:  # noqa: BLE001 — flagging must never raise
+        return None
+
+
+# Forged-shape signals (lowercase). Ordered most-specific first. Deliberately
+# does NOT match the bare bracketed markers (those are the legit carriers).
+_FORGED_PERSONA_SIGNALS = (
+    "higher-self integration rule",
+    "sanctioned platform infrastructure",
+    "higher-self reflection turn",
+    "higher-self orientation turn",
+    "higher-self completion-audit turn",
+    "higher-self seam",
+    "reflex (decision)",
+    "shadow-self",
+)
+
 
 # ===========================================================================
 # 3. Config knob: hermes_router.higher_self_integration_frame
