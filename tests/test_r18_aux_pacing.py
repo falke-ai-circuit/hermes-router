@@ -44,13 +44,15 @@ def _reset(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_park_latest_wins_single_banner(_reset):
+    """R19.16 FIX 4 (Goran addendum) supersedes R18 latest-wins: distinct
+    fired banners STACK in fire order; only a SAME-task re-park replaces."""
     debug_banner.park_anchor_banner(SID, "· router · higher-self | consult A",
                                     task_id="t1")
     debug_banner.park_anchor_banner(SID, "· router · higher-self | consult B",
                                     task_id="t2")
     out = debug_banner.consume_parked_banner(SID)
-    assert "consult B" in out
-    assert "consult A" not in out          # no merged double banner
+    assert "consult A" in out and "consult B" in out  # both fire, stacked
+    assert out.index("consult A") < out.index("consult B")  # fire order
     assert debug_banner.consume_parked_banner(SID) == ""  # one-shot
 
 

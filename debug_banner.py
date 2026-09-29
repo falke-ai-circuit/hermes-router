@@ -245,27 +245,64 @@ def park_anchor_banner(session_id: str, banner_text: str,
     Bounded map (32 sessions, FIFO eviction). Never raises.
     R9d (Goran 09-14): one LLM call = exactly one banner. A re-park for the
     SAME task_id REPLACES (the call retried/re-emitted); a park for a NEW
-    task_id accumulates (multiple distinct calls in one turn stay visible),
-    bounded 3x as before."""
+    task_id accumulates.
+    R19.16 FIX 4 (Goran addendum): ALL fired banners stack — the parked
+    aggregate is ONE BLOCK with one segment per FIRED banner, in fire
+    order (higher-self frontier + reflex decision segments coexist).
+    Latest-wins starvation is gone: a midturn reflex verdict can no longer
+    consume/replace the frontier banner slot (or vice versa). Identical
+    re-parks dedupe; canonical delivery text is NEVER trimmed to make
+    banner room (append_banner attaches the block; only the banner block
+    itself is bounded)."""
     try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
+            _ANCHOR_TASKS.pop(next(iter(_ANCHOR_TASKS)), None)
         sid = str(session_id or "")
-        txt = str(banner_text or "")[:MAX_BANNER_CHARS]
-        # R18 (Goran 09-24): latest-wins. The old merge branch combined
-        # multiple consult banners parked within one turn into a multi-line
-        # block, which delivered as doubled banners on a single message.
-        # One delivered message carries at most ONE banner: the most recent
-        # consult's. Provenance for every billed call stays in the route log.
-        _ANCHOR_BANNERS[sid] = txt
+        seg = str(banner_text or "").strip()[:MAX_BANNER_CHARS]
+        if not seg:
+            return
+        segs = list(_ANCHOR_SEGS.get(sid, []))
+        tasks = list(_ANCHOR_TASKS.get(sid, []))
+        if task_id and task_id in tasks:
+            # R9d retry: replace THAT task's segment ATOMICALLY (fire order
+            # kept) — a park's internal blank lines never split segments.
+            idx = tasks.index(task_id)
+            if idx < len(segs):
+                segs[idx] = seg
+            else:
+                segs.append(seg)
+        elif seg in segs:
+            return  # identical re-park (same content) — dedupe
+        else:
+            segs.append(seg)
+            tasks.append(str(task_id or ""))
+        # bound: keep the most recent segments (banner side only — the
+        # canonical delivery text is never trimmed)
+        while len(segs) > _MAX_PARK_SEGMENTS:
+            segs.pop(0)
+            if tasks:
+                tasks.pop(0)
+        _ANCHOR_SEGS[sid] = segs
+        _ANCHOR_TASKS[sid] = tasks
+        _ANCHOR_BANNERS[sid] = "\n\n".join(segs)
     except Exception:  # noqa: BLE001
         pass
 
 
+_MAX_PARK_SEGMENTS = 4
+_ANCHOR_TASKS: Dict[str, list] = {}
+_ANCHOR_SEGS: Dict[str, list] = {}
+
+
 def consume_parked_banner(session_id: str) -> str:
-    """Return and clear the parked anchor banner for this session (or "")."""
+    """Return and clear the parked anchor banner for this session (or "").
+    R19.16 FIX 4: clears the fire-order task ledger too."""
     try:
-        return _ANCHOR_BANNERS.pop(str(session_id or ""), "")
+        sid = str(session_id or "")
+        _ANCHOR_TASKS.pop(sid, None)
+        _ANCHOR_SEGS.pop(sid, None)
+        return _ANCHOR_BANNERS.pop(sid, "")
     except Exception:  # noqa: BLE001
         return ""
 

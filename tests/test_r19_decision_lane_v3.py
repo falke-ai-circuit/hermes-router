@@ -38,6 +38,8 @@ def _reset(monkeypatch, tmp_path):
     plugin.state.clear()
     LOGGED.clear()
     debug_banner._ANCHOR_BANNERS.clear()
+    debug_banner._ANCHOR_TASKS.clear()
+    debug_banner._ANCHOR_SEGS.clear()
     decision.reset_limits()
     decision.reset_v3_limits()
     monkeypatch.setattr(plugin, "_log_route",
@@ -538,8 +540,12 @@ def test_banner_latest_wins_one_per_message(_reset, monkeypatch):
                 break
             time.sleep(0.02)
     out = debug_banner.consume_parked_banner(SID)
+    # R19.16 FIX 4: DISTINCT fired banners STACK; a SAME-task re-fire
+    # replaces that task's segment (R9d retry semantics). Both calls here
+    # share TASK_ID -> one segment carrying the LATEST verdict.
     assert out.count("· router ·") == 1
-    assert "choice=memcached" in out  # latest wins (R19.15: label render)
+    assert "choice=memcached" in out  # latest verdict for the same task
+    assert "choice=redis" not in out
     assert debug_banner.consume_parked_banner(SID) == ""
 
 
