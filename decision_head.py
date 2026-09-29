@@ -199,8 +199,13 @@ def embed_text(text: str) -> Optional[list]:
         import subprocess
         import tempfile
 
+        # R19.17 ADDENDUM: aux model never a hardcoded literal — explicit
+        # config wins; absent/'auto'/'hermes' resolves to the agent's current
+        # Hermes model at call time; legacy fallback only on resolution miss.
+        from .semantic_classifier import resolve_aux_model as _ram
+
         payload = _json.dumps({
-            "model": str(ep.get("model") or "MiniMax-M3"),
+            "model": _ram(ep) or "MiniMax-M3",
             "input": [(text or "")[:8000]],
         })
         tmp_dir = tempfile.mkdtemp(prefix="hermes-router-embed-")

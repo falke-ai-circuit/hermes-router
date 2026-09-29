@@ -115,6 +115,33 @@ def sub_block(name: str) -> Dict[str, Any]:
         return {}
 
 
+def agent_model() -> str:
+    """R19.17 ADDENDUM: the AGENT's current model, resolved at call time
+    from the profile's top-level Hermes config (model.default / model) —
+    the same model the agent itself runs on. NEVER a cached constant: each
+    call re-reads the config (mtime-cheap) so future model changes
+    propagate automatically with no stale-literal rot (the exact bug this
+    kills: 12 configs carried dead meituan/longcat-2.0:free for weeks).
+    Never raises; "" on any miss (callers fail-open)."""
+    try:
+        import os
+        import yaml
+
+        path = _coLocatedPath()
+        if not path or not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        m = cfg.get("model")
+        if isinstance(m, dict):
+            return str(m.get("default") or m.get("model") or "").strip()
+        if isinstance(m, str):
+            return m.strip()
+        return ""
+    except Exception:  # noqa: BLE001 — fail-open empty
+        return ""
+
+
 def sub_block_alias(*names: str) -> Dict[str, Any]:
     """R19.13 reflex modularization: FIRST non-empty named sub-block wins —
     used so hermes_router.reflex may alias the legacy decision block

@@ -129,6 +129,26 @@ def _classification_cfg(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {}
 
 
+def resolve_aux_model(ep: Dict[str, Any]) -> str:
+    """R19.17 ADDENDUM: the aux model is NEVER a hardcoded literal again.
+    Explicit configured model wins (override preserved); absent OR the
+    sentinels 'auto'/'hermes' resolve AUTOMATICALLY to the agent's current
+    Hermes provider model (config_access.agent_model — same model the
+    agent runs on), resolved at call time, not cached. Resolution failure
+    returns "" — fail-open: the caller sends no model and the provider
+    default applies (exactly today's behavior on an absent model). Never
+    raises."""
+    try:
+        model = str((ep or {}).get("model") or "").strip()
+        if model and model.lower() not in ("auto", "hermes"):
+            return model
+        from . import config_access as _ca
+
+        return _ca.agent_model()
+    except Exception:  # noqa: BLE001 — fail-open empty
+        return ""
+
+
 def _endpoint_cfg(cls: Dict[str, Any]) -> Dict[str, Any]:
     ep = cls.get("aux_endpoint")
     return ep if isinstance(ep, dict) else {}
