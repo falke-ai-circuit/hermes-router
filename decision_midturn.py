@@ -405,6 +405,18 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _log(session_id, "midturn_stand_down", sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
             return
+        # R19.17 ADDENDUM 2: unmapped choice -> invalid_fork row (never
+        # free text in the choice column); no advisory parked.
+        if vreason == _dec.REASON_INVALID_FORK:
+            _dec.bump_counter("invalid_fork")
+            _dec.ledger_write(dict(base, choice="unmapped",
+                                   outcome="invalid_fork",
+                                   fail_open_reason=_dec.REASON_INVALID_FORK,
+                                   verdict_json=_dec.verdict_row_json(
+                                       verdict, content)))
+            _log(session_id, "midturn_invalid_fork", sig=sig, mode=mode,
+                 tool=tool_name, seam=seam)
+            return
         rid = _dec.ledger_write(dict(
             base, choice=str(verdict["choice"]),
             confidence=round(float(verdict["confidence"]), 4),

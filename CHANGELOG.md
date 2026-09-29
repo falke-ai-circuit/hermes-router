@@ -1,3 +1,30 @@
+## 4.12.4-a2 — 2026-09-29 (R19.17 ADDENDUM 2, Goran-approved: outcome-labeling defects from the fleet-wide auto-labeling run — 251 rows mined)
+
+- (1) OPTION-SPAN: a verdict choice that maps to NO envelope option (id or
+  label — e.g. reviewer row 78's 'No such file' lifted from a log dump) is
+  recorded choice='unmapped' + outcome='invalid_fork' (counter
+  invalid_fork; NO advisory, NO banner) — never free text in the choice
+  column. Label hits now map to the option id (closed-set anchoring);
+  malformed stays for non-string shapes. Applies to the v3 worker AND the
+  midturn hook.
+- (2) DELTA PERSISTENCE: ledger verdict_json carries delta_source_excerpt
+  (first 500 chars of the scanned content) via the shared
+  decision.verdict_row_json() helper — downstream invalid-fork filters can
+  check choice-in-source without re-reading sessions; top-level verdict
+  keys preserved.
+- (3) RESCAN DEDUPE: the same fork signature re-swept within a session
+  (same session + task + signature; TTL 1h, bounded registry) skips at
+  DETECTION — event decision_rescan_dedupe, no second verdict, no
+  ledger-cleanup reliance. A different task re-using the same option shape
+  is a genuine new fork and dispatches. Config knob rescan_dedupe (default
+  on) lets deliberate same-task refire harnesses opt out.
+- (4) EVOL MIGRATION: the R19.2 drift migration is now per-column fail-open
+  — one failing ALTER (old/partial schema) no longer aborts the rest, so
+  evol's pre-R19.2 hermes_router_state.db gains fork_signature et al on
+  next connect.
+- Housekeeping: legacy pins updated to the new contracts (unknown-choice
+  invalid_fork, label mapping, rescan dedupe). 10-test battery.
+
 ## 4.12.4 — 2026-09-29 (R19.17: family-wide declared fail-open — aux is a dependency for NO declared family)
 
 - Root cause (Goran): aux model dead fleet-wide (12 configs on

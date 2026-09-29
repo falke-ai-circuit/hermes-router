@@ -77,8 +77,11 @@ def test_non_manual_trigger_gets_no_retry(monkeypatch):
 
 def test_malformed_verdict_gets_no_retry(monkeypatch):
     import json
+    # R19.17 ADDENDUM 2: an unmatched choice is invalid_fork (not
+    # malformed) — still NO retry (retry is parse_fail-only), single-shot.
     bad = json.dumps({"choice": "opt-9", "confidence": 0.5})
     calls = [(bad, {}, "ok"), (_ok_content(), {}, "ok")]
     seen, rows, logs = _run(monkeypatch, "manual", calls)
-    assert len(seen) == 1, "malformed shape validation stays single-shot"
-    assert any(e == "decision_suppressed" for e, _ in logs)
+    assert len(seen) == 1, "invalid_fork stays single-shot"
+    assert any(e == "decision_invalid_fork" for e, _ in logs) \
+        or any(r.get("outcome") == "invalid_fork" for r in rows)

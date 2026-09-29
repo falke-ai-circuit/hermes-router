@@ -106,6 +106,9 @@ REASON_BREAKER_OPEN = "breaker_open"
 REASON_CAP_EXHAUSTED = "cap_exhausted"
 REASON_TIMEOUT = "timeout"
 REASON_PARSE_FAIL = "parse_fail"
+# R19.17 ADDENDUM 2: choice matched NO envelope option — the row
+# records choice=unmapped + outcome=invalid_fork (never free text).
+REASON_INVALID_FORK = "invalid_fork"
 
 DECISION_OPTIONS = ("apply_precedent", "escalate")
 
@@ -1581,6 +1584,29 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
                 return None, REASON_MALFORMED
             return {"choice": STAND_DOWN_CHOICE, "confidence": 0.0,
                     "alternatives": []}, "ok"
+        # R19.17 ADDENDUM 2: the choice must map to the envelope's CLOSED
+        # option set — by id OR by label (label hits normalize to the id).
+        # A non-empty choice matching NO option is recorded as
+        # choice="unmapped" + outcome=invalid_fork (never free text in the
+        # choice column — e.g. reviewer row 78's 'No such file' lifted from
+        # a log dump); malformed stays for non-string shapes.
+        if isinstance(choice, str) and choice not in ids:
+            _low = choice.strip().lower()
+            _mapped = next((o["id"] for o in envelope.get("options", [])
+                            if str(o.get("label") or "").strip().lower()
+                            == _low), None)
+            if _mapped is not None:
+                choice = _mapped
+        if isinstance(choice, str) and choice not in ids and choice.strip():
+            return {"choice": "unmapped",
+                    "confidence": max(0.0, min(
+                        1.0, float(data.get("confidence")
+                                   if isinstance(data.get("confidence"),
+                                                 (int, float))
+                                   and not isinstance(
+                                       data.get("confidence"), bool)
+                                   else 0.0))),
+                    "alternatives": []}, REASON_INVALID_FORK
         if not isinstance(choice, str) or choice not in ids:
             return None, REASON_MALFORMED  # not in the lane-built option set
         conf = data.get("confidence")
@@ -1853,6 +1879,26 @@ def caps_check(task_id: str, session_id: str, cfg: Dict[str, Any]
 # Append-only decision ledger (§5.7) — plugin state DB, bounded, tape recorder
 # ---------------------------------------------------------------------------
 
+# R19.17 ADDENDUM 2 (3): rescan-dedupe registry — per-session recent fork
+# signatures (bounded TTL). Same signature re-swept within a session skips
+# at detection; no second verdict, no ledger-cleanup reliance.
+_RESCAN_SIGS: Dict[str, Dict[str, float]] = {}
+_RESCAN_TTL_S = 3600.0
+
+
+def verdict_row_json(verdict: Dict[str, Any], content: Any) -> str:
+    """R19.17 ADDENDUM 2 (2): the ledger row's verdict_json — top-level
+    verdict keys preserved PLUS delta_source_excerpt (first 500 chars of
+    the scanned content) so downstream invalid-fork filters can check
+    choice-in-source without re-reading sessions. Never raises."""
+    try:
+        return json.dumps(dict(verdict or {},
+                               delta_source_excerpt=str(content or "")[:500]),
+                          default=str)
+    except Exception:  # noqa: BLE001
+        return "{}"
+
+
 _LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS decision_ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1916,9 +1962,17 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
             for _ncol in ("delta_source", "fork_signature", "midturn_mode",
                           "envelope_ids", "tool_name", "seam"):
                 if _ncol not in cols:
-                    conn.execute("ALTER TABLE decision_ledger ADD COLUMN %s"
-                                 " TEXT NOT NULL DEFAULT ''" % _ncol)
-                    conn.commit()
+                    # R19.17 ADDENDUM 2 (4): per-column try — one failing
+                    # ALTER (old/partial schema, e.g. evol's pre-R19.2
+                    # decision_ledger lacking fork_signature) no longer
+                    # aborts the remaining migrations. Fail-open.
+                    try:
+                        conn.execute("ALTER TABLE decision_ledger"
+                                     " ADD COLUMN %s"
+                                     " TEXT NOT NULL DEFAULT ''" % _ncol)
+                        conn.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
             # R19.13 (Frontier Part 2): sense_check outcome column — NULLABLE,
             # no default (future labeling: did the flagged absurdity
             # materialize / was it real?). Best-effort.
@@ -2201,6 +2255,42 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                 _log("manual_verbatim_passthrough",
                      n_options=len(opts),
                      reason=REASON_MANUAL_VERBATIM)
+        # R19.17 ADDENDUM 2 (3): rescan dedupe — the same fork signature
+        # re-swept within one session skips at DETECTION (no second
+        # verdict, no reliance on ledger cleanup). Bounded TTL map,
+        # fail-open. Config knob rescan_dedupe (default on) lets explicit
+        # same-task refire flows (caps/breaker harnesses) opt out.
+        _dedupe_on = bool(cfg.get("rescan_dedupe", True))
+        base_row_sig = ""  # defined on both knob paths
+        if _dedupe_on:
+            try:
+                              _sig = "|".join((trigger, fork_class(ask_text, opts),
+                                                                " ".join(str((o.get("label") if isinstance(o, dict)
+                                                                                            else None) or (o.get("id")
+                                                                                          if isinstance(o, dict) else o) or "")
+                                                                                  for o in opts).lower(),
+                                                                " ".join(str(ask_text or "").split()).lower()[:200]))
+                              import hashlib as _hl
+
+                              _sig = _hl.sha1(_sig.encode("utf-8", "replace")).hexdigest()[:16]
+                              _now = time.time()
+                              _seen = _RESCAN_SIGS.setdefault(str(session_id or ""), {})
+                              for _k in [k for k, v in _seen.items()
+                                                    if _now - float(v.get("ts") if isinstance(v, dict)
+                                                                                      else v or 0.0) > _RESCAN_TTL_S]:
+                                      _seen.pop(_k, None)
+                              # a RE-SCAN is the SAME task re-swept: dedupe on
+                              # (fork_signature, task_id) — a different task re-using the
+                              # same option shape is a genuine new fork and dispatches.
+                              _prior = _seen.get(_sig)
+                              if _prior is not None and _prior.get("task") == str(task_id):
+                                      _log("decision_rescan_dedupe", trigger=trigger,
+                                                fork_signature=_sig)
+                                      return
+                              _seen[_sig] = {"ts": _now, "task": str(task_id or "")}
+                              base_row_sig = _sig  # carried into the row below when built
+            except Exception:  # noqa: BLE001 — dedupe never breaks the lane
+                base_row_sig = ""
         cap_reason = caps_check(task_id, session_id, cfg)
         if cap_reason:
             _log("decision_suppressed", reason=cap_reason, trigger=trigger)
@@ -2240,7 +2330,8 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
         t = threading.Thread(
             target=_v3_worker,
             args=(envelope, dict(session_id=session_id, task_id=task_id,
-                                 trigger=trigger, initiator=initiator),
+                                 trigger=trigger, initiator=initiator,
+                                 fork_signature=base_row_sig),
                   cfg, _log),
             daemon=True)
         t.start()
@@ -2315,6 +2406,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             "model": str(meta.get("model") or cfg.get("model") or ""),
             "model_version": str(meta.get("model") or ""),
             "envelope_hash": envelope_hash(envelope),
+            "fork_signature": str(ids.get("fork_signature", "")),
             "ts": time.time(),
         }
         if content is None:
@@ -2331,6 +2423,20 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             log_route("decision_suppressed", reason=str(vreason),
                       trigger=ids.get("trigger", "pre"))
             ledger_write(dict(base_row, fail_open_reason=str(vreason)))
+            return
+        # R19.17 ADDENDUM 2 (1): unmapped choice -> ledger row with
+        # choice=unmapped + outcome=invalid_fork; NO advisory, NO banner.
+        if vreason == REASON_INVALID_FORK and \
+                verdict.get("choice") == "unmapped":
+            bump_counter("invalid_fork")
+            log_route("decision_invalid_fork",
+                      trigger=ids.get("trigger", "pre"),
+                      confidence=round(float(verdict["confidence"]), 3))
+            ledger_write(dict(base_row, choice="unmapped",
+                              outcome="invalid_fork",
+                              fail_open_reason=REASON_INVALID_FORK,
+                              verdict_json=verdict_row_json(verdict,
+                                                            content)))
             return
         if verdict["choice"] == STAND_DOWN_CHOICE:
             # §7(d): the backend stood down — no decision actually requested.
@@ -2363,9 +2469,14 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             _record_success()
         # §5.7: the tape recorder row — outcome stays pending until the POST
         # run-close audit fills actual_choice (never guessed).
+        # R19.17 ADDENDUM 2 (2): verdict_json carries the source delta
+        # excerpt (first 500 chars of the scanned content) so downstream
+        # invalid-fork filters can check choice-in-source without
+        # re-reading sessions. Top-level verdict keys preserved.
         ledger_write(dict(base_row, choice=str(verdict["choice"]),
                           confidence=round(float(verdict["confidence"]), 4),
-                          verdict_json=json.dumps(verdict, default=str)))
+                          verdict_json=verdict_row_json(verdict,
+                                                        content)))
         advisory = render_advisory(verdict, envelope)
         banner = render_decision_banner(
             ids.get("trigger", "pre"), base_row["model"], meta,

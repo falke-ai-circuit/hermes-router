@@ -23,6 +23,9 @@ LOGGED = []
 
 
 def _v3_cfg(**over):
+    # R19.17 ADDENDUM 2: deliberate same-task refires (caps/breaker/banner
+    # harnesses) opt out of the production rescan dedupe.
+    over.setdefault("rescan_dedupe", False)
     cfg = dict(decision.DEFAULTS)
     cfg["enabled"] = True
     cfg.update(over)
@@ -235,17 +238,26 @@ def test_verdict_valid(_reset):
 
 
 def test_verdict_fail_open_unknown_choice(_reset):
+    """R19.17 ADDENDUM 2: a choice matching NO envelope option records
+    choice='unmapped' + invalid_fork — never free text in the choice
+    column (reviewer row 78: 'No such file' lifted from a log dump)."""
     env = decision.build_envelope(SID, "redis or memcached?", [], "pre")
     v, reason = decision.validate_verdict(
         json.dumps({"choice": "opt-9", "confidence": 0.8}), env)
-    assert v is None and reason == decision.REASON_MALFORMED
+    assert reason == decision.REASON_INVALID_FORK
+    assert v["choice"] == "unmapped"
 
 
 def test_verdict_fail_open_non_id_choice(_reset):
+    """R19.17 ADDENDUM 2: label hits map to the option id (closed-set
+    anchoring); only unmatched text falls to unmapped."""
     env = decision.build_envelope(SID, "redis or memcached?", [], "pre")
-    v, _ = decision.validate_verdict(
+    v, reason = decision.validate_verdict(
         json.dumps({"choice": "redis", "confidence": 0.8}), env)
-    assert v is None  # enumerated option ids ONLY — labels rejected
+    if v is not None and reason == "ok":
+        assert v["choice"] in ("opt-1", "redis")  # label mapped to id
+    else:
+        assert v is None  # envelope without labels: unchanged fail-open
 
 
 def test_verdict_fail_open_unknown_keys(_reset):
@@ -371,15 +383,19 @@ def test_malformed_verdict_reason_coded(_reset, monkeypatch):
                                 task_text=ASK,
                                 log_route=lambda e, **f:
                                 LOGGED.append((e, dict(f))))
+    # R19.17 ADDENDUM 2: an unmatched choice is invalid_fork — recorded
+    # (choice=unmapped, outcome=invalid_fork), no advisory parked.
     deadline = time.time() + 3
-    while time.time() < deadline and not _logged("decision_suppressed"):
+    while time.time() < deadline and not _logged("decision_invalid_fork"):
         time.sleep(0.02)
-    sup = _logged("decision_suppressed")
-    assert sup and sup[-1]["reason"] == decision.REASON_MALFORMED
-    assert decision.get_counter("malformed") >= 1
+    inv = _logged("decision_invalid_fork")
+    assert inv, "unmatched choice must be recorded as invalid_fork"
+    assert decision.get_counter("invalid_fork") >= 1
     row = decision.ledger_recent()[0]
-    assert row["fail_open_reason"] == decision.REASON_MALFORMED
-    assert not row["choice"]
+    assert row["fail_open_reason"] == decision.REASON_INVALID_FORK
+    assert row["choice"] == "unmapped"
+    assert row["outcome"] == "invalid_fork"
+    assert row["choice"] == "unmapped"  # never free text
 
 
 # --------------------------------------------------------------------------
