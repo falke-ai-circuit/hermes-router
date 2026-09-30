@@ -866,9 +866,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # means a dropped append is unrecoverable. Live knob
                     # read via append_banner's own gate (R8c semantics:
                     # read per dispatch; OFF -> consumed and dropped).
-                    return _dbp.settle_decision_banner(
-                        session_id,
-                        _dbp.append_banner(response_text, "\n" + _parked))
+                    _merged_b = _dbp.append_banner(response_text,
+                                                   "\n" + _parked)
+                    # R19.21 (operative parity): a consumed banner that did
+                    # NOT land in the delivered body (knob off / empty-base
+                    # clause) is RE-PARKED for next-turn delivery — the
+                    # benign edge had the same vanish as the audit_sync
+                    # seam (worst ratio 8 consumes/1 delivered).
+                    if _parked.strip() not in str(_merged_b or ""):
+                        try:
+                            _dbp.park_anchor_banner(session_id, _parked)
+                            _log_route("POST",
+                                       event_detail=
+                                       "banner_redelivered_next_turn",
+                                       edge="benign",
+                                       session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return _dbp.settle_decision_banner(session_id,
+                                                       _merged_b)
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
             # R15 LEG 2: benign pass-through is still a delivery edge —
@@ -1159,6 +1175,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _dbp2.note_consumed_decision(session_id, _parked)
             if _parked:
                 rendered = _dbp2.append_banner(rendered, "\n" + _parked)
+                # R19.21 (operative parity): same vanish recovery as the
+                # benign edge — a consumed banner that did NOT land in the
+                # delivered render is RE-PARKED for next-turn delivery.
+                if _parked.strip() not in str(rendered or ""):
+                    _dbp2.park_anchor_banner(session_id, _parked)
+                    _log_route("POST",
+                               event_detail="banner_redelivered_next_turn",
+                               edge="uncensored-render",
+                               session_id=session_id)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         # R19.11 FIX 1: final-delivery gate — a decision banner consumed at

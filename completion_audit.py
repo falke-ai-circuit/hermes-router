@@ -1212,6 +1212,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # (fail-open: absent field = backcompat, lane continues).
         _sc = _parse_sense_check(verdict_text)
         _povs = _parse_povs(verdict_text)
+        # R19.21: per-vantage segments ALSO render as compact labeled
+        # lines in the delivered note ("<stance>: <note[:120]>", one line
+        # per vantage) — reviewer F-E3: 0 lines found, the parse was
+        # internal-only. Empty when no vantages (note unchanged).
+        _pov_lines = "\n".join(
+            "%s: %s" % (str(p.get("stance") or "pov"),
+                        str(p.get("note") or "")[:120])
+            for p in _povs) if _povs else ""
         _adv = _parse_adversarial(verdict_text)  # B+ 5c: attack verdict (nullable, fail-open)
         # R19.19 P2: POV distinctness — collapsed paraphrase vantages are
         # flagged in the persisted verdict (reviewer nice-to-have).

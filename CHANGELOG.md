@@ -1,3 +1,27 @@
+## 4.12.8 — 2026-09-29 (R19.21: closes the reviewer's final verification-round remarks)
+
+- (1) OPERATIVE BANNER-IN-BODY (worst ratio 8 consumes/1 delivered): the
+  R19.19 re-park recovery existed ONLY on the audit_sync edge — the
+  benign and uncensored-render edges still consumed-and-vanished (the
+  render edge even documents its swallowed-NameError vanish). ALL THREE
+  delivery edges now RE-PARK a consumed banner that did NOT land in the
+  delivered body (event banner_redelivered_next_turn, edge-tagged) —
+  nothing consumed-and-lost on any platform surface. The midturn
+  single-verdict provenance line is unchanged. (Conductor note: the
+  2-of-4 config resolutions — architect midturn 'shadow'->'on', shadow
+  log_path per-agent — are conductor-side, not code.)
+- (2) POV VANTAGE LINES (v4.12.7 regression): the per-vantage labeled
+  lines never rendered because the PRODUCER was missing — the
+  consumption site referenced _pov_lines but the assignment block never
+  landed in _consult_meta. Fixed: the lines ("<stance>: <note[:120]>",
+  one per vantage) are produced at parse time and appended to the
+  delivered note; no vantages -> note byte-identical to before. Pin: a
+  frontier consult with 3 parsed vantages produces 3 labeled lines.
+- Housekeeping: R9 seam pins updated to the recovery contract
+  (re-park-on-vanish supersedes consumed-and-dropped); the r9_reset
+  fixture clears all three FIX 4 anchor registries.
+- Tests: 6-test battery.
+
 ## 4.12.7 — 2026-09-29 (R19.20: closes the reviewer's two remaining F-batch-1 remarks — fit for duty confirmed, last gaps closed)
 
 - (1) POST BANNER CLOSED-SET CLAMP (her fresh live specimen):

@@ -38,6 +38,8 @@ def r9_reset(monkeypatch, tmp_path):
     route_gate.clear_declared(SID)
     route_gate.clear_turn_claims(SID)
     debug_banner._ANCHOR_BANNERS.clear()
+    debug_banner._ANCHOR_TASKS.clear()
+    debug_banner._ANCHOR_SEGS.clear()
     LOGGED = []
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
@@ -74,10 +76,16 @@ def test_benign_consume_returns_banner_even_when_append_equal(r9_reset, monkeypa
     out = plugin.on_transform_llm_output(
         response_text="visible reply", session_id=SID, model="minimax-m3")
     assert out == "visible reply"
-    assert not debug_banner._ANCHOR_BANNERS.get(SID)
+    # R19.21 supersedes consumed-and-dropped: the banner did NOT land in
+    # the delivered body -> RE-PARKED for next-turn delivery (the
+    # operative vanish, worst ratio 8 consumes/1 delivered).
+    assert debug_banner._ANCHOR_BANNERS.get(SID)
     rec = [f for e, f in r9_reset
-           if f.get("event_detail") == "anchor_banner_consume"]
-    assert len(rec) == 1 and rec[0].get("parked") is True
+           if f.get("event_detail") == "banner_redelivered_next_turn"]
+    assert rec and rec[-1].get("edge") == "benign"
+    crec = [f for e, f in r9_reset
+            if f.get("event_detail") == "anchor_banner_consume"]
+    assert len(crec) == 1 and crec[0].get("parked") is True
 
 
 def test_benign_consume_appends_to_delivered_string(r9_reset):
