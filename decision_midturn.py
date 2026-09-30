@@ -370,7 +370,30 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                  reason=_dec.REASON_BREAKER_OPEN, sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
             return
-        envelope = _dec.build_envelope(session_id, text, opts, TRIGGER, cfg)
+        # R19.18: envelope context enrichment — pull the last ~3 assistant
+        # messages BEFORE the fork from the profile state.db (read-only,
+        # capped, fail-open) so the causal frame includes the evidence the
+        # agent already gathered, not just the stripped delta. knob
+        # decision.frame_context_chars (default 1500; 0 disables, envelope
+        # identical to pre-R19.18).
+        _fcu = 0
+        try:
+            _knob = int(cfg.get("frame_context_chars", 1500) or 0)
+        except Exception:  # noqa: BLE001 — fail-open to delta-only
+            _knob = 0
+        _sctx = ""
+        if _knob > 0:
+            try:
+                _sctx = _dec.session_context_before(time.time(), _knob,
+                                                    session_id=session_id)
+                _fcu = len(_sctx)
+                if _fcu:
+                    _log(session_id, "frame_context_attached",
+                         chars=_fcu, knob=_knob)
+            except Exception:  # noqa: BLE001 — fail-open, never blocks
+                _sctx, _fcu = "", 0
+        envelope = _dec.build_envelope(session_id, text, opts, TRIGGER, cfg,
+                                       surrounding_context=_sctx)
         if not envelope:
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
                     tool_name=tool_name, seam=seam,
@@ -419,6 +442,7 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             return
         rid = _dec.ledger_write(dict(
             base, choice=str(verdict["choice"]),
+            frame_context_chars_used=(_fcu or None),
             confidence=round(float(verdict["confidence"]), 4),
             verdict_json=json.dumps(verdict, default=str)))
         _dec._record_success()
