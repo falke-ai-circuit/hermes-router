@@ -1,3 +1,31 @@
+## 4.12.9 — 2026-09-29 (R19.22, Goran — from operative's Kindle run: turn-close aggregate banner, cost rollup + independent lanes)
+
+- (1) REFLEX SEGMENT ROLLUP: the turn-close reflex (decision) segment is
+  now a compact rollup — '· router · reflex (decision) | N verdicts
+  (k shown >=0.9) | tok ti/to | $total | initiator=agent' + a 'Top
+  verdicts: <label> / <label>' line (up to 2 highest-confidence choice
+  labels inline, <=60 chars each) so Goran sees WHAT it picked without
+  opening the ledger. Stand-downs (no_options/parse_fail) are NOT
+  verdicts — filtered. The accumulator now records confidence + the
+  human-readable label (R19.15 choice_label). The single-verdict
+  render_decision_banner at turn close is superseded by the unified
+  rollup (its per-call format remains at park time upstream).
+- (2) INDEPENDENT LANE SEGMENTS: reflex AND frontier AND uncensored in
+  one turn -> ONE SEGMENT PER LANE in fire order (R19.16 FIX 4 stacking
+  survives the rollup change) — pinned with all 3 lanes firing in one
+  turn, each segment keeping its own tokens/cost, block consumed clean.
+- (3) COSTS ARE REAL: the reflex segment sums the actual Jev estimates
+  from the turn's consumed rows ($0.042/1M pricing already in code) — no
+  zeros with nonzero rows, no fabricated numbers.
+- (4) CAP INTERACTION: the aggregate block counts as ONE banner; the
+  3/session cap is unaffected (pin: consumed clean, nothing re-parked).
+- Housekeeping: the midturn histogram pins updated to the rollup
+  contract (the 4-bucket histogram + 'other' fold is superseded by the
+  count+confidence rollup).
+- Tests: 5-test battery. Housekeeping recovery: test_r19_21_parity.py
+  was truncated by a bad in-session write (95 lines) — restored from
+  HEAD and its rollup-format pin re-applied.
+
 ## 4.12.8 — 2026-09-29 (R19.21: closes the reviewer's final verification-round remarks)
 
 - (1) OPERATIVE BANNER-IN-BODY (worst ratio 8 consumes/1 delivered): the

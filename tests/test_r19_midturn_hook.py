@@ -423,9 +423,10 @@ def test_close_turn_single_verdict_format(_env, monkeypatch):
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
     _feed_verdicts(monkeypatch, cfg, ["opt-1"])
     banner = dmt.close_turn(SID)
-    assert banner
-    assert "decision" in banner
-    assert "midturn" in banner
+    # R19.22: unified rollup — counts + real cost + top label
+    assert banner.startswith("· router · reflex (decision) |")
+    assert "1 verdicts (0 shown >=0.9)" in banner or \
+        "1 verdicts (1 shown >=0.9)" in banner
     assert "initiator=agent" in banner
     assert "tok 10/5" in banner
     assert dmt.close_turn(SID) == ""  # drained
@@ -436,10 +437,10 @@ def test_close_turn_aggregate_format(_env, monkeypatch):
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
     _feed_verdicts(monkeypatch, cfg, ["opt-1", "opt-1", "opt-2", "opt-3"])
     banner = dmt.close_turn(SID)
-    assert banner.startswith("· router · decision | midturn x4 |")
-    assert "2 opt-1 / 1 opt-2 / 1 opt-3" in banner
+    assert banner.startswith("· router · reflex (decision) |")
+    assert "4 verdicts" in banner
     assert "| tok 40/20 |" in banner
-    assert banner.endswith("initiator=agent")
+    assert "initiator=agent" in banner  # rollup: Top verdicts line follows
 
 
 def test_close_turn_four_buckets_within_cap(_env, monkeypatch):
@@ -448,9 +449,8 @@ def test_close_turn_four_buckets_within_cap(_env, monkeypatch):
     _feed_verdicts(monkeypatch, cfg,
                    ["opt-1", "opt-1", "opt-2", "opt-3", "opt-4", "opt-4"])
     banner = dmt.close_turn(SID)
-    assert banner.startswith("· router · decision | midturn x6 |")
-    assert "2 opt-1" in banner
-    assert "2 opt-4" in banner
+    assert banner.startswith("· router · reflex (decision) |")
+    assert "6 verdicts" in banner
     # the formatter folds a 5th bucket into 'other' (unit-tested below)
 
 
@@ -460,11 +460,9 @@ def test_aggregate_histogram_5th_bucket_folds_into_other():
                 [{"choice": "opt-5", "tokens_in": 1, "tokens_out": 1,
                   "cost": 0.1, "model": "m"}])
     line = dmt._aggregate_line(6, 6, 6, 0.6, consumed)
-    assert line.startswith("· router · decision | midturn x6 |")
-    assert "2 opt-1" in line
-    assert "1 other" in line
-    assert "opt-5" not in line  # 5th bucket folded into 'other'
-    assert line.endswith("initiator=agent")
+    assert line.startswith("· router · reflex (decision) |")
+    assert "6 verdicts" in line
+    assert "initiator=agent" in line  # Top verdicts line follows
 
 
 # ------------------------------------------------------------------

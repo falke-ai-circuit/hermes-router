@@ -446,6 +446,10 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             confidence=round(float(verdict["confidence"]), 4),
             verdict_json=json.dumps(verdict, default=str)))
         _dec._record_success()
+        try:
+            meta["choice_label"] = _dec.choice_label(verdict, envelope)[:60]
+        except Exception:  # noqa: BLE001 — label is cosmetic
+            meta["choice_label"] = ""
         _record_consumed(session_id, verdict, meta, cfg)
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
@@ -608,6 +612,14 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
                "tokens_out": to if isinstance(to, int) else 0,
                "cost": float(cost or 0.0), "model": model,
                "endpoint": str(meta.get("endpoint") or "")}
+        try:
+            # R19.22: the rollup shows WHAT was picked — confidence + the
+            # human-readable label (caller supplies it from the envelope).
+            rec["confidence"] = max(0.0, min(
+                1.0, float(verdict.get("confidence") or 0.0)))
+        except Exception:  # noqa: BLE001
+            rec["confidence"] = 0.0
+        rec["label"] = str(meta.get("choice_label") or "")[:60]
         with _LOCK:
             st = _state(session_id)
             st["count"] = int(st.get("count") or 0) + 1
@@ -644,14 +656,10 @@ def close_turn(session_id: str) -> str:
         ti = sum(int(c.get("tokens_in") or 0) for c in consumed)
         to = sum(int(c.get("tokens_out") or 0) for c in consumed)
         total = sum(float(c.get("cost") or 0.0) for c in consumed)
-        if n == 1:
-            c = consumed[0]
-            banner = _dec.render_decision_banner(
-                "midturn", c.get("model") or "",
-                {"tokens_in": ti, "tokens_out": to,
-                 "endpoint": str(c.get("endpoint") or "")},
-                initiator="agent")
-            return banner or _aggregate_line(n, ti, to, total, consumed)
+        # R19.22: unified rollup for 1..N verdicts — counts + summed real
+        # cost + top labels; the single-verdict render_decision_banner is
+        # superseded at turn close (its per-call format remains at park
+        # time upstream).
         return _aggregate_line(n, ti, to, total, consumed)
     except Exception:  # noqa: BLE001 — banner must never break delivery
         logger.debug("decision_midturn.close_turn error", exc_info=True)
@@ -660,21 +668,39 @@ def close_turn(session_id: str) -> str:
 
 def _aggregate_line(n: int, ti: int, to: int, total: float,
                     consumed: List[Dict[str, Any]]) -> str:
-    """'· router · decision | midturn x<N> | <histogram> | tok <n/n> |
-    $<total> | initiator=agent'. Histogram capped at 4 buckets + 'other'."""
+    """R19.22 (Goran, operative's Kindle run): the reflex (decision)
+    segment at turn close is a COMPACT ROLLUP — count of Jev verdicts this
+    turn + summed cost + top verdict labels inline, e.g.:
+      · router · reflex (decision) | 13 verdicts (2 shown >=0.9) |
+        tok 2410/1180 | $0.0009 | initiator=agent
+      Top verdicts: <label> / <label>
+    Stand-downs (no_options/parse_fail) never reach the accumulator, and
+    are filtered defensively here — they are NOT verdicts. Costs are the
+    summed real Jev estimates from the turn's consumed rows ($0.042/1M
+    pricing). Never raises."""
     try:
-        counts: Dict[str, int] = {}
-        for c in consumed:
-            k = str(c.get("choice") or "?")
-            counts[k] = counts.get(k, 0) + 1
-        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-        shown = ordered[:_HIST_BUCKETS]
-        other = sum(v for _, v in ordered[_HIST_BUCKETS:])
-        hist = " / ".join("%d %s" % (v, k) for k, v in shown)
-        if other:
-            hist = (hist + " / " if hist else "") + "%d other" % other
-        return ("· router · decision | midturn x%d | %s | tok %d/%d | $%.6f"
-                " | initiator=agent"
-                % (n, hist or "(none)", ti, to, total))
+        verdicts = [c for c in consumed
+                    if str(c.get("choice") or "") not in
+                    ("", "stand_down", "unmapped")]
+        n = len(verdicts)
+        if not n:
+            return ""
+        ti = sum(int(c.get("tokens_in") or 0) for c in verdicts)
+        to = sum(int(c.get("tokens_out") or 0) for c in verdicts)
+        total = sum(float(c.get("cost") or 0.0) for c in verdicts)
+        hi = sum(1 for c in verdicts
+                 if float(c.get("confidence") or 0.0) >= 0.9)
+        line = ("· router · reflex (decision) | %d verdicts (%d shown >=0.9)"
+                " | tok %d/%d | $%.6f | initiator=agent"
+                % (n, hi, ti, to, total))
+        # top verdicts: highest-confidence choice labels inline (up to 2,
+        # <=60 chars each) so Goran sees WHAT it picked without the ledger.
+        top = sorted(verdicts, key=lambda c: -float(
+            c.get("confidence") or 0.0))[:2]
+        labels = [str(c.get("label") or c.get("choice") or "")[:60]
+                  for c in top if (c.get("label") or c.get("choice"))]
+        if labels:
+            line += "\nTop verdicts: " + " / ".join(labels)
+        return line
     except Exception:  # noqa: BLE001
         return ""
