@@ -28,9 +28,12 @@ def test_fallback_to_raw_id_when_label_missing():
 
 
 def test_fallback_when_choice_not_in_options():
+    """R19.20 supersedes the raw-id fallback: an unmatched choice renders
+    NO advisory at all (closed-set clamp) — the invalid_fork row is the
+    record, never a free-text choice line."""
     adv = D.render_advisory({"choice": "opt-9", "confidence": 0.5},
                             _env())
-    assert "choice=opt-9" in adv
+    assert adv == ""
 
 
 def test_label_truncated_to_60():

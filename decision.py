@@ -2285,6 +2285,26 @@ def render_advisory(verdict: Dict[str, Any],
     R19.15: renders the HUMAN-READABLE option label (60c max, id fallback)
     — 'opt-1' alone is meaningless to the user reading the banner."""
     try:
+        # R19.20 (reviewer F-batch-1): CLOSED-SET CLAMP at the advisory
+        # choke point — a choice not mapping to a declared envelope option
+        # (id or label) renders NO advisory at all. Her live specimen:
+        # choice="instead-of-criteria gating. Fix those" @0.91 — a
+        # span-parsed phrase glued from the agent's own text — reached the
+        # banner through a path that bypassed validate_verdict. No choice
+        # text without a declared option, on ANY path.
+        _ids = {str(o.get("id") or "") for o in envelope.get("options", [])
+                if isinstance(o, dict)}
+        _labels = {str(o.get("label") or "").strip().lower()
+                   for o in envelope.get("options", [])
+                   if isinstance(o, dict)}
+        _ch = str(verdict.get("choice") or "").strip()
+        if _ids and _ch and _ch not in _ids \
+                and _ch.lower() not in _labels:
+            try:
+                bump_counter("invalid_fork")
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
         caveat = (" ADVICE-ONLY: high-stakes fork — main model/user confirms."
                   if (envelope.get("scope") or {}).get("advice_only") else "")
         return (

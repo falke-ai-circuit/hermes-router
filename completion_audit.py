@@ -1299,8 +1299,10 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
                 "the user's answer, applying whatever the message flagged. "
                 "Do not restate the audit, do not ask permission to continue, "
-                "and do not output any marked text to the user.\n%s"
-                % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"), verdict_text))
+                "and do not output any marked text to the user.\n%s%s"
+                % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"),
+                   verdict_text,
+                   ("\n" + _pov_lines) if locals().get("_pov_lines") else ""))
         if banner_park:
             stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)

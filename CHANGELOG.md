@@ -1,3 +1,26 @@
+## 4.12.7 — 2026-09-29 (R19.20: closes the reviewer's two remaining F-batch-1 remarks — fit for duty confirmed, last gaps closed)
+
+- (1) POST BANNER CLOSED-SET CLAMP (her fresh live specimen):
+  choice="instead-of-criteria gating. Fix those" @0.91 — a span-parsed
+  phrase glued from the agent's own text — reached the banner through an
+  advisory path that bypassed validate_verdict. Fix: render_advisory (THE
+  choke point for all reflex advisory text) now applies the closed-set
+  clamp — a choice not mapping to a declared envelope option (id or
+  label) renders NO advisory at all, and the invalid_fork counter
+  records it. Option-less envelopes stay unclamped (fail-open, legacy
+  behavior). Pin reproduces her exact specimen text.
+- (2) POV VANTAGE LINES: the 3 vantages now (a) persist per-segment in
+  the frontier ledger row (labels + text, R19.19 persist_frontier_verdict)
+  AND (b) render as compact labeled lines in the delivered note — one
+  line per vantage, "<stance>: <note[:120]>" — so distinctness is
+  scoreable from outside (her F-E3 = 0 lines found).
+- Housekeeping: the R19.15 raw-id fallback pin superseded by the clamp
+  contract (unmatched choice => empty advisory; the invalid_fork row is
+  the record).
+- Tests: 8-test battery (specimen reproduction, label/id renders,
+  counter bump, option-less fail-open, pov line rendering caps, per-
+  vantage persistence, parse fields).
+
 ## 4.12.6 — 2026-09-29 (R19.19: combined fix round from the reviewer's dual audit)
 
 - P0 FRONTIER VERDICT PERSISTENCE: every frontier consult verdict gets a
