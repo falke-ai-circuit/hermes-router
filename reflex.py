@@ -84,9 +84,11 @@ def classify_signal(text: str, cfg: Optional[Dict[str, Any]] = None
     """Detection entry point: run each registered type's detector over the
     signal text. FIRST hit wins (one type per signal). Returns
     (type_name, hit) or (None, None) when NO registered type matches —
-    the SILENT default for unknown/unregistered shapes: the caller must
-    not fire and must not log. Fail-open: a detector error just skips that
-    type. Never raises."""
+    the SILENT default for unknown/unregistered SHAPES (not for registered
+    types: every registered type IS iterated, R19.19 P1 R-U1b). Detector
+    contract is (text, cfg); a legacy single-arg detector is retried as
+    (text) so externally-registered types still route. Detector errors are
+    OBSERVED (logged per type), never silent. Never raises."""
     try:
         _ensure_registered()
         for name in sorted(_REGISTRY.keys()):
@@ -94,9 +96,26 @@ def classify_signal(text: str, cfg: Optional[Dict[str, Any]] = None
             detect = entry.get("detect")
             if detect is None:
                 continue
+            hit = None
             try:
                 hit = detect(text, cfg)
-            except Exception:  # noqa: BLE001 — a bad detector is skipped
+            except TypeError:
+                # legacy signature: detector(text) only — retry so
+                # externally-registered types still route (R-U1b)
+                try:
+                    hit = detect(text)
+                except Exception:  # noqa: BLE001 — observed below
+                    hit = None
+            except Exception as exc:  # noqa: BLE001 — observed, not silent
+                try:
+                    from .router_core import _pkg_fn
+
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="reflex_detector_error",
+                        reflex_type=str(name),
+                        error=str(exc)[:120])
+                except Exception:  # noqa: BLE001
+                    pass
                 hit = None
             if hit:
                 return name, hit

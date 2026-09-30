@@ -1110,6 +1110,46 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         return None
 
 
+def persist_frontier_verdict(session_id: str, key: str, ep: Any,
+                             ask: str, response_text: str,
+                             verdict_text: str, povs: Any = None,
+                             pov_collapsed: Any = None,
+                             sc: Any = None, adv: Any = None) -> Optional[int]:
+    """R19.19 P0 (reviewer critical): persist a frontier consult verdict —
+    envelope (bounded ask + response excerpt) + FULL verdict text + parsed
+    POV segments (practitioner/outsider/skeptic) + p_failure, mirroring the
+    decision lane's persistence. Parked verdicts persist TOO (this runs
+    before the park): nothing consumed-and-lost. Fail-open: persistence
+    never breaks the audit. Returns the row id or None."""
+    try:
+        from .decision import ledger_write as _lw
+        import json as _sj
+
+        return _lw({
+            "session_id": session_id, "task_id": str(key or ""),
+            "trigger": "frontier_consult",
+            "fork_class": "frontier_consult",
+            "model": str(getattr(ep, "model", "") or ""),
+            "choice": "",
+            "verdict_json": _sj.dumps({
+                "envelope": {"ask": str(ask or "")[:1500],
+                             "response_excerpt":
+                                 str(response_text or "")[:1500]},
+                "verdict": str(verdict_text or ""),
+                "povs": list(povs or []),
+                "pov_collapsed": list(pov_collapsed or []),
+                "sense_check": sc,
+                "adversarial": dict(adv or {}),
+                "model": str(getattr(ep, "model", "") or ""),
+            }, default=str)[:8000],
+            "sense_check": _sj.dumps(sc) if sc else None,
+            "p_failure": (adv or {}).get("p_failure"),
+            "outcome": "completed",
+        })
+    except Exception:  # noqa: BLE001 — persistence never breaks audit
+        return None
+
+
 def _consult_meta(session_id: str, ask: str, response_text: str,
                   request: Optional[dict], model: str, key: str,
                   socket_timeout: int = 120) -> Optional[Dict[str, Any]]:
@@ -1173,6 +1213,30 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         _sc = _parse_sense_check(verdict_text)
         _povs = _parse_povs(verdict_text)
         _adv = _parse_adversarial(verdict_text)  # B+ 5c: attack verdict (nullable, fail-open)
+        # R19.19 P2: POV distinctness — collapsed paraphrase vantages are
+        # flagged in the persisted verdict (reviewer nice-to-have).
+        try:
+            import difflib as _dl
+
+            _collapsed = []
+            for _i in range(len(_povs)):
+                for _j in range(_i + 1, len(_povs)):
+                    _r = _dl.SequenceMatcher(
+                        None,
+                        str(_povs[_i].get("note") or "").lower(),
+                        str(_povs[_j].get("note") or "").lower()).ratio()
+                    if _r >= 0.8:
+                        _collapsed.append([_povs[_i].get("stance"),
+                                           _povs[_j].get("stance"),
+                                           round(_r, 2)])
+            if _collapsed:
+                _log("frontier_pov_collapsed pairs=%d" % len(_collapsed),
+                     session_id=session_id)
+                _pov_collapsed = _collapsed
+            else:
+                _pov_collapsed = []
+        except Exception:  # noqa: BLE001 — flagging never breaks audit
+            _pov_collapsed = []
         if _adv:
             _log("completion_audit_adversarial objection_chars=%d p_failure=%s"
                  % (len(_adv.get("strongest_objection") or ""),
@@ -1270,6 +1334,20 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _initiator = _rg.initiator_for_task(str(key or ""))
         except Exception:  # noqa: BLE001
             _initiator = "auto"
+        # R19.19 P0 (reviewer critical): EVERY frontier consult verdict
+        # persists — envelope + full verdict text + parsed POV segments +
+        # p_failure, mirroring the decision lane's persistence. Parked
+        # verdicts persist TOO (this runs before the park): token counts
+        # alone are not acceptable; nothing consumed-and-lost.
+        try:
+            persist_frontier_verdict(
+                session_id=session_id, key=str(key or ""), ep=ep,
+                ask=ask, response_text=response_text, verdict_text=note,
+                povs=locals().get("_povs") or [],
+                pov_collapsed=locals().get("_pov_collapsed") or [],
+                sc=locals().get("_sc"), adv=locals().get("_adv") or {})
+        except Exception:  # noqa: BLE001 — persistence never breaks audit
+            pass
         return {"note": note,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",

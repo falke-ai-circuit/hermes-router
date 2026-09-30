@@ -250,6 +250,17 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
         dm = _DELIVERY_MODE
     try:
         with _lock:
+            # R19.19 P2: never write empty/{} rows — a commit without a
+            # session or content hash is unverifiable envelope-wise (the
+            # reviewer's empty-row defect). Skip + observe.
+            if not str(session_id or "").strip() or not str(ch or "").strip():
+                try:
+                    logger.warning("canonical_empty_row_skipped sid=%s ch=%s",
+                                   str(session_id or "")[:40],
+                                   str(ch or "")[:40])
+                except Exception:  # noqa: BLE001
+                    pass
+                return False
             _load_locked()
             fresh = True
             if (sid, ch) in _seen_content:

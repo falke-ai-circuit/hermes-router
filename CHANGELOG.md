@@ -1,3 +1,46 @@
+## 4.12.6 — 2026-09-29 (R19.19: combined fix round from the reviewer's dual audit)
+
+- P0 FRONTIER VERDICT PERSISTENCE: every frontier consult verdict gets a
+  ledger row (trigger/fork_class=frontier_consult) via new
+  completion_audit.persist_frontier_verdict — envelope (bounded ask +
+  response excerpt) + FULL verdict text + parsed POV segments
+  (practitioner/outsider/skeptic) + sense_check + adversarial p_failure.
+  Mirrors the decision lane's persistence; the sync, async-downgrade, and
+  stash paths all route through it, so PARKED verdicts persist too —
+  nothing consumed-and-lost (token counts alone are not acceptable).
+- P0 FRONTIER DELIVERY PARITY: the audit_sync seam that ate 3 historical +
+  2/2 live consults (parked at the benign edge, content vanished) now
+  RE-PARKS a consumed banner that did NOT land in the delivered body
+  (knob off / empty-base clause / render replacement) — next-turn
+  delivery, event banner_redelivered_next_turn. Pin reproduces the 0/2
+  sequence.
+- P1 REFLEX TYPE-DISPATCH (R-U1b): classify_signal now ACTUALLY routes
+  registered types — a legacy single-arg detector is retried as (text)
+  when (text, cfg) raises TypeError, and detector errors are OBSERVED
+  (reflex_detector_error route event) instead of silently eaten. Modular
+  reflex is extensible in behavior, not just API surface.
+- P1 PER-PROFILE PARITY: (a) operative — the re-park fix closes the
+  body-delivery gap (worst ratio 8 consumes/1 delivered); the stacked
+  banner block covers the double-verdict specimen. (b) architect — a
+  manual 'decide this:' ask on a gateway whose decision lane is DISABLED
+  now logs decision_manual_suppressed reason=lane_disabled (her
+  zero-events symptom becomes diagnosable post-bounce). (c) shadow — the
+  router log is HERMES_HOME-scoped by design since H4
+  ($HERMES_HOME/uncensored-router.log, not /tmp); a stale in-memory
+  plugin produces her zero-events symptom — conductor's bounce resolves.
+- P2 OPT-3/OPT-4 CLAMP: regression pin — choice=opt-3 on a 2-option ask
+  is unmapped/invalid_fork (R19.17-A2 closed-set anchoring); implicit
+  defer must be an explicit envelope option.
+- P2 POV DISTINCTNESS: post-verdict pairwise SequenceMatcher check on the
+  3 vantages; collapsed paraphrase pairs (ratio >= 0.8) flagged in the
+  persisted verdict_json (pov_collapsed) + event frontier_pov_collapsed.
+- P2 CANONICAL LEDGER: commit_canonical_event refuses empty rows (no
+  session/content hash) — canonical_empty_row_skipped observed; no more {}
+  rows in hermes-router-canonical.jsonl.
+- Tests: 9-test battery. NOTE for conductor: reviewer's gateway needs ONE
+  bounce in the deploy window after this lands (her debug=2 render capture
+  + battery re-verification).
+
 ## 4.12.5 — 2026-09-29 (R19.18, Goran approved: midturn envelope frame enrichment)
 
 - ROOT CAUSE: midturn envelope frame starvation — the turn-sweep seam

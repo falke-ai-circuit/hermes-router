@@ -816,6 +816,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 _out_audit, "\n" + _parked_a)
                             if _merged:
                                 _out_audit = _merged
+                            # R19.19 P0 (reviewer: 3 historical + 2/2 live
+                            # consults vanished at this seam): a consumed
+                            # banner that did NOT land in the delivered body
+                            # (knob off / empty-base clause / render
+                            # replacement) is RE-PARKED for next-turn
+                            # delivery — never consumed-and-lost. The
+                            # verdict also persists via the frontier ledger
+                            # row, so nothing is unrecoverable.
+                            if _parked_a.strip() not in str(_out_audit or ""):
+                                try:
+                                    _dba.park_anchor_banner(session_id,
+                                                            _parked_a)
+                                    _log_route("POST",
+                                               event_detail=
+                                               "banner_redelivered_next_turn",
+                                               edge="audit_sync",
+                                               session_id=session_id)
+                                except Exception:  # noqa: BLE001
+                                    pass
                     except Exception:  # noqa: BLE001 — banner never breaks delivery
                         pass
                     # R19.11 FIX 1: final-delivery gate — re-emit a held

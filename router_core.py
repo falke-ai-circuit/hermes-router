@@ -1079,6 +1079,19 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
 
                 _dcfg_m = _decision_cfg()
                 _mhit = _dlane_m.manual_line_hit(user_text, _dcfg_m)
+                if _mhit is None and _dlane_m and not _lane_enabled(
+                        LANE_DECISION):
+                    # R19.19 P1 (architect parity): a manual 'decide this:'
+                    # ask on a gateway whose decision lane is DISABLED must
+                    # be OBSERVED — silent-zero lane events are undiagnosable
+                    # (architect: zero lane events on a manual fork).
+                    try:
+                        _pkg_fn("_log_route")(
+                            "PRE", event_detail="decision_manual_suppressed",
+                            reason="lane_disabled",
+                            session_id=str(session_id or ""))
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
                 if _mhit is not None:
                     _mdec = _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
                                  "decision_detected:manual_ask")
