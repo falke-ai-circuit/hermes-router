@@ -114,9 +114,25 @@ def runs_state() -> Dict[str, Dict[str, Any]]:
 
 
 def _mode(cfg: Dict[str, Any]) -> str:
+    """D3 residual round 2: mode resolution coerces YAML-boolean shapes
+    uniformly. `midturn: on` UNQUOTED parses as Python True (YAML 1.1 bool),
+    and str(True or "off") == "True" -> not in VALID_MODES -> silent "off"
+    (live: recovery's midturn lane dead post-v4.13.5 while evol, same code,
+    quoted 'on', fired). Coerce: True/"true"/"yes"/"1" -> "on"; False/"off"
+    -> "off"; valid mode strings pass through; anything else -> "off".
+    Never raises."""
     try:
-        m = str(cfg.get(MIDTURN_MODE_KEY) or "off").strip().lower()
-        return m if m in VALID_MODES else "off"
+        m = cfg.get(MIDTURN_MODE_KEY)
+        if m is True or (isinstance(m, str) and m.strip().lower()
+                         in ("true", "yes", "1", "on")):
+            return "on"
+        if m is False or (isinstance(m, str) and m.strip().lower()
+                          in ("false", "no", "0", "off")):
+            return "off"
+        if isinstance(m, str):
+            s = m.strip().lower()
+            return s if s in VALID_MODES else "off"
+        return "off"
     except Exception:  # noqa: BLE001
         return "off"
 
