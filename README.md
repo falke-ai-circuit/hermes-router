@@ -211,6 +211,19 @@ Suppression is reason-coded (`breaker_open|cap_exhausted|timeout|
 parse_fail|no_frame`) with per-hour fire/None counters. Any error
 fail-opens to flash-direct.
 
+### Impulse register (v1.1 — SPEC-impulse-lane-v1.md)
+
+The advisory line renders in the impulse register: weights per option
+(`pulls`, normalized from ledger prior support), a mechanical band
+(`strong|weak|noise` from calibration constants >=0.9 / 0.7-0.9 / <0.7),
+and <=3 signal-shape evidence citations — never mood/valence vocabulary,
+never permission language, one message. Banner display label is
+`impulse (decision)` (lane key, module name, and the
+`[decision-lane advisory]` PROVENANCE_TAG are unchanged; the retired
+`reflex (decision)` label remains a forged-banner spoof signal).
+Suppressed pre_cooldown consults are counted + ledger-visible
+(`pre_cooldown_suppressed_consult`), not banner-displayed.
+
 ### Decision memory + POST leg (R19 step 2, spec §10, v4.9.1 — dark by default)
 
 - `decision_miner.py` — bounded, resumable walk of the profile's own

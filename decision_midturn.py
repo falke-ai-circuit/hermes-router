@@ -690,7 +690,7 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         total = sum(float(c.get("cost") or 0.0) for c in verdicts)
         hi = sum(1 for c in verdicts
                  if float(c.get("confidence") or 0.0) >= 0.9)
-        line = ("· router · reflex (decision) | %d verdicts (%d shown >=0.9)"
+        line = ("· router · impulse (decision) | %d verdicts (%d shown >=0.9)"
                 " | tok %d/%d | $%.6f | initiator=agent"
                 % (n, hi, ti, to, total))
         # top verdicts: highest-confidence choice labels inline (up to 2,

@@ -119,10 +119,10 @@ def test_detection_triggers_off_tool_result_not_middleware(
     pending = dmt.flush(SID)
     assert len(pending) == 1
     assert pending[0].startswith(dmt.ADVISORY_HEADER)
-    # R19.15: the advisory renders the human-readable option LABEL —
-    # bare 'opt-N' only when no label exists in the envelope options
-    assert "choice=" in pending[0]
-    assert "choice=opt-1" not in pending[0]
+    # R19.15 / v1.1: the impulse frame renders the human-readable option
+    # LABEL — bare 'opt-N' only when no label exists in the envelope options
+    assert " pulls " in pending[0]
+    assert "opt-1 pulls" not in pending[0]
     assert "why_not: (no viable alternative" in pending[0]
     assert dmt.flush(SID) == []
 
@@ -424,7 +424,7 @@ def test_close_turn_single_verdict_format(_env, monkeypatch):
     _feed_verdicts(monkeypatch, cfg, ["opt-1"])
     banner = dmt.close_turn(SID)
     # R19.22: unified rollup — counts + real cost + top label
-    assert banner.startswith("· router · reflex (decision) |")
+    assert banner.startswith("· router · impulse (decision) |")
     assert "1 verdicts (0 shown >=0.9)" in banner or \
         "1 verdicts (1 shown >=0.9)" in banner
     assert "initiator=agent" in banner
@@ -437,7 +437,7 @@ def test_close_turn_aggregate_format(_env, monkeypatch):
     monkeypatch.setattr(dmt, "_cfg", lambda: cfg)
     _feed_verdicts(monkeypatch, cfg, ["opt-1", "opt-1", "opt-2", "opt-3"])
     banner = dmt.close_turn(SID)
-    assert banner.startswith("· router · reflex (decision) |")
+    assert banner.startswith("· router · impulse (decision) |")
     assert "4 verdicts" in banner
     assert "| tok 40/20 |" in banner
     assert "initiator=agent" in banner  # rollup: Top verdicts line follows
@@ -449,7 +449,7 @@ def test_close_turn_four_buckets_within_cap(_env, monkeypatch):
     _feed_verdicts(monkeypatch, cfg,
                    ["opt-1", "opt-1", "opt-2", "opt-3", "opt-4", "opt-4"])
     banner = dmt.close_turn(SID)
-    assert banner.startswith("· router · reflex (decision) |")
+    assert banner.startswith("· router · impulse (decision) |")
     assert "6 verdicts" in banner
     # the formatter folds a 5th bucket into 'other' (unit-tested below)
 
@@ -460,7 +460,7 @@ def test_aggregate_histogram_5th_bucket_folds_into_other():
                 [{"choice": "opt-5", "tokens_in": 1, "tokens_out": 1,
                   "cost": 0.1, "model": "m"}])
     line = dmt._aggregate_line(6, 6, 6, 0.6, consumed)
-    assert line.startswith("· router · reflex (decision) |")
+    assert line.startswith("· router · impulse (decision) |")
     assert "6 verdicts" in line
     assert "initiator=agent" in line  # Top verdicts line follows
 

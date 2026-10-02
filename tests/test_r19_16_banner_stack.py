@@ -24,9 +24,9 @@ def _clean():
 
 FRONTIER = ("· router · higher-self (frontier) | completion_audit | "
             "z-ai/glm-5.3 | tok 900/400 | $0.000100 | 3s | initiator=user")
-REFLEX_1 = ("· router · reflex (decision) | manual | typesafe/jev-router "
+REFLEX_1 = ("· router · impulse (decision) | manual | typesafe/jev-router "
             "| tok 100/20 | $0.000004 | 1s | initiator=user")
-REFLEX_2 = ("· router · reflex (decision) | midturn | typesafe/jev-router "
+REFLEX_2 = ("· router · impulse (decision) | midturn | typesafe/jev-router "
             "| tok 120/25 | $0.000005 | 2s | initiator=user")
 
 
@@ -38,7 +38,7 @@ def test_frontier_plus_two_reflex_all_stack(_clean):
     DB.park_anchor_banner("s-f4", REFLEX_2, task_id="t3")
     block = DB.consume_parked_banner("s-f4")
     assert "higher-self (frontier)" in block
-    assert block.count("reflex (decision)") == 2
+    assert block.count("impulse (decision)") == 2
     assert block.count("· router ·") == 3
     # fire order preserved
     assert block.index("higher-self (frontier)") \
@@ -52,7 +52,7 @@ def test_r17_two_lane_turn_no_starvation(_clean):
     DB.park_anchor_banner("s-f4b", FRONTIER, task_id="tf")
     DB.park_anchor_banner("s-f4b", REFLEX_1, task_id="tr")
     block = DB.consume_parked_banner("s-f4b")
-    assert "higher-self (frontier)" in block and "reflex (decision)" in block
+    assert "higher-self (frontier)" in block and "impulse (decision)" in block
 
 
 def test_same_task_retry_replaces_in_place(_clean):
@@ -83,7 +83,7 @@ def test_canonical_never_trimmed(_clean):
     out = DB.append_banner(answer, block, _knob_checked=True)
     assert out.startswith(answer)  # canonical first, banner appended
     assert answer in out and len(out) > len(answer)
-    assert "higher-self (frontier)" in out and "reflex (decision)" in out
+    assert "higher-self (frontier)" in out and "impulse (decision)" in out
 
 
 def test_bounded_segments(_clean):
@@ -105,6 +105,6 @@ def test_frontier_banner_delivery_path_end_to_end(_clean):
                                  + DB.consume_parked_banner("s-f4g"),
                                  _knob_checked=True)
     for marker in ("higher-self (frontier)", REFLEX_1.split(" | ")[0],
-                   "reflex (decision)"):
+                   "impulse (decision)"):
         assert marker in delivered
     assert delivered.count("· router ·") == 3

@@ -3,7 +3,7 @@ aggregate banner — reflex segment becomes a compact rollup (verdict count
 + confidence histogram + summed REAL cost + top verdict labels inline),
 and independent lanes each keep their own segment in fire order.
 
-1) Rollup: '· router · reflex (decision) | N verdicts (k shown >=0.9) |
+1) Rollup: '· router · impulse (decision) | N verdicts (k shown >=0.9) |
    tok ti/to | $total | initiator=agent' + 'Top verdicts: a / b'.
    Stand-downs are NOT verdicts.
 2) Independent lanes: reflex AND frontier AND uncensored in one turn ->
@@ -31,7 +31,7 @@ def test_rollup_counts_and_confidence_histogram():
                 {"choice": "opt-1", "confidence": 0.60, "label": "Approach 1",
                  "tokens_in": 80, "tokens_out": 30, "cost": 0.0001}]
     line = DMT._aggregate_line(3, 270, 120, 0.0005, consumed)
-    assert line.startswith("· router · reflex (decision) |")
+    assert line.startswith("· router · impulse (decision) |")
     assert "3 verdicts (2 shown >=0.9)" in line
     assert "tok 270/120" in line
     assert "$0.000500" in line
@@ -98,7 +98,7 @@ def test_three_lanes_fire_one_turn_all_segments(tmp_path):
     block = DB.consume_parked_banner("s-r22")
     assert block.count("· router ·") == 3  # one segment per lane
     assert "higher-self (frontier)" in block
-    assert "reflex (decision)" in block
+    assert "impulse (decision)" in block
     assert "shadow-self (uncensored)" in block
     # each segment keeps its own tokens/cost
     assert "tok 11824/96" in block and "$0.010792" in block
@@ -106,7 +106,7 @@ def test_three_lanes_fire_one_turn_all_segments(tmp_path):
     assert "tok 2000/800" in block and "$0.002100" in block
     # fire order: frontier -> reflex -> uncensored (park order)
     assert block.index("higher-self (frontier)") \
-        < block.index("reflex (decision)") \
+        < block.index("impulse (decision)") \
         < block.index("shadow-self (uncensored)")
     # the block counts as ONE banner: consumed clean, nothing re-parked
     assert DB.consume_parked_banner("s-r22") == ""

@@ -113,6 +113,31 @@ REASON_INVALID_FORK = "invalid_fork"
 DECISION_OPTIONS = ("apply_precedent", "escalate")
 
 # ---------------------------------------------------------------------------
+# Impulse register (v1.1 — SPEC-impulse-lane-v1.md, frozen frame doctrine):
+# the reflex advisory line becomes an impulse frame. Bands derive from
+# MEASURED calibration constants, never asserted. Bands are honest about
+# the mid-band: a 0.75 can no longer masquerade as instinct. The lane NEVER
+# names emotions/valence (hard rule §4) — instinct types live in personas.
+# ---------------------------------------------------------------------------
+IMPULSE_BAND_STRONG_MIN = 0.9   # >= 0.9        -> strong
+IMPULSE_BAND_WEAK_MIN = 0.7     # 0.7 - 0.9     -> weak; < 0.7 -> noise
+IMPULSE_BAND_LINES: Dict[str, str] = {
+    "strong": "pattern that usually precedes right calls",
+    "weak": "mixed evidence",
+    "noise": "statistically meaningless, ignore freely",
+}
+IMPULSE_TAIL = ("cannot be controlled, can be noticed and worked with; "
+                "never a command.")
+# Evidence-only rule (pin test): frame text carries signal shape ONLY.
+# This regex is the enforcement probe for the pin AND the build-time filter
+# on evidence citations.
+_EMOTION_WORD_RE = re.compile(
+    r"\b(fear|afraid|anxious|anxiety|dread|panic|worri\w*|excit\w*|"
+    r"curiou\w*|gut|hunch|instinct|feel\w*|felt|risk?y|riskier|"
+    r"love|hate|ang\w*|comfortable|uneasy|overwhelm\w*|reluctant|"
+    r"eager|attraction|repuls\w*|emotions?\w*)\b", re.IGNORECASE)
+
+# ---------------------------------------------------------------------------
 # Detection (stage-1, mirrors complexity.py shape)
 # ---------------------------------------------------------------------------
 
@@ -1338,6 +1363,95 @@ def _causal_context(session_id: str, ask: str,
         return clean_snippet(ask, 300)
 
 
+def _ledger_prior_stats(fork_cls: str, n_options: int,
+                        db_path: str = "") -> Dict[int, Tuple[int, int]]:
+    """Mechanical prior support per option: for each opt-N, how many ledger
+    rows in the same fork class chose it and how many were followed.
+    {} when the ledger has nothing — never fabricated. Never raises."""
+    out: Dict[int, Tuple[int, int]] = {}
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return out
+        try:
+            rows = conn.execute(
+                "SELECT choice, follow_verdict FROM decision_ledger"
+                " WHERE fork_class IN (?, ?) AND choice != '' AND choice != ?"
+                " ORDER BY id DESC LIMIT 50",
+                (str(fork_cls), "reflex:" + str(fork_cls),
+                 STAND_DOWN_CHOICE)).fetchall()
+        finally:
+            conn.close()
+        for i in range(max(0, int(n_options))):
+            want = OPTION_ID_FMT % (i + 1)
+            chosen = sum(1 for r in rows if r[0] == want)
+            if not chosen:
+                continue
+            followed = sum(1 for r in rows if r[0] == want and r[1])
+            out[i] = (chosen, followed)
+        return out
+    except Exception:  # noqa: BLE001
+        return out
+
+
+def impulse_band(weight: float) -> str:
+    """Band derivation from calibration constants (spec §2) — never asserted.
+    >=0.9 strong / 0.7-0.9 weak / <0.7 noise. Never raises."""
+    try:
+        w = max(0.0, min(1.0, float(weight)))
+        if w >= IMPULSE_BAND_STRONG_MIN:
+            return "strong"
+        if w >= IMPULSE_BAND_WEAK_MIN:
+            return "weak"
+        return "noise"
+    except Exception:  # noqa: BLE001
+        return "noise"
+
+
+def _impulse_weighting(ask: str, ids: List[str], framed: List[Dict[str, Any]],
+                       fork_cls: str) -> Dict[str, Any]:
+    """Weighting block (spec §3): weights per option (normalized, sum=1.0)
+    derived MECHANICALLY from ledger prior support per option (equal when
+    the ledger has nothing — never invented), band from calibration
+    constants over the TOP weight, evidence[] = <=3 signal-shape citations
+    from the options' causal frames (emotion-worded text is filtered out —
+    evidence-only rule), basis string. Never raises."""
+    try:
+        n = max(1, len(ids or []))
+        stats = _ledger_prior_stats(fork_cls, n)
+        if stats:
+            raw = [1.0 + float(stats.get(i, (0, 0))[1]) for i in range(n)]
+        else:
+            raw = [1.0] * n
+        total = sum(raw)
+        weights = [r / total for r in raw] if total > 0 else [1.0 / n] * n
+        weights = [round(w, 4) for w in weights]
+        drift = round(1.0 - sum(weights), 4)
+        if abs(drift) > 0:
+            weights[0] = round(weights[0] + drift, 4)
+        band = impulse_band(max(weights) if weights else 0.0)
+        evidence: List[str] = []
+        for o in (framed or [])[:3]:
+            for key in ("cause_effect", "cost", "risk", "priors"):
+                txt = str(o.get(key) or "").strip()
+                if txt and not _EMOTION_WORD_RE.search(txt):
+                    evidence.append(clean_snippet(txt, 120))
+                    break
+        return {
+            "weights": {ids[i]: weights[i] for i in range(n)
+                        if i < len(ids)},
+            "weights_list": weights,
+            "band": band,
+            "evidence": evidence[:3],
+            "basis": ("ledger prior support per option, normalized sum=1.0; "
+                      "band from calibration constants (>=0.9 strong / "
+                      "0.7-0.9 weak / <0.7 noise); equal weights when the "
+                      "ledger has no prior rows"),
+        }
+    except Exception:  # noqa: BLE001 — weighting never breaks the envelope
+        return {}
+
+
 def build_envelope(session_id: str, ask: str, options: List[str],
                    trigger: str, cfg: Optional[Dict[str, Any]] = None,
                    surrounding_context: str = "") -> Dict[str, Any]:
@@ -1387,6 +1501,9 @@ def build_envelope(session_id: str, ask: str, options: List[str],
                       "advice_only": rc == "high"},  # §5.2 high-stakes: advice only
             "causal_context": causal,
             "options": framed,
+            # SPEC-impulse-lane-v1.md §3: weighting block — weights per
+            # option (normalized), band, evidence[] (<=3), basis.
+            "weighting": _impulse_weighting(ask, ids, framed, fc),
             "question": {
                 "type": "choose_one_with_confidence",
                 "text": ("Choose exactly one option id. Respond with ONLY JSON: "
@@ -2230,7 +2347,7 @@ def ledger_recent(limit: int = 20, db_path: str = "") -> List[Dict[str, Any]]:
 def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
                            initiator: str = "user") -> str:
     """§7 provenance banner, same mechanics as uncensored/frontier lanes:
-    '· router · reflex (decision) | <trigger> | <model> | tok n/n | $x.xxxxxx |
+    '· router · impulse (decision) | <trigger> | <model> | tok n/n | $x.xxxxxx |
     initiator=user'. One banner per message, latest-wins park."""
     try:
         from . import debug_banner, usage_ledger
@@ -2307,17 +2424,60 @@ def render_advisory(verdict: Dict[str, Any],
             return ""
         caveat = (" ADVICE-ONLY: high-stakes fork — main model/user confirms."
                   if (envelope.get("scope") or {}).get("advice_only") else "")
-        return (
-            "%s reflex advisory (autonomous, not chosen): choice=%s "
-            "confidence=%.2f alternatives=%s fork=%s risk=%s%s — cannot be "
-            "controlled, can be noticed and worked with; never a command."
-            % (PROVENANCE_TAG, choice_label(verdict, envelope),
-               float(verdict.get("confidence") or 0.0),
-               ",".join(verdict.get("alternatives", [])) or "(none)",
-               envelope.get("fork_class", ""),
-               (envelope.get("scope") or {}).get("risk_class", "normal"),
-               caveat)
-        )
+        frame = render_impulse_frame(verdict, envelope)
+        if frame and caveat:
+            frame = re.sub(r"\s*never a command\.\s*$", "", frame).rstrip()
+            frame = "%s%s — %s." % (frame, caveat, IMPULSE_TAIL)
+            frame = re.sub(r"\s+", " ", frame).strip()
+        return frame
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def render_impulse_frame(verdict: Dict[str, Any],
+                         envelope: Dict[str, Any]) -> str:
+    """Impulse register frame (SPEC-impulse-lane-v1.md §2, v1.1):
+    `[decision-lane advisory] the fork surfaces as: <label-1> pulls <w1>
+    (<evidence-1>) | <label-2> pulls <w2> | band=<strong|weak|noise>:
+    <band-line> — cannot be controlled, can be noticed and worked with;
+    never a command.`
+    PROVENANCE_TAG byte-exact (injection defense — forged-banner battery
+    matches). Weights/band come from the envelope's MECHANICAL weighting
+    block; no emotion words, no imperatives, no outcome predictions, no
+    permission language. ONE message, single line. Fail-open ''.
+    Never raises."""
+    try:
+        opts = [o for o in (envelope.get("options") or [])
+                if isinstance(o, dict)]
+        if not opts:
+            return ""
+        w = envelope.get("weighting")
+        wmap = (w or {}).get("weights") if isinstance(w, dict) else None
+        band = str((w or {}).get("band") or "noise")
+        band_line = IMPULSE_BAND_LINES.get(band,
+                                           IMPULSE_BAND_LINES["noise"])
+        evid = (w or {}).get("evidence") or []
+        parts: List[str] = []
+        for i, o in enumerate(opts):
+            # R19.15 fallback kept under v1.1: blank/whitespace label -> raw id
+            label = (str(o.get("label") or "").strip()
+                     or str(o.get("id") or "").strip())[:60]
+            if not label:
+                return ""
+            wi = (wmap or {}).get(str(o.get("id") or ""))
+            if wi is None:
+                return ""  # no weight, no frame — never asserted
+            seg = "%s pulls %.2f" % (label, float(wi))
+            if i == 0 and evid:
+                ev = clean_snippet(evid[0], 120)
+                if ev and not _EMOTION_WORD_RE.search(ev):
+                    seg += " (%s)" % ev
+            parts.append(seg)
+        text = ("%s the fork surfaces as: %s | band=%s: %s — %s"
+                % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
+                   IMPULSE_TAIL))
+        # single-message shape: ONE line, whitespace-collapsed
+        return re.sub(r"\s+", " ", text).strip()
     except Exception:  # noqa: BLE001
         return ""
 

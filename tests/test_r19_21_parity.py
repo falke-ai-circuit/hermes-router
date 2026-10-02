@@ -92,7 +92,7 @@ def test_close_turn_single_verdict_banner_shape():
     banner = DMT._aggregate_line(1, 100, 20, 0.000004,
                                  [{"choice": "opt-2"}])
     # R19.22: the turn-close reflex segment is the rollup
-    assert banner.startswith("· router · reflex (decision) |")
+    assert banner.startswith("· router · impulse (decision) |")
     assert "1 verdicts" in banner
     assert "initiator=agent" in banner
     assert "Top verdicts: opt-2" in banner

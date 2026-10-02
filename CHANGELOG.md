@@ -1,3 +1,34 @@
+## 4.13.0 — 2026-10-02 (D1, impulse lane v1.1 — SPEC-impulse-lane-v1.md + v1.1 addendum)
+
+- (1) IMPULSE REGISTER FRAME SWAP: the reflex advisory line becomes the
+  impulse register — '[decision-lane advisory] the fork surfaces as:
+  <label-1> pulls <w1> (<evidence-1>) | <label-2> pulls <w2> |
+  band=<strong|weak|noise>: <band-line> — cannot be controlled, can be
+  noticed and worked with; never a command.' PROVENANCE_TAG byte-unchanged
+  (forged-banner battery still matches). Band lines fixed/mechanical from
+  calibration constants (>=0.9 strong / 0.7-0.9 weak / <0.7 noise, never
+  asserted); evidence clauses cite signal shape ONLY (emotion-worded text
+  filtered by _EMOTION_WORD_RE — hard rule §4: the lane never generates
+  mood/valence). One message, no permission language, no imperatives.
+- (2) WEIGHTING BLOCK: build_envelope gains `weighting` {weights per option
+  (normalized sum=1.0), band, evidence[] (<=3), basis} — derived
+  mechanically from ledger prior support per option (equal weights when the
+  ledger has no prior rows, never invented). Fail-open {} unchanged.
+- (3) v1.1 ADDENDUM — DISPLAY LABEL ONLY: banner label 'reflex (decision)'
+  → 'impulse (decision)'. Lane key, module name, PROVENANCE_TAG unchanged.
+  'reflex (decision)' stays in the forged-banner spoof signal list.
+- (4) E3 RIDER: the 600s pre_cooldown consult suppression is no longer
+  silent — emit_pre_cooldown_suppressed_consult() bumps
+  pre_cooldown_suppressed_consult and writes a ledger row
+  (outcome=suppressed_consult, fail_open_reason=pre_cooldown_skip_consult).
+  Ledger-visible, NOT banner-displayed. Never raises.
+- Docs: docs/SPEC-impulse-lane-v1.md + docs/SPEC-impulse-lane-v1.1-addendum.md
+  committed; README Lane 3 notes the impulse register.
+- Tests: tests/test_d1_impulse_lane.py — 16 pins (band derivation,
+  evidence-only regex, provenance retention, single-message shape,
+  weighting normalized, banner label, E3 ledger visibility, forged-banner
+  regression path). Suite stays green.
+
 ## 4.12.9 — 2026-09-29 (R19.22, Goran — from operative's Kindle run: turn-close aggregate banner, cost rollup + independent lanes)
 
 - (1) REFLEX SEGMENT ROLLUP: the turn-close reflex (decision) segment is

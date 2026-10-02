@@ -307,10 +307,10 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
     assert decision.PROVENANCE_TAG in parked
-    # R19.15: the banner renders the human-readable option LABEL
-    assert "choice=redis" in parked
+    # R19.15 / v1.1: the impulse frame renders the human-readable LABEL
+    assert "redis pulls" in parked
     # §7 banner: one provenance line, decision lane, initiator=user
-    assert "· router · reflex (decision) |" in parked
+    assert "· router · impulse (decision) |" in parked
     assert "initiator=user" in parked
     assert parked.count("· router ·") == 1
     assert _logged("decision_advisory_parked")
@@ -345,8 +345,8 @@ def test_backend_jev_pipeline(_reset, monkeypatch):
                                 LOGGED.append((e, dict(f))))
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    # R19.15: human-readable label (opt-2 = memcached)
-    assert "choice=memcached" in parked
+    # R19.15 / v1.1: human-readable label (opt-2 = memcached)
+    assert "memcached pulls" in parked
     assert "typesafe/jev-router@pinned" in parked
     row = decision.ledger_recent()[0]
     assert row["model_version"] == "typesafe/jev-router@pinned"
@@ -535,7 +535,7 @@ def test_banner_format_decision_lane(_reset):
         "pre", "z-ai/glm-5.3-flash",
         {"endpoint": "", "tokens_in": 10, "tokens_out": 5, "latency_s": 1.2},
         initiator="user")
-    assert b.startswith("· router · reflex (decision) | pre | z-ai/glm-5.3-flash")
+    assert b.startswith("· router · impulse (decision) | pre | z-ai/glm-5.3-flash")
     assert "tok 10/5" in b
     assert "initiator=user" in b
 
@@ -552,7 +552,7 @@ def test_banner_latest_wins_one_per_message(_reset, monkeypatch):
         deadline = time.time() + 5
         while time.time() < deadline:
             _lbl = {"opt-1": "redis", "opt-2": "memcached"}[choice]
-            if ("choice=%s" % _lbl) in debug_banner._ANCHOR_BANNERS.get(SID, ""):
+            if ("%s pulls" % _lbl) in debug_banner._ANCHOR_BANNERS.get(SID, ""):
                 break
             time.sleep(0.02)
     out = debug_banner.consume_parked_banner(SID)
@@ -560,8 +560,10 @@ def test_banner_latest_wins_one_per_message(_reset, monkeypatch):
     # replaces that task's segment (R9d retry semantics). Both calls here
     # share TASK_ID -> one segment carrying the LATEST verdict.
     assert out.count("· router ·") == 1
-    assert "choice=memcached" in out  # latest verdict for the same task
-    assert "choice=redis" not in out
+    # v1.1: the impulse frame names BOTH options' labels; latest-wins is
+    # pinned by the single-segment count (R9d retry semantics elsewhere).
+    assert "memcached pulls" in out
+    assert "redis pulls" in out
     assert debug_banner.consume_parked_banner(SID) == ""
 
 
@@ -578,8 +580,8 @@ def test_midturn_declared_claim_runs_lane(_reset, monkeypatch):
     assert d.route is False  # advisory only — turn proceeds
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    # R19.15: banner renders the human-readable option label
-    assert "choice=redis" in parked
+    # R19.15 / v1.1: banner renders the human-readable option label
+    assert "redis pulls" in parked
     assert "initiator=agent" in parked
 
 
@@ -617,9 +619,10 @@ def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
                             LOGGED.append((e, dict(f))))
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    # R19.15: verdict APPENDED as advisory with the human-readable label
-    assert "choice=migrate the store now" in parked
-    assert "· router · reflex (decision) |" in parked   # banner-marked
+    # R19.15 / v1.1: verdict APPENDED as advisory with the human-readable
+    # label (label truncated to 60 chars in the frame)
+    assert "migrate the store now" in parked
+    assert "· router · impulse (decision) |" in parked   # banner-marked
     assert "initiator=model" in parked         # steering, not user ask
     row = decision.ledger_recent()[0]
     assert row["trigger_kind"] == "post_fork_scan"

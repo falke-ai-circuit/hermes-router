@@ -459,6 +459,30 @@ def pre_cooldown_seconds() -> int:
         return 600
 
 
+def emit_pre_cooldown_suppressed_consult(session_id: str, task_id: str,
+                                         since_s: int) -> None:
+    """D1 E3 rider (SPEC-impulse-lane-v1.md v1.1): the 600s pre_cooldown
+    consult suppression was SILENT at the ledger layer. Emit a counted
+    suppressed-consult ledger line — ledger-visible, NOT banner-displayed.
+    Never raises, never breaks dispatch."""
+    try:
+        from . import decision as _dlane
+
+        _dlane.bump_counter("pre_cooldown_suppressed_consult")
+        _dlane.ledger_write({
+            "session_id": session_id, "task_id": task_id,
+            "trigger": "pre_cooldown",
+            "trigger_kind": _dlane.trigger_kind("pre"),
+            "choice": "", "outcome": "suppressed_consult",
+            "fail_open_reason": "pre_cooldown_skip_consult",
+            "verdict_json": json.dumps(
+                {"kind": "suppressed_consult", "since_s": since_s},
+                default=str),
+        })
+    except Exception:  # noqa: BLE001 — observability must never break dispatch
+        pass
+
+
 def post_audit_min_turns() -> int:
     """post_audit_min_turns (int, default 3, 1 = current behavior). Never raises."""
     try:
@@ -1048,6 +1072,8 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # Router tuning A2 (2026-09-09): PRE cooldown — after step-0 override
         # handling (override beats cooldown, per dispatch brief).
         if _pre_cooldown_active(session_id, task_id) and override != "anchor":
+            _cool_ts, _ = None, ""
+            _since = -1
             try:
                 from hermes_router import _log_route as _lr  # deferred - import cycle
                 _cool_ts, _ = state.last_staged_consult(session_id)
@@ -1057,6 +1083,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     task_id=task_id)
             except Exception:  # noqa: BLE001
                 pass
+            emit_pre_cooldown_suppressed_consult(session_id, task_id, _since)
             return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None, "pre_cooldown_skip")
 
         # v3.3.0 F3 — infra suppression guard, AFTER step-0 override handling

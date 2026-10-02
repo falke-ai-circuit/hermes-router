@@ -18,9 +18,13 @@ from hermes_router import decision as D
 
 
 def _env2():
-    return {"fork_class": "deploy",
-            "options": [{"id": "opt-1", "label": "Approach 1"},
-                        {"id": "opt-2", "label": "Approach 2"}]}
+    # D1 v1.1: the impulse frame reads the MECHANICAL weighting block —
+    # envelopes without it fail-open to '' (never asserted). Build one.
+    opts = [{"id": "opt-1", "label": "Approach 1"},
+            {"id": "opt-2", "label": "Approach 2"}]
+    return {"fork_class": "deploy", "options": opts,
+            "weighting": {"weights": {"opt-1": 0.5, "opt-2": 0.5},
+                          "band": "noise", "evidence": [], "basis": "test"}}
 
 
 # --- 1: closed-set clamp at the advisory choke point -----------------------------
@@ -60,12 +64,14 @@ def test_unmapped_choice_counter_bumps(monkeypatch):
 
 
 def test_empty_options_envelope_unclamped():
-    """No declared options in the envelope -> no clamp basis (fail-open,
-    legacy behavior for option-less envelopes)."""
+    """D1 v1.1: no declared options -> no weights -> the impulse frame
+    fail-opens to '' (never asserted) — superseding the legacy
+    option-less unclamped render."""
     verdict = {"choice": "apply_precedent", "confidence": 0.9,
                "alternatives": []}
     out = D.render_advisory(verdict, {"fork_class": "deploy", "options": []})
-    assert out != ""
+    assert out == ""
+    assert D.PROVENANCE_TAG not in out  # tag never rides an empty frame
 
 
 # --- 2: POV vantage lines ----------------------------------------------------------

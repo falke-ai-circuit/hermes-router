@@ -50,7 +50,11 @@ logger = logging.getLogger(__name__)
 
 BANNER_HEAD = "· router ·"
 BANNER_TAIL = "·"
-MAX_BANNER_CHARS = 480          # R19.15: 400 -> 480 (the choice LABEL render
+MAX_BANNER_CHARS = 700          # R19.15: 400 -> 480; D1 v1.1: 480 -> 700 (the
+                                # impulse frame with weights + evidence + band
+                                # + ADVICE-ONLY caveat runs ~500-560c — the cap
+                                # must keep the provenance banner line intact,
+                                # never truncate the frame's banner off)
                                 # adds ~50c over the bare opt-N id; oversized
                                 # diagnostics are still omitted entirely)
 VALID_LANES = ("uncensored-render", "uncensored-post", "frontier-anchor",
@@ -148,9 +152,12 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # SHADOW SELF (part of her model, not an external route); the
         # frontier lane is her HIGHER SELF. Banner labels reflect identity,
         # not plumbing.
+        # v1.1 addendum (SPEC-impulse-lane-v1.md): display label is
+        # 'impulse (decision)' — the lane KEY stays 'decision', the
+        # module name and PROVENANCE_TAG are unchanged.
         _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
             "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
-            else "reflex (decision)" if lane in ("decision", "reflex")
+            else "impulse (decision)" if lane in ("decision", "reflex")
             else lane.split("-", 1)[0])
         # R19 v3: an empty endpoint renders model-only (decision lane has no
         # remote host to name); initiator provenance rides the L1 line.
@@ -254,6 +261,7 @@ def park_anchor_banner(session_id: str, banner_text: str,
     re-parks dedupe; canonical delivery text is NEVER trimmed to make
     banner room (append_banner attaches the block; only the banner block
     itself is bounded)."""
+
     try:
         if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
             _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)

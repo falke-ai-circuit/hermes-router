@@ -63,8 +63,8 @@ def test_banner_label_parity_and_reflex_lane():
                              model="jev", endpoint="", tokens_in=1,
                              tokens_out=1, est_cost=0.0, latency_s=0.0,
                              retries=0, task_id="", session_id="s")
-    assert "reflex (decision)" in b_legacy
-    assert "reflex (decision)" in b_new
+    assert "impulse (decision)" in b_legacy
+    assert "impulse (decision)" in b_new
 
 
 # --- 2. silent default for unknown types --------------------------------------
