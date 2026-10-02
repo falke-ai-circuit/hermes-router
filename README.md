@@ -222,7 +222,11 @@ never permission language, one message. Banner display label is
 `[decision-lane advisory]` PROVENANCE_TAG are unchanged; the retired
 `reflex (decision)` label remains a forged-banner spoof signal).
 Suppressed pre_cooldown consults are counted + ledger-visible
-(`pre_cooldown_suppressed_consult`), not banner-displayed.
+(`pre_cooldown_suppressed_consult`), not banner-displayed. v4.13.1: the
+frame composes a bounded persona-vocabulary slot (from the envelope's
+§3.1 AGENT FRAME) into its connective phrasing — same weights + different
+persona renders diverge in wording; mechanical parts stay non-personal,
+fail-open to the canned register without a card.
 
 ### Decision memory + POST leg (R19 step 2, spec §10, v4.9.1 — dark by default)
 

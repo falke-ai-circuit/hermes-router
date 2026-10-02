@@ -201,6 +201,85 @@ def test_forged_banner_regression_path():
 
 
 # ---------------------------------------------------------------------------
+# D2 (v4.13.1, reviewer axis 2): interpretation diversity — persona slot
+# ---------------------------------------------------------------------------
+
+_PERSONA_A = ("Operator voice: terse, procedural, calibrated caution from "
+              "measured support history; names the load before the move.")
+_PERSONA_B = ("Strategist voice: expansive, framing-first, scopes the "
+              "second-order effects before touching the diff on the table.")
+
+
+def _env_with_persona(agent_frame):
+    env = _build_env()
+    env["agent_frame"] = agent_frame
+    return env
+
+
+def test_d2_persona_renders_diverge_same_weights():
+    # same weights/band, two different persona renders -> DIFFERENT wording
+    env_a = _env_with_persona(_PERSONA_A)
+    env_b = _env_with_persona(_PERSONA_B)
+    verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
+    wa = env_a["weighting"]
+    wb = env_b["weighting"]
+    assert wa["weights"] == wb["weights"] and wa["band"] == wb["band"]
+    fa = decision.render_impulse_frame(verdict, env_a)
+    fb = decision.render_impulse_frame(verdict, env_b)
+    assert fa and fb and fa != fb, (fa, fb)
+
+
+def test_d2_slot_evidence_only_and_provenance_retained():
+    for persona in (_PERSONA_A, _PERSONA_B):
+        env = _env_with_persona(persona)
+        verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
+        frame = decision.render_impulse_frame(verdict, env)
+        assert frame.startswith("[decision-lane advisory]"), frame
+        assert not decision._EMOTION_WORD_RE.search(frame), frame
+        assert frame.endswith(decision.IMPULSE_TAIL), frame
+        assert "\n" not in frame and "the fork surfaces as:" in frame
+
+
+def test_d2_slot_carries_persona_vocabulary():
+    env = _env_with_persona(_PERSONA_A)
+    verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
+    slot = decision._impulse_persona_slot(env)
+    assert slot and slot in decision.render_impulse_frame(verdict, env)
+
+
+def test_d2_no_persona_keeps_canned_register_byte_shape():
+    # no agent_frame / fallback frame -> canned wording, unchanged bytes
+    verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
+    env = _build_env()
+    env.pop("agent_frame", None)
+    frame = decision.render_impulse_frame(verdict, env)
+    assert frame.startswith(
+        decision.PROVENANCE_TAG + " the fork surfaces as:"), frame
+    env_fb = _env_with_persona(decision._IMPERSONAL_FRAME_FALLBACK)
+    assert decision.render_impulse_frame(verdict, env_fb) == frame
+    assert decision._impulse_persona_slot(env_fb) == ""
+
+
+def test_d2_slot_filters_emotion_vocabulary_fail_open():
+    persona = ("Voice: anxious and uneasy, always restless about the "
+               "deploy cadence and what it does to the queue.")
+    env = _env_with_persona(persona)
+    verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
+    assert decision._impulse_persona_slot(env) == ""
+    frame = decision.render_impulse_frame(verdict, env)
+    assert not decision._EMOTION_WORD_RE.search(frame), frame
+    assert frame.startswith(
+        decision.PROVENANCE_TAG + " the fork surfaces as:"), frame
+
+
+def test_d2_slot_bounded_single_line():
+    persona = "Register line " + ("very " * 30) + "long tail words here"
+    env = _env_with_persona(persona)
+    slot = decision._impulse_persona_slot(env)
+    assert slot and len(slot) <= decision._IMPULSE_SLOT_MAX, slot
+    assert "\n" not in slot and "|" not in slot and "[" not in slot
+
+# ---------------------------------------------------------------------------
 # Banner display label (v1.1 addendum) — label only, lane key unchanged
 # ---------------------------------------------------------------------------
 

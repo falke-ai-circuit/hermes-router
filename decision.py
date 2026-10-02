@@ -1317,6 +1317,19 @@ def detect_v3(text: str, level: Optional[int] = None,
 
 ENVELOPE_SCHEMA = "decision-envelope/2"
 
+# D2 (v4.13.1, reviewer axis 2): static stand-in emitted when the persona
+# card is unavailable — a frame with THIS text carries no persona vocabulary
+# and keeps the canned impulse register byte-shape.
+_IMPERSONAL_FRAME_FALLBACK = ("persona unavailable — answer from the "
+                              "profile's standing methodology: conservative, "
+                              "minimal-blast-radius default.")
+
+# D2: persona-vocabulary slot bounds. The slot is REGISTER, not content —
+# a short connective phrase the agent's own voice inhabits; bounded, single
+# line, evidence-only filtered (emotion regex), dropped entirely on any miss.
+_IMPULSE_SLOT_MAX = 40
+_IMPULSE_SLOT_MIN = 8
+
 
 def _agent_frame(cfg: Dict[str, Any]) -> str:
     """§3.1 AGENT FRAME from the profile DNA (persona card, bounded 800c).
@@ -1330,8 +1343,7 @@ def _agent_frame(cfg: Dict[str, Any]) -> str:
             return frame
     except Exception:  # noqa: BLE001
         pass
-    return ("persona unavailable — answer from the profile's standing "
-            "methodology: conservative, minimal-blast-radius default.")
+    return _IMPERSONAL_FRAME_FALLBACK
 
 
 def _causal_context(session_id: str, ask: str,
@@ -2434,6 +2446,36 @@ def render_advisory(verdict: Dict[str, Any],
         return ""
 
 
+def _impulse_persona_slot(envelope: Dict[str, Any]) -> str:
+    """D2 (v4.13.1, reviewer axis 2): the impulse frame is a register the
+    agent inhabits, not canned copy. Compose a PERSONA-VOCABULARY slot into
+    the frame's connective phrasing, sourced the way the uncensored lane
+    sources its card — the envelope's AGENT FRAME (§3.1), which is built
+    from persona_card.build_persona_context(). Mechanical parts (weights,
+    band, evidence) stay non-personal; ONLY this slot carries persona
+    vocabulary. Bounded [_IMPULSE_SLOT_MIN, _IMPULSE_SLOT_MAX] chars, one
+    line, marker/pipe/markdown chars stripped, evidence-only filtered
+    (emotion regex — hard rule §4). Fail-open '' = canned register,
+    byte-shape unchanged. Never raises."""
+    try:
+        raw = str(envelope.get("agent_frame") or "").strip()
+        if not raw or raw == _IMPERSONAL_FRAME_FALLBACK:
+            return ""
+        frag = clean_snippet(raw, 200)
+        line = re.sub(r"[\[\]|#*`_>]", " ", frag.split("\n")[0])
+        line = re.sub(r"\s+", " ", line).strip(" -–—:;,.\"'()").strip()
+        if len(line) > _IMPULSE_SLOT_MAX:
+            cut = line[:_IMPULSE_SLOT_MAX]
+            line = cut.rsplit(" ", 1)[0] if " " in cut else cut
+        if len(line) < _IMPULSE_SLOT_MIN:
+            return ""
+        if _EMOTION_WORD_RE.search(line):
+            return ""
+        return line
+    except Exception:  # noqa: BLE001 — fail-open to the canned register
+        return ""
+
+
 def render_impulse_frame(verdict: Dict[str, Any],
                          envelope: Dict[str, Any]) -> str:
     """Impulse register frame (SPEC-impulse-lane-v1.md §2, v1.1):
@@ -2473,9 +2515,19 @@ def render_impulse_frame(verdict: Dict[str, Any],
                 if ev and not _EMOTION_WORD_RE.search(ev):
                     seg += " (%s)" % ev
             parts.append(seg)
-        text = ("%s the fork surfaces as: %s | band=%s: %s — %s"
-                % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
-                   IMPULSE_TAIL))
+        # D2 (v4.13.1, reviewer axis 2): compose the persona-vocabulary
+        # slot into the frame's connective phrasing — same weights + two
+        # different persona renders DIVERGE in wording; no slot (no card /
+        # fallback frame / filtered out) keeps the canned register bytes.
+        slot = _impulse_persona_slot(envelope)
+        if slot:
+            text = ("%s the fork surfaces as: %s | band=%s: %s — %s — %s"
+                    % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
+                       slot, IMPULSE_TAIL))
+        else:
+            text = ("%s the fork surfaces as: %s | band=%s: %s — %s"
+                    % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
+                       IMPULSE_TAIL))
         # single-message shape: ONE line, whitespace-collapsed
         return re.sub(r"\s+", " ", text).strip()
     except Exception:  # noqa: BLE001

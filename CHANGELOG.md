@@ -1,3 +1,26 @@
+## 4.13.1 — 2026-10-02 (D2 fix-first, reviewer axis 2 — interpretation diversity)
+
+- PERSONA-VOCABULARY SLOT in the impulse frame: render_impulse_frame now
+  composes a bounded persona-vocabulary slot into the frame's connective
+  phrasing — the frame is a register the agent inhabits, not canned copy.
+  Sourced the way the uncensored lane sources its card: the envelope's
+  AGENT FRAME (§3.1, persona_card.build_persona_context()). Same weights +
+  two different persona renders now DIVERGE in wording.
+- Machine-layer mechanical parts (weights/band/evidence) stay non-personal:
+  only the slot carries persona vocabulary. Slot bounds
+  [_IMPULSE_SLOT_MIN=8, _IMPULSE_SLOT_MAX=40] chars, one line, marker/pipe/
+  markdown chars stripped, evidence-only filtered by _EMOTION_WORD_RE
+  (hard rule §4) — a slot that fails the filter is dropped entirely.
+- Fail-open: no agent_frame, the _IMPERSONAL_FRAME_FALLBACK static frame,
+  or a filtered-out slot all render the canned register byte-shape exactly
+  as before. PROVENANCE_TAG byte-exact '[decision-lane advisory]' retained
+  on every path; lane key decision unchanged; E3 suppressed-consult
+  untouched.
+- Tests: 6 new D2 pins in tests/test_d1_impulse_lane.py (divergence at
+  fixed weights, evidence-only + provenance retention with slot present,
+  slot carries persona vocabulary, canned byte-shape without persona,
+  emotion filter fail-open, slot bounds). Suite stays green.
+
 ## 4.13.0 — 2026-10-02 (D1, impulse lane v1.1 — SPEC-impulse-lane-v1.md + v1.1 addendum)
 
 - (1) IMPULSE REGISTER FRAME SWAP: the reflex advisory line becomes the

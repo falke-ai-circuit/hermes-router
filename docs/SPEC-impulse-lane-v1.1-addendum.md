@@ -4,6 +4,24 @@
 **Scope:** banner display label ONLY. Lane key, module name (`decision.py`),
 PROVENANCE_TAG (`[decision-lane advisory]`) all UNCHANGED.
 
+# v4.13.1 (D2 fix-first, reviewer axis 2) — interpretation diversity
+
+The impulse frame is a register the agent inhabits, not canned copy:
+`render_impulse_frame` composes a PERSONA-VOCABULARY SLOT into the frame's
+connective phrasing. The slot is sourced the way the uncensored lane sources
+its card — the envelope's AGENT FRAME (§3.1, `persona_card.build_persona_context()`).
+Same weights + two different persona renders DIVERGE in wording.
+
+Invariants preserved:
+- Mechanical parts (weights/band/evidence) stay non-personal — only the slot
+  carries persona vocabulary.
+- Slot is bounded (8–40 chars), one line, marker/pipe/markdown-stripped,
+  evidence-only filtered by the emotion regex; a failing slot is dropped.
+- Fail-open: no persona card / fallback frame / filtered slot renders the
+  canned register byte-shape unchanged.
+- PROVENANCE_TAG byte-exact `[decision-lane advisory]` on every path; lane
+  key `decision` unchanged; E3 suppressed-consult untouched.
+
 ## 1. Display label swap
 
 The banner display label for the decision lane changes from `reflex (decision)`
