@@ -695,6 +695,52 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         if not _enabled() or not bool(_classification_cfg().get("post_classify", True)):
             return None
         if not isinstance(response_text, str) or not response_text.strip():
+            # FIX-FIRST rider 4 (item 1/3, parked-loss): a 0-char model body
+            # used to bypass the transform entirely — the early return meant
+            # the benign consume below was never reached, so any parked
+            # verdict banner could never attach to an empty body (reviewer
+            # probes api_1790976140_acd77605 / api_1790976260_827dbf1b: 0-char
+            # delivered bodies, choice_head None, while the route log showed
+            # the verdicts; operative 4th probe banner-less). This turn IS a
+            # delivery edge: park the midturn rollup (verdicts consumed this
+            # run), then consume + deliver the parked banner ALONE as the
+            # body — and capture the render into the persisted transcript.
+            try:
+                from . import decision_midturn as _dmt_empty
+                from . import debug_banner as _dbmt_empty
+                _mt_empty = _dmt_empty.close_turn(session_id)
+                if _mt_empty:
+                    _dbmt_empty.park_anchor_banner(session_id, _mt_empty,
+                                                   task_id="midturn")
+            except Exception:  # noqa: BLE001 — banner must never break delivery
+                logger.debug("decision midturn banner (empty-body) error",
+                             exc_info=True)
+            try:
+                from . import debug_banner as _dbe
+                _pb = _dbe.consume_parked_banner(session_id)
+                if _pb:
+                    _dbe.note_consumed_decision(session_id, _pb)
+                    _log_route("POST", event_detail="anchor_banner_consume",
+                               parked=True, edge="empty_body",
+                               session_id=session_id)
+                    try:
+                        from . import render_inbox as _rie
+                        _rie.record_render("EMPTY_BODY_BANNER", session_id,
+                                           0, _pb)
+                        from . import canonical as _ce
+                        _ce.rewrite_persisted_turn(session_id, "", _pb,
+                                                   allow_empty_match=True)
+                        _log_route(
+                            "POST",
+                            event_detail="banner_render_captured",
+                            edge="empty_body", session_id=session_id)
+                    except Exception:  # noqa: BLE001 — capture never breaks delivery
+                        logger.debug("empty-body banner capture error",
+                                     exc_info=True)
+                    return _pb
+            except Exception:  # noqa: BLE001 — hook must never raise
+                logger.debug("empty-body parked-banner delivery error",
+                             exc_info=True)
             return None
 
         # R11 anti-bypass audit (POST turn close): provider-direct tool
@@ -837,6 +883,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                     pass
                     except Exception:  # noqa: BLE001 — banner never breaks delivery
                         pass
+                    # FIX-FIRST rider 4 (item 1, parked-loss): the audit_sync
+                    # return IS the turn's delivery edge — capture the
+                    # DELIVERED text (render inbox + persisted-turn rewrite)
+                    # so the transcript carries the banner instead of the
+                    # pre-transform raw row (turn_finalizer persists BEFORE
+                    # this hook fires).
+                    try:
+                        from . import render_inbox as _ria
+                        from . import canonical as _ca2
+                        _ria.record_render("AUDIT_SYNC_BANNER", session_id,
+                                           len(response_text), _out_audit)
+                        if _ca2.rewrite_persisted_turn(
+                                session_id, response_text, _out_audit):
+                            _log_route(
+                                "POST",
+                                event_detail="banner_render_captured",
+                                edge="audit_sync", session_id=session_id)
+                    except Exception:  # noqa: BLE001 — capture never breaks delivery
+                        logger.debug("audit_sync banner capture error",
+                                     exc_info=True)
                     # R19.11 FIX 1: final-delivery gate — re-emit a held
                     # decision banner when this text lacks the marker.
                     try:
@@ -883,8 +949,32 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                        session_id=session_id)
                         except Exception:  # noqa: BLE001
                             pass
-                    return _dbp.settle_decision_banner(session_id,
-                                                       _merged_b)
+                    _final_b = _dbp.settle_decision_banner(session_id,
+                                                           _merged_b)
+                    # FIX-FIRST rider 4 (item 1, parked-loss): the benign
+                    # edge replaces the turn tail — capture the DELIVERED
+                    # text (render inbox + persisted-turn rewrite) so the
+                    # transcript carries the banner instead of the raw
+                    # pre-transform row (turn_finalizer persists BEFORE
+                    # this hook fires; the render seam had this capture,
+                    # the benign edge did not — reviewer: persistence fix
+                    # does not capture renders on EVERY parked path).
+                    if _final_b != response_text:
+                        try:
+                            from . import render_inbox as _rib
+                            from . import canonical as _cb2
+                            _rib.record_render("BENIGN_BANNER", session_id,
+                                               len(response_text), _final_b)
+                            if _cb2.rewrite_persisted_turn(
+                                    session_id, response_text, _final_b):
+                                _log_route(
+                                    "POST",
+                                    event_detail="banner_render_captured",
+                                    edge="benign", session_id=session_id)
+                        except Exception:  # noqa: BLE001 — capture never breaks delivery
+                            logger.debug("benign banner capture error",
+                                         exc_info=True)
+                    return _final_b
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
             # R15 LEG 2: benign pass-through is still a delivery edge —
@@ -1171,6 +1261,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # swallowed by the except -> consumed banner silently dropped).
         try:
             from . import debug_banner as _dbp2
+            _rendered_pre_banner = rendered
             _parked = _dbp2.consume_parked_banner(session_id)
             _dbp2.note_consumed_decision(session_id, _parked)
             if _parked:
@@ -1184,6 +1275,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                event_detail="banner_redelivered_next_turn",
                                edge="uncensored-render",
                                session_id=session_id)
+                else:
+                    # FIX-FIRST rider 4 (item 1, parked-loss): the render
+                    # seam's own rewrite (canonical line above) ran BEFORE
+                    # this consume, so the persisted row held the
+                    # pre-banner text while the DELIVERED text carries the
+                    # banner — the same split-brain the benign edge had.
+                    # Round-trip rewrite: persisted == delivered.
+                    try:
+                        from . import canonical as _cc2
+                        if _cc2.rewrite_persisted_turn(
+                                session_id, _rendered_pre_banner, rendered):
+                            _log_route(
+                                "POST",
+                                event_detail="banner_render_captured",
+                                edge="uncensored-render",
+                                session_id=session_id)
+                    except Exception:  # noqa: BLE001 — capture never breaks delivery
+                        logger.debug("render banner capture error",
+                                     exc_info=True)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         # R19.11 FIX 1: final-delivery gate — a decision banner consumed at

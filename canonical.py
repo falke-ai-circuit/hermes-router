@@ -296,7 +296,8 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
 
 
 def rewrite_persisted_turn(session_id: str, refusal_text: str,
-                           delivered_text: str) -> bool:
+                           delivered_text: str,
+                           allow_empty_match: bool = False) -> bool:
     """Rewrite the persisted assistant turn to the DELIVERED text.
 
     Guard (router-substitution-only): the row is matched by EXACT content
@@ -306,8 +307,21 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
     is dropped with the rewrite, mirroring core's drop_stale_api_content
     semantics. Naturally idempotent: after the first rewrite no row matches
     the refusal text anymore. Never raises; True when exactly one row was
-    rewritten."""
-    if not session_id or not refusal_text or not delivered_text:
+    rewritten.
+
+    FIX-FIRST rider 4 (parked-loss, item 1): allow_empty_match=True —
+    used ONLY by the empty-body banner delivery edge — additionally
+    matches the newest EMPTY assistant row for the session. A 0-char
+    flash turn persisted by turn_finalizer before the transform fired
+    could never match the old exact-equality guard (empty refusal_text
+    was rejected), so the delivered parked banner never landed in the
+    persisted transcript (reviewer probes api_1790976140_acd77605 /
+    api_1790976260_827dbf1b: 0-char delivered bodies). The match is still
+    scoped to the session's newest assistant row and only fires when a
+    parked banner is actually delivered over it."""
+    if not session_id or not delivered_text:
+        return False
+    if not refusal_text and not allow_empty_match:
         return False
     try:
         import sqlite3
@@ -317,14 +331,24 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
             return False
         conn = sqlite3.connect(db_path, timeout=2.0)
         try:
-            cur = conn.execute(
-                "UPDATE messages SET content = ?, api_content = NULL"
-                " WHERE id = (SELECT id FROM messages"
-                "            WHERE session_id = ? AND role = 'assistant'"
-                "              AND content = ?"
-                "            ORDER BY id DESC LIMIT 1)",
-                (str(delivered_text), str(session_id), str(refusal_text)),
-            )
+            if refusal_text:
+                cur = conn.execute(
+                    "UPDATE messages SET content = ?, api_content = NULL"
+                    " WHERE id = (SELECT id FROM messages"
+                    "            WHERE session_id = ? AND role = 'assistant'"
+                    "              AND content = ?"
+                    "            ORDER BY id DESC LIMIT 1)",
+                    (str(delivered_text), str(session_id), str(refusal_text)),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE messages SET content = ?, api_content = NULL"
+                    " WHERE id = (SELECT id FROM messages"
+                    "            WHERE session_id = ? AND role = 'assistant'"
+                    "              AND (content = '' OR content IS NULL)"
+                    "            ORDER BY id DESC LIMIT 1)",
+                    (str(delivered_text), str(session_id)),
+                )
             conn.commit()
             return bool(cur.rowcount)
         finally:

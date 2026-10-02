@@ -1,3 +1,59 @@
+## 4.13.7 — 2026-10-02 (FIX-FIRST rider 4 — parked-loss exhaustiveness + D1 stacking + midturn pseudo-fires)
+
+Reviewer battery_final_20261002: 11/14 PASS; three open defect classes fixed.
+
+- Item 1/3 — PARKED-LOSS / operative banner-less. Verdicts fired, billed and
+  were correct, but the banner never reached the body (probes
+  api_1790976140_acd77605 / api_1790976260_827dbf1b: 0-char delivered
+  bodies, choice_head None; the operative 4th probe banner-less
+  post-rollout). Root cause (reviewer call confirmed): the render capture
+  existed ONLY at the uncensored-render seam — and even there the
+  persisted-turn rewrite ran BEFORE the parked-banner append, so the row
+  held the pre-banner text. Three parked paths bypassed capture entirely:
+  the benign consume edge, the audit_sync consume edge, and the empty-body
+  early return (a 0-char model body never even entered the transform, so a
+  parked banner could never attach to it).
+  Fix: park->deliver is now exhaustive — (a) the empty-body early return
+  parks the midturn rollup, consumes the parked banner and DELIVERS IT
+  ALONE as the body; (b) the benign and audit_sync edges capture the
+  delivered text (render_inbox.record_render + canonical.rewrite_persisted_turn);
+  (c) the render edge gained a round-trip rewrite (persisted == delivered
+  AFTER the banner append); (d) canonical.rewrite_persisted_turn gained
+  allow_empty_match (scoped: newest EMPTY assistant row of the session)
+  so 0-char persisted turns can carry the delivered banner. New route
+  event: banner_render_captured (edge-tagged).
+- Item 2 — D1 LANE-PRECEDENCE STEAL (specimen api_1790972692_ced09e3f).
+  One turn with a declared decision fork AND a declared frontier consult
+  ran ONLY the decision lane: _decision_lane_claim consumed the turn's
+  declared slot, and declared_frontier_hit carried an exhausted-generator
+  bug that made the phrase table dead from the second directive line
+  onward — a frontier consult declared on a later line of a multi-line
+  turn was never even detected. Fix: (a) generator -> list (phrase table
+  live for every line); (b) STACKING — the decision advisory (never a
+  consult; it spends no frontier budget) re-registers the pending
+  declared_user frontier claim and resets the turn-claim record to
+  executed=False, so the gate's execute-once contract fires the stacked
+  consult on the next pass of the same turn. Both lanes run; neither is
+  silently dropped. New route event: declared_frontier_stacked.
+- Item 4 — MIDTURN PSEUDO-FIRES on benign turns (suppressed before
+  delivery, but wasted consult calls + ledger noise). Root cause: the
+  prose 'X or Y' fallback (_OPT_OR_RE) matched benign prose and code/log
+  text inside tool results ('stdout or stderr redirect'). Fix: the midturn
+  seams (terminal + turn_boundary) now require an explicitly DECLARED
+  closed-fork structure (decision.has_declared_fork_structure: line
+  markers / named enumeration / >= 2 distinct (A)-(B) ordinals) before the
+  backend consult; benign prose logs midturn_suppressed
+  reason=no_declared_structure and never reaches the backend. The
+  reviewer's D2 declared (A)/(B) fork shape passes untouched.
+- Pins (tests/test_r19_parked_loss_stacking.py, 7): parked round-trip per
+  delivery edge (benign / empty-body / audit_sync — delivered text +
+  render capture + persisted rewrite), canonical rewrite round-trip
+  (exact + empty-row + guard), D1 stacking pin (decision advisory AND
+  frontier consult both fire on one turn), midturn pseudo-fire pin
+  (benign prose -> no backend call; declared (A)/(B) -> consult).
+- Housekeeping: plugin.yaml version field synced to 4.13.7 (had drifted
+  at 4.12.9 since the v4.13 line moved in CHANGELOG/commits only).
+
 ## 4.13.5 — 2026-10-02 (D3 residuals fix-first — evol park-to-deliver wipe + POST gate over-fire)
 
 - Item 1 — evol park-to-deliver gap. Trail (/tmp/uncensored-router-evol.log,

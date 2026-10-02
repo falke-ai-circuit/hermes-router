@@ -1343,8 +1343,13 @@ def declared_frontier_hit(content: str) -> bool:
     never a dependency for declared asks. Line-start discipline kept (echo
     guard). Never raises."""
     try:
-        frontier_phrases = (p for p, lane in DECLARED_USER_VARIANTS.items()
-                            if lane == LANE_HIGHER_PRE)
+        # FIX-FIRST rider 4 (item 2): this MUST be a list, not a generator —
+        # the exhausted generator made the phrase table dead from the SECOND
+        # directive line onward, so a frontier consult declared on a later
+        # line of a multi-line turn (after any other directive) was never
+        # detected and never fired (D1 specimen class).
+        frontier_phrases = [p for p, lane in DECLARED_USER_VARIANTS.items()
+                            if lane == LANE_HIGHER_PRE]
         for raw in _directive_lines(content):
             norm = _normalize_directive_line(raw)
             if not norm:
@@ -1692,6 +1697,35 @@ def _decision_lane_claim(content: str, session_id: str, model: str) -> None:
         clear_declared(session_id)
         if not (enabled and allowed):
             return
+        # FIX-FIRST rider 4 (item 2, D1 lane-precedence steal): the decision
+        # lane is ADVISORY-ONLY — its execution consumed the turn's declared
+        # slot, so a declared FRONTIER consult carried by the SAME turn's
+        # content was silently dropped (reviewer specimen
+        # api_1790972692_ced09e3f: one turn with both a declared decision
+        # fork and a declared frontier consult ran ONLY the decision lane).
+        # Stacking fix: when the same content ALSO declares a frontier
+        # consult, re-register a pending declared_user frontier claim (the
+        # decision advisory is not a consult and does not spend the turn's
+        # consult). The gate's execute-once contract fires it on the next
+        # pass of the same turn — both lanes run, neither is dropped.
+        try:
+            _frontier_also = bool(declared_frontier_hit(content))
+            if _frontier_also and _dm.on_demand_allowed("manual", cfg):
+                register_declared(session_id, LANE_HIGHER_PRE,
+                                  SOURCE_DECLARED_USER)
+                # The decision claim's registration stamped the turn-claim
+                # record (executed=True above) — reset it to an UNEXECUTED
+                # frontier record so the gate's execute-once contract fires
+                # the stacked consult on the next pass of this turn.
+                stamp_turn_claim(session_id, LANE_HIGHER_PRE,
+                                 SOURCE_DECLARED_USER, content,
+                                 str(model or ""), executed=False)
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="declared_frontier_stacked",
+                    lane=LANE_HIGHER_PRE, source=SOURCE_DECLARED_USER,
+                    session_id=session_id)
+        except Exception:  # noqa: BLE001 — stacking must never break the claim
+            logger.debug("declared frontier stacking error", exc_info=True)
         task_id = _rc.task_id_for(session_id, content, str(model or ""))
         _dm.handle_decision_v3(
             session_id=session_id, task_id=task_id, task_text=content,

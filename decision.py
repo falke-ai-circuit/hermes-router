@@ -1182,6 +1182,34 @@ def _post_gate_ok(text: str) -> bool:
         return False
 
 
+def has_declared_fork_structure(text: str) -> bool:
+    """FIX-FIRST rider 4 (item 4, midturn pseudo-fires): True ONLY when the
+    text carries an explicitly DECLARED closed-fork structure — line
+    markers ('- a) x'), named enumeration ('Approach 1: x'), or >= 2
+    DISTINCT parenthesized ordinals ('(A) ... (B) ...'). The prose 'X or Y'
+    fallback deliberately does NOT count: benign prose and code/log text
+    ('stdout or stderr', 'retry or fail') matched _OPT_OR_RE inside tool
+    results and pushed pseudo-forks into the backend consult (reviewer
+    specimen api_1790972692_ced09e3f class). Declared (A)/(B) forks — the
+    D2 axis shape — still pass. Never raises."""
+    try:
+        t = str(text or "")
+        if not t.strip():
+            return False
+        for line in t.splitlines():
+            m = _OPT_LINE_RE.match(line)
+            if m and str(m.group(2) or "").strip():
+                return True
+        if _NAMED_ENUM_RE.search(t):
+            return True
+        pf = _EXPLICIT_PAREN_FORK_RE.findall(t)
+        if len({str(x).lower() for x in pf}) >= 2:
+            return True
+        return False
+    except Exception:  # noqa: BLE001 — gate failure must never crash
+        return False
+
+
 def option_ids(options: List[str]) -> List[str]:
     """Lane-assigned closed option ids: opt-1..opt-N (never model-invented)."""
     try:

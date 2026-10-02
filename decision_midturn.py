@@ -251,6 +251,17 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  reason=_dec.REASON_NO_OPTIONS, mode=mode,
                  tool=str(tool_name or ""), seam=seam)
             return
+        # FIX-FIRST rider 4 (item 4): benign prose must never reach the
+        # backend consult. Only an explicitly DECLARED closed-fork
+        # structure (line markers / named enum / (A)-(B) ordinals) fires;
+        # the prose 'X or Y' fallback is a midturn pseudo-fire class
+        # (code/log text inside tool results). Declared (A)/(B) forks —
+        # the reviewer D2 axis shape — still pass untouched.
+        if not _dec.has_declared_fork_structure(text):
+            _log(session_id, "midturn_suppressed",
+                 reason="no_declared_structure", mode=mode,
+                 tool=str(tool_name or ""), seam=seam)
+            return
         _handle_hit(str(session_id), str(tool_name or ""), text, opts, cfg,
                     mode, seam)
     except Exception:  # noqa: BLE001 — fail-open, never break the tool result
@@ -350,6 +361,15 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                     rst["count"] = 0
             opts = _dec.extract_options(text)
             if not opts:
+                continue
+            # FIX-FIRST rider 4 (item 4): same declared-fork gate as SEAM 1
+            # — benign prose reaching the sweep (user ingress, prior-turn
+            # tool text) must not push pseudo-forks into the backend.
+            if not _dec.has_declared_fork_structure(text):
+                _log(session_id, "midturn_suppressed",
+                     reason="no_declared_structure", mode=mode,
+                     tool=str(msg.get("name") or "turn_sweep"),
+                     seam=SEAM_TURN_BOUNDARY)
                 continue
             _handle_hit(key, str(msg.get("name") or "turn_sweep"), text,
                         opts, cfg, mode, SEAM_TURN_BOUNDARY)

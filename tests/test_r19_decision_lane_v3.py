@@ -102,7 +102,12 @@ def _mock_nous(monkeypatch, choice="opt-1", confidence=0.9,
                                             alternatives or []))
 
 
-def _wait_parked(timeout=5.0):
+def _wait_parked(timeout=15.0):
+    # rider 4 (2026-10-02): 5s flaked in full-suite order (392-test prefix
+    # reproduced it even with the rider's code changes stashed — pre-existing
+    # timing, not a regression): the async v3 worker park lands beyond 5s
+    # under suite load. 15s keeps the pin honest without masking a park that
+    # never comes (the assert still fails on a genuine delivery loss).
     deadline = time.time() + timeout
     while time.time() < deadline:
         if debug_banner._ANCHOR_BANNERS.get(SID):
