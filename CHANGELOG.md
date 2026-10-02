@@ -1,3 +1,33 @@
+## 4.13.4 — 2026-10-02 (D3-DELIVERY rider 2 — turn-close rollup provenance tag / api_server body delivery)
+
+- Live repro (conductor :8649, session api_1790950451_44077f93, jev_native,
+  verdict opt-1@0.78): the midturn consult -> verdict -> close_turn park ->
+  POST benign anchor_banner_consume (parked=True edge=benign) chain ALL
+  executed on an api_server turn, yet the captured response bodies of both
+  the consult turn and the follow-up turn never carried
+  `[decision-lane advisory]` — the block vanished at the body seam.
+- Root cause: the turn-close aggregate rollup (`_aggregate_line`) is the
+  ONLY body-side delivery of a midturn verdict — the tagged single-verdict
+  frame is request-side only (staged pending, flushed into the next llm
+  request). The rollup line rendered with NO provenance tag, so a fully
+  successful park->consume->append delivery carried nothing the body seam
+  could verify: `[decision-lane advisory]` could never appear in an
+  api_server response body regardless of lane health.
+- Fix: the rollup's first line now carries the byte-exact
+  `decision.PROVENANCE_TAG` (`[decision-lane advisory]`) prefixed to the
+  unchanged `· router · impulse (decision) | ...` byte-shape. The tag is
+  the same marker the forged-banner battery and the R19.1 provenance filter
+  match on; rollup counts/cost/top-labels unchanged; empty close still
+  returns `''`.
+- Pins (tests/test_d3_delivery_banner_body.py, 5): full real-hook chain for
+  an api_server-shaped turn (SEAM-1 consult -> close_turn park -> POST
+  consume -> DELIVERED-string tag assertion, one-shot, next turn clean);
+  async verdict completing after the turn close delivers on the NEXT turn's
+  body; tag byte-exactness/single occurrence; empty close unchanged;
+  request-side frame flush unaffected. R19.22 rollup byte-shape pins
+  updated for the prefixed tag.
+- No deploy, no gateway bounces, no .env writes.
+
 ## 4.13.3 — 2026-10-02 (D3-DELIVERY fix-first — midturn fork-consult session-key normalization)
 
 - Root cause (conductor probes, 2026-10-02): the platform hands the

@@ -31,7 +31,9 @@ def test_rollup_counts_and_confidence_histogram():
                 {"choice": "opt-1", "confidence": 0.60, "label": "Approach 1",
                  "tokens_in": 80, "tokens_out": 30, "cost": 0.0001}]
     line = DMT._aggregate_line(3, 270, 120, 0.0005, consumed)
-    assert line.startswith("· router · impulse (decision) |")
+    # D3-DELIVERY rider 2: provenance tag prefixed, byte-exact
+    assert line.startswith("[decision-lane advisory] · router · "
+                           "impulse (decision) |")
     assert "3 verdicts (2 shown >=0.9)" in line
     assert "tok 270/120" in line
     assert "$0.000500" in line

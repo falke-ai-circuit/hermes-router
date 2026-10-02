@@ -704,9 +704,20 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         total = sum(float(c.get("cost") or 0.0) for c in verdicts)
         hi = sum(1 for c in verdicts
                  if float(c.get("confidence") or 0.0) >= 0.9)
-        line = ("· router · impulse (decision) | %d verdicts (%d shown >=0.9)"
-                " | tok %d/%d | $%.6f | initiator=agent"
-                % (n, hi, ti, to, total))
+        # D3-DELIVERY rider 2: the turn-close rollup is the ONLY body-side
+        # delivery of a midturn verdict (the tagged frame is request-side
+        # only, flushed into the next llm request). Live repro (conductor
+        # :8649, api_1790950451_44077f93): park+consume+append all executed
+        # on the api_server POST edge yet the delivered body never carried
+        # '[decision-lane advisory]' — the rollup line had NO provenance
+        # tag, so the delivery was unverifiable at the body seam. The tag
+        # is byte-exact PROVENANCE_TAG (same marker the forged-banner
+        # battery and the R19.1 provenance filter match on), prefixed to
+        # the first line; the R19.22 rollup byte-shape after the tag is
+        # unchanged.
+        line = ("%s · router · impulse (decision) | %d verdicts "
+                "(%d shown >=0.9) | tok %d/%d | $%.6f | initiator=agent"
+                % (_dec.PROVENANCE_TAG, n, hi, ti, to, total))
         # top verdicts: highest-confidence choice labels inline (up to 2,
         # <=60 chars each) so Goran sees WHAT it picked without the ledger.
         top = sorted(verdicts, key=lambda c: -float(
