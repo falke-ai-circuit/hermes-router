@@ -1,3 +1,45 @@
+## 4.13.2 — 2026-10-02 (D3 rider — systemone-native jev backend)
+
+- New backend value `jev_native` for the decision lane: the envelope is
+  mapped NATIVELY onto the typesafe systemone schema
+  (POST https://api.typesafe.ai/v1/systemone, model `jev-latest`, schema
+  verified live at https://api.typesafe.ai/openapi.json). No chat-completion
+  wrapper, no JSON-contract prompt — provider roulette (gemini/deepseek/luna
+  routing, null content on reasoning models) eliminated by construction.
+- Wire mapping (`_systemone_native_payload`): state = rendered context
+  (AGENT FRAME + scope risk_class + causal context + surrounding context —
+  the render_prompt assembly minus the JSON contract); one `choice` question
+  with instructions 'choose the option that best fits the framed fork;
+  stand_down only if no decision is actually requested' and criteria =
+  option id -> label + causal frames (cause_effect/cost/priors/risk).
+- Answer parse (`_systemone_verdict_content`): systemone answers shape
+  {choice, confidence, probabilities} -> the SHARED verdict schema
+  {choice, confidence, alternatives} — confidence from the answer's
+  confidence field, alternatives from the probabilities ranking
+  (runner-up first, closed-set option ids only). stand_down passthrough
+  unchanged. The result runs through the SAME validate_verdict strict
+  typed validation / fail-open / banner paths as the openrouter backends.
+- Fail-open unchanged: 422 -> suppress advisory, ledger reason
+  backend_error (NOT timeout — LEG 3 mislabel guard); malformed answers ->
+  parse_fail; missing key -> backend_error. New FALLBACK CHAIN: typesafe
+  5xx / network error -> the existing openrouter jev-router path fires
+  automatically (the pre-4.13.2 jev branch extracted unchanged into
+  _call_jev); auth/other-4xx do NOT fall back. Route logs + ledger now
+  record the SERVED backend (meta.backend: jev_native | jev), so a
+  fallback row is visible in the tape recorder.
+- Banner provenance: api.typesafe.ai renders as provider name 'typesafe'.
+- Key handling: TYPESAFE_API_KEY read via os.environ at call time
+  (knob typesafe_api_key_env, default TYPESAFE_API_KEY); .env.example
+  carries the named placeholder only — real key lands in per-profile .env
+  files by the orchestrator. New knobs: typesafe_endpoint,
+  typesafe_api_key_env, jev_native_model (default jev-latest).
+- Tests: 15-test battery in tests/test_d3_jev_native.py (envelope->
+  systemone mapping, answers-shape verdict parse, 422 fail-open
+  backend_error, 5xx + network fallback to openrouter, 401 no-fallback,
+  missing key, malformed answers, pipeline end-to-end with ledger
+  served-backend rows, openrouter jev path regression). Suite green.
+- No deploy, no gateway bounces, no .env writes.
+
 ## 4.13.1 — 2026-10-02 (D2 fix-first, reviewer axis 2 — interpretation diversity)
 
 - PERSONA-VOCABULARY SLOT in the impulse frame: render_impulse_frame now

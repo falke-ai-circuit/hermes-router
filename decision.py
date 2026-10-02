@@ -76,6 +76,11 @@ DEFAULTS: Dict[str, Any] = {
     "backend": "nous",          # jev | nous (adapter pattern — config flip)
     "model": "z-ai/glm-5.3-flash",          # pinned (nous backend for now)
     "jev_model": "typesafe/jev-router",     # pinned (jev backend)
+    # D3 (v4.13.2): systemone-native jev backend — typesafe direct API
+    # (schema: https://api.typesafe.ai/openapi.json, verified live).
+    "typesafe_endpoint": "https://api.typesafe.ai/v1/systemone",
+    "typesafe_api_key_env": "TYPESAFE_API_KEY",
+    "jev_native_model": "jev-latest",
     "api_key_env": "OPENROUTER_API_KEY",
     "openrouter_endpoint": "https://openrouter.ai/api/v1/chat/completions",
     "slice": True,              # §3.6 optional provenance-stamped slice
@@ -1912,6 +1917,168 @@ def _robust_json_content(content: str) -> str:
         return ""
 
 
+def _systemone_native_payload(envelope: Dict[str, Any],
+                              cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """D3 (v4.13.2): map the decision envelope onto the systemone schema
+    (§4 adapter input for the native typesafe backend): state = rendered
+    context (frame + scope + causal_context + surrounding_context — the
+    render_prompt assembly minus the JSON contract), one choice question
+    with criteria = option id -> label + cause_effect/cost/priors/risk.
+    Never raises."""
+    try:
+        s1 = _systemone(envelope)
+        options = [o for o in s1.get("options", []) if isinstance(o, dict)]
+        if not options:
+            return {}
+        criteria: Dict[str, str] = {}
+        for o in options:
+            oid = str(o.get("id") or "")
+            if not oid:
+                continue
+            parts = [str(o.get("label") or oid)]
+            for key, tag in (("cause_effect", "leads to"), ("cost", "cost"),
+                             ("priors", "priors"), ("risk", "risk")):
+                if o.get(key):
+                    parts.append("%s: %s" % (tag, o[key]))
+            criteria[oid] = " | ".join(parts)
+        if not criteria:
+            return {}
+        sctx = str(envelope.get("surrounding_context") or "").strip()
+        state = (
+            "AGENT FRAME (methodology):\n%s\nSCOPE: risk_class=%s\n"
+            "CAUSAL CONTEXT:\n%s%s"
+            % (str(s1.get("frame") or "")[:800],
+               str((s1.get("scope") or {}).get("risk_class") or "normal"),
+               str(s1.get("causal_context") or "")[:1200],
+               ("\nSURROUNDING CONTEXT:\n%s" % sctx[:2000]) if sctx else ""))
+        return {
+            "model": str(cfg.get("jev_native_model")
+                         or DEFAULTS["jev_native_model"]),
+            "state": state,
+            "questions": {
+                "choice": {
+                    "type": "choice",
+                    "instructions": ("choose the option that best fits the "
+                                     "framed fork; stand_down only if no "
+                                     "decision is actually requested"),
+                    "criteria": criteria,
+                }},
+        }
+    except Exception:  # noqa: BLE001 — fail-open
+        return {}
+
+
+def _systemone_verdict_content(data: Any, envelope: Dict[str, Any]) -> str:
+    """D3 (v4.13.2): parse a systemone answers shape
+    {answers: {choice: {choice, confidence, probabilities}}} back into the
+    shared verdict JSON {choice, confidence, alternatives} — confidence from
+    the answer's confidence field, alternatives from the probabilities
+    ranking (runner-up first, option ids only). stand_down passthrough.
+    Returns "" (caller fails open) on any shape mismatch. Never raises."""
+    try:
+        answers = (data or {}).get("answers") or {}
+        ans = answers.get("choice") if isinstance(answers, dict) else None
+        if not isinstance(ans, dict):
+            return ""
+        ch = str(ans.get("choice") or "").strip()
+        if ch == STAND_DOWN_CHOICE:
+            return json.dumps({"choice": STAND_DOWN_CHOICE, "confidence": 0.0,
+                               "alternatives": []})
+        ids = [str(o.get("id") or "") for o in envelope.get("options", [])
+               if isinstance(o, dict)]
+        if ch not in ids:
+            return ""  # out-of-set answer — validate_verdict would reject it
+        try:
+            conf = float(ans.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        alts: List[str] = []
+        probs = ans.get("probabilities")
+        if isinstance(probs, dict):
+            def _pval(v: Any) -> float:
+                try:
+                    return -1.0 if isinstance(v, bool) else float(v)
+                except (TypeError, ValueError):
+                    return -1.0
+            ranked = sorted(((str(k), _pval(v)) for k, v in probs.items()),
+                            key=lambda kv: kv[1], reverse=True)
+            alts = [k for k, _ in ranked if k in ids and k != ch]
+        return json.dumps({"choice": ch,
+                           "confidence": max(0.0, min(1.0, conf)),
+                           "alternatives": alts})
+    except Exception:  # noqa: BLE001 — fail-open
+        return ""
+
+
+def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
+              timeout: float, t0: float
+              ) -> Tuple[Optional[str], Dict[str, Any], str]:
+    """Openrouter jev-router adapter (the pre-v4.13.2 jev branch, extracted
+    unchanged for the D3 fallback chain). Never raises."""
+    meta: Dict[str, Any] = {}
+    try:
+        model = str(cfg.get("jev_model") or DEFAULTS["jev_model"])
+        endpoint = str(cfg.get("openrouter_endpoint")
+                       or DEFAULTS["openrouter_endpoint"])
+        import os as _os
+
+        key = _os.environ.get(str(cfg.get("api_key_env")
+                                  or "OPENROUTER_API_KEY"), "")
+        if not key:
+            return None, dict(meta, model=model, endpoint=endpoint,
+                              latency_s=round(time.time() - t0, 2)), \
+                REASON_BACKEND_ERROR
+        data = _http_post_json(endpoint,
+                               {"Authorization": "Bearer %s" % key}, {
+            "model": model, "temperature": 0.0, "max_tokens": 512,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "user", "content": prompt}],
+        }, timeout)
+        meta = dict(meta, model=model, endpoint=endpoint,
+                    latency_s=round(time.time() - t0, 2))
+        if not isinstance(data, dict):
+            return None, meta, _http_reason()
+        try:
+            meta["tokens_in"] = (data.get("usage") or {}).get("prompt_tokens")
+            meta["tokens_out"] = (data.get("usage") or {}).get("completion_tokens")
+        except Exception:  # noqa: BLE001
+            pass
+        content = None
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except Exception:  # noqa: BLE001
+            content = None
+        if not content or not str(content).strip():
+            return None, meta, REASON_PARSE_FAIL
+        content = str(content)
+        # R19.11 FIX 2: Jev parse hardening — live session showed a
+        # 2/5 parse_fail rate (markdown fences, prose-wrapped JSON).
+        # Robust extract first; if nothing parseable, ONE strict retry
+        # ('respond ONLY with JSON') before failing open.
+        extracted = _robust_json_content(content)
+        if extracted:
+            return extracted, meta, "ok"
+        data2 = _http_post_json(endpoint,
+                                {"Authorization": "Bearer %s" % key}, {
+            "model": model, "temperature": 0.0, "max_tokens": 512,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "user",
+                          "content": prompt + "\n\nRespond ONLY with "
+                                     "the JSON object."}],
+        }, timeout)
+        content2 = None
+        try:
+            content2 = data2["choices"][0]["message"]["content"]
+        except Exception:  # noqa: BLE001
+            content2 = None
+        extracted2 = _robust_json_content(str(content2 or ""))
+        if extracted2:
+            return extracted2, meta, "ok"
+        return None, meta, REASON_PARSE_FAIL
+    except Exception:  # noqa: BLE001
+        return None, meta, REASON_BACKEND_ERROR
+
+
 def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                  ) -> Tuple[Optional[str], Dict[str, Any], str]:
     """Run the envelope through the configured backend. Returns
@@ -1929,61 +2096,67 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             return None, meta, REASON_PARSE_FAIL
         t0 = time.time()
         if backend == "jev":
-            model = str(cfg.get("jev_model") or DEFAULTS["jev_model"])
-            endpoint = str(cfg.get("openrouter_endpoint")
-                           or DEFAULTS["openrouter_endpoint"])
+            return _call_jev(envelope, prompt, cfg, timeout, t0)
+        if backend == "jev_native":
+            # D3 (v4.13.2): systemone-native backend — the envelope mapped
+            # onto the typesafe /v1/systemone schema, answers parsed back
+            # into the shared verdict shape. Fail-open unchanged; fallback
+            # chain: 5xx / network error -> openrouter jev path.
+            model = str(cfg.get("jev_native_model")
+                        or DEFAULTS["jev_native_model"])
+            endpoint = str(cfg.get("typesafe_endpoint")
+                           or DEFAULTS["typesafe_endpoint"])
             import os as _os
 
-            key = _os.environ.get(str(cfg.get("api_key_env") or "OPENROUTER_API_KEY"), "")
+            key = _os.environ.get(
+                str(cfg.get("typesafe_api_key_env")
+                    or DEFAULTS["typesafe_api_key_env"]), "")
             if not key:
                 return None, dict(meta, model=model, endpoint=endpoint,
-                                  latency_s=round(time.time() - t0, 2)), \
+                                  latency_s=round(time.time() - t0, 2),
+                                  backend="jev_native"), \
                     REASON_BACKEND_ERROR
-            data = _http_post_json(endpoint, {"Authorization": "Bearer %s" % key}, {
-                "model": model, "temperature": 0.0, "max_tokens": 512,
-                "response_format": {"type": "json_object"},
-                "messages": [{"role": "user", "content": prompt}],
-            }, timeout)
+            payload = _systemone_native_payload(envelope, cfg)
+            if not payload:
+                return None, dict(meta, backend="jev_native"), \
+                    REASON_PARSE_FAIL
+            data = _http_post_json(
+                endpoint, {"Authorization": "Bearer %s" % key}, payload,
+                timeout)
             meta = dict(meta, model=model, endpoint=endpoint,
-                        latency_s=round(time.time() - t0, 2))
+                        latency_s=round(time.time() - t0, 2),
+                        backend="jev_native")
             if not isinstance(data, dict):
-                return None, meta, _http_reason()
+                reason = _http_reason()
+                code = _HTTP_ERROR_CODE
+                if reason == REASON_TIMEOUT or \
+                        (isinstance(code, int) and code >= 500):
+                    # D3 fallback chain: 5xx / network error -> openrouter
+                    # jev-router path. The served backend is recorded in
+                    # the returned meta (ledger row model / endpoint).
+                    content, jmeta, jreason = _call_jev(
+                        envelope, prompt, cfg, timeout, t0)
+                    return content, dict(jmeta, backend="jev"), jreason
+                if isinstance(code, int) and code == 422:
+                    # D3: 422 -> suppress advisory, ledger backend_error
+                    # (NOT timeout — R19.1 LEG 3 mislabel guard).
+                    return None, meta, REASON_BACKEND_ERROR
+                return None, meta, reason
+            content = _systemone_verdict_content(data, envelope)
+            if not content:
+                return None, meta, REASON_PARSE_FAIL
             try:
-                meta["tokens_in"] = (data.get("usage") or {}).get("prompt_tokens")
-                meta["tokens_out"] = (data.get("usage") or {}).get("completion_tokens")
+                usage = data.get("usage") or {}
+                meta["tokens_in"] = (usage.get("prompt_tokens")
+                                     if usage.get("prompt_tokens") is not None
+                                     else usage.get("input_tokens"))
+                meta["tokens_out"] = (
+                    usage.get("completion_tokens")
+                    if usage.get("completion_tokens") is not None
+                    else usage.get("output_tokens"))
             except Exception:  # noqa: BLE001
                 pass
-            content = None
-            try:
-                content = data["choices"][0]["message"]["content"]
-            except Exception:  # noqa: BLE001
-                content = None
-            if not content or not str(content).strip():
-                return None, meta, REASON_PARSE_FAIL
-            content = str(content)
-            # R19.11 FIX 2: Jev parse hardening — live session showed a
-            # 2/5 parse_fail rate (markdown fences, prose-wrapped JSON).
-            # Robust extract first; if nothing parseable, ONE strict retry
-            # ('respond ONLY with JSON') before failing open.
-            extracted = _robust_json_content(content)
-            if extracted:
-                return extracted, meta, "ok"
-            data2 = _http_post_json(endpoint, {"Authorization": "Bearer %s" % key}, {
-                "model": model, "temperature": 0.0, "max_tokens": 512,
-                "response_format": {"type": "json_object"},
-                "messages": [{"role": "user",
-                              "content": prompt + "\n\nRespond ONLY with "
-                                         "the JSON object."}],
-            }, timeout)
-            content2 = None
-            try:
-                content2 = data2["choices"][0]["message"]["content"]
-            except Exception:  # noqa: BLE001
-                content2 = None
-            extracted2 = _robust_json_content(str(content2 or ""))
-            if extracted2:
-                return extracted2, meta, "ok"
-            return None, meta, REASON_PARSE_FAIL
+            return content, meta, "ok"
         if backend == "nous":
             # OpenAI-compatible chat endpoint via the profile's aux path —
             # the plumbing stub for conductor live tests (NO Jev credits).
@@ -2372,7 +2545,8 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
         ep = str(meta.get("endpoint") or "")
         for host, name in (("openrouter.ai", "openrouter"),
                            ("inference-api.nousresearch.com", "nous"),
-                           ("api.venice.ai", "venice")):
+                           ("api.venice.ai", "venice"),
+                           ("api.typesafe.ai", "typesafe")):
             if host in ep:
                 ep = name
                 break
@@ -2728,7 +2902,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             _record_failure(cfg)
             log_route("decision_suppressed", reason=str(reason),
                       trigger=ids.get("trigger", "pre"),
-                      backend=str(cfg.get("backend") or ""))
+                      backend=str(meta.get("backend")
+                                  or cfg.get("backend") or ""))
             ledger_write(dict(base_row, fail_open_reason=str(reason)))
             return
         verdict, vreason = validate_verdict(content, envelope)
@@ -2736,7 +2911,9 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             bump_counter("malformed")
             _record_failure(cfg)
             log_route("decision_suppressed", reason=str(vreason),
-                      trigger=ids.get("trigger", "pre"))
+                      trigger=ids.get("trigger", "pre"),
+                      backend=str(meta.get("backend")
+                                  or cfg.get("backend") or ""))
             ledger_write(dict(base_row, fail_open_reason=str(vreason)))
             return
         # R19.17 ADDENDUM 2 (1): unmapped choice -> ledger row with
@@ -2757,7 +2934,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             # §7(d): the backend stood down — no decision actually requested.
             # No advisory, no banner; the ledger records the stand-down.
             log_route("decision_stand_down", trigger=ids.get("trigger", "pre"),
-                      backend=str(cfg.get("backend") or ""))
+                      backend=str(meta.get("backend")
+                                  or cfg.get("backend") or ""))
             ledger_write(dict(base_row, outcome="stand_down",
                               fail_open_reason="stand_down"))
             return
@@ -2805,7 +2983,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             log_route("decision_advisory_parked",
                       choice=str(verdict["choice"]),
                       confidence=round(float(verdict["confidence"]), 3),
-                      backend=str(cfg.get("backend") or ""),
+                      backend=str(meta.get("backend")
+                                  or cfg.get("backend") or ""),
                       model=base_row["model"],
                       trigger=ids.get("trigger", "pre"))
         # tokens into the usage ledger (never breaks the lane)
