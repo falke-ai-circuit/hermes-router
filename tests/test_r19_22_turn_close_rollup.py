@@ -23,6 +23,32 @@ def _clear():
 
 # --- 1: rollup format ------------------------------------------------------------
 
+def test_rollup_provider_segment_derived_from_rows():
+    """v4.13.6 rider 3: provider segment sits between cost and initiator,
+    derived from the consumed rows' endpoint (name only, never a URL);
+    '(unknown)' when rows carry no endpoint. jev_native->typesafe,
+    openrouter->openrouter."""
+    line = DMT._aggregate_line(1, 10, 5, 0.0001, [
+        {"choice": "opt-1", "confidence": 0.9, "label": "L",
+         "tokens_in": 10, "tokens_out": 5, "cost": 0.0001,
+         "endpoint": "https://api.typesafe.ai/v1/systemone"}])
+    assert "provider=typesafe" in line
+    assert "api.typesafe.ai" not in line  # URL never leaks
+    line_or = DMT._aggregate_line(1, 10, 5, 0.0001, [
+        {"choice": "opt-1", "confidence": 0.9, "label": "L",
+         "tokens_in": 10, "tokens_out": 5, "cost": 0.0001,
+         "endpoint": "https://openrouter.ai/api/v1/chat/completions"}])
+    assert "provider=openrouter" in line_or
+    line_unknown = DMT._aggregate_line(1, 10, 5, 0.0001, [
+        {"choice": "opt-1", "confidence": 0.9, "label": "L",
+         "tokens_in": 10, "tokens_out": 5, "cost": 0.0001}])
+    assert "provider=(unknown)" in line_unknown
+    # byte-shape: provider segment sits between cost and initiator
+    import re
+    m = re.search(r"\| \$[0-9.]+ \| provider=[^|]+ \| initiator=agent", line)
+    assert m, "provider segment not between cost and initiator"
+
+
 def test_rollup_counts_and_confidence_histogram():
     consumed = [{"choice": "opt-1", "confidence": 0.95, "label": "Approach 1",
                  "tokens_in": 100, "tokens_out": 50, "cost": 0.0002},

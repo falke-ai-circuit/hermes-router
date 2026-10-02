@@ -136,9 +136,22 @@ def record_tokens(lane: str, model: str, session_id: str,
 # models the provider catalog misses. source=measured (Goran-approved):
 # input ~$0.042/1M, output free (earlier measurement). NOT fabricated rates;
 # provider-catalog rates still win when present. Unknown models stay 0.0.
+# FIX (v4.13.6 rider 3): jev_native consults pass model='jev-latest' —
+# the measured table only held 'typesafe/jev-router', so the banner
+# billed $0.00000. jev-latest/jev-preview are the same typesafe jev model
+# (aliases across the openrouter-hosted and native-direct paths); price
+# them identically (source=measured).
 _MEASURED_PRICING: Dict[str, Dict[str, Any]] = {
     "typesafe/jev-router": {"input_per_1m": 0.042, "output_per_1m": 0.0,
                             "source": "measured"},
+    "typesafe/jev-latest": {"input_per_1m": 0.042, "output_per_1m": 0.0,
+                            "source": "measured"},  # same jev model, native path
+    "jev-latest": {"input_per_1m": 0.042, "output_per_1m": 0.0,
+                   "source": "measured"},  # bare alias (jev_native cfg)
+    "jev-preview": {"input_per_1m": 0.042, "output_per_1m": 0.0,
+                    "source": "measured"},  # preview alias
+    "typesafe/jev-preview": {"input_per_1m": 0.042, "output_per_1m": 0.0,
+                             "source": "measured"},
 }
 
 
@@ -168,6 +181,15 @@ def estimate_cost(model: str, input_tokens: Optional[int],
                 # MEASURED fallback table (marked source=measured, NOT
                 # fabricated rates); provider rates still win when present.
                 prices = _MEASURED_PRICING.get(str(model or ""))
+                if not isinstance(prices, dict):
+                    # v4.13.6 rider 3: alias normalization — try the model name
+                    # with/without the provider prefix so 'jev-latest' and
+                    # 'typesafe/jev-latest' resolve to the same row either way.
+                    m = str(model or "").strip().lower()
+                    if m.startswith("typesafe/"):
+                        prices = _MEASURED_PRICING.get(m.split("/", 1)[1])
+                    else:
+                        prices = _MEASURED_PRICING.get("typesafe/" + m)
                 if not isinstance(prices, dict):
                     return 0.0
         it = max(0, int(input_tokens or 0))

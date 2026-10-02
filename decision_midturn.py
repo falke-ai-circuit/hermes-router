@@ -707,15 +707,37 @@ def close_turn(session_id: str) -> str:
         return ""
 
 
+def endpoint_provider(endpoint: str) -> str:
+    """Host->provider-name mapping (same rule as render_decision_banner):
+    provider NAME only, never a URL. '' when undetermined. Never raises."""
+    try:
+        ep = str(endpoint or "")
+        for host, name in (("openrouter.ai", "openrouter"),
+                           ("inference-api.nousresearch.com", "nous"),
+                           ("api.venice.ai", "venice"),
+                           ("api.typesafe.ai", "typesafe")):
+            if host in ep:
+                return name
+        # Non-URL endpoints carry a display name already (e.g. hermes-auxiliary)
+        if ep and not ep.startswith("http"):
+            return ep
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _aggregate_line(n: int, ti: int, to: int, total: float,
                     consumed: List[Dict[str, Any]]) -> str:
     """R19.22 (Goran, operative's Kindle run): the reflex (decision)
     segment at turn close is a COMPACT ROLLUP — count of Jev verdicts this
     turn + summed cost + top verdict labels inline, e.g.:
       · router · reflex (decision) | 13 verdicts (2 shown >=0.9) |
-        tok 2410/1180 | $0.0009 | initiator=agent
+        tok 2410/1180 | $0.0009 | provider=typesafe | initiator=agent
       Top verdicts: <label> / <label>
-    Stand-downs (no_options/parse_fail) never reach the accumulator, and
+    v4.13.6 rider 3: provider segment added between cost and initiator,
+    derived from the consumed rows' endpoint (host->name map, name only,
+    never a URL; '(unknown)' when undetermined). Stand-downs
+    (no_options/parse_fail) never reach the accumulator, and
     are filtered defensively here — they are NOT verdicts. Costs are the
     summed real Jev estimates from the turn's consumed rows ($0.042/1M
     pricing). Never raises."""
@@ -731,6 +753,14 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         total = sum(float(c.get("cost") or 0.0) for c in verdicts)
         hi = sum(1 for c in verdicts
                  if float(c.get("confidence") or 0.0) >= 0.9)
+        # FIX (v4.13.6 rider 3): provider segment — the rollup had NO provider
+        # (the pre-fix single-verdict banner did: '<model> @ <provider>').
+        # Derive from the consumed rows' endpoint URL (same host->name map as
+        # render_decision_banner; name only, never the URL; empty when
+        # undetermined). jev_native rows -> typesafe, jev rows -> openrouter.
+        providers = sorted({endpoint_provider(str(c.get("endpoint") or ""))
+                            for c in verdicts} - {""})
+        prov = "/".join(providers)
         # D3-DELIVERY rider 2: the turn-close rollup is the ONLY body-side
         # delivery of a midturn verdict (the tagged frame is request-side
         # only, flushed into the next llm request). Live repro (conductor
@@ -743,8 +773,10 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # the first line; the R19.22 rollup byte-shape after the tag is
         # unchanged.
         line = ("%s · router · impulse (decision) | %d verdicts "
-                "(%d shown >=0.9) | tok %d/%d | $%.6f | initiator=agent"
-                % (_dec.PROVENANCE_TAG, n, hi, ti, to, total))
+                "(%d shown >=0.9) | tok %d/%d | $%.6f | provider=%s | "
+                "initiator=agent"
+                % (_dec.PROVENANCE_TAG, n, hi, ti, to, total, prov
+                   or "(unknown)"))
         # top verdicts: highest-confidence choice labels inline (up to 2,
         # <=60 chars each) so Goran sees WHAT it picked without the ledger.
         top = sorted(verdicts, key=lambda c: -float(

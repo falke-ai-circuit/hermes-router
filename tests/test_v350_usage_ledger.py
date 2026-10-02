@@ -109,6 +109,21 @@ def test_estimate_cost_unpriced_model_is_zero():
     assert usage_ledger.estimate_cost("definitely-not-priced-model", 1000, 1000) == 0.0
 
 
+def test_estimate_cost_jev_latest_alias_measured():
+    """v4.13.6 rider 3: jev_native consults bill model='jev-latest' — the
+    measured table must cover it (alias rows + prefix-stripped fallback),
+    else the banner bills $0.00000. Rate = measured 0.042/1M input."""
+    assert usage_ledger.estimate_cost("jev-latest", 1_000_000, 0) == 0.042
+    assert usage_ledger.estimate_cost("jev-latest", 1000, 1000) == 0.000042
+    assert usage_ledger.estimate_cost("typesafe/jev-latest", 1000, 0) == 0.000042
+    assert usage_ledger.estimate_cost("jev-preview", 1000, 0) == 0.000042
+    assert usage_ledger.estimate_cost("typesafe/jev-preview", 1000, 0) == 0.000042
+    assert usage_ledger.estimate_cost("typesafe/jev-router", 1000, 0) == 0.000042
+    # unpriced names still zero — alias fallback must not fabricate rates
+    assert usage_ledger.estimate_cost("jev-not-a-real-model", 1000, 0) == 0.0
+    assert usage_ledger.estimate_cost("", 1000, 0) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # Tap 1: render lane (router.py)
 # ---------------------------------------------------------------------------
