@@ -493,9 +493,23 @@ def _sanitize_session_key(raw: Any) -> str:
     """v4.11.4 FIX 3: accept only keys matching the platform session-id
     shape (non-empty, bounded, no whitespace/control chars — a stale or
     foreign context key like a repr-bleed string must never become ledger
-    state). Returns the sanitized key or "" (caller falls back)."""
+    state). D3-DELIVERY FIX: the platform hands the terminal seam a
+    'session:'-prefixed session id ('session:api_...') while the
+    llm_execution / POST edges use the bare sid ('api_...'). Staging,
+    consumption and close_turn all key _RUNS + the ledger by the raw
+    sanitized value, so a SEAM-1 consult staged under 'session:api_x'
+    was invisible to flush_and_scan('api_x') AND to close_turn — the
+    advisory AND the aggregate banner never delivered. A leading
+    'session:'/'sessions:' prefix is now STRIPPED so every seam
+    converges on the bare platform sid (matching route_gate, the
+    debug_banner park/consume keys and the ledger rows the POST edges
+    write). Returns the sanitized key or "" (caller falls back)."""
     try:
         s = str(raw or "").strip()
+        if s.startswith("session:"):
+            s = s[len("session:"):]
+        elif s.startswith("sessions:"):
+            s = s[len("sessions:"):]
         if not s or len(s) > 128:
             return ""
         if re.search(r"[\s\x00-\x1f]", s):

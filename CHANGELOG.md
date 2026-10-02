@@ -1,3 +1,26 @@
+## 4.13.3 — 2026-10-02 (D3-DELIVERY fix-first — midturn fork-consult session-key normalization)
+
+- Root cause (conductor probes, 2026-10-02): the platform hands the
+  transform_terminal_output seam (SEAM 1) a `session:`-prefixed session id
+  (`session:api_...`) while the llm_execution (flush_and_scan) and POST
+  (close_turn / park-consume) edges use the bare sid. `_sanitize_session_key`
+  passed the prefixed form through verbatim, so terminal-seam fork consults
+  staged pending advisories and consumed records under a key the delivery
+  edges never read — the advisory AND the aggregate turn-close banner never
+  delivered (5 live fork probes, 0 deliveries; one ledger row carried the
+  leaked `session:` prefix). Backend chain was healthy throughout.
+- Fix: `_sanitize_session_key` strips a leading `session:`/`sessions:` prefix
+  so every seam converges on the bare platform sid (matching route_gate,
+  the debug_banner park/consume keys and the ledger rows the POST edges
+  write). Only the LEADING prefix is stripped — bare sids containing `:`
+  elsewhere are untouched.
+- Regression pins (tests/test_d3_delivery_midturn_key.py): prefix
+  normalization; park->deliver round-trip for a `session:`-prefixed SEAM-1
+  consult (pending stages under the bare sid, flush_and_scan delivers,
+  one-shot); ledger row recorded under the bare sid; aggregate banner
+  reachable via close_turn on the bare sid, one-shot drain.
+- No deploy, no gateway bounces, no .env writes.
+
 ## 4.13.2 — 2026-10-02 (D3 rider — systemone-native jev backend)
 
 - New backend value `jev_native` for the decision lane: the envelope is
