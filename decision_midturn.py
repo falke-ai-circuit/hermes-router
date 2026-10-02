@@ -316,11 +316,22 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             if _dec.provenance_skip(text, cfg):
                 continue  # [Durable Summary / [Depth- / bracketed envelopes
             if str(msg.get("role")) == "user":
-                # user ingress = run boundary: reset the cap accumulator
+                # user ingress = run boundary: reset the RUN CAP only.
+                # D3 residual fix (evol trail, session
+                # api_1790958984_30efbcf5): wiping `consumed` here silently
+                # DELETED undelivered midturn verdicts whenever a sweep
+                # ran with a rolled/trimmed window (mid-run anchor-consult
+                # llm_execution fires a sweep whose slice rescan sees
+                # history user messages) — close_turn then found no
+                # verdicts and the aggregate rollup never parked, so the
+                # POST consume delivered only the anchor banner and the
+                # session never saw '[decision-lane advisory]'. Verdicts
+                # in the accumulator are UNDELIVERED state, not cap
+                # pressure: they survive until close_turn drains them
+                # (one-shot). Cap accounting stays on `count`.
                 with _LOCK:
                     rst = _state(key)
                     rst["count"] = 0
-                    rst["consumed"] = []
             opts = _dec.extract_options(text)
             if not opts:
                 continue

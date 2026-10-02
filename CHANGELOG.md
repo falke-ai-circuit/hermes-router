@@ -1,3 +1,54 @@
+## 4.13.5 — 2026-10-02 (D3 residuals fix-first — evol park-to-deliver wipe + POST gate over-fire)
+
+- Item 1 — evol park-to-deliver gap. Trail (/tmp/uncensored-router-evol.log,
+  session api_1790958984_30efbcf5): SEAM-1 terminal verdict conf=1.0
+  (ledger_id=55) -> PRE anchor_banner_parked + debug_banner_emitted
+  (task_id=ce6eac102085291ca894a404, event_seq=2) -> next turn POST
+  anchor_banner_consume parked=True edge=benign -> but NO '[decision-lane
+  advisory]' text ever landed in that session's assistant bodies, while
+  conductor's identical path delivers (11 bodies tagged).
+- Root cause: sweep_turn_start's user-ingress run-boundary block wiped the
+  consumed accumulator (`rst["consumed"] = []`), not just the run cap. A
+  mid-run anchor-consult llm_execution fires flush_and_scan whose rolled
+  message slice (n < last_n -> conservative last_n=0 rescan) sees history
+  user messages -> the wipe DELETED the turn's undelivered verdicts before
+  the POST close -> close_turn drained nothing -> the aggregate rollup never
+  parked -> the benign consume delivered only the anchor banner (parked
+  16:41:14) and the body seam never saw the tag. Conductor's runs carry no
+  mid-run anchor consult, so no rescan wipe preceded its POST close — the
+  evol-vs-conductor asymmetry. Not the re-park vanish recovery (no
+  banner_redelivered_next_turn events in the trail — the re-park path never
+  fired) and not the cooldown (the 4ea1200c32e4 sweep hit was legit
+  cross-seam dedupe of an already-served fork).
+- Fix: user ingress resets the RUN CAP (`count`) only; consumed-but-
+  undelivered verdicts survive until close_turn drains them one-shot.
+- Item 2 — post_gate_insufficient_structure over-fired on deliberately
+  short declared forks ('Quick fork: (A)... (B)... One word answer.') on
+  architect/recovery/evol probe turns: the >=20-char consequence clause
+  blocked the consult path entirely. Fix: two DISTINCT parenthesized
+  ordinals ('(A)'/'(B)' anywhere in the text) bypass the consequence probe,
+  and extract_options gained an inline paren-fork fallback (line-anchored
+  markers never match a single-line declared fork); every other marker
+  style keeps the strict gate — genuinely unstructured text stays
+  default-deny.
+- Pins (tests/test_d3_residuals_fixfirst.py, 5): the evol repro end-to-end
+  (SEAM-1 verdict -> mid-run rolled-window sweep wipe -> POST close still
+  delivers the tagged rollup, one-shot, next turn clean); cap reset kept
+  while the accumulator survives; gate passes declared short forks
+  ('Quick fork: (A) ship now (B) hold back...' and '(A) kafka or (B)
+  rabbitmq'); gate still blocks unstructured prose / empty text;
+  post_fork_scan actually dispatches on the declared short fork (no
+  post_gate row).
+- Item 3 (housekeeping note, no change): /opt/data/profiles/evol/config.yaml
+  L613/L618 'midturn: 'on'' rows are DIFFERENT YAML levels —
+  hermes_router/decision/on_demand/midturn (the on_demand toggle read by
+  on_demand_allowed) vs hermes_router/decision/midturn (the shadow|on|off
+  mode read by _mode). Both are read by code; no last-one-wins collision —
+  orch dedupe would change semantics, do not collapse them.
+- Suite 1334 passed / 2 skipped / 1 deselected (full run 6m16s; the known
+  test_midturn_declared_claim_runs_lane worker-bleed flake passed this run).
+- No deploy, no gateway bounces, no profile config/.env writes.
+
 ## 4.13.4 — 2026-10-02 (D3-DELIVERY rider 2 — turn-close rollup provenance tag / api_server body delivery)
 
 - Live repro (conductor :8649, session api_1790950451_44077f93, jev_native,

@@ -1016,6 +1016,30 @@ def extract_options(text: str, cap: int = 6,
                 if len(out) >= cap:
                     break
         if not out:
+            # D3 residual fix: INLINE parenthesized letter/digit forks —
+            # 'Quick fork: (A) ship now (B) hold back. One word answer.'
+            # (live architect/recovery/evol probe shape). The line-anchored
+            # marker regexes never match a single-line declared fork; the
+            # parenthesized ordinals split the text into verbatim labels.
+            # Never-invent holds: labels come only from the stated segments.
+            pms = list(_EXPLICIT_PAREN_FORK_RE.finditer(text))
+            if len(pms) >= 2:
+                seen_p: set = set()
+                for i, m in enumerate(pms):
+                    o = m.group(1).lower()
+                    if o in seen_p:
+                        continue
+                    seg = text[m.end():pms[i + 1].start()
+                               if i + 1 < len(pms) else len(text)]
+                    label = clean_snippet(
+                        seg.strip(" \t\n\r-—:;,."), 120)
+                    if label and label.lower() not in {
+                            o2.lower() for o2 in out}:
+                        seen_p.add(o)
+                        out.append(label)
+                    if len(out) >= cap:
+                        break
+        if not out:
             m = _OPT_OR_RE.search(text)
             if m:
                 for g in (m.group(1), m.group(2)):
@@ -1081,6 +1105,12 @@ def _manual_verbatim_options(ask_text: str, cap: int = 6) -> List[str]:
         return []
 
 
+# D3 residual: explicit parenthesized letter/digit fork ordinals —
+# '(A) ...' / '(1) ...' declared closed-fork shapes. Distinct >= 2 bypasses
+# the consequence clause in _post_gate_ok (deliberately short forks).
+_EXPLICIT_PAREN_FORK_RE = re.compile(r"\(([A-Da-d1-4])\)")
+
+
 def _post_gate_ok(text: str) -> bool:
     """R19.12 FIX 2: POST pseudo-fire gate. The POST leg fires ONLY when
     the source turn contains >= 2 DISTINCT named options WITH consequence
@@ -1093,6 +1123,19 @@ def _post_gate_ok(text: str) -> bool:
         t = str(text or "")
         if not t:
             return False
+        # D3 residual fix: an EXPLICIT parenthesized letter fork — '(A) ...
+        # (B) ...' declared shapes (live: architect, recovery and evol
+        # probe forks 'Quick fork: (A)... (B)... One word answer.') were
+        # gate-blocked by the >=20-char consequence clause, so the consult
+        # path never ran on deliberately SHORT forks. Two DISTINCT
+        # parenthesized ordinals anywhere in the text are themselves a
+        # declared closed fork: pass without the consequence probe. Every
+        # other marker style (numbered lists, 'Option N', bullets) keeps
+        # the strict consequence gate, so genuinely unstructured text
+        # stays default-deny.
+        _pf = _EXPLICIT_PAREN_FORK_RE.findall(t)
+        if len({str(x).lower() for x in _pf}) >= 2:
+            return True
         count = 0
         seen_labels: set = set()
         for line in t.splitlines():
@@ -1106,6 +1149,19 @@ def _post_gate_ok(text: str) -> bool:
                 label = line[:30].lower()
             if label in seen_labels:
                 continue
+            # D3 residual fix: an EXPLICIT parenthesized letter fork —
+            # '(A) ... (B) ...' declared shapes (live: architect, recovery
+            # and evol probe forks 'Quick fork: (A)... (B)... One word
+            # answer.') were gate-blocked by the >=20-char consequence
+            # clause, so the consult path never ran on deliberately SHORT
+            # forks. Two DISTINCT parenthesized ordinals are themselves a
+            # declared closed fork: pass without the consequence probe.
+            # Every other marker style (numbered lists, 'Option N',
+            # bullets) keeps the strict consequence gate, so genuinely
+            # unstructured text stays default-deny.
+            _pf = _EXPLICIT_PAREN_FORK_RE.findall(t)
+            if len({str(x).lower() for x in _pf}) >= 2:
+                return True
             body = str(m.group(2) or "") if m.lastindex and m.lastindex >= 2 \
                 else line
             if len(body) < 20:
