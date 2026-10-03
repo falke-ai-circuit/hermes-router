@@ -520,6 +520,22 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             _self_reflect = ""
                         _sr_block = ("\n\nTHE AGENT'S CURRENT SELF-ASSESSMENT (her own last words, "
                                      "for context — observe ask AND agent):\n" + _self_reflect) if _self_reflect else ""
+                        # C-F2 (FIX-FIRST rider 7): the PRE frame saw ask[:4000]
+                        # + 700-char self-assessment ONLY — no causal chain.
+                        # Reuse the decision lane's _causal_context (the same
+                        # bounded recent-tail the impulse envelope gets) so the
+                        # orientation consult observes the chain that produced
+                        # the fork, not the ask in isolation. Bounded (1200c),
+                        # state.db read-only, fail-open ''.
+                        _causal_block = ""
+                        try:
+                            from .decision import _causal_context as _cc
+                            _causal = _cc(session_id, _orig, {})
+                            if _causal and _causal.strip():
+                                _causal_block = ("\n\nCAUSAL CONTEXT (bounded recent "
+                                                 "tail of the session):\n" + _causal)
+                        except Exception:  # noqa: BLE001 — tail never breaks the consult
+                            _causal_block = ""
                         _frame = (
                             "You are the agent's higher intuition at task START. "
                             "Do NOT solve the task. Given the ask below, produce a terse "
@@ -530,7 +546,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                             "4. What to avoid.\n"
                             "5. How failure would look like (early-warning signs).\n"
                             "Advisory only — the agent may deviate.\n\nTHE ASK:\n"
-                            + _orig[:orientation_ask_cap()] + _sr_block
+                            + _orig[:orientation_ask_cap()] + _sr_block + _causal_block
                         )
                         # R19.13 B+ 5b (Goran addendum): PRE doubt-seed — the
                         # adversarial element rides INSIDE this consult (one
@@ -551,6 +567,24 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                                     _adv_family(_orig):
                                 _frame += _adv_seed()
                         except Exception:  # noqa: BLE001 — seed never breaks the consult
+                            pass
+                        # C-F1/C-F3 (FIX-FIRST rider 7): the multi-POV
+                        # instruction was wired ONLY into the POST audit; the
+                        # PRE orientation frame never carried it. Same gate
+                        # family as POST (_pov_active), with the C-F3
+                        # double-gate fix: this consult ALREADY passed the
+                        # complexity gate to be staged (complexity lane), so
+                        # 'auto' must not re-gate — the POV rides whenever
+                        # pov_mode != off. 'always'/'auto' both include;
+                        # 'off' never does. Never raises.
+                        try:
+                            from .completion_audit import (
+                                pov_mode as _pov_mode,
+                                _pov_instruction as _pov_inst,
+                            )
+                            if _pov_mode() != "off":
+                                _frame += _pov_inst()
+                        except Exception:  # noqa: BLE001 — POV never breaks the consult
                             pass
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):

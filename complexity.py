@@ -98,6 +98,16 @@ _PLANNING_ARCH: List[str] = [
     r"\bwhat\s+(?:breaks?|fails?|goes\s+wrong)\b",
     # "mitigation/rollback/fallback ... for each" enumeration-of-handling shape.
     r"\b(?:mitigation\w*|fallback\w*|rollback|failure modes?)\b.{0,60}\b(?:for each|per|and the)\b",
+    # C-A (FIX-FIRST rider 7, conductor frontier-detection gap): analysis-class
+    # asks ("audit the decision envelope / analyze the lane behavior / audit
+    # the session's framework") scored 0 — every real conductor turn went
+    # clear_simple. R14 LESSON applied: TIGHT verb+noun pairs only (analyze/
+    # audit/scrutinize + a bounded analysis OBJECT noun), NEVER bare verbs —
+    # the R14 overfiring class (bare 'analyze' matching ordinary prose) must
+    # not re-open. Bounded noun family: behavioral|framework|system|envelope|
+    # lane|session (+ audit-of variants).
+    r"\b(?:analyz\w+|analys\w+|audit|scrutini\w+|examin\w+)\b.{0,16}\b(?:behavioral|behavioural|framework|envelope|lane|session)\b",
+    r"\b(?:behavioral|behavioural)\b.{0,24}\b(?:audit|analy\w+|review|examin\w+)\b",
 ]
 
 # Bucket DEBUG CHAINS — "why does X fail", root-cause hunts with unknown cause

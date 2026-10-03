@@ -26,7 +26,11 @@ banner/fire-point wiring (delivery representation only).
 """
 from __future__ import annotations
 
+import logging
+
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("hermes.plugins.router.render_payload")
 
 CONTEXT_MAX_CHARS = 1200
 VOICE_MAX_CHARS = 1600
@@ -63,6 +67,17 @@ def build_render_payload(*, task: str, context_msgs: Optional[List[Dict[str, Any
             text = str(m.get("content") or "").strip()
             if not text:
                 continue
+            # C-U2 (FIX-FIRST rider 7, verified): the platform appends a
+            # <memory-context> block (recalled graph facts) to the user
+            # message — dispatcher_pre._strip_memory_context removes it from
+            # the ROUTING text, but raw context_msgs passed here could still
+            # carry it into the RENDER payload. Strip it defensively from
+            # every line so graph-recall noise can never reach the renderer.
+            _mc = text.find("<memory-context>")
+            if _mc != -1:
+                text = text[:_mc].rstrip()
+                if not text:
+                    continue
             line = "%s: %s" % (role, text)
             if len(line) > budget:
                 line = line[:budget]
@@ -95,27 +110,43 @@ def serialize_for_chat(payload: Dict[str, str]) -> str:
     try:
         clean = {k: v for k, v in dict(payload or {}).items()
                  if k not in _INTERNAL_ENVELOPE_KEYS and isinstance(v, str)}
-        p = build_render_payload(
-            task=clean.get("task", ""),
-            voice_card=clean.get("voice", ""),
-            output_shape=clean.get("output_shape", ""),
-            language=clean.get("language", "auto"),
-            constraints=clean.get("constraints", ""),
-        )
-        p["context"] = str(clean.get("context") or "")[:CONTEXT_MAX_CHARS]
+        # C-U3 (FIX-FIRST rider 7): serialize_for_chat double-built the
+        # payload via build_render_payload, and any key drift between the
+        # builder's expected field set and a drifted caller dict silently
+        # DROPPED fields (e.g. a caller passing `content=` instead of
+        # `context=` vanished without a trace). Fail-LOUD instead: validate
+        # the expected field set, log unknown keys and missing expected keys
+        # (logger.warning, observability only — never raise), and build
+        # WITHOUT the rebuild step so a drifted field set can't be silently
+        # discarded twice.
+        _expected = {"task", "context", "voice", "output_shape", "language", "constraints"}
+        _drift = [k for k in clean if k not in _expected]
+        if _drift:
+            logger.warning("serialize_for_chat unknown payload keys (dropped): %s",
+                           ",".join(sorted(_drift)))
+        _missing = [k for k in _expected if k not in clean]
+        if _missing:
+            logger.warning("serialize_for_chat missing expected payload keys: %s",
+                           ",".join(sorted(_missing)))
+        task_s = str(clean.get("task") or "")[:TASK_MAX_CHARS]
+        voice_s = str(clean.get("voice") or "")[:VOICE_MAX_CHARS]
+        shape_s = str(clean.get("output_shape") or "")[:OUTPUT_SHAPE_MAX_CHARS]
+        lang_s = str(clean.get("language") or "auto")[:24]
+        cons_s = str(clean.get("constraints") or "")[:CONSTRAINTS_MAX_CHARS]
+        context = str(clean.get("context") or "")[:CONTEXT_MAX_CHARS]
         sections = [
-            "=== TASK ===\n" + (p["task"] or "(none)"),
+            "=== TASK ===\n" + (task_s or "(none)"),
         ]
-        if p["context"]:
-            sections.append("=== RECENT CONVERSATION (bounded) ===\n" + p["context"])
-        if p["voice"]:
-            sections.append("=== VOICE ===\n" + p["voice"])
-        if p["output_shape"]:
-            sections.append("=== OUTPUT SHAPE ===\n" + p["output_shape"])
-        if p["language"] and p["language"] != "auto":
-            sections.append("=== LANGUAGE ===\n" + p["language"])
-        if p["constraints"]:
-            sections.append("=== CONSTRAINTS ===\n" + p["constraints"])
+        if context:
+            sections.append("=== RECENT CONVERSATION (bounded) ===\n" + context)
+        if voice_s:
+            sections.append("=== VOICE ===\n" + voice_s)
+        if shape_s:
+            sections.append("=== OUTPUT SHAPE ===\n" + shape_s)
+        if lang_s and lang_s != "auto":
+            sections.append("=== LANGUAGE ===\n" + lang_s)
+        if cons_s:
+            sections.append("=== CONSTRAINTS ===\n" + cons_s)
         return "\n\n".join(sections)
     except Exception:  # noqa: BLE001
         return str((payload or {}).get("task") or "")

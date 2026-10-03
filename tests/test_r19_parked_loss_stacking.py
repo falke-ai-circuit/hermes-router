@@ -311,23 +311,22 @@ def test_d1_stacking_decision_plus_frontier(r4_reset, monkeypatch):
     # agent registers a declared DECISION claim mid-turn (request_routing)
     route_gate.register_declared(SID, route_gate.LANE_DECISION,
                                  route_gate.SOURCE_DECLARED_AGENT)
+    # D1 rider 7: BOTH lanes fire on the ONE turn — the frontier consult
+    # routes on this pass (declared Leg-3 staged swap) and the decision
+    # advisory dispatches async (parked banner). No reliance on a later
+    # pass of the turn (the v4.13.7 pending-claim stack never executed on
+    # single-shot turns: reviewer 3/3 repro api_1791007124_237c97ee).
     dec = route_gate.claim_pass(content, SID, "m")
-    assert dec.route is False  # decision lane: advisory only, turn proceeds
+    assert dec.route is True and dec.lane == route_gate.LANE_HIGHER_PRE
+    assert dec.source == route_gate.SOURCE_DECLARED_USER
     # the decision advisory fired (backend called for the decision fork)
     deadline = time.time() + 5.0
     while time.time() < deadline and not calls:
         time.sleep(0.02)
     assert calls, "decision advisory must fire"
-    # STACKING: the frontier consult is queued (pending declared claim) and
-    # the next pass of the same turn executes it
-    pending = route_gate.peek_declared(SID)
-    assert pending is not None and pending.get("lane") == \
-        route_gate.LANE_HIGHER_PRE, pending
-    dec2 = route_gate.claim_pass(content, SID, "m")
-    assert dec2.route is True and dec2.lane == route_gate.LANE_HIGHER_PRE
+    # stack event logged + the frontier consult envelope stages
     assert [f for e, f in LOGGED
             if f.get("event_detail") == "declared_frontier_stacked"]
-    # the claim's consult envelope stages (request_routing_executed)
     assert [f for e, f in LOGGED
             if f.get("event_detail") == "request_routing_executed"]
 

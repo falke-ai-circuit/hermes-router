@@ -497,23 +497,31 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             meta["choice_label"] = _dec.choice_label(verdict, envelope)[:60]
         except Exception:  # noqa: BLE001 — label is cosmetic
             meta["choice_label"] = ""
-        # F4 (rider 6): the rollup banner claims tok n/n + $ — those claims
-        # MUST have a tokens-ledger row to reconcile against. The midturn
-        # path computed cost locally but never wrote the usage ledger (the
-        # pre/midturn legs at decision.py:3080 do). Write the row at verdict
-        # time, same lane/source tagging as the other legs.
+        # F4 (rider 6) + rider 7 P0 (fail-loud): the rollup banner claims
+        # tok n/n + $ — those claims MUST have a tokens-ledger row to
+        # reconcile against. Write the row at verdict time with the REAL
+        # session id (correlation), task_id + initiator tags; a failed
+        # write surfaces at ERROR + a route event, never vanishes.
+        _tokens_ok = True
         try:
             from . import usage_ledger as _ul
 
             _ti, _to = meta.get("tokens_in"), meta.get("tokens_out")
             if _ti is not None or _to is not None:
-                _ul.record_tokens(
+                _tokens_ok = bool(_ul.record_tokens(
                     "decision", base["model"],
-                    str(meta.get("endpoint") or ""), _ti, _to,
+                    str(session_id or ""), _ti, _to,
                     _ul.estimate_cost(base["model"], _ti, _to),
-                    "decision_midturn")
-        except Exception:  # noqa: BLE001 — tokens never break the lane
-            pass
+                    "decision_midturn",
+                    task_id=str(base.get("task_id") or ""),
+                    initiator="auto"))
+        except Exception as _tok_exc:  # noqa: BLE001
+            _tokens_ok = False
+            logger.error("decision_midturn tokens-ledger write FAILED: %s",
+                         _tok_exc)
+        if _tokens_ok is False:
+            _log(session_id, "tokens_ledger_write_failed",
+                 detail="decision_midturn")
         _record_consumed(session_id, verdict, meta, cfg)
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),

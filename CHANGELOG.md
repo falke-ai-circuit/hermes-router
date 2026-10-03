@@ -1,3 +1,81 @@
+## 4.14.0 — 2026-10-03 (FIX-FIRST rider 7 — provenance fail-loud + decision/frontier stacking)
+
+Reviewer router behavioral audit (r19_audit_run2 refix round) — 3 items.
+
+- P0 PROVENANCE BREAK — banner claims with zero bookkeeping (operative
+  8651 + architect 8650; probes api_1791015886_fba529fe /
+  api_1791015911_d98baec9: banner=True, 0 token rows, 0 decision-ledger
+  rows, no /tmp shadow events). Root cause confirmed (a): the probe
+  sessions ran on gateway processes holding the PRE-fix module (code
+  mtime 07:53/08:00, gateways restarted 08:27/08:28 AFTER the probes) —
+  the classic module-state gotcha; tree and live module now match. Code
+  hardening so it can never recur silently:
+  - decision.py worker: the tokens-ledger row now writes BEFORE the
+    banner renders, carries the REAL session id (was the endpoint string
+    — wrong correlation field), task_id + initiator tags.
+  - render_decision_banner: new ledger_ref/tokens_ok params. The banner
+    includes `row=<decision-ledger row id>`; a failed tokens write
+    renders `LEDGER-WRITE FAILED` in the banner and a failed/missing
+    decision-ledger row renders `ledger-row MISSING` — banner claims
+    must reconcile against the ledger or fail loud (F4 rider contract).
+  - the silent `except: pass` around record_tokens at decision.py:3140,
+    decision_midturn.py:510 and the aux scorer (decision.py:748) are
+    replaced with logged failures (logger.error/warning) + a
+    tokens_ledger_write_failed route event; a ledger write failure can
+    never vanish again.
+- P1 architect empty-body regression (0-char bodies vs yesterday's
+  banner-in-body): same stale-module root cause as the P0 — the probe
+  ran pre-restart; the 08:27/08:28 gateway restarts already load the
+  fixed delivery path (parked-loss exhaustiveness, v4.13.7). Flagged for
+  reporter re-audit delta; no additional code change.
+- P2 D1 lane-precedence steal: the v4.13.7 stack-a-pending-claim fix
+  never executed on single-shot turns (no later gate pass in the turn —
+  3/3 repro api_1791007124_237c97ee, 2 events, frontier leg absent) and
+  the pending declared record leaked into later turns. Replaced with
+  real precedence at claim_pass: a turn carrying BOTH a declared
+  decision fork and a declared frontier consult now fires BOTH lanes on
+  the one turn — the decision advisory dispatches async (parked banner,
+  consumes no turn slot) and the frontier consult routes through the
+  normal declared Leg-3 staged-swap path. New gated event
+  decision_frontier_stacked_gated when the decision lane is disabled.
+
+Conductor framing audit (same dispatch) — verified-then-fixed:
+
+- C-U1 shadow-self/surgeon frame VERIFIED POST-HOC-ONLY: the uncensored
+  render call's system prompt (dispatcher_knobs._persona_system_prompt)
+  carried voice card + method card + render mandate, while the frame rode
+  only in _build_substance_message post-delivery. The render call now
+  carries the same identity frame in ITS system prompt — render-side
+  identity == delivery-side framing.
+- C-F1 multi-POV wired into the PRE orientation frame (anchor_exec),
+  same pov_mode gate family as POST (_pov_active).
+- C-F2 PRE causal tail: the orientation consult saw ask[:4000] +
+  700-char self-assessment only; it now also gets the decision lane's
+  _causal_context (bounded 1200c recent tail), same as the impulse
+  envelope. Fail-open ''.
+- C-F3 auto-POV double-gate removed in the complexity lane: the PRE
+  orientation consult ALREADY passed the complexity gate to stage, so
+  'auto' no longer re-gates — POV rides whenever pov_mode != off
+  ('off' still excludes; 'always' unchanged).
+- C-F4 adversarial p_failure parse-fails logged + durable ledger row
+  (fork_class=frontier_adversarial_parse_fail, out of priors) — a
+  dodged/malformed adversarial JSON never vanishes silently again.
+- C-U2 <memory-context> strip extended into build_render_payload's
+  context lines — graph-recall noise cannot reach the renderer via raw
+  context_msgs even when the ingress strip was bypassed.
+- C-U3 serialize_for_chat double-build removed; key drift now logs
+  unknown keys + missing expected keys (logger.warning) instead of
+  silently dropping fields.
+- C-A frontier detection: stage-1 gains a bounded analysis-class family
+  (tight verb+noun pairs analyze/audit/scrutinize/examine +
+  behavioral|behavioural|framework|envelope|lane|session, 16-char
+  direct-object window; R14 lesson applied — no bare verbs). Regression
+  tests: conductor-style analysis asks route frontier; benign prose and
+  analysis-verb-plus-unrelated-object stays clear_simple
+  (tests/test_rider7_ca_analysis_class.py).
+
+Version bump: 4.13.9 -> 4.14.0 (plugin.yaml + catalog test).
+
 ## 4.13.9 — 2026-10-03 (FIX-FIRST rider 6 — verdict-of-record render + leak + reconciliation)
 
 Reviewer audit r19_audit_run3 (post-v4.13.8): 6 findings fixed.

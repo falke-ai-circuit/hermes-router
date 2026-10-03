@@ -1221,6 +1221,29 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                         str(p.get("note") or "")[:120])
             for p in _povs) if _povs else ""
         _adv = _parse_adversarial(verdict_text)  # B+ 5c: attack verdict (nullable, fail-open)
+        # C-F4 (FIX-FIRST rider 7): adversarial p_failure parse-fails were
+        # UNLOGGED — _parse_adversarial returned None silently, so a verdict
+        # that dodged the adversarial JSON (or malformed p_failure) left no
+        # trace and the ledger column stayed NULL with no event. Fail-LOUD
+        # (observability, not the lane): log + durable parse-fail ledger row
+        # (fork_class=frontier_adversarial_parse_fail keeps it out of priors)
+        # whenever the consult carried an adversarial instruction but the
+        # parse missed. Never raises.
+        if _adv is None:
+            try:
+                logger.info("frontier_adversarial_parse_failed "
+                            "session_id=%s chars=%d", session_id,
+                            len(verdict_text))
+                from .decision import ledger_write as _lw
+
+                _lw({"session_id": session_id, "task_id": str(key or ""),
+                     "trigger": "frontier_adversarial_parse_fail",
+                     "fork_class": "frontier_adversarial_parse_fail",
+                     "model": str(model or ""), "choice": "",
+                     "verdict_json": str(verdict_text or "")[:1000],
+                     "p_failure": None, "outcome": "parse_failed"})
+            except Exception:  # noqa: BLE001 — observability only
+                pass
         # R19.19 P2: POV distinctness — collapsed paraphrase vantages are
         # flagged in the persisted verdict (reviewer nice-to-have).
         try:

@@ -745,13 +745,18 @@ def score(frame: Dict[str, Any], task_text: str,
 
             _it, _ot = _sc._usage_from_response(data)
             if _it is not None or _ot is not None:
-                usage_ledger.record_tokens(
+                _tok_ok = usage_ledger.record_tokens(
                     "decision", "hermes-auxiliary", "", _it, _ot,
                     usage_ledger.estimate_cost("hermes-auxiliary", _it, _ot),
                     "decision_score",
                 )
-        except Exception:  # noqa: BLE001 — ledger must never break the lane
-            pass
+                if _tok_ok is False:
+                    # fail-loud: a scoring write miss must surface, not vanish
+                    logger.warning(
+                        "decision_score tokens-ledger write returned False")
+        except Exception as _tok_exc:  # noqa: BLE001 — scoring never raises
+            logger.warning("decision_score tokens-ledger write FAILED: %s",
+                           _tok_exc)
         _record_success()
         return verdict, "ok"
     except Exception:  # noqa: BLE001 — score never raises
@@ -2663,10 +2668,18 @@ def render_verdict_record(rid: Any) -> str:
 # ---------------------------------------------------------------------------
 
 def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
-                           initiator: str = "user") -> str:
+                           initiator: str = "user",
+                           ledger_ref: Any = None,
+                           tokens_ok: Optional[bool] = None) -> str:
     """§7 provenance banner, same mechanics as uncensored/frontier lanes:
     '· router · impulse (decision) | <trigger> | <model> | tok n/n | $x.xxxxxx |
-    initiator=user'. One banner per message, latest-wins park."""
+    initiator=user'. One banner per message, latest-wins park.
+
+    F4 rider contract (rider 7 P0 — fail-loud): the banner carries the
+    reconcilable decision-ledger row id (`row=<rid>`); when the tokens-ledger
+    write FAILED the tok/$ claims are marked LEDGER-WRITE FAILED and when no
+    decision-ledger row exists the banner is marked ledger-row MISSING — a
+    banner with unbacked claims never renders silently."""
     try:
         from . import debug_banner, usage_ledger
 
@@ -2685,12 +2698,28 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
                 break
         else:
             ep = "" if ("/" in ep and ep.startswith("http")) else ep
-        return debug_banner.format_banner(
+        _out = debug_banner.format_banner(
             lane="decision", trigger=str(trigger or "none"),
             model=str(model or "?"), endpoint=ep,
             tokens_in=ti, tokens_out=to, est_cost=cost,
             latency_s=meta.get("latency_s"),
             initiator=str(initiator or "user"))
+        # F4 rider contract fail-loud markers (rider 7 P0): reconcilable
+        # ledger refs ride IN the banner; a write failure or a missing
+        # decision-ledger row is never silent.
+        markers = []
+        if ledger_ref:
+            markers.append("row=%s" % str(ledger_ref)[:40])
+        else:
+            markers.append("ledger-row MISSING")
+        if tokens_ok is False:
+            markers.append("LEDGER-WRITE FAILED")
+        if markers:
+            _out = str(_out).rstrip()
+            if _out.endswith("·"):
+                _out = _out[:-1].rstrip()
+            _out = "%s | %s ·" % (_out, " | ".join(markers))
+        return _out
     except Exception:  # noqa: BLE001
         return ""
 
@@ -3109,10 +3138,41 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                                  4),
                                 verdict_json=verdict_row_json(verdict,
                                                               content)))
+        # F4 rider contract (rider 7 P0): the banner claims tok/$ — the
+        # tokens-ledger row MUST land BEFORE the banner renders, and the
+        # banner carries the reconcilable refs (decision-ledger row id +
+        # real session id). A failed write is FAIL-LOUD: logged at ERROR +
+        # a route event + a banner marker, never a silent miss.
+        ti, to = meta.get("tokens_in"), meta.get("tokens_out")
+        tokens_claimed = ti is not None or to is not None
+        tokens_ok = None if not tokens_claimed else True
+        if tokens_claimed:
+            try:
+                from . import usage_ledger
+
+                tokens_ok = bool(usage_ledger.record_tokens(
+                    "decision", base_row["model"],
+                    str(ids.get("session_id") or ""), ti, to,
+                    usage_ledger.estimate_cost(base_row["model"], ti, to),
+                    "decision_v3", task_id=str(ids.get("task_id") or ""),
+                    initiator=str(ids.get("initiator") or "user")))
+            except Exception as _tok_exc:  # noqa: BLE001
+                tokens_ok = False
+                logger.error("decision tokens-ledger write FAILED: %s",
+                             _tok_exc)
+            if tokens_ok is False:
+                try:
+                    log_route("tokens_ledger_write_failed", lane="decision",
+                              detail="decision_v3",
+                              session_id=str(ids.get("session_id") or ""),
+                              task_id=str(ids.get("task_id") or ""))
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
         advisory = render_advisory(verdict, envelope)
         banner = render_decision_banner(
             ids.get("trigger", "pre"), base_row["model"], meta,
-            initiator=ids.get("initiator", "user"))
+            initiator=ids.get("initiator", "user"),
+            ledger_ref=rid, tokens_ok=tokens_ok)
         # F1 (rider 6): the advisory carries the verdict-of-record read back
         # from the ledger row — no render-layer shaping may diverge from the
         # recorded choice/confidence. No row -> no claim.
@@ -3131,19 +3191,6 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                   or cfg.get("backend") or ""),
                       model=base_row["model"],
                       trigger=ids.get("trigger", "pre"))
-        # tokens into the usage ledger (never breaks the lane)
-        try:
-            from . import usage_ledger
-
-            ti, to = meta.get("tokens_in"), meta.get("tokens_out")
-            if ti is not None or to is not None:
-                usage_ledger.record_tokens(
-                    "decision", base_row["model"],
-                    str(meta.get("endpoint") or ""), ti, to,
-                    usage_ledger.estimate_cost(base_row["model"], ti, to),
-                    "decision_v3")
-        except Exception:  # noqa: BLE001
-            pass
     except Exception:  # noqa: BLE001
         logger.debug("decision v3 worker error", exc_info=True)
     finally:

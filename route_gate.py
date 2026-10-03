@@ -1697,35 +1697,13 @@ def _decision_lane_claim(content: str, session_id: str, model: str) -> None:
         clear_declared(session_id)
         if not (enabled and allowed):
             return
-        # FIX-FIRST rider 4 (item 2, D1 lane-precedence steal): the decision
-        # lane is ADVISORY-ONLY — its execution consumed the turn's declared
-        # slot, so a declared FRONTIER consult carried by the SAME turn's
-        # content was silently dropped (reviewer specimen
-        # api_1790972692_ced09e3f: one turn with both a declared decision
-        # fork and a declared frontier consult ran ONLY the decision lane).
-        # Stacking fix: when the same content ALSO declares a frontier
-        # consult, re-register a pending declared_user frontier claim (the
-        # decision advisory is not a consult and does not spend the turn's
-        # consult). The gate's execute-once contract fires it on the next
-        # pass of the same turn — both lanes run, neither is dropped.
-        try:
-            _frontier_also = bool(declared_frontier_hit(content))
-            if _frontier_also and _dm.on_demand_allowed("manual", cfg):
-                register_declared(session_id, LANE_HIGHER_PRE,
-                                  SOURCE_DECLARED_USER)
-                # The decision claim's registration stamped the turn-claim
-                # record (executed=True above) — reset it to an UNEXECUTED
-                # frontier record so the gate's execute-once contract fires
-                # the stacked consult on the next pass of this turn.
-                stamp_turn_claim(session_id, LANE_HIGHER_PRE,
-                                 SOURCE_DECLARED_USER, content,
-                                 str(model or ""), executed=False)
-                _pkg_fn("_log_route")(
-                    "PRE", event_detail="declared_frontier_stacked",
-                    lane=LANE_HIGHER_PRE, source=SOURCE_DECLARED_USER,
-                    session_id=session_id)
-        except Exception:  # noqa: BLE001 — stacking must never break the claim
-            logger.debug("declared frontier stacking error", exc_info=True)
+        # D1 (rider 7): the stack-a-pending-claim approach was REMOVED —
+        # no later pass of a single-shot turn ever executed the stacked
+        # claim (reviewer: frontier leg absent, 2 events only), and the
+        # pending declared record leaked into later turns. The combined
+        # decision+frontier turn is now handled at claim_pass BEFORE this
+        # claim executes: decision advisory async + frontier routed on the
+        # SAME turn. This path is now pure decision-lane execution.
         task_id = _rc.task_id_for(session_id, content, str(model or ""))
         _dm.handle_decision_v3(
             session_id=session_id, task_id=task_id, task_text=content,
@@ -1773,8 +1751,68 @@ def claim_pass(content: str, session_id: str, model: str,
         # R19 v3: on-demand midturn decision claim — explicit claims win
         # (§5.3). The lane runs as a parked advisory; the turn itself
         # proceeds (NO_ROUTE) — one lane per turn via the turn claim.
-        _decision_lane_claim(content, session_id, model)
-        return NO_ROUTE
+        # D1 fix (rider 7 P2, precedence): when the SAME turn ALSO declares
+        # a frontier consult ("challenge this: ..."), the decision claim
+        # must NOT steal the turn's routed slot. Both lanes fire on the one
+        # turn: the decision advisory dispatches async (parked banner,
+        # consumes nothing) and the FRONTIER consult routes on this turn
+        # through the normal declared Leg-3 staged-swap path below.
+        # Evidence: reviewer 3/3 repro api_1791007124_237c97ee — the old
+        # stack-a-pending-claim approach registered a claim no later pass
+        # of a single-shot turn ever executed (frontier leg absent, 2
+        # events only).
+        _also_frontier = False
+        try:
+            _also_frontier = bool(declared_frontier_hit(content))
+        except Exception:  # noqa: BLE001 — fail-open False
+            _also_frontier = False
+        if _also_frontier:
+            try:
+                from . import decision as _dm
+                from . import router_core as _rc
+
+                _cfg_d = _dm._cfg()
+                _allowed = _dm.on_demand_allowed("manual", _cfg_d)
+                _enabled = bool(isinstance(_cfg_d, dict)
+                                and _cfg_d.get("enabled") is True)
+                if _enabled and _allowed:
+                    # 1. the decision advisory: async parked banner —
+                    #    consumes NO turn slot and NO turn claim.
+                    _init = "user"
+                    try:
+                        _existing = peek_declared(session_id)
+                        if _existing is not None and str(
+                                _existing.get("source") or "") == \
+                                SOURCE_DECLARED_AGENT:
+                            _init = "agent"
+                    except Exception:  # noqa: BLE001 — cosmetic only
+                        pass
+                    _task_d = _rc.task_id_for(session_id, content,
+                                              str(model or ""))
+                    _dm.handle_decision_v3(
+                        session_id=session_id, task_id=_task_d,
+                        task_text=content, model=str(model or ""),
+                        log_route=_pkg_fn("_log_route"), initiator=_init)
+                    # 2. re-point the turn's declared claim at the frontier
+                    #    lane and route it on THIS turn.
+                    register_declared(session_id, LANE_HIGHER_PRE,
+                                      SOURCE_DECLARED_USER)
+                    decision = GateDecision(
+                        route=True, lane=LANE_HIGHER_PRE,
+                        source=SOURCE_DECLARED_USER, reason="declared_user")
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="declared_frontier_stacked",
+                        lane=LANE_HIGHER_PRE, source=SOURCE_DECLARED_USER,
+                        session_id=session_id)
+                else:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="decision_frontier_stacked_gated",
+                        gated=True, session_id=session_id)
+            except Exception:  # noqa: BLE001 — never break the claim path
+                logger.debug("decision+frontier stack error", exc_info=True)
+        if decision.route is False or decision.lane != LANE_HIGHER_PRE:
+            _decision_lane_claim(content, session_id, model)
+            return NO_ROUTE
     if decision.route:
         # Leg 7: stamp the turn-scoped claim record on EVERY claim (any
         # lane, any source) — legacy claim sites read claim_state() and
