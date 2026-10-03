@@ -874,6 +874,22 @@ def _async_worker(frame: Dict[str, Any], task_text: str, cfg: Dict[str, Any],
             pass
 
 
+def _park_task_id(task_id: str) -> str:
+    """R11-1 (rider 11, T1R4 P1a/P1b): the decision lane's PARK key is
+    lane-scoped. Co-fire derives ONE content task id shared by BOTH lanes
+    (task_id_for(session, content, model)) — the decision advisory parks
+    first, then the frontier anchor banner parks with the SAME id and hits
+    park_anchor_banner's R9d replace branch (debug_banner.py: task_id in
+    tasks -> segs[idx] = seg), silently overwriting the decision segment
+    (live: valmet api_1791058540 / operative api_1791058583 — both lanes'
+    banners logged with the identical task id, only the frontier banner
+    delivered). Co-fire is two distinct calls, not one retry, so the
+    replace branch must not cross lanes; a decision RETRY re-parks with
+    the same suffixed id and still replaces correctly. Only affects the
+    park key — ledger rows keep the plain task id."""
+    return ("decision|" + str(task_id)) if task_id else ""
+
+
 def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
              frame: Dict[str, Any], session_id: str, task_id: str,
              task_text: str, cfg: Dict[str, Any],
@@ -897,7 +913,7 @@ def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
                     return None
                 _BANNER_COUNTS[session_id] = seen + 1
                 debug_banner.park_anchor_banner(session_id, envelope,
-                                                task_id=task_id)
+                                                task_id=_park_task_id(task_id))
                 log_route("decision_advisory_parked",
                           confidence=round(float(verdict.get("confidence") or 0.0), 3),
                           precedents=",".join(verdict.get("precedents", [])),
@@ -3335,7 +3351,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             from . import debug_banner
 
             debug_banner.park_anchor_banner(ids.get("session_id", ""), parked,
-                                            task_id=ids.get("task_id", ""))
+                                            task_id=_park_task_id(
+                                                ids.get("task_id", "")))
             log_route("decision_advisory_parked",
                       choice=str(verdict["choice"]),
                       confidence=round(float(verdict["confidence"]), 3),

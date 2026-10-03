@@ -290,6 +290,49 @@ def test_r10_2_meta_carries_row_for_downgraded_async_banner(
 
 
 # ---------------------------------------------------------------------------
+# R11-1 — co-fire banner collision: decision park key is lane-scoped
+# ---------------------------------------------------------------------------
+
+def test_r11_1_cofire_decision_banner_survives_frontier_park_same_task_id(
+        r10_reset):
+    """T1R4 P1a/P1b residual: on a co-fire turn the decision advisory and
+    the frontier consult share ONE content-derived task id — the frontier
+    banner park hit park_anchor_banner's R9d replace branch and silently
+    overwrote the decision segment (live: valmet api_1791058540,
+    operative api_1791058583 — decision_advisory_parked then
+    anchor_banner_parked, same task id, only frontier delivered). The
+    decision lane's park key is lane-scoped, so both segments stack and
+    BOTH deliver (R9-8: two banners + two ledger trails)."""
+    decision_task = "eb3d572ae1e7f442457611ca"  # shared content-derived id
+    # the decision lane parks via its lane-scoped key (decision.py v3 worker)
+    debug_banner.park_anchor_banner(
+        SID, "· router · impulse (decision) | manual | tok 1/2 ·",
+        task_id=decision._park_task_id(decision_task))
+    # the frontier anchor parks with the PLAIN task id (as on_llm_execution)
+    debug_banner.park_anchor_banner(
+        SID, "· router · higher-self (frontier) | consult | tok 3/4 ·",
+        task_id=decision_task)
+    parked = debug_banner.consume_parked_banner(SID)
+    assert "impulse (decision)" in parked, \
+        "decision banner must survive the frontier park (R11-1)"
+    assert "higher-self (frontier)" in parked, \
+        "frontier banner must still deliver"
+    assert parked.count("· router ·") == 2
+    # R9d retry semantics per lane preserved: a decision RETRY re-parks
+    # with the SAME lane-scoped key -> replaces only the decision segment.
+    debug_banner.park_anchor_banner(
+        SID, "· router · impulse (decision) | manual | tok 9/9 ·",
+        task_id=decision._park_task_id(decision_task))
+    debug_banner.park_anchor_banner(
+        SID, "· router · higher-self (frontier) | consult | tok 5/6 ·",
+        task_id=decision_task)
+    parked = debug_banner.consume_parked_banner(SID)
+    assert parked.count("· router ·") == 2
+    assert "tok 9/9" in parked and "tok 1/2" not in parked
+    assert "tok 5/6" in parked and "tok 3/4" not in parked
+
+
+# ---------------------------------------------------------------------------
 # R10-3 — benign-prose misfire gates
 # ---------------------------------------------------------------------------
 
