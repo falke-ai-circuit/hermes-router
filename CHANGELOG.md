@@ -1,3 +1,96 @@
+## 4.16.0 — 2026-10-03 (FIX-FIRST rider 10 — co-fire mirror stacking, frontier row-ref reconciliation, benign-prose misfire gates, C3 injection fork preservation, parked-loss loudness, conductor observability-leg repair)
+
+Sources: reviewer T1R3 battery (/opt/data/tmp/t1r3-results-2026-10-03.md,
+raw t1r3-raw.jsonl), Goran-directed fold. No deploy, no gateway bounces,
+no profile config/.env writes.
+
+- R10-1 CO-FIRE STACKING UNREACHABLE (P1 FAIL): the user-content direction
+  of the co-fire contract was unreachable — when the turn itself declares
+  BOTH a frontier consult AND a decision fork, decide_turn's step-4
+  direct frontier route consumed the turn slot before the decision gate
+  ran; the LANE_DECISION stacking branch is gated on the resolved lane
+  being decision, so the decision ask was silently swallowed (no row, no
+  banner, no event; specimens valmet P1a + operative P1b). Fix: mirror
+  co-fire block in claim_pass — when the resolved lane is the frontier
+  (declared_user/aux_intent) AND the content carries the trusted manual
+  'decide this' line, the decision advisory dispatches ASYNC (parked
+  banner, consumes no turn slot) while the frontier consult routes on
+  THIS turn. Two banners, two ledger trails (R9-8 contract intact);
+  event declared_decision_stacked.
+- R10-2 FRONTIER ROW-REF RENDER CONTRACT BROKEN BOTH DIRECTIONS (P3
+  FAIL): (a) the completion-audit banner parked BEFORE
+  persist_frontier_verdict ran and the returned row id was DISCARDED
+  (A4: banner carried no ref while row 347 existed); (b) the anchored
+  banner read a PRE-EXECUTION peek COPY of the swap record
+  (peek_pending_swap returns dict(rec)) which can never see the
+  frontier_ledger_row key written on the LIVE popped record (P1a/b/c:
+  'ledger-row MISSING' while rows 30/148/1192 existed). Fix: persist
+  BEFORE the banner park in _consult_meta (both the main and the
+  NO-FINDINGS early-return paths — a billed NO-FINDINGS consult gets its
+  row too), ledger_row carried in the consult meta, the parked and
+  downgraded-async banners stamp row=<rid> / 'ledger-row MISSING', and
+  the §10.2 anchored banner reconciles from
+  anchor_exec.last_frontier_row(session_id) when the peek copy lacks the
+  key.
+- R10-3 FRONTIER MISFIRE ON BENIGN PROSE (B1, new class):
+  risk.reports_consequential ran its report-verb+target regex over RAW
+  response text — no quoted-block strip, no meta/hypothetical guard — so
+  a benign essay DISCUSSING consequential ops billed an audit consult
+  (rows 25 parse_fail + 26 consult, banner captured-not-delivered at
+  edge=audit_sync); and _audit_payload appended the adversarial attack
+  element UNCONDITIONALLY, turning the misfired audit into an
+  adversarial consult. Fix: the report scan applies the same guards
+  stage1 uses (_strip_quoted + _META_GUARD_RE); the adversarial element
+  rides ONLY when the ASK declared it
+  (_ask_declared_adversarial: adversarial_declared / adversarial_family_hit).
+- R10-4 C3 SILENT FORK LOSS: the R15 risk leg had NO
+  system-injection quarantine (the complexity leg has one) — an
+  injection-marker clause whose wording lexically hit the risk
+  co-occurrence rule routed reason=risk_r2 AND short-circuited the
+  decision leg below it (no consult, no event). Fix: the risk leg
+  inherits the same quarantine + a DISTINCT event
+  (risk_pre_skip_system_injected); the risk consult return now fires
+  the rider-8 stashed-manual decision stack (_fire_decision_stack) so a
+  compound ask keeps its decision consult; and an injection-only
+  decision-leg suppression is EVENTFUL
+  (decision_injected_suppressed) instead of silent.
+- R10-5 A2 ANALYST BANNERLESS (parked-loss family, 3rd round): a banner
+  CONSUMED at the benign edge whose persisted rewrite silently missed
+  (exact-content guard defeated by gateway-side generation rewrites;
+  live: 8 ledger verdicts on analyst with parked=True consumes, zero
+  banner_render_captured, zero redelivered events) was
+  consumed-and-lost. Fix: the benign edge now FAILS LOUD — a
+  rewrite-miss or capture exception re-parks the banner for next-turn
+  delivery and logs parked_capture_failed (reason=rewrite_no_match /
+  capture_exception). Root cause on analyst's actual path: analyst-only
+  decision.post:true + slice:'on' enables the POST fork-scan advisory
+  which parks AFTER the turn's benign consume (rider 8's
+  post_worker_wait covers the reverse order only); the config-side
+  mitigation (drop decision.post/slice to match valmet) is REPORTED for
+  the operator — profile configs stay untouched per constraint.
+- R10-6 OBSERVABILITY-LEG REPAIR (conductor): the either-or
+  hermes_router/uncensored_router section choice in config_access
+  dropped the LEGACY anchor_chain/log_path keys the moment the modern
+  block became non-empty — conductor added hermes_router.decision
+  (~Sep 28-30), its legacy anchor_chain vanished, every declared
+  frontier consult staged None and died with the claim MARKED EXECUTED
+  (silent; zero events, zero frontier_consult rows EVER on conductor),
+  freezing the spend ledger at Sep 30 while decision/impulse verdicts
+  kept billing. Fix: legacy key-MERGE (modern wins per-key) in
+  router_section/_read_yaml, and the staged-None declared claim is NO
+  LONGER marked executed (declared_claim_standdown_unexecuted
+  reason=staging_no_record; the execute-once contract re-fires it).
+  Live-verified: conductor's legacy anchor_chain now resolves to a real
+  endpoint through the merged section. Verification consult
+  ('anchor this' → billed spend row + router log event + banner) is
+  PENDING the conductor gateway bounce — conductor bounces at clean
+  task boundaries only.
+- New pin battery tests/test_rider10_fixes.py (16 tests): co-fire both
+  directions, row-ref both directions + NO-FINDINGS path, misfire
+  gates, risk quarantine + stack-fire + eventful suppression,
+  parked-loss loudness, legacy merge (modern-wins parity), staged-None
+  re-executability.
+
 ## 4.15.0 — 2026-10-03 (FIX-FIRST rider 9 — shadow-lane swallow closure, frontier provenance ledger, co-fire stacking, line-hold register)
 
 Sources: reviewer T1 re-run (/opt/data/tmp/t1-redeploy-results-2026-10-03.md),

@@ -223,6 +223,12 @@ def test_declared_then_auto_dispatch_stands_down(monkeypatch):
     re-fire of the same ask must NOT re-run the auto pass — the turn
     record stands it down (one consult per turn, one outcome)."""
     monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R10-6 (rider 10): the declared claim's consult EXECUTES when its
+    # staged-swap envelope stages — mock staging SUCCESS so the
+    # execute-once record flips to executed=True (a failed staging is
+    # re-executable by design, the R19.16 FIX 2 contract).
+    monkeypatch.setattr(router_core, "stage_model_swap",
+                        lambda *a, **k: {"staged": True})
     dispatch_calls = []
     monkeypatch.setattr(plugin, "_dispatch_pass",
                         lambda c, s, m: dispatch_calls.append(1) or True)

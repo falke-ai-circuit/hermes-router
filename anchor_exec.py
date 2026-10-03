@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 from . import anchor_chain
@@ -134,6 +135,24 @@ def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
 
 _CHARS_PER_TOKEN = 4.0
 _DEFAULT_EST_OUTPUT_TOKENS = 2000
+
+# R10-2 (rider 10): session-scoped last frontier_consult ledger row id,
+# written by maybe_execute_anchored when the row lands and read by the
+# §10.2 banner render at on_llm_execution — which holds only a
+# PRE-EXECUTION peek copy of the swap record and would otherwise render
+# 'ledger-row MISSING' while the row exists.
+_LAST_FRONTIER_ROW: Dict[str, int] = {}
+_LAST_FRONTIER_ROW_LOCK = threading.Lock()
+
+
+def last_frontier_row(session_id: str) -> int:
+    """The session's last frontier_consult ledger row id (0 when none).
+    Never raises."""
+    try:
+        with _LAST_FRONTIER_ROW_LOCK:
+            return int(_LAST_FRONTIER_ROW.get(str(session_id or ""), 0))
+    except Exception:  # noqa: BLE001 — fail-open 0
+        return 0
 
 
 def estimate_tokens_from_payload(api_kwargs: Dict[str, Any]) -> Tuple[int, int]:
@@ -723,6 +742,14 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 # §10.2 banner at on_llm_execution carries the reconcilable
                 # `row=<rid>` ref (same contract as the decision lane).
                 rec["frontier_ledger_row"] = int(_rid)
+                # R10-2 (rider 10): on_llm_execution reads a PRE-EXECUTION
+                # peek COPY of the swap record (peek_pending_swap returns
+                # dict(rec) — router_core.py), which can never see the key
+                # the LIVE popped record just gained (T1R3 P1a/b/c
+                # MISSING-while-row-exists). Expose the session-scoped
+                # last write for the banner render to reconcile.
+                with _LAST_FRONTIER_ROW_LOCK:
+                    _LAST_FRONTIER_ROW[str(session_id or "")] = int(_rid)
         except Exception:  # noqa: BLE001 — ledger must never break the consult
             pass
 

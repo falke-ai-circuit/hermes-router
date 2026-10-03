@@ -1285,31 +1285,53 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 _rcfg = _risk.risk_cfg()
                 _rmode = str(_rcfg.get("mode") or "consult").strip().lower()
                 if _rmode == "consult" and bool(_rcfg.get("pre_lexicon", True)):
-                    _rcls, _rmeta = _risk.classify(
-                        user_text,
-                        pre_lexicon=True,
-                        semantic_stage2=bool(_rcfg.get("semantic_stage2", True)),
-                    )
-                    if _rcls in ("r2", "r3"):
-                        # R16: risk auto-consult inherits the same cooldown
-                        # map (same normalized-hash keying; risk_r2/r3 only).
-                        if _consult_cooldown_active(session_id, user_text):
-                            return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
-                                        None, "consult_cooldown_suppressed")
-                        _record_cooldown_fire(
-                            session_id, _cooldown_hash(session_id, user_text))
+                    # R10-4 (rider 10, C3): the complexity leg quarantines
+                    # system-injected turns (_is_system_injected_turn);
+                    # the risk leg did NOT — an injection-marker clause
+                    # whose wording lexically hits the risk co-occurrence
+                    # rule routed reason=risk_r2 AND short-circuited the
+                    # decision leg below it (silent fork loss: no consult,
+                    # no event). Same quarantine + distinct event.
+                    if _is_system_injected_turn(user_text):
                         try:
                             from hermes_router import _log_route as _lr
                             _lr("PRE", session_id=session_id,
-                                event_detail="risk_consult_fire",
-                                risk_class=_rcls,
-                                stage=str(_rmeta.get("stage") or "stage1"),
+                                event_detail="risk_pre_skip_system_injected",
                                 task_id=task_id)
                         except Exception:  # noqa: BLE001 — observability only
                             pass
-                        return _dec(LANE_COMPLEXITY, MODE_CONSULT,
-                                    _primary_model(),
-                                    "risk_" + str(_rcls), orientation=True)
+                    else:
+                        _rcls, _rmeta = _risk.classify(
+                            user_text,
+                            pre_lexicon=True,
+                            semantic_stage2=bool(_rcfg.get("semantic_stage2", True)),
+                        )
+                        if _rcls in ("r2", "r3"):
+                            # R16: risk auto-consult inherits the same cooldown
+                            # map (same normalized-hash keying; risk_r2/r3 only).
+                            if _consult_cooldown_active(session_id, user_text):
+                                return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                            None, "consult_cooldown_suppressed")
+                            _record_cooldown_fire(
+                                session_id, _cooldown_hash(session_id, user_text))
+                            try:
+                                from hermes_router import _log_route as _lr
+                                _lr("PRE", session_id=session_id,
+                                    event_detail="risk_consult_fire",
+                                    risk_class=_rcls,
+                                    stage=str(_rmeta.get("stage") or "stage1"),
+                                    task_id=task_id)
+                            except Exception:  # noqa: BLE001 — observability only
+                                pass
+                            # R10-4 (rider 10, C3): rider-8 compound parity —
+                            # fire a stashed manual decision consult async
+                            # BEFORE the risk consult routes, exactly like the
+                            # complexity-orientation return does; otherwise the
+                            # risk return short-circuits the decision leg.
+                            _fire_decision_stack()
+                            return _dec(LANE_COMPLEXITY, MODE_CONSULT,
+                                        _primary_model(),
+                                        "risk_" + str(_rcls), orientation=True)
         except Exception:  # noqa: BLE001 — risk lane must never break dispatch
             pass
 
@@ -1347,6 +1369,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             _lr("PRE", session_id=session_id,
                                 event_detail="decision_provenance_skip",
                                 lane=LANE_DECISION, task_id=task_id)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
+                    if _is_system_injected_turn(user_text):
+                        # R10-4 (rider 10, C3): an injection-marker turn must
+                        # never suppress the decision leg SILENTLY — same
+                        # WARN-visibility doctrine as the complexity leg's
+                        # complexity_pre_skip_system_injected event.
+                        try:
+                            from hermes_router import _log_route as _lr2  # deferred - import cycle
+                            _lr2("PRE", session_id=session_id,
+                                 event_detail="decision_injected_suppressed",
+                                 lane=LANE_DECISION, task_id=task_id)
                         except Exception:  # noqa: BLE001 — observability only
                             pass
                 else:

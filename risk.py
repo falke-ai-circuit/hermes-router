@@ -348,7 +348,20 @@ def reports_consequential(text: str) -> bool:
     try:
         if not isinstance(text, str) or not text.strip():
             return False
-        return bool(_REPORT_FORWARD_RE.search(text)
-                    or _REPORT_REVERSE_RE.search(text))
+        # R10-3 (rider 10, B1 misfire): the response being AUDITED is prose
+        # the model WROTE — discussive/hypothetical essays about
+        # consequential ops are not reports of executed work. Apply the
+        # same two guards stage1 uses on the ask side: strip quoted/
+        # echoed lines and fenced blocks first, then short-circuit on the
+        # meta/hypothetical frame (what-if, for example, e.g.). A
+        # declarative past-tense report still matches; a hypothetical or
+        # quoted example no longer bills an audit consult on benign prose.
+        t = _strip_quoted(text)
+        if not t:
+            return False
+        if _META_GUARD_RE.search(t):
+            return False
+        return bool(_REPORT_FORWARD_RE.search(t)
+                    or _REPORT_REVERSE_RE.search(t))
     except Exception:  # noqa: BLE001
         return False

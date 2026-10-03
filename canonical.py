@@ -295,6 +295,36 @@ def commit_canonical_event(session_id: str, turn_marker: str, content: str,
         return False
 
 
+def persisted_turn_row_exists(session_id: str, content: str) -> bool:
+    """R10-5 (rider 10): True when the persisted transcript ALREADY holds
+    an assistant row whose content byte-equals `content` for this session —
+    the discriminator between 'rewrite missed because the exact-content
+    guard was defeated by gateway-side generation rewrites' (the row
+    EXISTS, the banner silently vanished from the persisted body — re-park
+    loudly) and 'the row was never persisted' (nothing to heal; re-parking
+    here would loop forever). Read-only. Never raises."""
+    if not session_id or not content:
+        return False
+    try:
+        import sqlite3
+
+        db_path = _state_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return False
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            cur = conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ?"
+                " AND role = 'assistant' AND content = ? LIMIT 1",
+                (str(session_id), str(content)),
+            )
+            return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — read-only probe, never raises
+        return False
+
+
 def rewrite_persisted_turn(session_id: str, refusal_text: str,
                            delivered_text: str,
                            allow_empty_match: bool = False) -> bool:

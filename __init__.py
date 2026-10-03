@@ -1030,9 +1030,53 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                     "POST",
                                     event_detail="banner_render_captured",
                                     edge="benign", session_id=session_id)
+                            else:
+                                # R10-5 (rider 10, A2 analyst): a consume that
+                                # SUCCEEDED while the persisted rewrite missed
+                                # is a silent parked-loss — the banner lived
+                                # only in the hook return. Fail loud; RE-PARK
+                                # only when the persisted row EXISTS but no
+                                # longer matches (exact-content guard
+                                # defeated) — a row that was never persisted
+                                # would loop forever. Row-presence
+                                # discriminator: persisted_turn_row_exists.
+                                try:
+                                    if _cb2.persisted_turn_row_exists(
+                                            session_id, response_text):
+                                        _dbp.park_anchor_banner(
+                                            session_id, _parked)
+                                    _log_route(
+                                        "POST",
+                                        event_detail="parked_capture_failed",
+                                        edge="benign",
+                                        reason="rewrite_no_match",
+                                        row_present=bool(
+                                            _cb2.persisted_turn_row_exists(
+                                                session_id, response_text)),
+                                        session_id=session_id)
+                                except Exception:  # noqa: BLE001
+                                    pass
                         except Exception:  # noqa: BLE001 — capture never breaks delivery
                             logger.debug("benign banner capture error",
                                          exc_info=True)
+                            try:
+                                # R10-5: capture THREW — same fail-loud
+                                # contract; re-park only when the persisted
+                                # row exists (never-persisted rows would
+                                # loop forever).
+                                from . import canonical as _cb3
+
+                                if _cb3.persisted_turn_row_exists(
+                                        session_id, response_text):
+                                    _dbp.park_anchor_banner(session_id,
+                                                            _parked)
+                                _log_route("POST",
+                                           event_detail="parked_capture_failed",
+                                           edge="benign",
+                                           reason="capture_exception",
+                                           session_id=session_id)
+                            except Exception:  # noqa: BLE001
+                                pass
                     return _final_b
             except Exception:  # noqa: BLE001 — banner must never break delivery
                 pass
@@ -1555,6 +1599,18 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 # by anchor_exec; 'ledger-row MISSING' when the write failed)
                 # — same fail-loud contract as the decision-lane banner.
                 _frow = rec.get("frontier_ledger_row")
+                if not _frow:
+                    try:
+                        # R10-2 (rider 10): rec is a PRE-EXECUTION peek copy
+                        # (peek_pending_swap returns dict(rec)); the row id
+                        # is written on the LIVE record inside
+                        # maybe_execute_anchored — reconcile from the
+                        # session-scoped last-write accessor.
+                        from . import anchor_exec as _ax
+
+                        _frow = _ax.last_frontier_row(session_id)
+                    except Exception:  # noqa: BLE001 — fail-open MISSING
+                        _frow = 0
                 _row_marker = ("row=%s" % int(_frow) if _frow
                                else "ledger-row MISSING")
                 if _banner:

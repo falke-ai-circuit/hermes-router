@@ -1852,12 +1852,65 @@ def claim_pass(content: str, session_id: str, model: str,
         if decision.route is False or decision.lane != LANE_HIGHER_PRE:
             _decision_lane_claim(content, session_id, model)
             return NO_ROUTE
+    if (decision.route and decision.lane == LANE_HIGHER_PRE
+            and str(decision.source or "") in (SOURCE_DECLARED_USER,
+                                               SOURCE_AUX_INTENT)):
+        # R10-1 (rider 10, T1R3 P1a/P1b): the MIRROR co-fire direction —
+        # the user's turn text itself declares BOTH a frontier consult AND
+        # a decision fork. decide_turn resolves ONE lane (the frontier,
+        # step 4 direct route) and returns, so the decision gate never
+        # runs and the decision ask is silently swallowed (no row, no
+        # banner, no event). Same contract as the LANE_DECISION branch
+        # above: the decision advisory dispatches ASYNC (parked banner,
+        # consumes no turn slot) and the frontier consult routes on THIS
+        # turn — two banners, two ledger trails (R9-8).
+        try:
+            from . import decision as _dm
+            from . import router_core as _rcf
+
+            _cfg_d = _dm._cfg()
+            _enabled = bool(isinstance(_cfg_d, dict)
+                            and _cfg_d.get("enabled") is True)
+            _mhit = _dm.manual_line_hit(content, _cfg_d) if _enabled else None
+        except Exception:  # noqa: BLE001 — fail-open: frontier proceeds
+            _mhit = None
+            _dm = None
+            _rcf = None
+        if _mhit is not None:
+            try:
+                from . import decision as _dm2
+                from . import router_core as _rcf2
+
+                _init = "user"
+                try:
+                    _existing = peek_declared(session_id)
+                    if _existing is not None and str(
+                            _existing.get("source") or "") == \
+                            SOURCE_DECLARED_AGENT:
+                        _init = "agent"
+                except Exception:  # noqa: BLE001 — cosmetic only
+                    pass
+                _task_d = _rcf2.task_id_for(session_id, content,
+                                            str(model or ""))
+                _dm2.handle_decision_v3(
+                    session_id=session_id, task_id=_task_d,
+                    task_text=content, model=str(model or ""),
+                    log_route=_pkg_fn("_log_route"), initiator=_init)
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="declared_decision_stacked",
+                    lane=LANE_HIGHER_PRE, source=str(decision.source or ""),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — never break the claim path
+                logger.debug("frontier+decision stack error", exc_info=True)
     if decision.route:
         # Leg 7: stamp the turn-scoped claim record on EVERY claim (any
         # lane, any source) — legacy claim sites read claim_state() and
         # stand down for the rest of this turn's provider-call burst.
         stamp_turn_claim(session_id, decision.lane or "", decision.source or "",
-                         content, str(model or ""))
+                         content, str(model or ""),
+                         executed=not (str(decision.source or "") in (
+                             SOURCE_DECLARED_USER, SOURCE_DECLARED_AGENT,
+                             SOURCE_AUX_INTENT)))
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT,
                                               SOURCE_AUX_INTENT):
@@ -1910,10 +1963,27 @@ def claim_pass(content: str, session_id: str, model: str,
                         claim_source=str(decision.source or ""))
                 else:
                     _staged = _rc.stage_model_swap(session_id, _rd)
-                # Leg 7c: the declared claim's consult has now FIRED — flag
-                # the turn-claim record executed so every later pass of this
-                # turn stands down (register-time record executed=False).
-                mark_turn_claim_executed(session_id)
+                if _staged is None:
+                    # R10-6 (rider 10): staging SILENTLY no-opped (return
+                    # None — chain empty / dedupe / backoff). Marking the
+                    # claim executed here killed the R19.16 FIX 2
+                    # execute-once re-fire: the consult never ran, the
+                    # claim was consumed, ZERO events (live: conductor —
+                    # every higher-pre fire staged=False, no
+                    # frontier_consult rows since Sep 30). Keep the claim
+                    # re-executable and log the failure event.
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="declared_claim_standdown_unexecuted",
+                        lane=str(decision.lane or ""),
+                        source=str(decision.source or ""),
+                        reason="staging_no_record", task_id=_task,
+                        session_id=session_id)
+                else:
+                    # Leg 7c: the declared claim's consult has now FIRED —
+                    # flag the turn-claim record executed so every later
+                    # pass of this turn stands down (register-time record
+                    # executed=False).
+                    mark_turn_claim_executed(session_id)
                 _pkg_fn("_log_route")(
                     "PRE", event_detail="request_routing_executed",
                     lane=decision.lane, source=decision.source,

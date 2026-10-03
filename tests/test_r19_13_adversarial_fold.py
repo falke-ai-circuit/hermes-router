@@ -90,16 +90,23 @@ def test_banner_doubt_suffix(monkeypatch):
 
 def test_post_payload_carries_attack(monkeypatch):
     """The POST consult prompt (one call) carries BOTH the sense_check JSON
-    requirement and the adversarial attack — merge rule active under pov."""
+    requirement and the adversarial attack — merge rule active under pov.
+    R10-3 (rider 10): the attack element rides ONLY when the ASK declared
+    the adversarial element ('challenge this:' family); a benign ask's
+    payload carries no attack (the B1 misfire fix)."""
     monkeypatch.setattr(CA, "_pov_active", lambda ask: True)
-    import re as _re
-    src = CA._audit_payload.__code__.co_consts
-    # payload builder is a pure function: exercise it directly
-    msgs = CA._audit_payload("deploy the fleet migration now", "",
-                             "final response text", 4000)
+    # declared adversarial ask: attack present
+    msgs = CA._audit_payload("challenge this: deploy the fleet migration now",
+                             "", "final response text", 4000)
     body = msgs[-1]["content"]
     assert "sense_check" in body and "adversarial" in body
     assert "skeptic vantage" in body  # merged, not doubled
+    # benign ask: no attack element (R10-3 B1 fix)
+    msgs2 = CA._audit_payload("deploy the fleet migration now", "",
+                              "final response text", 4000)
+    body2 = msgs2[-1]["content"]
+    assert "sense_check" in body2
+    assert "adversarial" not in body2
 
 
 # --- 5d: declared phrases -----------------------------------------------------

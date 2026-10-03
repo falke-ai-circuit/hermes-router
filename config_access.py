@@ -59,17 +59,44 @@ def _read_yaml(path: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
         section: Dict[str, Any] = {}
+        legacy: Optional[Dict[str, Any]] = None
         for key in _SECTION_KEYS:
             sec = cfg.get(key)
             if isinstance(sec, dict) and sec:
-                section = sec
-                break
+                if not section:
+                    section = sec
+                elif not legacy:
+                    legacy = sec
+        # R10-6: fill sub-blocks the chosen section lacks from the legacy one.
+        section = _merge_legacy(section, legacy)
         _cache["path"] = path
         _cache["mtime"] = st.st_mtime
         _cache["section"] = dict(section)
         return dict(section)
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _merge_legacy(section: Dict[str, Any], legacy: Optional[Dict[str, Any]]
+                  ) -> Dict[str, Any]:
+    """R10-6 (rider 10): fill sub-blocks/keys the CHOSEN section lacks from
+    the LEGACY section (modern wins per-key). Failure class this kills:
+    a profile whose hermes_router block is non-empty (e.g. only decision)
+    while anchor_chain/log_path/pricing still live under legacy
+    uncensored_router — the either-or section choice silently dropped the
+    legacy keys (live: conductor — anchor chain vanished, every declared
+    frontier consult staged None and died with the claim marked executed,
+    spend ledger frozen since Sep 30, zero frontier_consult rows)."""
+    try:
+        if not isinstance(legacy, dict):
+            return dict(section)
+        merged = dict(section)
+        for key, val in legacy.items():
+            if key not in merged or merged.get(key) in (None, {}, ""):
+                merged[key] = val
+        return merged
+    except Exception:  # noqa: BLE001 — config read must never raise
+        return dict(section)
 
 
 def router_section() -> Dict[str, Any]:
@@ -90,6 +117,19 @@ def router_section() -> Dict[str, Any]:
     except Exception:  # noqa: BLE001
         section = None
     if isinstance(section, dict) and section:
+        # R10-6: merge legacy keys the modern section lacks.
+        legacy = None
+        try:
+            for key in _SECTION_KEYS:
+                if cfg.get(key) is section:
+                    continue
+                cand = cfg.get(key)
+                if isinstance(cand, dict) and cand:
+                    legacy = cand
+                    break
+        except Exception:  # noqa: BLE001
+            legacy = None
+        section = _merge_legacy(section, legacy)
         _cache["section"] = dict(section)
         _cache["path"] = None  # process-level read wins; drop stale yaml key
         return dict(section)

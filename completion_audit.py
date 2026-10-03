@@ -860,6 +860,21 @@ def _pov_instruction() -> str:
         "outsider|skeptic\", \"note\": \"...\"}] (all three, terse).\n")
 
 
+def _ask_declared_adversarial(ask: str) -> bool:
+    """R10-3 (rider 10, B1): True only when the USER'S ASK itself declared
+    the adversarial element — the strict standalone directive lines
+    ('challenge this' / 'am i missing something', route_gate.adversarial_declared)
+    or the family wording near the line start (adversarial_family_hit).
+    Fail-open False: a missed declaration costs a plain consult. Never raises."""
+    try:
+        from . import route_gate as _rg
+
+        return bool(_rg.adversarial_declared(ask)
+                    or _rg.adversarial_family_hit(ask))
+    except Exception:  # noqa: BLE001 — fail-open plain consult
+        return False
+
+
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
@@ -880,7 +895,14 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
         "- Could/should be better: what feels off, thin, or off-target?"
         + _sense_check_verdict_json()
         + (_pov_instruction() if _pov_active(ask) else "")
-        + _adversarial_attack_instruction(_pov_active(ask))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
+        # R10-3 (rider 10, B1): the adversarial attack element rides ONLY
+        # when the ASK declared it ('challenge this:' / 'am i missing
+        # something' standalone directive lines, or the family wording
+        # near the line start). An unconditional injection billed
+        # adversarial consults (and parse-fail rows) on benign essays
+        # whose audit merely fired via the risk report trigger.
+        + ((_adversarial_attack_instruction(_pov_active(ask))
+            if _ask_declared_adversarial(ask) else ""))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
     )
     return [
         {"role": "system",
@@ -971,6 +993,17 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                         _btext = _btext.rstrip() + _sense_banner_suffix(
                             meta.get("sense_check")) + _doubt_banner_suffix(
                             meta.get("adversarial"))
+                        # R10-2 (rider 10): the downgraded-async banner
+                        # carries the same reconcilable row ref as the
+                        # sync-parked banner (meta carries the captured
+                        # frontier_consult row id).
+                        _row = meta.get("ledger_row")
+                        _row_marker = ("row=%s" % int(_row) if _row
+                                       else "ledger-row MISSING")
+                        _btext = str(_btext).rstrip()
+                        if _btext.endswith("·"):
+                            _btext = _btext[:-1].rstrip()
+                        _btext = "%s | %s ·" % (_btext, _row_marker)
                         if _btext:
                             _dbg.park_anchor_banner(session_id, _btext)
                 except Exception:  # noqa: BLE001
@@ -1303,6 +1336,21 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                      session_id=session_id)
                 # Spend visibility (Goran 09-09): a NO-FINDINGS consult is a
                 # billed frontier call — it must still emit its banner.
+                # R10-2 (rider 10): persist FIRST (a billed NO-FINDINGS
+                # consult gets its frontier_consult row too) and stamp the
+                # same reconcilable row marker on the parked banner.
+                _rid_nf = None
+                try:
+                    _rid_nf = persist_frontier_verdict(
+                        session_id=session_id, key=str(key or ""), ep=ep,
+                        ask=ask, response_text=response_text,
+                        verdict_text=verdict_text,
+                        povs=locals().get("_povs") or [],
+                        pov_collapsed=locals().get("_pov_collapsed") or [],
+                        sc=locals().get("_sc"),
+                        adv=locals().get("_adv") or {})
+                except Exception:  # noqa: BLE001 — persistence never breaks audit
+                    _rid_nf = None
                 try:
                     from . import debug_banner as _dbg
                     if banner_park and _dbg.debug_banner_enabled():
@@ -1315,6 +1363,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                             retries=0, task_id="", session_id=session_id)
                         if _bnf:
                             _bnf = _bnf.rstrip() + "\nverdict: no findings — work is sound"
+                            _row_marker_nf = ("row=%s" % int(_rid_nf)
+                                              if _rid_nf
+                                              else "ledger-row MISSING")
+                            _bnf = "%s | %s ·" % (
+                                str(_bnf).rstrip().rstrip("·").rstrip(),
+                                _row_marker_nf)
                             _dbg.park_anchor_banner(session_id, _bnf)
                 except Exception:  # noqa: BLE001
                     pass
@@ -1337,6 +1391,27 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         if banner_park:
             stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)
+        # R10-2 (rider 10): the frontier_consult row id must be captured
+        # BEFORE the banner renders (A4: banner carried no row ref while
+        # row 347 existed). persist BEFORE the banner park; the parked
+        # banner gets the same fail-loud row marker the anchored lane uses.
+        _rid = None
+        _base = str(getattr(ep, "base_url", "") or "")
+        try:
+            _rid = persist_frontier_verdict(
+                session_id=session_id, key=str(key or ""), ep=ep,
+                ask=ask, response_text=response_text, verdict_text=note,
+                povs=locals().get("_povs") or [],
+                pov_collapsed=locals().get("_pov_collapsed") or [],
+                sc=locals().get("_sc"), adv=locals().get("_adv") or {})
+        except Exception:  # noqa: BLE001 — persistence never breaks audit
+            _rid = None
+        if _rid is None:
+            try:
+                _log("frontier_consult_ledger_write_FAILED key=%s"
+                     % str(key or ""), session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
         # Spend visibility (Goran 2026-09-09): EVERY frontier call must emit a
         # banner so call loops / burn are user-visible. ASYNC path parks for
         # the next delivery; SYNC path's banner is appended inline by the
@@ -1346,7 +1421,6 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 from . import debug_banner as _dbg
 
                 if _dbg.debug_banner_enabled():
-                    _base = str(getattr(ep, "base_url", "") or "")
                     _host = _base.split("://", 1)[-1].split("/", 1)[0] if _base else ""
                     _banner = _dbg.format_banner(
                         lane="frontier-anchor", trigger="completion_audit",
@@ -1354,10 +1428,15 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                         tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
                         retries=0, task_id="", session_id=session_id)
                     if _banner:
+                        _row_marker = ("row=%s" % int(_rid) if _rid
+                                       else "ledger-row MISSING")
+                        _banner = str(_banner).rstrip()
+                        if _banner.endswith("·"):
+                            _banner = _banner[:-1].rstrip()
+                        _banner = "%s | %s ·" % (_banner, _row_marker)
                         _dbg.park_anchor_banner(session_id, _banner)
             except Exception:  # noqa: BLE001 — banner must never break audit
                 pass
-        _base = str(getattr(ep, "base_url", "") or "")
         # Leg 6: the consult meta carries the gate's claim source as the
         # initiator tag (declared_user->user, declared_agent->agent,
         # auto/legacy->auto) — consumed by banner/detail surfaces.
@@ -1367,26 +1446,13 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _initiator = _rg.initiator_for_task(str(key or ""))
         except Exception:  # noqa: BLE001
             _initiator = "auto"
-        # R19.19 P0 (reviewer critical): EVERY frontier consult verdict
-        # persists — envelope + full verdict text + parsed POV segments +
-        # p_failure, mirroring the decision lane's persistence. Parked
-        # verdicts persist TOO (this runs before the park): token counts
-        # alone are not acceptable; nothing consumed-and-lost.
-        try:
-            persist_frontier_verdict(
-                session_id=session_id, key=str(key or ""), ep=ep,
-                ask=ask, response_text=response_text, verdict_text=note,
-                povs=locals().get("_povs") or [],
-                pov_collapsed=locals().get("_pov_collapsed") or [],
-                sc=locals().get("_sc"), adv=locals().get("_adv") or {})
-        except Exception:  # noqa: BLE001 — persistence never breaks audit
-            pass
         return {"note": note,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
                 "initiator": _initiator,
                 "sense_check": _sc, "povs": _povs,
                 "adversarial": _adv,
+                "ledger_row": _rid,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))
