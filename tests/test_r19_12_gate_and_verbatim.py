@@ -124,6 +124,53 @@ def test_manual_either_or_binary_fork(_env, monkeypatch):
     assert any("wait for the next window" in o for o in opts)
 
 
+# R12-1b (rider 12, analyst A2 2026-10-03 ledger row 112): prose either/or
+# WITHOUT the word "either" — a closed interrogative sentence with a bare
+# " or " connective is the explicit connective on the TRUSTED manual trigger.
+ASK_PROSE_OR = (
+    "decide this: I have a week of backlog and a demo Friday, and I keep "
+    "going back and forth. Should I cut scope on the demo and keep the "
+    "backlog healthy, or push everything into the demo and clean up next "
+    "week? I genuinely can't tell which tradeoff is right.")
+
+
+def test_manual_prose_or_interrogative_binary_fork(_env, monkeypatch):
+    """R12-1b: manual prose ask, 'Should I X, or Y?' -> 2-option verbatim
+    fork, decision advisory dispatches (no no_options suppression)."""
+    assert decision._manual_verbatim_options(ASK_PROSE_OR) != []
+    opts = decision._manual_verbatim_options(ASK_PROSE_OR)
+    assert len(opts) == 2
+    assert any("cut scope" in o for o in opts)
+    assert any("push everything" in o for o in opts)
+    calls = []
+
+    def fake_backend(envelope, cfg):
+        calls.append(envelope)
+        content = json.dumps({"choice": "opt-1", "confidence": 0.9,
+                              "alternatives": []})
+        meta = {"model": "m", "endpoint": "e", "tokens_in": 10,
+                "tokens_out": 5, "latency_s": 0.1}
+        return content, meta, "ok"
+
+    monkeypatch.setattr(decision, "call_backend", fake_backend)
+    monkeypatch.setattr(decision, "render_prompt", lambda env: "P")
+    cfg = dict(decision.DEFAULTS)
+    cfg["enabled"] = True
+    cfg["on_demand"] = {"manual": True, "midturn": True}
+    monkeypatch.setattr(decision, "_cfg", lambda: cfg)
+    decision._invoke("s-r12", "t-r12", ASK_PROSE_OR, "manual", cfg,
+                     lambda e, **f: None, initiator="user")
+    assert len(calls) == 1  # previously suppressed with no_options (row 112)
+
+
+def test_prose_or_no_interrogative_still_suppressed(_env):
+    """R12-1b bound: bare ' or ' WITHOUT a closed '?-sentence' derives no
+    fork on the manual trigger (never-invent / FP protection)."""
+    ask = ("decide this: we could ship tonight or wait until Friday, "
+           "that is basically the situation.")
+    assert decision._manual_verbatim_options(ask) == []
+
+
 def test_verbatim_never_invents(_env):
     """No synthesis: a single inline option must not become two."""
     ask = ("decide this: A) just do the batch append and move on, that is "

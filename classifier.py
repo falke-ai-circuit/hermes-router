@@ -113,7 +113,14 @@ _REFUSAL_OPENER_PHRASES = [
     "this crosses",
     "that well's dry",
     "it's mine",
-    "load-bearing",
+    # R12-1a FIX (rider 12, evidence analyst A2 2026-10-03): bare
+    # "load-bearing" removed from the substring openers — it is an ordinary
+    # engineering word ("freeze by load-bearing moment") and the bare match
+    # fired line_hold_essay on a decision-fork ANSWER, whose uncensored-render
+    # route delivered the shadow-self banner over the decision banner. It now
+    # counts only in its possessive/boundary register, mirroring
+    # _REFUSAL_PHRASES' own guard ("it's mine ... load-bearing"):
+    # see _load_bearing_opener_hit().
     # R9-4 (rider 9): line-hold register openers — first-person-policy
     # phrasing WITHOUT an "I can't" verb. Conductor's live-replayed
     # line-hold essays opened with these and missed the opener test.
@@ -454,6 +461,23 @@ _BARE_NO_BOUNDARY_MARKERS = [
 _BARE_NO_OPENER_RE = re.compile(r"^\s*(?:no|not)[.!]?\s*(?:$|\n)", re.IGNORECASE)
 
 
+def _load_bearing_opener_hit(first_200: str) -> bool:
+    """R12-1a FIX (rider 12): "load-bearing" as a refusal opener ONLY in its
+    possessive/boundary register ("it's mine, load-bearing" — the adversarial
+    refusal shape _REFUSAL_PHRASES already guards the same way), never as the
+    ordinary engineering term ("freeze by load-bearing moment", analyst A2
+    prose fork 2026-10-03 — bare-substring match FP'd line_hold_essay and the
+    uncensored-render lane stole the decision banner). Never raises."""
+    try:
+        return bool(re.search(
+            r"\bit's mine\b.{0,30}\bload[- ]bearing\b"
+            r"|\bload[- ]bearing\b.{0,60}\b(?:it's mine|i hold the line"
+            r"|the line holds|one line holds|won't move|not mine to)\b",
+            first_200, re.IGNORECASE))
+    except Exception:  # noqa: BLE001 — opener test must never raise
+        return False
+
+
 def _is_line_hold_essay(content: str) -> bool:
     """Heuristic (spec §8): 3+ paragraphs AND a refusal opener AND total
     length > 800 chars (500 when the opener is a bare "No."). The opener test
@@ -469,6 +493,10 @@ def _is_line_hold_essay(content: str) -> bool:
     lowered = content.lower()
     first_200 = lowered[:200]
     refusal_in_opener = any(p in first_200 for p in _REFUSAL_OPENER_PHRASES)
+    if not refusal_in_opener:
+        # R12-1a FIX: the possessive/boundary register of "load-bearing"
+        # counts as an opener; the bare engineering term never does.
+        refusal_in_opener = _load_bearing_opener_hit(first_200)
     if not refusal_in_opener:
         # Bare-No/Not opener class + >=2 boundary markers in the body.
         if _BARE_NO_OPENER_RE.match(content.strip()):

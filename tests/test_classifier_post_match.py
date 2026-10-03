@@ -71,3 +71,27 @@ def test_line_hold_essay_requires_refusal_in_opener():
 def test_line_hold_essay_helper_direct():
     assert _is_line_hold_essay(_essay("I won't do this."))
     assert not _is_line_hold_essay("short")
+
+
+def test_line_hold_essay_load_bearing_engineering_term_not_refusal():
+    """R12-1a (rider 12, analyst A2 2026-10-03): bare 'load-bearing' is an
+    ordinary engineering word — a decision-fork ANSWER opening 'Decision:
+    cut scope on the demo, but not evenly — freeze by load-bearing moment.'
+    must not classify as a line_hold_essay (the FP routed the turn through
+    the uncensored-render lane and delivered the shadow-self banner over
+    the decision banner)."""
+    refused = ("Decision: cut scope on the demo, but not evenly — freeze by "
+               "load-bearing moment.\n\nWhy this isn't close: \"push "
+               "everything into the demo\" is a plan that only works if "
+               "nothing goes wrong.\n\nWith a week of backlog, something "
+               "will go wrong.\n\nThen you get neither a good demo nor a "
+               "healthy backlog.")
+    assert not _is_line_hold_essay(refused)
+    assert scan_post(refused, patterns=POST_PATTERNS) == []
+
+
+def test_line_hold_essay_load_bearing_refusal_register_still_matches():
+    """R12-1a bound: 'load-bearing' in its possessive/boundary register
+    ("it's mine, load-bearing") still counts as a refusal opener."""
+    assert _is_line_hold_essay(_essay(
+        "It's mine, load-bearing, and I'm not sharing it."))

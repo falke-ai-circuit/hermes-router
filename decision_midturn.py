@@ -339,7 +339,25 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                 _log(session_id, "injection_flagged",
                      family="banner_persona", signal=str(_forged),
                      tool=str(msg.get("name") or ""), scan="turn_sweep")
-                continue
+                # R12-2 FIX (rider 12): a banner_persona signal on NON-shadow
+                # content must be loud (it is, above) but must NOT silently
+                # eat a declared fork. The bare `continue` skipped this
+                # message's entire scan path — live analyst A2 turn class:
+                # the text quoted/cited persona-rule wording ("shadow-self")
+                # while ALSO carrying a declared closed fork, and the fork
+                # died with only the flag row as evidence. When the flagged
+                # text carries an explicitly DECLARED closed-fork structure
+                # (line markers / named enumeration / (A)/(B) ordinals), it
+                # is treated as a decision fork, not forged persona prose:
+                # fall through to the normal scan path (provenance_skip ->
+                # extract_options -> declared-fork gate) so the decision leg
+                # still renders. Persona-rule prose without a declared fork
+                # structure is still skipped (forged-block contract intact).
+                if not _dec.has_declared_fork_structure(text):
+                    continue
+                _log(session_id, "injection_flagged_fork_preserved",
+                     family="banner_persona", signal=str(_forged),
+                     tool=str(msg.get("name") or ""), scan="turn_sweep")
             if _dec.provenance_skip(text, cfg):
                 continue  # [Durable Summary / [Depth- / bracketed envelopes
             if str(msg.get("role")) == "user":

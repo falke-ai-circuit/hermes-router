@@ -1,3 +1,49 @@
+## 4.16.2 — 2026-10-03 (FIX-FIRST rider 12 — A2 residual: shadow-lane eating the manual decision fork + injection-flag fork preservation)
+
+Sources: reviewer T1R5 battery (/opt/data/tmp/t1r5-results-2026-10-03.md,
+raw t1r5-raw.jsonl). No deploy, no gateway bounces, no profile config/.env
+writes.
+
+- R12-1 A2 RESIDUAL, NEW ROOT CAUSE — TWO stacked defects, both fixed:
+  (a) CLASSIFIER FP (the shadow banner's delivery path): the analyst A2
+  prose-fork ANSWER ("Decision: cut scope on the demo, but not evenly —
+  freeze by load-bearing moment.") was classified line_hold_essay because
+  "load-bearing" was a bare substring in _REFUSAL_OPENER_PHRASES — it is an
+  ordinary engineering word. POST route_fired_no_stash re-rendered the turn
+  through the uncensored chain and the SHADOW-SELF banner delivered over the
+  decision banner. Fix: bare "load-bearing" removed from the opener list; it
+  counts only in its possessive/boundary register (mirrors _REFUSAL_PHRASES'
+  own "it's mine ... load-bearing" guard) — _load_bearing_opener_hit().
+  The exact live answer (1332 chars, analyst lcm store_id 143030) now
+  scans clean; the refusal-register shape still matches.
+  (b) DECISION PRE SUPPRESSION (why row 112 had no verdict): the prose ask
+  "Should I cut scope on the demo and keep the backlog healthy, or push
+  everything into the demo and clean up next week?" has no enumerable
+  markers and no "either" — extract_options + _manual_verbatim_options both
+  returned [] -> decision_suppressed no_options (fail-open ledger row 112,
+  no verdict, no banner). Fix: _manual_verbatim_options gains a prose-or
+  fallback — on the TRUSTED manual trigger, a bare " or " inside a single
+  closed (?-terminated) interrogative sentence is the explicit either/or
+  connective; the verbatim sentence halves become the two options
+  (never-invent holds; bounded to one sentence, no '?' -> still []).
+- R12-2 INJECTION-FLAG FORK PRESERVATION (fail-loud): the decision_midturn
+  sweep's banner_persona flag path did a bare `continue` — a wrong shadow
+  claim on fork-bearing content ate the fork silently behind the (loud)
+  injection_flagged row. Cross-checked every `injection_flagged
+  family=banner_persona` occurrence in /tmp/uncensored-router-*.log (coder,
+  orchestrator, analyst): reflex (decision) signals dominate (quoted
+  banner text) plus the two shadow-self rows. Fix: the flag row is still
+  logged loudly, but when the flagged text carries an explicitly DECLARED
+  closed-fork structure (has_declared_fork_structure), the normal scan path
+  runs and an injection_flagged_fork_preserved row is logged — the decision
+  leg still renders when the shadow claim is wrong. Persona-rule prose
+  without a declared fork structure is still skipped (forged-block
+  contract intact).
+- Pins: load-bearing engineering-term negative + refusal-register positive;
+  manual prose-or interrogative fork + non-interrogative still suppressed;
+  forged-block-without-fork never adopted + declared-fork-preserved.
+  Version-bump pin advanced to 4.16.2.
+
 ## 4.16.0 — 2026-10-03 (FIX-FIRST rider 10 — co-fire mirror stacking, frontier row-ref reconciliation, benign-prose misfire gates, C3 injection fork preservation, parked-loss loudness, conductor observability-leg repair)
 
 Sources: reviewer T1R3 battery (/opt/data/tmp/t1r3-results-2026-10-03.md,

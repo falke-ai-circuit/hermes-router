@@ -1229,6 +1229,24 @@ def _manual_verbatim_options(ask_text: str, cap: int = 6) -> List[str]:
                                   .strip(" \t\n\r-—:,;"), 120)
             if left and right and left.lower() != right.lower():
                 return [left, right]
+        # R12-1b FIX (rider 12, evidence analyst A2 2026-10-03 ledger row 112):
+        # prose either/or WITHOUT the word "either" — "Should I cut scope on
+        # the demo and keep the backlog healthy, or push everything into the
+        # demo and clean up next week?" — suppressed no_options (fail-open
+        # row billed, no verdict, no decision banner) while the turn's POST
+        # scan FP-routed to the shadow lane. On the TRUSTED manual trigger a
+        # bare " or " inside a single closed interrogative sentence is the
+        # explicit either/or connective; the verbatim segments become the
+        # two options (never-invent still holds). Bounded to one sentence
+        # (the [^.!?\n] run) ending in "?" so multi-sentence prose never
+        # derives a fork. Never raises.
+        m = re.search(r"([^.!?\n]{1,240}?)\s*,?\s+or\s+([^.!?\n]{1,240})\?",
+                      t, re.IGNORECASE)
+        if m:
+            left = clean_snippet(m.group(1).strip(" \t\n\r-—:,;"), 120)
+            right = clean_snippet(m.group(2).strip(" \t\n\r-—:,;"), 120)
+            if left and right and left.lower() != right.lower():
+                return [left, right]
         return []
     except Exception:  # noqa: BLE001 — passthrough must never raise
         return []
