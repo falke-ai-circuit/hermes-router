@@ -1416,6 +1416,16 @@ def provenance_skip(text: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
         return False
 
 
+# R9-6 (rider 9): ask-shape discriminator for NON-declared prose forks.
+# A context/narration turn (replay setup, digests, status lines) never
+# consults; a question or a second-person decision imperative does.
+_ASK_SHAPED_RE = re.compile(
+    r"\?|\b(?:should|shall|do|does|can|could|would|will)\s+(?:we|i|you)\b"
+    r"|\bwhich (?:one|option|approach|path)\b"
+    r"|\b(?:pick|choose|select|decide|weigh)\b.{0,40}\b(?:between|for)\b",
+    re.IGNORECASE)
+
+
 def _manual_trigger_in_text(text: str) -> bool:
     """R8-4 (rider 8): manual on-demand trigger matching. The line-anchored
     startswith check missed the COMPOUND-turn asks — the fork sits midline
@@ -1516,6 +1526,19 @@ def detect_v3(text: str, level: Optional[int] = None,
         # bypasses — PRIMARY trusted trigger); level 3 = any family.
         opts = extract_options(text)
         if not opts:
+            return None
+        # R9-6 (rider 9): tighten the consult gate on NON-FORK prose. T1 D2a
+        # (NEW regression): a context-only replay-setup turn with NO declared
+        # fork structure consulted 3-4x at conf 0.51-0.66, all billed —
+        # extract_options' structural scan alone lets pseudo-option prose
+        # reach the backend. Non-declared prose forks now fire ONLY when the
+        # text is ASK-shaped (a question, or a second-person decision
+        # imperative): pure context/narration turns (replay setup, digests,
+        # status) never consult. Declared fork structures and manual
+        # triggers are unaffected. Ask-shaped real forks (the v3 battery's
+        # 'redis or memcached?' shape) still fire.
+        if not has_declared_fork_structure(text) and \
+                not _ASK_SHAPED_RE.search(text):
             return None
         families = sorted(
             name for name, rx in _FAMILIES_RE.items() if rx.search(text))

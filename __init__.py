@@ -462,9 +462,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             if (_claim_decision.lane == _route_gate.LANE_SHADOW
                     and _claim_decision.source in (
                         _route_gate.SOURCE_DECLARED_USER,
-                        _route_gate.SOURCE_DECLARED_AGENT)):
-                _initiator = ("user" if _claim_decision.source ==
-                              _route_gate.SOURCE_DECLARED_USER else "agent")
+                        _route_gate.SOURCE_DECLARED_AGENT,
+                        _route_gate.SOURCE_AUX_INTENT)):
+                # R9-1 (rider 9): SOURCE_AUX_INTENT shadow claims render TOO —
+                # the old allowlist consumed the claim at claim_pass
+                # (mark_turn_claim_executed + clear_declared) and then skipped
+                # this render branch SILENTLY (conductor chain: aux conf=1.0,
+                # staged=False, nothing). Aux shadow asks are user-phrased —
+                # initiator=user (machine-DETECTED, never machine-initiated).
+                _initiator = ("agent"
+                              if _claim_decision.source ==
+                              _route_gate.SOURCE_DECLARED_AGENT
+                              else "user")
                 try:
                     _persona = _persona_system_prompt(
                         request if isinstance(request, dict) else None)
@@ -542,8 +551,24 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                         _ul.tag_last_render_initiator(session_id, _initiator)
                     except Exception:  # noqa: BLE001 — observability only
                         pass
+                    # R9-3 (rider 9): the claim's render ROW landed — annotate
+                    # the shadow claim so any later stand-down pass of this
+                    # turn sees rendered=True (never fails loud spuriously).
+                    try:
+                        _route_gate.mark_shadow_rendered(session_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
                 except Exception:  # noqa: BLE001 — never break delivery
                     logger.debug("shadow render branch error", exc_info=True)
+                    # R9-3 (rider 9): a shadow render branch EXCEPTION with a
+                    # claim already consumed is a fail-loud route_failed — the
+                    # claim is gone and nothing rendered.
+                    try:
+                        _log_route("PRE", event_detail="route_failed",
+                                   pattern_groups="shadow_render_branch_error",
+                                   render_lane="shadow", session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                 return _hs_pass()
             return _hs_pass()
 
@@ -565,6 +590,19 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             _turn_claim = None
         if _turn_claim is not None and _turn_claim.get("lane") not in (
                 _route_gate.LANE_HIGHER_PRE, _route_gate.LANE_HIGHER_POST):
+            # R9-3 (rider 9): a consumed SHADOW claim with NO render row is
+            # route_failed (rider 7 provenance contract), never a silent
+            # stand-down. The render branch annotates the claim via
+            # mark_shadow_rendered; absence here = the claim was eaten
+            # without a render (source-allowlist miss, exception, kill-switch
+            # stand-down) — fail loud.
+            if (_turn_claim.get("lane") == _route_gate.LANE_SHADOW
+                    and not _turn_claim.get("rendered")):
+                _log_route("PRE", event_detail="route_failed",
+                           pattern_groups="shadow_claim_consumed",
+                           render_lane="shadow",
+                           claim_source=str(_turn_claim.get("source") or ""),
+                           session_id=session_id)
             _log_route("PRE", event_detail="claim_standdown_uncensored",
                        claim_lane=str(_turn_claim.get("lane") or ""),
                        claim_source=str(_turn_claim.get("source") or ""),
@@ -1449,14 +1487,20 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         if isinstance(msgs, list):
             from . import frames as _frames
             _kind = str(envelope.get("kind") or "")
+            # R9-9 (rider 9): the envelope's provenance stamps (model + cost,
+            # written by anchor_exec) ride INTO the delivered advisory — the
+            # tool-stream text is self-contained discrimination.
+            _st_model = envelope.get("model")
+            _st_cost = envelope.get("cost")
             if _kind == "orientation":
                 advisory = _frames.orientation_advisory(
                     envelope.get("producer"), envelope.get("route_id"),
-                    envelope.get("answer"))
+                    envelope.get("answer"), model=_st_model, cost=_st_cost)
             else:
                 advisory = _frames.reflection_advisory(
                     _kind, envelope.get("producer"), envelope.get("route_id"),
-                    envelope.get("limitations"), envelope.get("answer"))
+                    envelope.get("limitations"), envelope.get("answer"),
+                    model=_st_model, cost=_st_cost)
             msgs.append({"role": "assistant", "content": advisory})
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
             # after the advisory envelope, explicitly instruct the main model to
@@ -1506,6 +1550,18 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     est_cost=_cost, latency_s=0.0, retries=0,
                     task_id=str(rec.get("task_id") or ""), session_id=session_id,
                     route_id=str(rec.get("route_id") or ""))
+                # R9-7 (rider 9): reconcilable row ref on the consult banner —
+                # the billed frontier consult's decision-ledger row id (stashed
+                # by anchor_exec; 'ledger-row MISSING' when the write failed)
+                # — same fail-loud contract as the decision-lane banner.
+                _frow = rec.get("frontier_ledger_row")
+                _row_marker = ("row=%s" % int(_frow) if _frow
+                               else "ledger-row MISSING")
+                if _banner:
+                    _banner = str(_banner).rstrip()
+                    if _banner.endswith("·"):
+                        _banner = _banner[:-1].rstrip()
+                    _banner = "%s | %s ·" % (_banner, _row_marker)
                 if _banner:
                     # §10.4 delivery: the envelope is model-context only —
                     # park the banner for the POST transform to append to the

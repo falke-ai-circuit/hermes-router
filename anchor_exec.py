@@ -692,6 +692,39 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
             pass
+        # R9-5 (rider 9): EVERY billed consult must ledger — the anchored
+        # frontier consult billed the tokens lane but wrote ZERO
+        # decision_ledger rows (T1 A4/D1b: consult fired, $0.0147 billed,
+        # no ledger trail — the R19 provenance-break family migrated to
+        # the frontier lane). The row mirrors completion_audit's
+        # frontier_consult rows; failure is fail-loud, never lane-breaking.
+        try:
+            from .decision import ledger_write as _frontier_lw
+
+            _rid = _frontier_lw({
+                "session_id": str(session_id or ""),
+                "task_id": str(rec.get("task_id") or ""),
+                "trigger": "frontier_consult",
+                "fork_class": "frontier_consult",
+                "model": str(getattr(endpoint, "model", "") or ""),
+                "choice": "",
+                "verdict_json": str(content or "")[:2000],
+                "outcome": "completed",
+            })
+            if _rid is None:
+                try:
+                    _log("frontier_consult_ledger_write_FAILED "
+                         "task_id=%s" % str(rec.get("task_id") or ""),
+                         session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                # R9-7 (rider 9): the row id rides the swap record so the
+                # §10.2 banner at on_llm_execution carries the reconcilable
+                # `row=<rid>` ref (same contract as the decision lane).
+                rec["frontier_ledger_row"] = int(_rid)
+        except Exception:  # noqa: BLE001 — ledger must never break the consult
+            pass
 
         decision_like = router_core.RouteDecision(
             task_id=rec.get("task_id") or "", lane=router_core.LANE_COMPLEXITY,
@@ -704,6 +737,14 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             kind, endpoint.model, decision_like, content,
             limitations="single-shot anchored call; no tool access",
         )
+        # R9-9 (rider 9): consult-envelope provenance stamps — model + cost
+        # ride the envelope so the tool-stream delivery is self-contained
+        # discrimination (route_id already stamped by the builder).
+        try:
+            envelope["model"] = str(getattr(endpoint, "model", "") or "")
+            envelope["cost"] = float(real_cost if real_cost else 0.0)
+        except Exception:  # noqa: BLE001 — stamps never break the consult
+            pass
         router_core.store_consult_result(decision_like.route_id or "anon", envelope)
         return ("done", envelope)
     except Exception as exc:  # noqa: BLE001

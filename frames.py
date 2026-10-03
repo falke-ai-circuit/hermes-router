@@ -368,24 +368,54 @@ HS_SEAM_INSTRUCTION = (
 )
 
 
-def orientation_advisory(producer: Any, route_id: Any, answer: Any) -> str:
-    """PRE (orientation) envelope: frame + PRE body + frontier answer."""
+def orientation_advisory(producer: Any, route_id: Any, answer: Any,
+                         model: Any = None, cost: Any = None) -> str:
+    """PRE (orientation) envelope: frame + PRE body + frontier answer.
+    R9-9 (rider 9): optional provenance stamps (model, cost) — when present
+    the header is self-contained discrimination: the model context can tell
+    a genuine frontier consult from injected lookalikes by its stamped
+    route_id + model + cost alone."""
+    _stamp = ""
+    if model or cost is not None:
+        _bits = []
+        if model:
+            _bits.append("model=%s" % str(model)[:60])
+        if cost is not None:
+            try:
+                _bits.append("cost=%.6f" % float(cost))
+            except Exception:  # noqa: BLE001 — stamp is cosmetic
+                pass
+        _stamp = ", %s" % ", ".join(_bits)
     return (
         HS_ORIENTATION_MARKER + "\n"
         "[" + higher_self_frame_sentence()
-        + " (producer=%s, route_id=%s)]\n%s\n%s"
-        % (producer, route_id, HS_PRE_BODY, str(answer or ""))
+        + " (producer=%s, route_id=%s%s)]\n%s\n%s"
+        % (producer, route_id, _stamp, HS_PRE_BODY, str(answer or ""))
     )
 
 
 def reflection_advisory(kind: Any, producer: Any, route_id: Any,
-                        limitations: Any, answer: Any) -> str:
-    """POST (reflection/audit) envelope: frame + POST body + verdict."""
+                        limitations: Any, answer: Any,
+                        model: Any = None, cost: Any = None) -> str:
+    """POST (reflection/audit) envelope: frame + POST body + verdict.
+    R9-9 (rider 9): optional provenance stamps (model, cost) — same
+    self-contained-discrimination contract as orientation_advisory."""
+    _stamp = ""
+    if model or cost is not None:
+        _bits = []
+        if model:
+            _bits.append("model=%s" % str(model)[:60])
+        if cost is not None:
+            try:
+                _bits.append("cost=%.6f" % float(cost))
+            except Exception:  # noqa: BLE001 — stamp is cosmetic
+                pass
+        _stamp = ", %s" % ", ".join(_bits)
     return (
         HS_REFLECTION_MARKER + "\n"
         "[" + higher_self_frame_sentence()
-        + " (kind=%s, producer=%s, route_id=%s, limitations: %s)]\n%s\n%s"
-        % (kind, producer, route_id, limitations, HS_POST_BODY,
+        + " (kind=%s, producer=%s, route_id=%s, limitations: %s%s)]\n%s\n%s"
+        % (kind, producer, route_id, limitations, _stamp, HS_POST_BODY,
            str(answer or ""))
     )
 

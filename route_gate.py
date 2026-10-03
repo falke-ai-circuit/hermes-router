@@ -118,6 +118,15 @@ DECLARED_USER_VARIANTS: Dict[str, str] = {
     "ask your shadow": LANE_SHADOW,
     "ask the shadow": LANE_SHADOW,
     "shadow self read": LANE_SHADOW,
+    # R9-2 (rider 9): explicit 'uncensored lane' asks took NO declared path —
+    # the shadow table only had 'route through shadow' + ask-shadow shapes,
+    # so a literal 'route to uncensored lane' directive fell to aux (or
+    # nowhere). Strict line-start variants map to LANE_SHADOW like their
+    # shadow siblings; echo guard + dedupe inherited unchanged.
+    "route to uncensored lane": LANE_SHADOW,
+    "route to uncensored": LANE_SHADOW,
+    "route through the uncensored lane": LANE_SHADOW,
+    "use the uncensored lane": LANE_SHADOW,
     # R11 (Goran 09-17): frontier imperative-consult family. "ask frontier
     # her consult" (operative incident 20260807_050731, ids 62195-62206)
     # named the frontier as the TARGET of an ask — the higher-self table
@@ -1010,6 +1019,27 @@ def stamp_turn_claim_if_absent(session_id: str, lane: str, source: str,
         pass
 
 
+def mark_shadow_rendered(session_id: str) -> None:
+    """R9-3 (rider 9): annotate the session's current shadow claim as
+    RENDERED (both the pending declared claim and the turn-window record).
+    The middleware's claim-standdown path reads this flag: a shadow-lane
+    claim consumed WITHOUT a render row is a route_failed (provenance
+    contract), not a silent stand-down. Never raises."""
+    try:
+        now = time.time()
+        with _CLAIM_LOCK:
+            _gc_claims_locked(now)
+            rec = _DECLARED_CLAIMS.get(str(session_id or ""))
+            if rec is not None and rec.get("lane") == LANE_SHADOW:
+                rec["rendered"] = True
+            key = _turn_claim_key(str(session_id or ""))
+            trec = _TURN_CLAIMED.get(key)
+            if trec is not None and trec.get("lane") == LANE_SHADOW:
+                trec["rendered"] = True
+    except Exception:  # noqa: BLE001 — observability never breaks routing
+        pass
+
+
 def _peek_turn_claim(session_id: str, content: str = "",
                      model: str = "") -> Optional[Dict[str, Any]]:
     try:
@@ -1763,7 +1793,16 @@ def claim_pass(content: str, session_id: str, model: str,
         # events only).
         _also_frontier = False
         try:
-            _also_frontier = bool(declared_frontier_hit(content))
+            # R9-8 (rider 9, user directive): the co-fire probe must use the
+            # SAME payload-tolerant matching as the declared table —
+            # declared_frontier_hit alone misses the colon-payload form
+            # ('ask frontier: is this the right window?' — the strict table
+            # routes it, the probe did not), so the frontier leg of a
+            # decision+frontier turn was gated OUT of the stacking path and
+            # lane precedence dropped it. Both lanes must deliver.
+            _also_frontier = (bool(declared_frontier_hit(content))
+                              or detect_declared_user(content)
+                              == LANE_HIGHER_PRE)
         except Exception:  # noqa: BLE001 — fail-open False
             _also_frontier = False
         if _also_frontier:

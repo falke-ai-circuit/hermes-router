@@ -114,6 +114,13 @@ _REFUSAL_OPENER_PHRASES = [
     "that well's dry",
     "it's mine",
     "load-bearing",
+    # R9-4 (rider 9): line-hold register openers — first-person-policy
+    # phrasing WITHOUT an "I can't" verb. Conductor's live-replayed
+    # line-hold essays opened with these and missed the opener test.
+    "one line holds",
+    "the line holds",
+    "i hold the line",
+    "the last word on it",
 ]
 
 _REFUSAL_PHRASES = [
@@ -180,6 +187,19 @@ _REFUSAL_PHRASES = [
     # writing Y"): shadow delivers the analysis half and declines the scenario
     # half mid-turn. Same harm co-signal requirement.
     r"(?s)\bi'?ll give you\b.{0,300}?\bbut i'?m not\b.{0,160}?\b(?:sexual[\s-]?violen\w*|rap(?:e|ing)|tortur\w* scene|explicit(?:ly)? sexual|sexualized? (?:violence|content)|graphic(?:ally)? (?:sexual|violent)|mutilat\w*|gore)\b",
+    # R9-4 (rider 9): LINE-HOLD REGISTER — first-person-policy refusals with
+    # NO "I can't" verb family. Conductor's live-replayed shapes ("One line
+    # holds here", "the last word on it") matched NEITHER the combined
+    # refusal alternation NOR _is_line_hold_essay's opener set, so the POST
+    # matcher stood down on a non-minor closed line. Distinctive
+    # policy-possession phrasing only; benign prose ("the last chapter")
+    # cannot carry these exact shapes.
+    r"\bone line holds(?: here| there| on this)?\b",
+    r"\bthe last word on (?:it|this)\b",
+    r"\bi hold the line\b",
+    r"\bi'?m holding the line\b",
+    r"\bthe line holds(?: here| there)?\b",
+    r"\bnot my line to (?:move|change|cross)\b",
 ]
 
 

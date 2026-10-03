@@ -1,3 +1,75 @@
+## 4.15.0 — 2026-10-03 (FIX-FIRST rider 9 — shadow-lane swallow closure, frontier provenance ledger, co-fire stacking, line-hold register)
+
+Sources: reviewer T1 re-run (/opt/data/tmp/t1-redeploy-results-2026-10-03.md),
+conductor's verified lane audits, user directive. Ten items in priority
+order. No deploy, no gateway bounces, no profile config/.env writes.
+
+- R9-1 AUX-INTENT SHADOW CLAIM SILENT SWALLOW (conductor, evidence-complete):
+  the LEG 8 shadow-render branch in on_llm_request only fired for source
+  declared_user/declared_agent — an aux_intent shadow claim was consumed at
+  claim_pass (mark_turn_claim_executed + clear_declared) then skipped the
+  render branch SILENTLY (chain: aux caught conf=1.0, staged=False, nothing).
+  Fix: SOURCE_AUX_INTENT joins the render allowlist; aux shadow asks render
+  on the uncensored chain with initiator=user (machine-DETECTED, never
+  machine-initiated).
+- R9-2 SHADOW DECLARED PHRASES: 'route to uncensored lane' + variants
+  ('route to uncensored', 'route through the uncensored lane', 'use the
+  uncensored lane') added to the declared table (strict line-start,
+  echo guard inherited); aux-down fallback _SHADOW_MARKERS gains
+  'uncensored lane' so the ask is aux-recoverable too.
+- R9-3 SHADOW FAIL-LOUD: a consumed shadow claim with NO render row now
+  logs route_failed (rider 7 provenance contract) — new
+  route_gate.mark_shadow_rendered annotation written by the render branch;
+  the claim-standdown path checks it (pattern_groups=shadow_claim_consumed);
+  a render-branch EXCEPTION also fails loud.
+- R9-4 SHADOW NEGATION MISS (conductor, replayed live): line-hold register
+  refusals ('One line holds here', 'the last word on it', 'I hold the
+  line', ...) matched NEITHER _REFUSAL_COMBINED_RE NOR the line-hold-essay
+  opener set. Fix: line-hold register patterns added to _REFUSAL_PHRASES
+  (POST-only) and _REFUSAL_OPENER_PHRASES; benign prose stays inert.
+- R9-5 A4 FRONTIER BOOKKEEPING LOSS (rev): the anchored frontier consult
+  billed the tokens lane but wrote ZERO decision_ledger rows (T1 A4/D1b —
+  the R19 provenance-break family migrated to the frontier lane). Fix:
+  anchor_exec.maybe_execute_anchored writes a frontier_consult ledger row
+  for EVERY billed consult; a failed write is fail-loud.
+- R9-6 D2a MISFIRE REGRESSION (rev): a non-fork context turn consulted
+  3-4x at conf 0.51-0.66, billed. Fix: the PRE heuristic in detect_v3 now
+  requires an explicitly DECLARED closed-fork structure (same bar the
+  midturn seams already enforce); prose 'X or Y' pseudo-options never
+  reach the backend; declared (A)/(B) forks still fire.
+- R9-7 ROW-TAG/BANNERLESS RESIDUALS (rev): the frontier-anchor banner now
+  carries the reconcilable `row=<rid>` ref (or 'ledger-row MISSING') —
+  the row id is written by anchor_exec into the swap record. ROOT CAUSE
+  on the per-agent residuals: orchestrator profile runs a STALE deployed
+  copy (plugin.yaml version 4.12.9 — the row= machinery is v4.14.x), and
+  its A6 banner shows the pre-R19.22 rollup shape — deployment staleness,
+  NOT a repo bug (deploy is out of this rider's scope; the 4.14.1 agents'
+  midturn banners already carry row=). Pin tests lock the rollup + manual
+  banner reconciliation shapes.
+- R9-8 CO-FIRED LANE DELIVERY (USER DIRECTIVE, load-bearing): when impulse
+  (decision) AND frontier (consult) both fire in one turn BOTH must
+  deliver. Root cause: the stacking co-fire probe used
+  declared_frontier_hit alone, which misses the colon-payload form
+  ('ask frontier: is this the right window?') that the strict declared
+  table routes — lane precedence dropped the frontier leg. Fix: the probe
+  now also accepts detect_declared_user == LANE_HIGHER_PRE. Pin test:
+  decision fork + frontier-eligible ask in one turn = decision advisory
+  dispatched AND frontier swap staged (two lanes, two trails).
+- R9-9 CONSULT ENVELOPE PROVENANCE STAMPS (conductor): the frontier
+  envelope now stamps model + cost (anchor_exec) and the delivered
+  advisory stamps them into the header next to route_id (frames.py) —
+  self-contained discrimination vs injection.
+- R9-10 CRON LIFECYCLE (minor, doc-only): the watchdog cron job is culled
+  at loop close by the operator loop itself — encoded here as the
+  checklist rule: a loop-close checklist MUST include "cull the watchdog
+  cron job (cronjob_manage action=delete) after the final verification";
+  no code touches it.
+- Note (T1 'injection' observation): the 'HIGHER-SELF INTEGRATION RULE'
+  text the reviewer saw inside tool output is the router's own
+  sanctioned marker (defined in frames.py:211-243, asserted by
+  test_higher_self_identity.py) — provenance-verified in-repo, not
+  third-party injection.
+
 ## 4.14.1 — 2026-10-03 (FIX-FIRST rider 8 — T1 battery reloop: row refs, delivery migration root causes, misfire gate, compound-turn restore)
 
 Reviewer T1_DEPLOY battery v4.14.0 (DB-grounded, /opt/data/tmp/t1-deploy-

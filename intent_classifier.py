@@ -387,6 +387,11 @@ def _fallback_verdict(payload: str) -> Optional[Dict[str, Any]]:
             "unfiltered", "hold back", "don't sanitize", "dont sanitize",
             "worst case", "adversarial", "wargame", "exploit", "covert",
             "undetected", "cover", "falsify", "backdate", "smuggle",
+            # R9-2: 'uncensored lane' names the LANE itself (route/use
+            # directives) — with 'uncensored' present, 'route to uncensored
+            # lane' reaches the >=2 marker floor when aux is DOWN and the
+            # strict declared table is the primary path anyway.
+            "uncensored lane",
         )
         hits = sum(1 for m in _SHADOW_MARKERS if m in low)
         if hits >= 2:
