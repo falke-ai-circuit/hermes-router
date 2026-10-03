@@ -522,7 +522,7 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         if _tokens_ok is False:
             _log(session_id, "tokens_ledger_write_failed",
                  detail="decision_midturn")
-        _record_consumed(session_id, verdict, meta, cfg)
+        _record_consumed(session_id, verdict, meta, cfg, rid=rid)
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
              confidence=round(float(verdict["confidence"]), 3),
@@ -691,9 +691,13 @@ def _render_midturn_advisory(verdict: Dict[str, Any],
 
 
 def _record_consumed(session_id: str, verdict: Dict[str, Any],
-                     meta: Dict[str, Any], cfg: Dict[str, Any]) -> None:
+                     meta: Dict[str, Any], cfg: Dict[str, Any],
+                     rid: Optional[int] = None) -> None:
     """LEG 3 accumulator: remember the verdict for the turn-close aggregate
-    banner. Bounded by RUN_CAP. Never raises."""
+    banner. Bounded by RUN_CAP. Never raises.
+    R8-1 (rider 8): carry the reconcilable decision-ledger row id so the
+    turn-close rollup can render `row=<rid>` (same reconciliation contract
+    the manual-path banner already honors)."""
     try:
         model = str(meta.get("model") or cfg.get("model") or "")
         ti, to = meta.get("tokens_in"), meta.get("tokens_out")
@@ -707,6 +711,10 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
                "tokens_out": to if isinstance(to, int) else 0,
                "cost": float(cost or 0.0), "model": model,
                "endpoint": str(meta.get("endpoint") or "")}
+        try:
+            rec["row_id"] = int(rid) if rid is not None else 0
+        except Exception:  # noqa: BLE001
+            rec["row_id"] = 0
         try:
             # R19.22: the rollup shows WHAT was picked — confidence + the
             # verdict-of-record choice (clean ledger shape: choice+conf;
@@ -879,6 +887,24 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
                  % (_dec.PROVENANCE_TAG, n,
                     "" if n == 1 else "s", ti, to, total, prov
                     or "(unknown)")]
+        # R8-1 (rider 8): reconciliation contract on the midturn variant —
+        # the rollup carries `row=<rid>` refs for every verdict that has a
+        # decision-ledger row (per-profile ids, matching render_decision_
+        # banner's manual-path shape). Refs missing/zero render as
+        # 'ledger-row MISSING' — a verdict without a reconcilable row is
+        # never silent.
+        _rows = []
+        try:
+            _rows = [str(int(c.get("row_id") or 0)) for c in verdicts]
+        except Exception:  # noqa: BLE001
+            _rows = []
+        _row_markers = ["row=%s" % r if r != "0" else "ledger-row MISSING"
+                        for r in _rows]
+        if _row_markers:
+            parts[0] = parts[0].rstrip()
+            if parts[0].endswith("·"):
+                parts[0] = parts[0][:-1].rstrip()
+            parts[0] = "%s | %s ·" % (parts[0], " | ".join(_row_markers))
         # B1 (rider 5): ranked top-2 tail (all verdicts when <=2), every
         # shown verdict carries its confidence — threshold-agnostic.
         top = sorted(verdicts, key=lambda c: -float(

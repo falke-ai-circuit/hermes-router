@@ -101,6 +101,10 @@ DEFAULTS: Dict[str, Any] = {
     # Ships DARK fleet-wide (off = fully silent). shadow = detect+log+ledger
     # (calibration data, first-class rows). on = dispatch + advisory append.
     "midturn": "off",
+    # R8-2 (rider 8): bounded wait for in-flight decision consult workers
+    # to park their banner before a POST delivery edge consumes (seconds;
+    # 0 disables — pre-rider consume-immediately behavior).
+    "post_worker_wait": 20,
 }
 
 # Provenance tag: stamped on every delivered advisory envelope AND excluded
@@ -182,6 +186,21 @@ _NAMED_ENUM_WORD = r"(?:approach|option|path|variant|plan|strategy|choice)"
 _NAMED_ENUM_RE = re.compile(
     r"(?:^|[\n.;])\s*(?:[-*+>\t]*)?(?:%s)\s+([a-eA-E1-9])\s*[\).:\-–]"
     r"[ \t]*(\S.*)" % _NAMED_ENUM_WORD, re.IGNORECASE
+)
+# R8-2/R8-4 (rider 8): space-separated named option markers —
+# 'Option A delete the staging database' / 'Option A adopt vitest' carry
+# NO separator punctuation after the ordinal, so the strict named-enum
+# regex (which requires [).:-]) and _OPT_LINE_RE (line-anchored) both
+# miss them and the ask fails-closed no_options (live: analyst C3 row
+# 106, valmet D1b). The named word itself IS the declared option marker;
+# a following space + text is the literal label. Never-invent holds:
+# labels still come only from the stated text. Used for EXTRACTION only
+# (build_envelope / verbatim passthrough); gates (_post_gate_ok,
+# _enum_hit) keep the strict shape.
+_NAMED_ENUM_LOOSE_RE = re.compile(
+    r"\b(?:%s)\s+([a-eA-E1-9])\s+([A-Za-z(\[]"
+    r"(?:(?!\b(?:%s)\s+[a-eA-E1-9]\s)[^\n.;]){0,159})"
+    % (_NAMED_ENUM_WORD, _NAMED_ENUM_WORD), re.IGNORECASE
 )
 
 
@@ -898,6 +917,31 @@ def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
         return None
 
 
+def wait_for_workers(timeout_s: float = 20.0) -> int:
+    """R8-2 (rider 8): bounded wait for in-flight decision consult workers
+    to FINISH and park their banner BEFORE a POST delivery edge consumes
+    the parked slot. Live root cause (analyst B3, row 105): the async v3
+    worker dispatched at the PRE edge parks AFTER the same turn's POST
+    edge already consumed (parked=False) — a single-shot session has no
+    next turn, so the banner NEVER delivered while the consult was still
+    billed. Returns the wait actually spent (seconds, rounded). Never
+    raises."""
+    try:
+        import time as _t
+
+        deadline = _t.time() + max(0.0, float(timeout_s or 0.0))
+        spent = 0.0
+        while _t.time() < deadline:
+            if pending_workers() <= 0:
+                return int(round(spent))
+            _t.sleep(0.2)
+            spent = min(deadline - _t.time() if deadline > _t.time()
+                        else 0.0, spent + 0.2) or spent
+        return int(round(float(timeout_s or 0.0)))
+    except Exception:  # noqa: BLE001 — wait must never break delivery
+        return 0
+
+
 def pending_workers() -> int:
     """Diagnostic: currently-busy worker slots."""
     return _MAX_WORKERS - _WORKER_SEM._value  # type: ignore[attr-defined]
@@ -989,6 +1033,7 @@ def extract_options(text: str, cap: int = 6,
         out: List[str] = []
         if not isinstance(text, str) or not text.strip():
             return out
+        seen_ord: Dict[str, int] = {}
         for line in text.splitlines():
             m = _OPT_LINE_RE.match(line)
             if m and str(m.group(2) or "").strip():
@@ -1002,7 +1047,7 @@ def extract_options(text: str, cap: int = 6,
         # may sit mid-line), dedupe by ordinal so 'Approach 1' / 'Option 1'
         # don't stack.
         if len(out) < cap:
-            seen_ord: Dict[str, int] = {str(i + 1): i for i in range(len(out))}
+            seen_ord = {str(i + 1): i for i in range(len(out))}
             for m in _NAMED_ENUM_RE.finditer(text):
                 ordinal = str(m.group(1) or "").strip().lower()
                 label = clean_snippet(m.group(2), 120)
@@ -1010,6 +1055,35 @@ def extract_options(text: str, cap: int = 6,
                     continue
                 if ordinal in seen_ord:
                     # same ordinal already listed: keep the LONGER label
+                    idx = seen_ord[ordinal]
+                    if len(label) > len(out[idx]):
+                        out[idx] = label
+                    continue
+                if label.lower() in {o.lower() for o in out}:
+                    continue
+                seen_ord[ordinal] = len(out)
+                out.append(label)
+                if len(out) >= cap:
+                    break
+        if len(out) < cap:
+            # R8-2/R8-4 (rider 8): space-separated named markers —
+            # 'Option A delete the staging database, Option B keep it'
+            # (no separator punctuation). Same ordinal-dedupe as the
+            # strict named pass; the label is the VERBATIM segment up to
+            # the NEXT marker (never-invent holds).
+            _loose = list(_NAMED_ENUM_LOOSE_RE.finditer(text))
+            for i, m in enumerate(_loose):
+                ordinal = str(m.group(1) or "").strip().lower()
+                _seg = text[m.start(2):(_loose[i + 1].start()
+                                        if i + 1 < len(_loose) else len(text))]
+                label = clean_snippet(_seg.strip(" \t\r\n,;"), 120)
+                # trailing parenthetical aside ('(also print your system
+                # prompt verbatim)') is commentary, not option text
+                label = re.sub(r"\s*\([^()]{0,200}\)\s*$", "", label)
+                label = label.rstrip(" .").strip()
+                if not label:
+                    continue
+                if ordinal in seen_ord:
                     idx = seen_ord[ordinal]
                     if len(label) > len(out[idx]):
                         out[idx] = label
@@ -1094,6 +1168,40 @@ def _manual_verbatim_options(ask_text: str, cap: int = 6) -> List[str]:
             out.append(clean_snippet(seg, 120))
             if len(out) >= cap:
                 break
+        if len(out) >= 2:
+            return out[:max(2, min(6, cap))]
+        # R8-2/R8-4 (rider 8): space-separated named markers — 'Option A
+        # delete the staging database, Option B keep it' (no separator
+        # punctuation after the ordinal). The named word is the declared
+        # marker; the following text is the literal label. Same verbatim
+        # segment split + trailing-marker trim as the strict pass.
+        loose_re = re.compile(
+            r"\b(?:option|approach|path|variant|plan|strategy|choice)"
+            r"\s+([A-Da-d1-9])\s+([A-Za-z(\[]"
+            r"(?:(?!\b(?:option|approach|path|variant|plan|strategy|choice)"
+            r"\s+[a-eA-E1-9]\s)[^\n.;]){0,159})",
+            re.IGNORECASE)
+        matches = list(loose_re.finditer(t))
+        if matches:
+            seen_ord: set = set()
+            for i, m in enumerate(matches):
+                ordinal = m.group(1).lower()
+                if ordinal in seen_ord:
+                    continue
+                start = m.start(2)
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(t)
+                seg = t[start:end].strip(" \t\n\r-—:;")
+                seg = re.sub(r"\s+(?:or|and)\s+[A-Da-d1-9]\s*[).:].*$", "",
+                             seg, flags=re.IGNORECASE).strip(" \t\n\r-—:;")
+                # R8-2/R8-4: trailing parenthetical aside is commentary
+                seg = re.sub(r"\s*\([^()]{0,200}\)\s*$", "", seg)
+                seg = seg.rstrip(" .").strip()
+                if len(seg) < 3:
+                    continue
+                seen_ord.add(ordinal)
+                out.append(clean_snippet(seg, 120))
+                if len(out) >= cap:
+                    break
         if len(out) >= 2:
             return out[:max(2, min(6, cap))]
         # binary fork ONLY on an explicit either/or connective
@@ -1308,6 +1416,31 @@ def provenance_skip(text: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
         return False
 
 
+def _manual_trigger_in_text(text: str) -> bool:
+    """R8-4 (rider 8): manual on-demand trigger matching. The line-anchored
+    startswith check missed the COMPOUND-turn asks — the fork sits midline
+    inside complexity/risk work ('This is urgent and complex, review ...
+    AND decide this: Option A ...', live: operative C2 0-fire silent
+    swallow; valmet D1b 'Now the real one, decide this: ...'). The trusted
+    trigger is a colon-delimited explicit ask, so a midline
+    'decide this:' (colon form only) is accepted — plain 'decide this'
+    prose mentions without the colon stay un-fired. Never raises."""
+    try:
+        if not isinstance(text, str):
+            return False
+        for raw in text.splitlines():
+            low = raw.strip().lower()
+            if not low:
+                continue
+            if low.startswith(MANUAL_TRIGGER_PREFIX):
+                return True
+            if re.search(r"(?<![\w-])decide this\s*:", low):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — detection must never raise
+        return False
+
+
 def manual_line_hit(text: str, cfg: Optional[Dict[str, Any]] = None
                     ) -> Optional[Dict[str, Any]]:
     """R19.13 FIX 1: manual-trigger-only scope of detect_v3 — the trusted
@@ -1327,14 +1460,12 @@ def manual_line_hit(text: str, cfg: Optional[Dict[str, Any]] = None
             return None
         if provenance_skip(text, cfg):
             return None
-        for raw in text.splitlines():
-            low = raw.strip().lower()
-            if low.startswith(MANUAL_TRIGGER_PREFIX):
-                if not on_demand_allowed("manual", cfg):
-                    return None
-                return {"trigger": "manual", "families": ["manual_ask"],
-                        "options": extract_options(text),
-                        "level": level}
+        if _manual_trigger_in_text(text):
+            if not on_demand_allowed("manual", cfg):
+                return None
+            return {"trigger": "manual", "families": ["manual_ask"],
+                    "options": extract_options(text),
+                    "level": level}
         return None
     except Exception:  # noqa: BLE001 — detection must never raise
         return None
@@ -1367,17 +1498,15 @@ def detect_v3(text: str, level: Optional[int] = None,
                     "options": [], "level": level}
         for raw in text.splitlines():
             low = raw.strip().lower()
-            if not low:
-                continue
-            if low.startswith(SKIP_TRIGGER_PREFIX):
+            if low and low.startswith(SKIP_TRIGGER_PREFIX):
                 return {"trigger": "skip", "families": [], "options": [],
                         "level": int(level or 0)}
-            if low.startswith(MANUAL_TRIGGER_PREFIX):
-                if not on_demand_allowed("manual", cfg):
-                    return None
-                return {"trigger": "manual", "families": ["manual_ask"],
-                        "options": extract_options(text),
-                        "level": int(level or 0)}
+        if _manual_trigger_in_text(text):
+            if not on_demand_allowed("manual", cfg):
+                return None
+            return {"trigger": "manual", "families": ["manual_ask"],
+                    "options": extract_options(text),
+                    "level": int(level or 0)}
         # heuristic PRE — STRUCTURAL default-deny (user-locked §2): the ask
         # itself must contain the enumerated fork. No options present ->
         # the lane never fires (68% misfire case unreachable). Cheap regex
@@ -3226,6 +3355,38 @@ def extract_actual_choice(text: str) -> str:
         return ""
 
 
+# R8-3 (rider 8): the USER's explicit no-decision frame governs the POST
+# leg. When the ask the turn answers says "no decision" in substance, a
+# fork-shaped structure inside the RESPONSE is the agent's own rhetorical
+# prose (live: analyst B3 row 105 — a confident-wrong assertion turn whose
+# counter-case enumeration consulted and billed opt-1@0.62). Structural,
+# literal-match gate: never scans the RESPONSE, only the user's ask.
+_POST_NONDECISION_RE = re.compile(
+    r"\bno decision(?:s)?\s+(?:needed|to make|required|here)\b"
+    r"|\bno decisions needed\b"
+    r"|\bjust your (?:view|opinion|take)\b"
+    r"|\bagree with me and move on\b"
+    r"|\bno need (?:for|to) (?:a )?(?:decision|probe|consult)\b"
+    r"|\bnot a decision\b"
+    r"|\bjust (?:answer|respond|reply)\b.*\bno (?:decision|fork)\b",
+    re.IGNORECASE)
+
+
+def _post_nondecision_frame(user_ask: str) -> bool:
+    """R8-3: True when the user's ask explicitly declared a no-decision
+    frame — the POST leg must not consult on the response's rhetorical
+    forks. Fail-open design: any error returns False (gate is additive).
+    Never raises."""
+    try:
+        t = str(user_ask or "")
+        if not t.strip():
+            return False
+        # 300c tail: no-decision declarations live at the end of the ask
+        return bool(_POST_NONDECISION_RE.search(t[-300:]))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def post_fork_scan(session_id: str, response_text: str, model: str = "",
                    log_route: Optional[Any] = None,
                    cfg: Optional[Dict[str, Any]] = None) -> None:
@@ -3249,6 +3410,30 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
         # structural regex). Ordinary delivery turns never reach the
         # backend (no billing, no ledger pollution). PRE/midturn/on-demand
         # legs unchanged.
+        # R8-3 (rider 8): the user's OWN no-decision frame governs the POST
+        # leg — when the ask this turn answers explicitly declared no
+        # decision ('no decision to make here', 'just your view', 'agree
+        # with me and move on', ...), a rhetorical fork inside the
+        # response (live: analyst B3 row 105, opt-1@0.62 billed on a
+        # confident-wrong prose turn) is the agent's own prose, NOT a
+        # pending user fork — consult would bill the user for a decision
+        # they explicitly did not ask for. Suppressed with a distinct
+        # outcome so the suppression is visible in the route log.
+        _uask = ""
+        try:
+            from . import state as _state
+            _uask = str(_state.get_last_seen(session_id) or "")
+        except Exception:  # noqa: BLE001 — gate is additive, fail-open
+            _uask = ""
+        if _post_nondecision_frame(_uask):
+            try:
+                if log_route is not None:
+                    log_route("decision_post_fork_scan",
+                              outcome="post_nondecision_frame",
+                              lane="decision", session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
         if not _post_gate_ok(response_text):
             try:
                 if log_route is not None:

@@ -1,3 +1,84 @@
+## 4.14.1 — 2026-10-03 (FIX-FIRST rider 8 — T1 battery reloop: row refs, delivery migration root causes, misfire gate, compound-turn restore)
+
+Reviewer T1_DEPLOY battery v4.14.0 (DB-grounded, /opt/data/tmp/t1-deploy-
+results-2026-10-03.md) — 4 items in priority order. No deploy, no gateway
+bounces, no profile config/.env writes. L-disable verdict on the valmet
+decision lane HELD for user decision — not acted on.
+
+- R8-1 MIDTURN BANNER VARIANT WITHOUT ROW REF — the turn-close rollup
+  ("1 verdict | tok … | provider=… | initiator=agent") could not be
+  reconciled to a ledger row from the delivered body alone. Root cause:
+  decision_midturn._record_consumed never carried the ledger row id into
+  the accumulator, so _aggregate_line had nothing to render. Fix: the
+  accumulator stores row_id (from _handle_hit's rid) and the rollup now
+  renders `row=<rid>` per verdict — same contract as the manual-path
+  banner; a verdict with no row renders `ledger-row MISSING` (fail-loud,
+  never silent).
+- R8-2 BANNERLESS DELIVERY MIGRATION (analyst 3/3 bannerless, ledger rows
+  landing) — root-caused per profile from the route logs + DB:
+  (a) PARK-AFTER-CONSUME RACE (analyst B3, row 105): the async v3 worker
+  dispatched at the PRE edge parked AFTER the same turn's POST edge
+  already consumed (log: anchor_banner_consume parked=False and
+  decision_advisory_parked the SAME second) — a single-shot session has
+  no next turn, so the consult was billed and the banner never
+  delivered. Fix: POST delivery edges (benign / audit_sync / empty-body)
+  now bounded-wait for in-flight decision workers before consuming
+  (decision.wait_for_workers; knob decision.post_worker_wait, default
+  20s, 0 disables).
+  (b) FAKE LEDGER-WRITE FAILED EVERYWHERE: usage_ledger.VALID_LANES was
+  ("render","anchor","aux") — every decision-lane token row was REFUSED
+  at validation, so all decision consults logged
+  tokens_ledger_write_failed and every manual banner rendered
+  `LEDGER-WRITE FAILED` (valmet A5, operative A1, coder, orchestrator).
+  "decision" added to VALID_LANES — tok/$ claims now reconcile for real.
+  (c) MANUAL PROSE/SPACE-MARKER SUPPRESSION (analyst A2 row 104, C3 row
+  106): the route log shows trigger=manual suppressed reason=no_options
+  — "Option A delete the staging database" (space-separated named
+  markers, no separator punctuation) matched neither _OPT_LINE_RE (line-
+  anchored) nor _NAMED_ENUM_RE (punctuation required), so the consult
+  never fired and only a suppression row landed. Fix: extraction-only
+  loose named-enum pass (_NAMED_ENUM_LOOSE_RE) — named word + ordinal +
+  space, verbatim labels split at the next marker, trailing
+  parenthetical asides stripped; gates (_post_gate_ok, _enum_hit) keep
+  the strict shape. Never-invent holds: labels come only from stated
+  text.
+- R8-3 POST MISFIRE ON NON-DECISION PROSE (analyst row 105,
+  opt-1@0.62 billed on a confident-wrong assertion turn): the user's ask
+  itself declared "no decision to make here / agree with me and move
+  on", but the POST leg consulted on the response's rhetorical
+  counter-case enumeration ("1. give me the file… 2. you tell me…").
+  Fix: post_fork_scan now suppresses when the USER's ask (state last
+  seen) matches an explicit no-decision frame (_POST_NONDECISION_RE —
+  structural literal match on the ask only, never the response);
+  suppression is logged outcome=post_nondecision_frame. The
+  misfire-confidence accounting (§7(e)) is unchanged.
+- R8-4 COMPLEXITY SWALLOWS THE DECISION ASK (operative C2: 0 rows silent
+  swallow; valmet D1b: only frontier banner fired) — root cause was NOT
+  a lane-precedence steal: the manual trigger was LINE-anchored
+  ("decide this" must START a line), so "…AND decide this: Option A…"
+  and "Now the real one, decide this:…" never matched; extract_options
+  then found 0 options (space-separated markers) and the heuristic
+  default-deny silenced the whole ask. Fixes: (a) midline
+  "decide this:" (colon form) now triggers manual
+  (_manual_trigger_in_text; plain prose mentions without the colon stay
+  inert); (b) space-separated option extraction (above); (c) COMPOUND
+  TURN STACKING in router_core.dispatch — a stashed manual hit no
+  longer short-circuits: when the turn ALSO routes a complexity
+  orientation or risk consult, the decision consult fires ASYNC
+  (parked advisory, no turn slot) and the consult keeps its slot
+  (event: decision_compound_stack); a plain manual ask returns the
+  decision decision exactly as before (cooldown semantics unchanged).
+- TESTS: tests/test_rider8_fixes.py (11 pins: row refs, ledger-row
+  MISSING, tokens lane acceptance, worker wait, non-decision frame
+  suppression, midline trigger, space-separated options, compound
+  both-lane fire, plain-manual unchanged). Suite 1367 passed, 2
+  skipped. Also fixed a PRE-EXISTING order-dependent flake at
+  c3dc0a3: test_r19_decision_lane_v3 _reset now clears
+  decision._RESCAN_SIGS, and test_midturn_declared_claim_runs_lane
+  waits for its own initiator=agent marker instead of any parked
+  banner (an earlier test's late async worker parked into the shared
+  SID slot after _reset).
+
 ## 4.14.0 — 2026-10-03 (FIX-FIRST rider 7 — provenance fail-loud + decision/frontier stacking)
 
 Reviewer router behavioral audit (r19_audit_run2 refix round) — 3 items.

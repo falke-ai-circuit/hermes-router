@@ -1063,6 +1063,37 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                            orientation=orientation)
         return rd
 
+    # R8-4 (rider 8): stashed manual decision hit + compound-turn stack.
+    # A manual 'decide this:' ask inside a complexity/risk turn fires BOTH
+    # lanes: the decision consult dispatches ASYNC (parked advisory) and
+    # the complexity/risk consult keeps its routed slot.
+    _manual_stack: Dict[str, Any] = {"hit": None}
+
+    def _fire_decision_stack() -> None:
+        """Fire the stashed manual decision consult async (parked-banner
+        advisory, no turn slot) BEFORE a complexity/risk consult routes on
+        the same turn. One-shot: clears the stash. Never raises."""
+        if _manual_stack.get("hit") is None:
+            return
+        _manual_stack["hit"] = None
+        try:
+            from . import decision as _dm
+            from hermes_router import _log_route as _lr  # deferred - import cycle
+
+            _dm.handle_decision_v3(
+                session_id=session_id, task_id=task_id,
+                task_text=user_text, model=str(model or ""),
+                log_route=_lr, initiator="user")
+            try:
+                _lr("PRE", session_id=session_id,
+                    event_detail="decision_compound_stack",
+                    lane=LANE_DECISION, task_id=task_id,
+                    reason="manual_plus_consult_turn")
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+        except Exception:  # noqa: BLE001 — stack must never break dispatch
+            pass
+
     try:
         # 0. Inline overrides — before any classification.
         override = complexity.detect_override(user_text)
@@ -1132,7 +1163,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             task_id=task_id)
                     except Exception:  # noqa: BLE001 — observability only
                         pass
-                    return _mdec
+                    # R8-4 (rider 8): the manual decision ask must NOT be
+                    # decided between here and complexity/risk — a compound
+                    # turn (fork wrapped in complexity work, live: operative
+                    # C2 silent 0-fire; valmet D1b risk_r2 ate the ask) must
+                    # consult BOTH lanes. The manual hit is STASHED: the
+                    # complexity/risk stages below fire the decision consult
+                    # ASYNC (parked advisory, consumes no turn slot) and
+                    # route their own consult on the turn. When nothing
+                    # downstream consults, the final decision stage returns
+                    # the stashed manual decision (plain-ask behavior
+                    # unchanged).
+                    _manual_stack["hit"] = _mdec
             except Exception:  # noqa: BLE001 — decision lane must never break dispatch
                 pass
 
@@ -1212,6 +1254,9 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                 "consult_cooldown_suppressed")
                 _record_cooldown_fire(session_id,
                                       _cooldown_hash(session_id, user_text))
+                # R8-4 (rider 8): compound turn — decision consult fires
+                # async BEFORE the orientation consult routes.
+                _fire_decision_stack()
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "complexity_orientation",
                             orientation=True)
@@ -1274,6 +1319,12 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # by dispatcher_pre._dispatch_pass on this lane/mode). Single ladder:
         # the advisory escalates into MODE_CONSULT on low confidence — no
         # dead zone (frontier #1). Any error -> fail-open to flash-direct.
+        # R8-4 (rider 8): a stashed manual hit that no complexity/risk
+        # consult stacked on is returned HERE — plain manual ask, behavior
+        # byte-identical to the pre-rider early return (no consult cooldown
+        # suppression; R16 manual semantics preserved).
+        if _manual_stack.get("hit") is not None:
+            return _manual_stack["hit"]
         try:
             from . import decision as _dlane
 
@@ -1329,6 +1380,9 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                     None, "consult_cooldown_suppressed")
                     _record_cooldown_fire(
                         session_id, _cooldown_hash(session_id, user_text))
+                    # R8-4 (rider 8): compound turn — decision consult fires
+                    # async BEFORE the risk consult routes.
+                    _fire_decision_stack()
                     try:
                         from hermes_router import _log_route as _lr  # deferred - import cycle
                         _lr("PRE", session_id=session_id,

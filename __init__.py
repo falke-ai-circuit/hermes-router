@@ -201,6 +201,24 @@ def _log_route(event: str, **fields: Any) -> None:
     return _dispatcher_knobs._log_route(event, **fields)
 
 
+def _decision_wait_before_consume() -> None:
+    """R8-2 (rider 8): bounded wait for in-flight decision consult workers
+    to park their banner BEFORE a POST delivery edge consumes the parked
+    slot. Live root cause (analyst B3 row 105, single-shot): the async
+    worker parks AFTER this turn's POST consume — consult billed, banner
+    never delivered (single-shot sessions have no next turn). Bounded by
+    decision.post_worker_wait (default 20s; 0 disables). Never raises."""
+    try:
+        from . import decision as _dw
+
+        _dcfg = _dw._cfg()
+        _wait = float(_dcfg.get("post_worker_wait", 20) or 0)
+        if _wait > 0:
+            _dw.wait_for_workers(_wait)
+    except Exception:  # noqa: BLE001 — wait must never break delivery
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Message extraction helpers
 # ---------------------------------------------------------------------------
@@ -717,6 +735,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                              exc_info=True)
             try:
                 from . import debug_banner as _dbe
+                _decision_wait_before_consume()
                 _pb = _dbe.consume_parked_banner(session_id)
                 if _pb:
                     _dbe.note_consumed_decision(session_id, _pb)
@@ -849,6 +868,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # once, on the turn that actually delivers.
                     try:
                         from . import debug_banner as _dba
+                        _decision_wait_before_consume()
                         _parked_a = _dba.consume_parked_banner(session_id)
                         _dba.note_consumed_decision(session_id, _parked_a)
                         _log_route("POST", event_detail="anchor_banner_consume",
@@ -918,6 +938,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # banner and append to this turn's DELIVERY (one-shot).
             try:
                 from . import debug_banner as _dbp
+                _decision_wait_before_consume()
                 _parked = _dbp.consume_parked_banner(session_id)
                 _dbp.note_consumed_decision(session_id, _parked)
                 _log_route("POST", event_detail="anchor_banner_consume",

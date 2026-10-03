@@ -42,7 +42,7 @@ _SCAN_LINES = 20000
 
 _lock = threading.Lock()
 
-VALID_LANES = ("render", "anchor", "aux")
+VALID_LANES = ("render", "anchor", "aux", "decision")
 
 
 def _store_path() -> str:

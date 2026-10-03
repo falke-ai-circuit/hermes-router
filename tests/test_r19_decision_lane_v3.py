@@ -45,6 +45,12 @@ def _reset(monkeypatch, tmp_path):
     debug_banner._ANCHOR_SEGS.clear()
     decision.reset_limits()
     decision.reset_v3_limits()
+    # rider 8: the rescan-dedupe map keys on (session, task, ask) and
+    # survives _reset — a later test re-using the same SID + ask was
+    # deduped against an EARLIER test's consult (stale parked banner
+    # satisfied _wait_parked -> 'initiator=agent' failed). Bounded-TTL
+    # map is lane runtime state, not persisted state: clear per-test.
+    decision._RESCAN_SIGS.clear()
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
     # default config: dark (enabled false); ledger goes to a tmp db
@@ -583,7 +589,18 @@ def test_midturn_declared_claim_runs_lane(_reset, monkeypatch):
                                  route_gate.SOURCE_DECLARED_AGENT)
     d = route_gate.claim_pass("decide this: redis or memcached?", SID, "m")
     assert d.route is False  # advisory only — turn proceeds
-    assert _wait_parked()
+    # rider 8: an earlier test's async worker can park a stale banner
+    # into the shared SID slot AFTER _reset cleared it — waiting for ANY
+    # banner consumed that stale park and failed on 'initiator=agent'.
+    # Wait for THIS test's own marker instead: the midturn consult parks
+    # with initiator=agent (claim_pass passes initiator="agent").
+    _deadline = time.time() + 15.0
+    _pinned = ""
+    while time.time() < _deadline:
+        _pinned = debug_banner._ANCHOR_BANNERS.get(SID, "")
+        if "initiator=agent" in _pinned:
+            break
+        time.sleep(0.02)
     parked = debug_banner.consume_parked_banner(SID)
     # R19.15 / v1.1: banner renders the human-readable option label
     assert "redis pulls" in parked
