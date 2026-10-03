@@ -3,7 +3,7 @@ aggregate banner — reflex segment becomes a compact rollup (verdict count
 + confidence histogram + summed REAL cost + top verdict labels inline),
 and independent lanes each keep their own segment in fire order.
 
-1) Rollup: '· router · impulse (decision) | N verdicts (k shown >=0.9) |
+1) Rollup: '· router · impulse (decision) | N verdicts |
    tok ti/to | $total | initiator=agent' + 'Top verdicts: a / b'.
    Stand-downs are NOT verdicts.
 2) Independent lanes: reflex AND frontier AND uncensored in one turn ->
@@ -60,16 +60,17 @@ def test_rollup_counts_and_confidence_histogram():
     # D3-DELIVERY rider 2: provenance tag prefixed, byte-exact
     assert line.startswith("[decision-lane advisory] · router · "
                            "impulse (decision) |")
-    assert "3 verdicts (2 shown >=0.9)" in line
+    assert "3 verdicts |" in line  # B1 rider 5: no >=0.9 display threshold
+    assert "shown >=0.9" not in line
     assert "tok 270/120" in line
     assert "$0.000500" in line
     assert "initiator=agent" in line
-    # top-2 highest-confidence labels inline, <=60 chars each
+    # B1 rider 5: ranked top-2 tail with ACTUAL confidence per verdict
+    # (threshold-agnostic) — labels carry "(~conf)".
     top = [l for l in line.split("\n") if l.startswith("Top verdicts:")]
     assert len(top) == 1
     labels = top[0].replace("Top verdicts: ", "").split(" / ")
-    assert labels == ["Approach 1", "Approach 2"]
-    assert all(len(l) <= 60 for l in labels)
+    assert labels == ["Approach 1 (~0.95)", "Approach 2 (~0.92)"]
 
 
 def test_standdowns_not_counted():
@@ -89,6 +90,49 @@ def test_zero_verdicts_empty():
     assert DMT._aggregate_line(1, 10, 5, 0.0,
                                [{"choice": "stand_down"}]) == ""
     assert DMT._aggregate_line(0, 0, 0, 0.0, []) == ""
+
+
+def test_rollup_threshold_agnostic_confidence_display():
+    """B1 CONFIDENCE CALIBRATION (rider 5): real forks land at 0.4-0.87
+    (conductor probe series) — verdicts below 0.9 MUST still show their
+    choice + confidence. Regression pin for api_1791007111_01702b54 where
+    the tail said '0 shown >=0.9' on a delivered verdict."""
+    consumed = [{"choice": "A", "confidence": 0.72,
+                 "label": "Option A: scrub all residue now",
+                 "tokens_in": 100, "tokens_out": 50, "cost": 0.0001}]
+    line = DMT._aggregate_line(1, 100, 50, 0.0001, consumed)
+    assert "1 verdicts |" in line
+    assert "shown >=0.9" not in line
+    assert "Option A: scrub all residue now (~0.72)" in line
+    # ranked: highest confidence first
+    consumed2 = [{"choice": "x", "confidence": 0.55, "label": "low pick",
+                  "tokens_in": 1, "tokens_out": 1, "cost": 0.0},
+                 {"choice": "y", "confidence": 0.80, "label": "high pick",
+                  "tokens_in": 1, "tokens_out": 1, "cost": 0.0}]
+    line2 = DMT._aggregate_line(2, 2, 2, 0.0, consumed2)
+    assert line2.index("high pick (~0.80)") < line2.index("low pick (~0.55)")
+
+
+def test_rollup_label_cap_finishes_at_clause_boundary():
+    """B1 rider 5 item 2: no mid-sentence truncation — the reviewer
+    specimen tail cut at 'keep 30 days, compres'. Long labels are capped
+    at a clause/option boundary; short labels pass through untouched."""
+    long_label = ("Option A: scrub all residue now. Option B: leave on "
+                  "disk until the next restructure touches the folder.")
+    line = DMT._aggregate_line(1, 1, 1, 0.0, [
+        {"choice": "A", "confidence": 0.72, "label": long_label,
+         "tokens_in": 1, "tokens_out": 1, "cost": 0.0}])
+    top = [l for l in line.split("\n") if l.startswith("Top verdicts:")][0]
+    label = top.replace("Top verdicts: ", "").split(" (~")[0]
+    assert len(label) <= 90
+    assert label.endswith(("now", "now.", "residue", "residue.")) \
+        or label.count("Option") == 1
+    # the Option B continuation must never be cut mid-word/mid-clause
+    assert not label.endswith("compres") and not label.endswith(" until")
+    # short labels unchanged
+    assert "~0.90)" in DMT._aggregate_line(1, 1, 1, 0.0, [
+        {"choice": "a", "confidence": 0.9, "label": "short label",
+         "tokens_in": 1, "tokens_out": 1, "cost": 0.0}])
 
 
 # --- 3: costs are real (summed Jev estimates) --------------------------------------

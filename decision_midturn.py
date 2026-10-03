@@ -746,6 +746,42 @@ def endpoint_provider(endpoint: str) -> str:
         return ""
 
 
+def _cap_at_boundary(text: str, cap: int = 90) -> str:
+    """B1 rider 5: cap a verdict label at a clause/option boundary, never
+    mid-sentence. Within `cap` chars, prefer the last sentence/option
+    boundary ('.', '!', '?', ':' or the start of ' Option '/option
+    ordinal); fall back to the last ',' boundary; fall back to the full
+    text only when the text is short. Never raises."""
+    try:
+        s = str(text or "").strip()
+        if len(s) <= cap:
+            return s
+        w = s[:cap]
+        best = -1
+        for marker in (". ", "! ", "? ", ": "):
+            i = w.rfind(marker)
+            if i > best:
+                best = i
+        # option-boundary: start of ' Option B' style continuation
+        import re as _re
+        mo = None
+        for mo in _re.finditer(r"[Oo]ption [A-Za-z0-9]", w):
+            pass
+        if mo and mo.start() > best:
+            best = mo.start()
+        if best < 0:
+            i = w.rfind(", ")
+            best = i
+        if best <= 0:
+            return w.rstrip() + "…"
+        out = s[:best + (2 if s[best:best + 2] in (". ", "! ", "? ", ": ")
+                         else 1)].rstrip()
+        # never leave a dangling 'Option X:' ordinal with no option text
+        return re.sub(r"[Oo]ption [A-Za-z0-9]\s*[:.]?\s*$", "", out).rstrip() or out
+    except Exception:  # noqa: BLE001
+        return str(text or "")[:cap]
+
+
 def _aggregate_line(n: int, ti: int, to: int, total: float,
                     consumed: List[Dict[str, Any]]) -> str:
     """R19.22 (Goran, operative's Kindle run): the reflex (decision)
@@ -792,19 +828,34 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # battery and the R19.1 provenance filter match on), prefixed to
         # the first line; the R19.22 rollup byte-shape after the tag is
         # unchanged.
-        line = ("%s · router · impulse (decision) | %d verdicts "
-                "(%d shown >=0.9) | tok %d/%d | $%.6f | provider=%s | "
-                "initiator=agent"
-                % (_dec.PROVENANCE_TAG, n, hi, ti, to, total, prov
-                   or "(unknown)"))
-        # top verdicts: highest-confidence choice labels inline (up to 2,
-        # <=60 chars each) so Goran sees WHAT it picked without the ledger.
+        # B1 CONFIDENCE CALIBRATION (rider 5): the old "(k shown >=0.9)"
+        # histogram was a display threshold, but conductor probe series
+        # showed real-fork confidences land at 0.4-0.87 — so the tail
+        # counted 0 shown even when verdicts were delivered (reviewer
+        # specimen api_1791007111_01702b54). The >=0.9 gate belongs to
+        # advisory-SHAPING, not display: every delivered verdict now
+        # shows its choice + confidence, ranked by confidence, top-2
+        # when >2 (all when <=2). Labels are capped at a CLAUSE/OPTION
+        # boundary (never mid-sentence): find the best boundary marker
+        # within the cap and cut after it; only fall back to the raw
+        # cap when no boundary exists.
+        parts = ["%s · router · impulse (decision) | %d verdicts "
+                 "| tok %d/%d | $%.6f | provider=%s | initiator=agent"
+                 % (_dec.PROVENANCE_TAG, n, ti, to, total, prov
+                    or "(unknown)")]
+        # B1 (rider 5): ranked top-2 tail (all verdicts when <=2), every
+        # shown verdict carries its confidence — threshold-agnostic.
         top = sorted(verdicts, key=lambda c: -float(
             c.get("confidence") or 0.0))[:2]
-        labels = [str(c.get("label") or c.get("choice") or "")[:60]
-                  for c in top if (c.get("label") or c.get("choice"))]
-        if labels:
-            line += "\nTop verdicts: " + " / ".join(labels)
-        return line
+        shown = [str(c.get("label") or c.get("choice") or "")
+                 for c in top if (c.get("label") or c.get("choice"))]
+        confs = ["%.2f" % float(c.get("confidence") or 0.0) for c in top
+                 if (c.get("label") or c.get("choice"))]
+        if shown:
+            tail = " / ".join(
+                "%s (~%s)" % (_cap_at_boundary(s), cf)
+                for s, cf in zip(shown, confs))
+            parts.append("Top verdicts: " + tail)
+        return "\n".join(parts)
     except Exception:  # noqa: BLE001
         return ""
