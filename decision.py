@@ -1427,7 +1427,14 @@ def _agent_frame(cfg: Dict[str, Any]) -> str:
         from . import persona_card
 
         txt = persona_card.build_persona_context()
-        frame = clean_snippet(str(txt or ""), 800)
+        # F3 (rider 6): the persona card can embed an internal RENDER MANDATE
+        # block (persona_card.py). That block is backend-instruction text and
+        # leaked verbatim into recipient-facing bodies via the advisory
+        # persona slot (specimens api_1791011803_2170acf8 +
+        # api_1791011818_c537dd3f). Strip it here, at the frame source, so
+        # it can never reach the envelope's agent_frame at all.
+        head = str(txt or "").split("=== RENDER MANDATE", 1)[0]
+        frame = clean_snippet(head, 800)
         if frame:
             return frame
     except Exception:  # noqa: BLE001
@@ -2609,6 +2616,48 @@ def ledger_recent(limit: int = 20, db_path: str = "") -> List[Dict[str, Any]]:
         return []
 
 
+def ledger_row_by_id(rid: Any, db_path: str = "") -> Dict[str, Any]:
+    """F1 (rider 6): read back the verdict-of-record row — the banner renders
+    ONLY what this row records (choice + confidence), so the rendered
+    confidence can never diverge from the ledger. {} on any miss. Never
+    raises."""
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return {}
+        try:
+            r = conn.execute(
+                "SELECT id, choice, confidence FROM decision_ledger"
+                " WHERE id = ?", (int(rid or 0),)).fetchone()
+            if not r:
+                return {}
+            return {"id": int(r[0]), "choice": str(r[1] or ""),
+                    "confidence": r[2]}
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def render_verdict_record(rid: Any) -> str:
+    """F1 (rider 6): the tape-recorder segment rendered INTO the advisory —
+    choice + confidence read back from the ledger row just written. Zero
+    divergence by construction: the rendered value IS the row value, not a
+    render-layer shaping of it. '' when the row has no recorded verdict
+    (stand-down / fail-open rows make NO confidence claim). Never raises."""
+    try:
+        row = ledger_row_by_id(rid)
+        if not row:
+            return ""
+        choice = row.get("choice") or ""
+        conf = row.get("confidence")
+        if not choice or conf is None:
+            return ""
+        return ("verdict-of-record: %s @ %.2f (ledger row %d)"
+                % (str(choice), float(conf), int(row.get("id") or 0)))
+    except Exception:  # noqa: BLE001
+        return ""
+
 # ---------------------------------------------------------------------------
 # Delivery — banner (§7) + the v3 pipeline
 # ---------------------------------------------------------------------------
@@ -2726,6 +2775,11 @@ def _impulse_persona_slot(envelope: Dict[str, Any]) -> str:
             cut = line[:_IMPULSE_SLOT_MAX]
             line = cut.rsplit(" ", 1)[0] if " " in cut else cut
         if len(line) < _IMPULSE_SLOT_MIN:
+            return ""
+        # F3 defense (rider 6): a slot fragment is persona VOCABULARY — any
+        # internal seam header ('=== RENDER MANDATE' etc.) that survives the
+        # source strip above must never be composed into the frame.
+        if "RENDER MANDATE" in line.upper() or "===" in line:
             return ""
         if _EMOTION_WORD_RE.search(line):
             return ""
@@ -3050,14 +3104,20 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         # excerpt (first 500 chars of the scanned content) so downstream
         # invalid-fork filters can check choice-in-source without
         # re-reading sessions. Top-level verdict keys preserved.
-        ledger_write(dict(base_row, choice=str(verdict["choice"]),
-                          confidence=round(float(verdict["confidence"]), 4),
-                          verdict_json=verdict_row_json(verdict,
-                                                        content)))
+        rid = ledger_write(dict(base_row, choice=str(verdict["choice"]),
+                                confidence=round(float(verdict["confidence"]),
+                                                 4),
+                                verdict_json=verdict_row_json(verdict,
+                                                              content)))
         advisory = render_advisory(verdict, envelope)
         banner = render_decision_banner(
             ids.get("trigger", "pre"), base_row["model"], meta,
             initiator=ids.get("initiator", "user"))
+        # F1 (rider 6): the advisory carries the verdict-of-record read back
+        # from the ledger row — no render-layer shaping may diverge from the
+        # recorded choice/confidence. No row -> no claim.
+        advisory = " ".join(x for x in (advisory, render_verdict_record(rid))
+                            if x)
         parked = "\n\n".join(x for x in (advisory, banner) if x)
         if parked:
             from . import debug_banner

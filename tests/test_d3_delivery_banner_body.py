@@ -124,7 +124,11 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
     assert out1 and "t1 plain answer" in out1
     assert TAG in out1, out1                      # the repro's body grep
     assert "impulse (decision)" in out1           # rollup provenance line
-    assert "ship the fix now" in out1             # top verdict label
+    # F2 (rider 6): the tail is the verdict-of-record shape — ledger choice
+    # + confidence ONLY; the old label echoed raw option text truncated
+    # mid-word.
+    assert "Top verdicts: opt-1 (~0.78)" in out1
+    assert "ship the fix now" not in out1
     crec = [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"]
     assert len(crec) == 1 and crec[0].get("parked") is True \

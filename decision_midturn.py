@@ -46,7 +46,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import decision as _dec
 
@@ -497,13 +497,30 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             meta["choice_label"] = _dec.choice_label(verdict, envelope)[:60]
         except Exception:  # noqa: BLE001 — label is cosmetic
             meta["choice_label"] = ""
+        # F4 (rider 6): the rollup banner claims tok n/n + $ — those claims
+        # MUST have a tokens-ledger row to reconcile against. The midturn
+        # path computed cost locally but never wrote the usage ledger (the
+        # pre/midturn legs at decision.py:3080 do). Write the row at verdict
+        # time, same lane/source tagging as the other legs.
+        try:
+            from . import usage_ledger as _ul
+
+            _ti, _to = meta.get("tokens_in"), meta.get("tokens_out")
+            if _ti is not None or _to is not None:
+                _ul.record_tokens(
+                    "decision", base["model"],
+                    str(meta.get("endpoint") or ""), _ti, _to,
+                    _ul.estimate_cost(base["model"], _ti, _to),
+                    "decision_midturn")
+        except Exception:  # noqa: BLE001 — tokens never break the lane
+            pass
         _record_consumed(session_id, verdict, meta, cfg)
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
              confidence=round(float(verdict["confidence"]), 3),
              sig=sig, mode=mode, tool=tool_name, seam=seam, ledger_id=rid,
              backend=str(cfg.get("backend") or ""))
-        adv = _render_midturn_advisory(verdict, envelope, meta)
+        adv = _render_midturn_advisory(verdict, envelope, meta, rid=rid)
         if adv:
             with _LOCK:
                 # max 1 pending, latest-wins
@@ -639,19 +656,28 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
 
 def _render_midturn_advisory(verdict: Dict[str, Any],
                              envelope: Dict[str, Any],
-                             meta: Dict[str, Any]) -> str:
+                             meta: Dict[str, Any],
+                             rid: Optional[int] = None) -> str:
     """ONE advisory envelope for the in-flight request queue: provenance-
     stamped header + verdict + why_not (alternatives). Never rewrites
-    model/tool content; non-binding."""
+    model/tool content; non-binding. F1 (rider 6): carries the
+    verdict-of-record segment read back from the ledger row — zero
+    divergence from the recorded choice/confidence."""
     try:
         alts = [str(a) for a in (verdict.get("alternatives") or [])]
         why_not = ("why_not: %s" % ", ".join(alts)) if alts else \
             "why_not: (no viable alternative in the closed option set)"
-        return "\n".join([
+        vor = ""
+        try:
+            vor = _dec.render_verdict_record(rid)
+        except Exception:  # noqa: BLE001 — record never breaks the advisory
+            vor = ""
+        return "\n".join([x for x in (
             ADVISORY_HEADER,
             _dec.render_advisory(verdict, envelope),
+            vor,
             why_not,
-        ])
+        ) if x])
     except Exception:  # noqa: BLE001
         return ""
 
@@ -675,12 +701,12 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
                "endpoint": str(meta.get("endpoint") or "")}
         try:
             # R19.22: the rollup shows WHAT was picked — confidence + the
-            # human-readable label (caller supplies it from the envelope).
+            # verdict-of-record choice (clean ledger shape: choice+conf;
+            # no prompt/option-text echo — F2 rider 6).
             rec["confidence"] = max(0.0, min(
                 1.0, float(verdict.get("confidence") or 0.0)))
         except Exception:  # noqa: BLE001
             rec["confidence"] = 0.0
-        rec["label"] = str(meta.get("choice_label") or "")[:60]
         with _LOCK:
             st = _state(session_id)
             st["count"] = int(st.get("count") or 0) + 1
@@ -839,21 +865,27 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # boundary (never mid-sentence): find the best boundary marker
         # within the cap and cut after it; only fall back to the raw
         # cap when no boundary exists.
-        parts = ["%s · router · impulse (decision) | %d verdicts "
+        # F6 (rider 6): '1 verdict' — singular grammar when n == 1.
+        parts = ["%s · router · impulse (decision) | %d verdict%s "
                  "| tok %d/%d | $%.6f | provider=%s | initiator=agent"
-                 % (_dec.PROVENANCE_TAG, n, ti, to, total, prov
+                 % (_dec.PROVENANCE_TAG, n,
+                    "" if n == 1 else "s", ti, to, total, prov
                     or "(unknown)")]
         # B1 (rider 5): ranked top-2 tail (all verdicts when <=2), every
         # shown verdict carries its confidence — threshold-agnostic.
         top = sorted(verdicts, key=lambda c: -float(
             c.get("confidence") or 0.0))[:2]
-        shown = [str(c.get("label") or c.get("choice") or "")
-                 for c in top if (c.get("label") or c.get("choice"))]
+        # F2 (rider 6): the tail is the verdict-of-record shape — the ledger
+        # verdict's choice + confidence ONLY. No prompt/option-text echo
+        # (the old label field grabbed raw option text and truncated it
+        # mid-word); no free text outside the recorded choice id.
+        shown = [str(c.get("choice") or "") for c in top
+                 if c.get("choice")]
         confs = ["%.2f" % float(c.get("confidence") or 0.0) for c in top
-                 if (c.get("label") or c.get("choice"))]
+                 if c.get("choice")]
         if shown:
             tail = " / ".join(
-                "%s (~%s)" % (_cap_at_boundary(s), cf)
+                "%s (~%s)" % (s, cf)
                 for s, cf in zip(shown, confs))
             parts.append("Top verdicts: " + tail)
         return "\n".join(parts)

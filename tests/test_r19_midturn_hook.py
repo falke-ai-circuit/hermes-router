@@ -427,7 +427,9 @@ def test_close_turn_single_verdict_format(_env, monkeypatch):
     # (D3-DELIVERY rider 2: provenance tag prefixed, byte-exact)
     assert banner.startswith("[decision-lane advisory] · router · "
                              "impulse (decision) |")
-    assert "1 verdicts |" in banner  # B1 rider 5: threshold-agnostic display
+    # F6 (rider 6): singular grammar; F2 (rider 6): choice+conf tail
+    assert "1 verdict |" in banner
+    assert "Top verdicts: opt-1 (~0.90)" in banner
     assert "initiator=agent" in banner
     assert "tok 10/5" in banner
     assert dmt.close_turn(SID) == ""  # drained

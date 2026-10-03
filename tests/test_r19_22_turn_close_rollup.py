@@ -66,11 +66,12 @@ def test_rollup_counts_and_confidence_histogram():
     assert "$0.000500" in line
     assert "initiator=agent" in line
     # B1 rider 5: ranked top-2 tail with ACTUAL confidence per verdict
-    # (threshold-agnostic) — labels carry "(~conf)".
+    # (threshold-agnostic). F2 (rider 6): the tail is the verdict-of-record
+    # shape — ledger choice + confidence ONLY, no label text.
     top = [l for l in line.split("\n") if l.startswith("Top verdicts:")]
     assert len(top) == 1
     labels = top[0].replace("Top verdicts: ", "").split(" / ")
-    assert labels == ["Approach 1 (~0.95)", "Approach 2 (~0.92)"]
+    assert labels == ["opt-1 (~0.95)", "opt-2 (~0.92)"]
 
 
 def test_standdowns_not_counted():
@@ -82,7 +83,8 @@ def test_standdowns_not_counted():
                 {"choice": "unmapped", "confidence": 0.8,
                  "tokens_in": 5, "tokens_out": 0, "cost": 0.0}]
     line = DMT._aggregate_line(3, 20, 5, 0.0001, consumed)
-    assert "1 verdicts" in line
+    assert "1 verdict |" in line  # F6 (rider 6): singular grammar
+    assert "1 verdicts |" not in line
     assert "tok 10/5" in line  # only the real verdict's tokens
 
 
@@ -101,35 +103,31 @@ def test_rollup_threshold_agnostic_confidence_display():
                  "label": "Option A: scrub all residue now",
                  "tokens_in": 100, "tokens_out": 50, "cost": 0.0001}]
     line = DMT._aggregate_line(1, 100, 50, 0.0001, consumed)
-    assert "1 verdicts |" in line
+    assert "1 verdict |" in line
     assert "shown >=0.9" not in line
-    assert "Option A: scrub all residue now (~0.72)" in line
-    # ranked: highest confidence first
+    assert "A (~0.72)" in line
+    # ranked: highest confidence first (F2 rider 6: choice+conf tail only)
     consumed2 = [{"choice": "x", "confidence": 0.55, "label": "low pick",
                   "tokens_in": 1, "tokens_out": 1, "cost": 0.0},
                  {"choice": "y", "confidence": 0.80, "label": "high pick",
                   "tokens_in": 1, "tokens_out": 1, "cost": 0.0}]
     line2 = DMT._aggregate_line(2, 2, 2, 0.0, consumed2)
-    assert line2.index("high pick (~0.80)") < line2.index("low pick (~0.55)")
+    assert line2.index("y (~0.80)") < line2.index("x (~0.55)")
 
 
-def test_rollup_label_cap_finishes_at_clause_boundary():
-    """B1 rider 5 item 2: no mid-sentence truncation — the reviewer
-    specimen tail cut at 'keep 30 days, compres'. Long labels are capped
-    at a clause/option boundary; short labels pass through untouched."""
-    long_label = ("Option A: scrub all residue now. Option B: leave on "
-                  "disk until the next restructure touches the folder.")
+def test_rollup_tail_is_verdict_record_choice():
+    """F2 (rider 6): the tail is the verdict-of-record shape — the ledger
+    verdict's choice + confidence ONLY. The old label field echoed raw
+    prompt/option text and truncated it mid-word (specimen
+    '2 retries with 5s backoff. Option B: 1 retry with 30s backof'); the
+    clean verdict_json shape is choice+conf, and that is what renders."""
     line = DMT._aggregate_line(1, 1, 1, 0.0, [
-        {"choice": "A", "confidence": 0.72, "label": long_label,
+        {"choice": "opt-1", "confidence": 0.72, "label": "whatever text",
          "tokens_in": 1, "tokens_out": 1, "cost": 0.0}])
     top = [l for l in line.split("\n") if l.startswith("Top verdicts:")][0]
-    label = top.replace("Top verdicts: ", "").split(" (~")[0]
-    assert len(label) <= 90
-    assert label.endswith(("now", "now.", "residue", "residue.")) \
-        or label.count("Option") == 1
-    # the Option B continuation must never be cut mid-word/mid-clause
-    assert not label.endswith("compres") and not label.endswith(" until")
-    # short labels unchanged
+    assert top == "Top verdicts: opt-1 (~0.72)"
+    assert "whatever text" not in line
+    # short labels unchanged — no label text at all in the tail
     assert "~0.90)" in DMT._aggregate_line(1, 1, 1, 0.0, [
         {"choice": "a", "confidence": 0.9, "label": "short label",
          "tokens_in": 1, "tokens_out": 1, "cost": 0.0}])

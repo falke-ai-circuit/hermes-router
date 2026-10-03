@@ -1,3 +1,62 @@
+## 4.13.9 — 2026-10-03 (FIX-FIRST rider 6 — verdict-of-record render + leak + reconciliation)
+
+Reviewer audit r19_audit_run3 (post-v4.13.8): 6 findings fixed.
+
+- F1 — CONFIDENCE FABRICATION AT RENDER (load-bearing). The banner rendered
+  "pulls 0.50 both options / band=noise" with NO verdict confidence while
+  the ledger row recorded conf 0.14 (evol api_1791011803_2170acf8, row 69);
+  the architect body showed ~1.00 vs ledger 0.63 (row 2). Root cause: the
+  advisory frame renders the envelope's MECHANICAL weighting (weights/band)
+  and never the verdict-of-record; the rollup's ~1.00 was the midturn
+  turn_sweep row's own ledger conf (1.0, row 70/3 — correct per row, but
+  the manual verdict's conf never appeared anywhere). Fix: every advisory
+  now carries a 'verdict-of-record: <choice> @ <conf> (ledger row <id>)'
+  segment read BACK from the decision_ledger row just written
+  (ledger_row_by_id + render_verdict_record, decision.py) — zero divergence
+  by construction, since the rendered value IS the row value. Wired into
+  both the pre/manual/post advisory path (_v3_worker) and the midturn
+  pending advisory (_render_midturn_advisory, rid-parameterized).
+- F2 — SPAN-MAPPING BUG (the tail). "Top verdicts:" echoed raw prompt/
+  option text truncated mid-word ('...30s backof', '<memory-context> [Sys
+  tem no') because the rollup consumed rec["label"] = choice_label() — the
+  envelope's human-readable option TEXT (up to 60 chars of prompt echo) —
+  while the ledger verdict_json is clean (choice+conf). Fix: the consumed
+  record no longer carries the label echo (decision_midturn._record_consumed)
+  and the tail renders the verdict-of-record shape ONLY —
+  "Top verdicts: opt-1 (~1.00)" — choice id + conf, no free text.
+  _cap_at_boundary is no longer needed on this path.
+- F3 — RENDER MANDATE leak. The internal seam text "=== RENDER MANDATE
+  (overrides any boundary text above) ===" leaked into recipient-facing
+  bodies on BOTH probes. Root cause: decision._agent_frame() derives the
+  envelope's agent_frame from persona_card.build_persona_context() — which
+  embeds the mandate block verbatim — and _impulse_persona_slot() composed
+  a fragment of it straight into the frame. Fix at the source: _agent_frame
+  strips everything from the mandate header onward before snippetting;
+  belt-and-braces: the slot filter also rejects any fragment carrying
+  "RENDER MANDATE" or "===".
+- F4 — TOKENS-LEDGER RECONCILIATION (load-bearing). The rollup claimed
+  "tok 1181/28 | $0.000050" but ZERO tokens-ledger rows existed for the
+  probe sessions. Root cause: the midturn path computed cost locally in
+  _record_consumed and NEVER called usage_ledger.record_tokens (the other
+  decision legs do, decision.py _v3_worker). Fix: the midturn verdict path
+  writes a usage_ledger row at verdict time (lane=decision,
+  source=decision_midturn) so every tok/$ claim in the banner reconciles
+  against an actual row.
+- F5 — JSONL LANDMINE (wiring answer, no config written). The conductor
+  hermes-router-decisions.jsonl is a DEAD SINK: the ONLY writer in the
+  tree is decisions.record_decision() (decisions.py, async jsonl appender)
+  and it has ZERO production call sites in v4.13.8 (grep: no caller, no
+  reader; only tests reference the module). Decision rows land exclusively
+  in the per-profile hermes_router_state.db decision_ledger
+  (delta-provable: evol 69->71, architect 1->3). Safe to delete the jsonl
+  from configs; the (dead) writer decisions.py stays untouched in the
+  tree.
+- F6 — '1 verdicts' -> '1 verdict' singular grammar in the rollup line.
+
+Suite: 1353 passed, 2 skipped, 1 deselected (tests updated to pin the new
+verdict-of-record tail + singular grammar: test_r19_22_turn_close_rollup,
+test_d3_delivery_banner_body, test_r19_21_parity, test_r19_midturn_hook).
+
 ## 4.13.7 — 2026-10-02 (FIX-FIRST rider 4 — parked-loss exhaustiveness + D1 stacking + midturn pseudo-fires)
 
 Reviewer battery_final_20261002: 11/14 PASS; three open defect classes fixed.
