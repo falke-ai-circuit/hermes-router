@@ -1,4 +1,64 @@
-# 4.16.3 — 2026-10-04 (FIX-FIRST rider 13 — misfire/gate battery: fork-preservation engagement + benign-prose consult gates)
+# 4.16.4 — 2026-10-04 (FIX-FIRST rider 13 ADDENDUM, Goran-approved — R13-4 observability recurrence: R10-6 probe-verified-but-broken-on-real-turns)
+
+R13-4 live recurrence (conductor session api_1791099470_927b8d58,
+07:37-07:38 2026-10-04, 'anchor this' + frontier consult @ z-ai/glm-5.3,
+$0.013318): claimed banner-less delivered reply + no
+anchor_route_fired/anchor_banner events. Root-caused against the REAL
+surfaces (delivered body state.db 313607 len 4644 == the BENIGN_BANNER
+render record; route log /tmp/uncensored-router-conductor.log):
+
+- FINDING 1 DISSOLVED as observer artifact (the delivered body is the only
+  truth surface — verified): ALL FOUR legs were present on the REAL turn.
+  (1) billed spend: routing-state Oct 4 $0.041137 + ledger rows 362/363/364
+  (frontier_consult completed, $0.013318); (2) route events:
+  anchor_banner_parked + debug_banner_emitted + anchor_route_fired at
+  07:38:24, anchor_banner_consume parked=True edge=benign +
+  banner_render_captured at 07:38:46; (3) banner segs in the delivered
+  reply ('· router · higher-self (frontier) | consult | … | row=363 ·' +
+  two decision-lane advisory segs); (4) spend entry $0.013318 on the
+  banner line. The 20:11 probe turn (api_1791058257) shows the IDENTICAL
+  event pattern and banner shape — the "probe takes a different code path"
+  hypothesis is FALSE; probe and real turn took the same path.
+- FINDING 2 ROOT CAUSE (the "no events" claim): LOG-LOCATION split-brain.
+  The conductor's ACTIVE route log is /tmp/uncensored-router-conductor.log
+  (config.yaml:665 log_path override) — the home-dir uncensored-router.log
+  froze at 2026-10-03T19:45:18Z, and the observer tailed the FROZEN log.
+  Every "log lines were frozen" claim in this battery traces to reading
+  the wrong file. Config is owner territory: NOT touched; recommendation
+  for the owner — move log_path back under the profile home (also /tmp is
+  wiped on reboot). The acceptance upgrade (delivered body = truth) makes
+  future claims immune to this artifact.
+- FINDING 3 REAL CODE DEFECTS on the delivered body (both fixed):
+  (a) impulse-frame persona slot sourced ROUTER/BANNER vocabulary from the
+  agent frame when prior banner text rode the context — the delivered
+  rollup glued 'ADVICE-ONLY: high-stakes fork — main model/user confirms.'
+  + a duplicated reflex tail into the band line, reading as a corrupted
+  banner (why the conductor read it banner-less). Fix: _BANNER_VOCAB_RE
+  deny filter in _impulse_persona_slot — a fragment carrying banner
+  vocabulary falls back to the canned register.
+  (b) unlabeled options fell back to the option BODY as label, hard-cut at
+  60 chars mid-sentence ('Cost baseline capture. "Fleet generalization
+  after a day of pulls 0.25 …'). Fix: long labels truncate at a WORD
+  boundary with an ellipsis; the reflex tail renders exactly once.
+- ACCEPTANCE UPGRADE (binding, codified in
+  tests/test_r13_4_delivered_body_legs.py): banner/billing acceptance
+  verifies the DELIVERED BODY string — (1) billed spend row, (2) route
+  event, (3) banner rendered IN the delivered reply text, (4) spend entry
+  — never log lines alone. The parked→consume→delivered one-shot
+  guarantee is pinned on the delivery string. Probes are diagnostic only.
+
+- Pins: tests/test_r13_4_delivered_body_legs.py (6) — slot banner-vocab
+  rejection + clean-vocab passthrough, word-boundary label truncation +
+  single reflex tail, short-label regression, delivered-body four-leg
+  shape on a real-shaped api_server turn, park→consume→delivered string.
+
+- Known non-goals (note only, no action): the forged-persona detector
+  still flags the integration-rule seam text arriving unmarked — that
+  signal is the designed loud-flag behavior; recovery E4 remains
+  user-attested only.
+
+Version pin: plugin.yaml 4.16.4.
+
 
 Sources: reviewer T1R6 battery (/opt/data/tmp/t1r6-results-2026-10-04.md,
 raw t1r6-raw.jsonl) on v4.16.2 / 5d59c8a. No deploy, no gateway bounces,

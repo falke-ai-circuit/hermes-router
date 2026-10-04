@@ -1700,6 +1700,16 @@ _IMPERSONAL_FRAME_FALLBACK = ("persona unavailable — answer from the "
 _IMPULSE_SLOT_MAX = 40
 _IMPULSE_SLOT_MIN = 8
 
+# R13-4 (rider 13): banner/advisory vocabulary that must never ride a
+# persona-vocabulary slot — a slot fragment containing router banner
+# wording is contamination from prior-turn banner text riding the agent
+# frame context, not persona voice (live: conductor api_1791099470).
+_BANNER_VOCAB_RE = re.compile(
+    r"advice-only|cannot be controlled|decision-lane advisory"
+    r"|router advisory|verdict-of-record|band=|pulls \d"
+    r"|\bopt-\d|· router ·|\brod?uter\b|\bbanner\b|\bverdict\b",
+    re.IGNORECASE)
+
 
 def _agent_frame(cfg: Dict[str, Any]) -> str:
     """§3.1 AGENT FRAME from the profile DNA (persona card, bounded 800c).
@@ -3086,6 +3096,15 @@ def _impulse_persona_slot(envelope: Dict[str, Any]) -> str:
         # source strip above must never be composed into the frame.
         if "RENDER MANDATE" in line.upper() or "===" in line:
             return ""
+        # R13-4 (rider 13): the slot sourced ROUTER/BANNER vocabulary from
+        # the agent frame when a prior turn's banner text rode the context
+        # (live: conductor 07:38 api_1791099470 — the delivered impulse
+        # frame glued 'ADVICE-ONLY: high-stakes fork — main model/user
+        # confirms.' + a duplicated reflex tail into the band line, reading
+        # as a corrupted banner). A slot fragment that itself carries
+        # banner/advisory vocabulary is contamination, not persona voice.
+        if _BANNER_VOCAB_RE.search(line):
+            return ""
         if _EMOTION_WORD_RE.search(line):
             return ""
         return line
@@ -3120,9 +3139,18 @@ def render_impulse_frame(verdict: Dict[str, Any],
         for i, o in enumerate(opts):
             # R19.15 fallback kept under v1.1: blank/whitespace label -> raw id
             label = (str(o.get("label") or "").strip()
-                     or str(o.get("id") or "").strip())[:60]
+                     or str(o.get("id") or "").strip())
             if not label:
                 return ""
+            # R13-4 (rider 13): unlabeled options fall back to the option
+            # BODY as label — the hard [:60] cut sliced mid-sentence
+            # (live: conductor 07:38 'Cost baseline capture. "Fleet
+            # generalization after a day of pulls 0.25 ...' — the rollup
+            # read as corrupted banner text). Long labels truncate at a
+            # WORD boundary with an ellipsis, never mid-sentence.
+            if len(label) > 60:
+                cut = label[:60]
+                label = (cut.rsplit(" ", 1)[0] if " " in cut else cut) + "…"
             wi = (wmap or {}).get(str(o.get("id") or ""))
             if wi is None:
                 return ""  # no weight, no frame — never asserted

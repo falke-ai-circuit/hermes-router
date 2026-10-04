@@ -45,8 +45,23 @@ def test_label_truncated_to_60():
     long = "x" * 200
     adv = D.render_advisory({"choice": "opt-1", "confidence": 0.9},
                             _env(labels=(long, "b")))
-    assert ("x" * 60) + " pulls" in adv
+    # R13-4: word-boundary truncation — a spaceless blob keeps <= 60 chars
+    # with an ellipsis marker; a >60-char run can never appear.
+    assert ("x" * 60) + "…" in adv
     assert ("x" * 61) not in adv
+
+
+def test_label_word_boundary_truncation():
+    # R13-4 (live: conductor api_1791099470 — mid-sentence hard cut): a
+    # real-sentence label cuts at the last word boundary + ellipsis.
+    long = 'Cost baseline capture. "Fleet generalization after a day of proof."'
+    adv = D.render_advisory({"choice": "opt-1", "confidence": 0.9},
+                            _env(labels=(long, "b")))
+    assert "after a day of proof" not in adv  # beyond the cut
+    assert "of proof.\u2026" not in adv
+    cut_label = adv.split(" pulls ", 1)[0].split("the fork surfaces as: ")[-1]
+    assert cut_label.endswith("…")
+    assert " pulls" not in cut_label  # no stray insertion inside the label
 
 
 def test_fail_open_garbage_inputs():
