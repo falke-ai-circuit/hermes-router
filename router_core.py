@@ -1031,6 +1031,16 @@ def _is_system_injected_turn(user_text: str) -> bool:
     except Exception:  # noqa: BLE001
         return False
 
+
+def _prompt_injection_flag(user_text: str):
+    """R13-1 (rider 13): exfiltration-style prompt-injection clause flag
+    (frames.flag_prompt_injection), import-isolated. Never raises."""
+    try:
+        from .frames import flag_prompt_injection as _fpi
+        return _fpi(user_text)
+    except Exception:  # noqa: BLE001 — observability gate must never crash
+        return None
+
 def dispatch(user_text: str, *, session_id: str, model: str = "",
              uncensored_matched: bool = False) -> RouteDecision:
     """SINGLE PRE classification. Order of authority:
@@ -1297,6 +1307,22 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             from hermes_router import _log_route as _lr
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_skip_system_injected",
+                                task_id=task_id)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
+                    elif _prompt_injection_flag(user_text):
+                        # R13-1 (rider 13): an exfiltration-style injection
+                        # clause bundled into the user turn is untrusted
+                        # noise, not ask content — the risk lexicon reads it
+                        # as risky ('delete', 'staging database') and bills
+                        # a consult (live: analyst C3 anchor_route_fired
+                        # reason=risk_r2 on the injection ask). Skip the
+                        # risk consult; the decision lane owns the declared
+                        # fork and eventsthe preserved/suppressed pair.
+                        try:
+                            from hermes_router import _log_route as _lr
+                            _lr("PRE", session_id=session_id,
+                                event_detail="risk_pre_skip_injection_clause",
                                 task_id=task_id)
                         except Exception:  # noqa: BLE001 — observability only
                             pass

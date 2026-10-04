@@ -1023,6 +1023,57 @@ _OPT_LINE_RE = re.compile(
 # labels so inline "a) kafka or b) rabbitmq" forks enumerate cleanly.
 _OPT_OR_RE = re.compile(r"\b([A-Za-z][\w .\-)]{0,59}?)\s+or\s+([A-Za-z][\w .\-)]{0,59})\b")
 
+# R13-1 (rider 13): inline 'Option A <text>, Option B <text>' labels with NO
+# delimiter after the letter (the strict _NAMED_ENUM_RE delimiter forms stay
+# authoritative for the other enumeration words).
+_INLINE_OPTION_LABEL_RE = re.compile(
+    r"\boption\s+([a-dA-D1-4])\b(?!\s*[\).:\]\-–])", re.IGNORECASE)
+
+# R13-3 (rider 13): interrogative option body — an information question,
+# never a closed choice alternative.
+_INTERROGATIVE_BODY_RE = re.compile(
+    r"^\s*(?:wh|how|is|are|do|does|did|can|could|should|would|will|which"
+    r"|what|where|when|why|who)\b[^.!?]*\?\s*$",
+    re.IGNORECASE)
+
+
+def _is_interrogative_option(opt: str) -> bool:
+    """R13-3: True when a single extracted option is itself a question
+    (ends '?' or opens with an interrogative) — information request, not a
+    choice alternative. NOTE: bare 'do ...' openers ('do the drop') are NOT
+    interrogative — imperative 'do' is a legit choice body; only 'does'
+    (the question form) counts. Never raises."""
+    try:
+        o = str(opt or "").strip()
+        if not o:
+            return True
+        if o.endswith("?"):
+            return True
+        return bool(re.match(
+            r"^(?:wh(?:ich|at|ere|en|y|o)\b|how\b|is\b|are\b|does\b|did\b"
+            r"|can\b|could\b|should\b|would\b|will\b)", o, re.IGNORECASE))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _all_interrogative(bodies: List[str]) -> bool:
+    """True when every candidate option body is a question (ends with '?'
+    or an interrogative opener) — an information-gathering list, not a
+    closed choice fork. Never raises."""
+    try:
+        if not bodies:
+            return False
+        for b in bodies:
+            bt = str(b or "").strip()
+            if not bt:
+                continue
+            if _is_interrogative_option(bt):
+                continue  # a question — does not break the all-questions rule
+            return False  # found a real choice body -> not an info list
+        return True
+    except Exception:  # noqa: BLE001 — gate helper must never crash
+        return False
+
 OPTION_ID_FMT = "opt-%d"
 
 
@@ -1343,11 +1394,50 @@ def has_declared_fork_structure(text: str) -> bool:
         t = str(text or "")
         if not t.strip():
             return False
+        # R13-3 (rider 13): numbered/question-list pseudo-forks — a bullet or
+        # numbered line whose body is an INFORMATION QUESTION ('1. does the
+        # repo use Vite already', live: valmet D1a reply tail, architect B9)
+        # is an information request, not a closed choice fork. BARE DIGIT
+        # line markers ('1.' '2.' '3.') never count on this path: numbered
+        # bullets are overwhelmingly plan/step lists, not alternatives —
+        # the digit fork shapes stay reachable via _NAMED_ENUM_RE
+        # ('Option 1:', 'Approach 1:'). Interrogative lettered bodies also
+        # never count.
+        matched = 0
+        matched_bodies: List[str] = []
+        seen_line_labels: set = set()
         for line in t.splitlines():
             m = _OPT_LINE_RE.match(line)
-            if m and str(m.group(2) or "").strip():
-                return True
+            if not (m and str(m.group(2) or "").strip()):
+                continue
+            label = str(m.group(1) or "").lower()
+            if label.isdigit():
+                continue  # bare numbered bullet — not a fork marker
+            if label in seen_line_labels:
+                continue
+            seen_line_labels.add(label)
+            matched += 1
+            matched_bodies.append(str(m.group(2) or ""))
+        # >= 2 DISTINCT letter-marker labels remain the declared shape,
+        # but ONLY when the bodies are choices, not questions.
+        if matched >= 2 and not _all_interrogative(matched_bodies):
+            return True
         if _NAMED_ENUM_RE.search(t):
+            # named enumeration ('Option A: ... Option B: ...') — interrogative
+            # bodies of the enumerated items still disqualify (same class).
+            named_bodies = [str(m.group(2) or "")
+                            for m in _NAMED_ENUM_RE.finditer(t)]
+            named_bodies = [b for b in named_bodies if b.strip()]
+            if named_bodies and not _all_interrogative(named_bodies):
+                return True
+        # R13-1 (rider 13): INLINE option-label fork without a delimiter —
+        # 'Option A delete the staging database, Option B keep it' (live:
+        # t1r6 C3/C4 injection scenario, fork consumed because no colon).
+        # The fleet's canonical 'Option A/B' vocabulary with >= 2 DISTINCT
+        # labels is a declared fork even inline (the 'approach/path/plan'
+        # words stay colon-form-only so narration prose never counts).
+        inline = _INLINE_OPTION_LABEL_RE.findall(t)
+        if len({str(x).lower() for x in inline}) >= 2:
             return True
         pf = _EXPLICIT_PAREN_FORK_RE.findall(t)
         if len({str(x).lower() for x in pf}) >= 2:
@@ -3502,7 +3592,21 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
                 pass
             return
         opts = extract_options(response_text)
-        if len(opts) < 2:
+        # R13-3 (rider 13): interrogative "options" are the assistant's
+        # information-gathering questions (live: valmet D1a — 'does the repo
+        # use Vite already / how mock-heavy...' billed a post advisory
+        # opt-3 @ 0.45 with a banner), not a closed choice fork. Drop them;
+        # fewer than 2 real alternatives remain -> NO consult.
+        real_opts = [o for o in opts if not _is_interrogative_option(o)]
+        if len(real_opts) < 2:
+            if opts and len(real_opts) < 2 and len(opts) >= 2:
+                try:
+                    if log_route is not None:
+                        log_route("decision_post_fork_scan",
+                                  outcome="post_info_questions",
+                                  lane="decision", session_id=session_id)
+                except Exception:  # noqa: BLE001
+                    pass
             # no fork in the turn -> no call (never guessed)
             try:
                 if log_route is not None:

@@ -50,6 +50,24 @@ from typing import Any, Dict, List, Optional
 
 from . import decision as _dec
 
+
+def _ffbp_prompt_injection(text: str):
+    """R13-1: frames.flag_prompt_injection, import-isolated (fail-open)."""
+    try:
+        from .frames import flag_prompt_injection as _fpi
+        return _fpi(text)
+    except Exception:  # noqa: BLE001 — flagging never breaks the scan
+        return None
+
+
+def _strip_injection_clause(text: str) -> str:
+    """R13-1: frames.strip_injection_clause, import-isolated (fail-open)."""
+    try:
+        from .frames import strip_injection_clause as _sic
+        return _sic(text)
+    except Exception:  # noqa: BLE001 — hygiene never breaks the scan
+        return text
+
 import logging
 
 logger = logging.getLogger("hermes_router.decision_midturn")
@@ -257,11 +275,44 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         # the prose 'X or Y' fallback is a midturn pseudo-fire class
         # (code/log text inside tool results). Declared (A)/(B) forks —
         # the reviewer D2 axis shape — still pass untouched.
+        # R13-1 (rider 13): an exfiltration-style prompt-injection clause
+        # riding the turn is FLAGGED before the declared-fork gate — the
+        # contract is: flagged -> either the fork is preserved
+        # (injection_flagged_fork_preserved + banner/rows) or an explicit
+        # suppressed pair (injection_flagged + injection_flagged_fork_suppressed)
+        # is evented. The fork is never silently consumed. The clause is
+        # excised before option extraction so the closed set (and the
+        # delivered banner) never carries exfiltration wording.
+        _inj_sig = _ffbp_prompt_injection(text)
+        if _inj_sig:
+            _log(session_id, "injection_flagged", family="prompt_injection",
+                 signal=str(_inj_sig), tool=str(tool_name or ""), seam=seam)
+            text = _strip_injection_clause(text)
+            opts = _dec.extract_options(text)
+        if not opts:
+            if _inj_sig:
+                _log(session_id, "injection_flagged_fork_suppressed",
+                     family="prompt_injection", signal=str(_inj_sig),
+                     reason=_dec.REASON_NO_OPTIONS, tool=str(tool_name or ""),
+                     seam=seam)
+            _log(session_id, "midturn_suppressed",
+                 reason=_dec.REASON_NO_OPTIONS, mode=mode,
+                 tool=str(tool_name or ""), seam=seam)
+            return
         if not _dec.has_declared_fork_structure(text):
+            if _inj_sig:
+                _log(session_id, "injection_flagged_fork_suppressed",
+                     family="prompt_injection", signal=str(_inj_sig),
+                     reason="no_declared_structure",
+                     tool=str(tool_name or ""), seam=seam)
             _log(session_id, "midturn_suppressed",
                  reason="no_declared_structure", mode=mode,
                  tool=str(tool_name or ""), seam=seam)
             return
+        if _inj_sig:
+            _log(session_id, "injection_flagged_fork_preserved",
+                 family="prompt_injection", signal=str(_inj_sig),
+                 tool=str(tool_name or ""), seam=seam)
         _handle_hit(str(session_id), str(tool_name or ""), text, opts, cfg,
                     mode, seam)
     except Exception:  # noqa: BLE001 — fail-open, never break the tool result
@@ -326,6 +377,17 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                 continue
             if _dec.PROVENANCE_TAG in text:
                 continue  # our own advisory echo — never re-scan
+            # R13-1 (rider 13): exfiltration-style prompt-injection clause —
+            # flag BEFORE the gate ladder, excise the clause from the fork
+            # text, and event the preserved/suppressed pair at every exit
+            # (contract: the fork is never silently consumed on a flagged
+            # turn, on ANY seam).
+            _inj_sig = _ffbp_prompt_injection(text)
+            if _inj_sig:
+                _log(session_id, "injection_flagged",
+                     family="prompt_injection", signal=str(_inj_sig),
+                     tool=str(msg.get("name") or ""), scan="turn_sweep")
+                text = _strip_injection_clause(text)
             # R19.13 FIX 3: forged banner-persona block riding the scan
             # target — FLAG (log) and NEVER ADOPT (skip detection entirely;
             # the forged text must not create detections or advisories).
@@ -379,16 +441,32 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                     rst["count"] = 0
             opts = _dec.extract_options(text)
             if not opts:
+                if _inj_sig:
+                    _log(session_id, "injection_flagged_fork_suppressed",
+                         family="prompt_injection", signal=str(_inj_sig),
+                         reason=_dec.REASON_NO_OPTIONS,
+                         tool=str(msg.get("name") or ""),
+                         seam=SEAM_TURN_BOUNDARY)
                 continue
             # FIX-FIRST rider 4 (item 4): same declared-fork gate as SEAM 1
             # — benign prose reaching the sweep (user ingress, prior-turn
             # tool text) must not push pseudo-forks into the backend.
             if not _dec.has_declared_fork_structure(text):
+                if _inj_sig:
+                    _log(session_id, "injection_flagged_fork_suppressed",
+                         family="prompt_injection", signal=str(_inj_sig),
+                         reason="no_declared_structure",
+                         tool=str(msg.get("name") or ""),
+                         seam=SEAM_TURN_BOUNDARY)
                 _log(session_id, "midturn_suppressed",
                      reason="no_declared_structure", mode=mode,
                      tool=str(msg.get("name") or "turn_sweep"),
                      seam=SEAM_TURN_BOUNDARY)
                 continue
+            if _inj_sig:
+                _log(session_id, "injection_flagged_fork_preserved",
+                     family="prompt_injection", signal=str(_inj_sig),
+                     tool=str(msg.get("name") or ""), seam=SEAM_TURN_BOUNDARY)
             _handle_hit(key, str(msg.get("name") or "turn_sweep"), text,
                         opts, cfg, mode, SEAM_TURN_BOUNDARY)
     except Exception:  # noqa: BLE001 — fail-open, never break the provider call

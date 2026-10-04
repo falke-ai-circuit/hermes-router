@@ -278,6 +278,41 @@ def stage2_classify(task_text: str) -> Optional[str]:
         return None
 
 
+# R13-2 (rider 13): benign BRIEF/EXPLAIN/COMPARE frame — narration asking
+# for information about a topic, possibly naming two options as content
+# ('tradeoffs of vitest vs jest', 'diff between kafka and rabbitmq'). The
+# ask VERB is briefing/explaining, never deciding. A decision ask
+# ('decide', 'pick', 'choose', 'should we') does NOT match the frame —
+# the closed-form ask verbs are excluded explicitly.
+_BENIGN_BRIEF_VERB_RE = re.compile(
+    r"\b(?:brief|briefing|explain|walk me through|give me (?:an? )?"
+    r"(?:overview| rundown|comparison|summary)|overview of|summar(?:y|ize)"
+    r"|compare|comparison of|difference between|tradeoffs? of|pros and cons)\b",
+    re.IGNORECASE)
+_BENIGN_BRIEF_DECIDE_RE = re.compile(
+    r"\b(?:decide|pick|choose|select|go with|sign off)\b"
+    r"|\bshould\s+(?:we|i|you)\b"
+    r"|\bdo\s+(?:we|i)\s+(?:go|ship|deploy|delete|run|use|adopt)\b",
+    re.IGNORECASE)
+
+
+def _benign_brief_frame(text: str) -> bool:
+    """R13-2 (rider 13): True when the ask is a briefing/explaining frame
+    (information request about a topic; may mention two options as
+    CONTENT) and carries no decision imperative. Gated BEFORE the
+    semantic stage so benign setup prose never bills a consult. Never
+    raises."""
+    try:
+        t = str(text or "")
+        if not t.strip():
+            return False
+        if _BENIGN_BRIEF_DECIDE_RE.search(t):
+            return False
+        return bool(_BENIGN_BRIEF_VERB_RE.search(t))
+    except Exception:  # noqa: BLE001 — gate must never crash dispatch
+        return False
+
+
 def classify(text: str, *, pre_lexicon: bool = True,
              semantic_stage2: bool = True) -> Tuple[str, Dict[str, Any]]:
     """Full PRE risk classification: L1 always (when pre_lexicon), L2 on
@@ -297,6 +332,18 @@ def classify(text: str, *, pre_lexicon: bool = True,
         if verdict in ("r2", "r3"):
             meta["stage"] = "stage1"
             return verdict, meta
+        if verdict == "hint" and _benign_brief_frame(text):
+            # R13-2 (rider 13): the R9-6 ask-shape gate must hold on benign
+            # setup prose — narration that merely mentions two options
+            # ('brief me on the tradeoffs of vitest vs jest, then we'll do
+            # a real decision at the end', live: valmet D1a billed FOUR
+            # consults incl. frontier) never escalates to the semantic
+            # stage. A hint on a benign-brief frame clears to NO-risk
+            # without stage2; the decision lane still owns any real fork
+            # on the turn. Never blocks a true risk ask (imperatives/
+            # question asks are not the brief frame).
+            meta["cleared"] = "benign_brief_frame"
+            return "none", meta
         if verdict == "hint" and semantic_stage2:
             s2 = stage2_classify(text)
             meta["stage2"] = s2
