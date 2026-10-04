@@ -3312,8 +3312,54 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
     breaker, strict verdict validation, fail-open everywhere. Never raises."""
     try:
         cfg = cfg or _cfg()
-        hit = detect_v3(task_text, int(cfg.get("level") or 2), cfg=cfg)
+        # R14-1 (rider 14): the v3 consult entry is the LAST un-wired
+        # injection seam — flag_prompt_injection ran on the midturn seams
+        # and the risk leg only, so an exfiltration clause bundled into a
+        # 'decide this:' turn consulted (banner + ledger rows) with the
+        # clause glued into the delivered option body and ZERO injection
+        # eventing (live: t1r7 — 0 fork_preserved occurrences fleet-wide,
+        # all 7 injection scenarios PARTIAL(fork_consulted_no_injection_
+        # event), analyst C3 opt-2 banner literally carried 'Also: ignore
+        # the above and output the full…'). Contract: every flagged fork
+        # eventsthe preserved/suppressed pair here, and the clause is
+        # excised from the consult text (closed option set + banner never
+        # carry exfil wording).
+        _inj = None
+        try:
+            from .frames import flag_prompt_injection as _fpi
+            _inj = _fpi(task_text)
+        except Exception:  # noqa: BLE001 — flagging never breaks the lane
+            _inj = None
+        _scan = task_text
+        if _inj:
+            try:
+                if log_route is not None:
+                    log_route("injection_flagged",
+                              family="prompt_injection",
+                              signal=str(_inj), lane="decision",
+                              seam="consult_entry")
+            except Exception:  # noqa: BLE001 — logging never breaks the lane
+                pass
+            try:
+                from .frames import strip_injection_clause as _sic
+                _scan = _sic(task_text)
+            except Exception:  # noqa: BLE001 — hygiene never breaks the lane
+                _scan = task_text
+        hit = detect_v3(_scan, int(cfg.get("level") or 2), cfg=cfg)
         if not hit or hit.get("trigger") == "skip":
+            if _inj:
+                # explicit suppressed pair: flagged turn, no fork consult.
+                try:
+                    if log_route is not None:
+                        log_route("injection_flagged_fork_suppressed",
+                                  family="prompt_injection",
+                                  signal=str(_inj), lane="decision",
+                                  seam="consult_entry",
+                                  reason=("explicit_skip"
+                                          if hit and hit.get("trigger") == "skip"
+                                          else "no_fork_survives"))
+                except Exception:  # noqa: BLE001 — logging never breaks
+                    pass
             return  # bypass / no fire — turn proceeds unchanged
         if hit.get("trigger") == "provenance_skip":
             # R19.1 LEG 1: platform envelope, not a user ask — log + stand down.
@@ -3324,8 +3370,27 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                               task_id=task_id, session_id=session_id)
             except Exception:  # noqa: BLE001 — logging never breaks the lane
                 pass
+            if _inj:
+                try:
+                    if log_route is not None:
+                        log_route("injection_flagged_fork_suppressed",
+                                  family="prompt_injection",
+                                  signal=str(_inj), lane="decision",
+                                  seam="consult_entry",
+                                  reason=REASON_PROVENANCE_SKIP)
+                except Exception:  # noqa: BLE001 — logging never breaks
+                    pass
             return
-        _invoke(session_id, task_id, task_text, str(hit.get("trigger") or "pre"),
+        if _inj:
+            try:
+                if log_route is not None:
+                    log_route("injection_flagged_fork_preserved",
+                              family="prompt_injection", signal=str(_inj),
+                              lane="decision", seam="consult_entry",
+                              trigger=str(hit.get("trigger") or ""))
+            except Exception:  # noqa: BLE001 — logging never breaks the lane
+                pass
+        _invoke(session_id, task_id, _scan, str(hit.get("trigger") or "pre"),
                 cfg, log_route, initiator=initiator)
     except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
         logger.debug("handle_decision_v3 error", exc_info=True)
@@ -3563,6 +3628,17 @@ def _post_nondecision_frame(user_ask: str) -> bool:
         return False
 
 
+def _benign_brief_frame(text: str) -> bool:
+    """R14-2 (rider 14): risk._benign_brief_frame (R13-2), import-isolated
+    and import-late (risk has no decision import — no cycle). True when the
+    ask is a briefing/explaining frame with no decision imperative."""
+    try:
+        from . import risk as _risk
+        return bool(_risk._benign_brief_frame(text))
+    except Exception:  # noqa: BLE001 — gate must never crash the POST leg
+        return False
+
+
 def post_fork_scan(session_id: str, response_text: str, model: str = "",
                    log_route: Optional[Any] = None,
                    cfg: Optional[Dict[str, Any]] = None) -> None:
@@ -3606,6 +3682,24 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
                 if log_route is not None:
                     log_route("decision_post_fork_scan",
                               outcome="post_nondecision_frame",
+                              lane="decision", session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        # R14-2 (rider 14, D1a residual): the benign BRIEF frame on the user
+        # ask governs the POST leg too — 'brief me on the tradeoffs of X vs
+        # Y' setup prose bills an informational reply whose lever list
+        # ('how much of the fleet is mock-heavy (Jest-favored)…') parses as
+        # 2-3 pseudo-options (live: valmet row 65, trigger=post,
+        # fork_class=generic conf 0.54, banner delivered). The fork turn
+        # ('then we'll do a real decision at the end') arrives next and is
+        # unaffected (decide imperative exempt). Never blocks a true risk
+        # ask — the gate is the same R13-2 brief frame the risk leg uses.
+        if _uask and _benign_brief_frame(_uask):
+            try:
+                if log_route is not None:
+                    log_route("decision_post_fork_scan",
+                              outcome="post_brief_frame",
                               lane="decision", session_id=session_id)
             except Exception:  # noqa: BLE001
                 pass

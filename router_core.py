@@ -1041,6 +1041,17 @@ def _prompt_injection_flag(user_text: str):
     except Exception:  # noqa: BLE001 — observability gate must never crash
         return None
 
+def _strip_injection_clause(text: str) -> str:
+    """R14-1 (rider 14): frames.strip_injection_clause, import-isolated —
+    remove the flagged clause sentence(s) so the closed option set and the
+    delivered banner never carry exfiltration wording. Fail-open: the text
+    is returned uncut on any doubt."""
+    try:
+        from .frames import strip_injection_clause as _sic
+        return _sic(text)
+    except Exception:  # noqa: BLE001 — hygiene must never crash dispatch
+        return text
+
 def dispatch(user_text: str, *, session_id: str, model: str = "",
              uncensored_matched: bool = False) -> RouteDecision:
     """SINGLE PRE classification. Order of authority:
@@ -1077,7 +1088,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
     # A manual 'decide this:' ask inside a complexity/risk turn fires BOTH
     # lanes: the decision consult dispatches ASYNC (parked advisory) and
     # the complexity/risk consult keeps its routed slot.
-    _manual_stack: Dict[str, Any] = {"hit": None}
+    _manual_stack: Dict[str, Any] = {"hit": None, "text": None}
 
     def _fire_decision_stack() -> None:
         """Fire the stashed manual decision consult async (parked-banner
@@ -1086,13 +1097,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         if _manual_stack.get("hit") is None:
             return
         _manual_stack["hit"] = None
+        # R14-1 (rider 14): the consult text is the INJECTION-STRIPPED scan
+        # text when the manual path flagged a clause (the closed option set
+        # and the delivered banner must never carry exfiltration wording).
+        _stack_text = str(_manual_stack.get("text") or user_text)
+        _manual_stack["text"] = None
         try:
             from . import decision as _dm
             from hermes_router import _log_route as _lr  # deferred - import cycle
 
             _dm.handle_decision_v3(
                 session_id=session_id, task_id=task_id,
-                task_text=user_text, model=str(model or ""),
+                task_text=_stack_text, model=str(model or ""),
                 log_route=_lr, initiator="user")
             try:
                 _lr("PRE", session_id=session_id,
@@ -1146,9 +1162,58 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 from . import decision as _dlane_m
 
                 _dcfg_m = _decision_cfg()
-                _mhit = _dlane_m.manual_line_hit(user_text, _dcfg_m)
-                if _mhit is None and _dlane_m and not _lane_enabled(
-                        LANE_DECISION):
+                # R14-1 (rider 14): the trusted manual consult path is the
+                # LAST injection un-wired seam — flag_prompt_injection ran
+                # on the midturn seams + the risk leg only, so an
+                # exfiltration clause bundled into a 'decide this:' turn
+                # consulted (banner + ledger rows) with the clause glued
+                # into the delivered option body and ZERO injection
+                # eventing (live: t1r7 C3/C4/C7/E1-E4 — 0 fork_preserved
+                # occurrences fleet-wide, all 7 injection scenarios
+                # PARTIAL(fork_consulted_no_injection_event)). Contract:
+                # flagged -> the preserved/suppressed event pair fires and
+                # the clause is excised from the consult text so the
+                # closed option set and the banner never carry exfil
+                # wording.
+                _inj_m = _prompt_injection_flag(user_text)
+                _scan_text_m = user_text
+                if _inj_m:
+                    try:
+                        from hermes_router import _log_route as _lrj
+                        _lrj("PRE", session_id=session_id,
+                             event_detail="injection_flagged",
+                             family="prompt_injection",
+                             signal=str(_inj_m), lane=LANE_DECISION,
+                             trigger="manual", seam="pre_dispatch",
+                             task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    _scan_text_m = _strip_injection_clause(user_text)
+                _mhit = _dlane_m.manual_line_hit(_scan_text_m, _dcfg_m)
+                if _mhit is None and _inj_m:
+                    # explicit suppressed pair: the fork died with the
+                    # clause cut (no fork consult on the flagged turn).
+                    try:
+                        from hermes_router import _log_route as _lrj
+                        _lrj("PRE", session_id=session_id,
+                             event_detail="injection_flagged_fork_suppressed",
+                             family="prompt_injection",
+                             signal=str(_inj_m), lane=LANE_DECISION,
+                             trigger="manual", seam="pre_dispatch",
+                             reason="no_fork_survives", task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                if _mhit is not None and _inj_m:
+                    try:
+                        from hermes_router import _log_route as _lrj
+                        _lrj("PRE", session_id=session_id,
+                             event_detail="injection_flagged_fork_preserved",
+                             family="prompt_injection",
+                             signal=str(_inj_m), lane=LANE_DECISION,
+                             trigger="manual", seam="pre_dispatch",
+                             task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
                     # R19.19 P1 (architect parity): a manual 'decide this:'
                     # ask on a gateway whose decision lane is DISABLED must
                     # be OBSERVED — silent-zero lane events are undiagnosable
@@ -1185,6 +1250,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # the stashed manual decision (plain-ask behavior
                     # unchanged).
                     _manual_stack["hit"] = _mdec
+                    _manual_stack["text"] = _scan_text_m
             except Exception:  # noqa: BLE001 — decision lane must never break dispatch
                 pass
 

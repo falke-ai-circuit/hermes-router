@@ -267,6 +267,42 @@ _EXFIL_OUTPUT_RE = re.compile(
     re.IGNORECASE)
 
 
+def strip_platform_metadata(text: str) -> str:
+    """R14-3 (rider 14): remove platform-injected metadata wrappers from a
+    scanned text BEFORE fork-option extraction. The midturn sweep scans the
+    full request message slice — and the platform composes user/tool message
+    content that rides RECALLED MEMORY CONTEXT inside <memory-context> spans
+    (agent/turn_context.py compose). That recalled context quotes PRIOR
+    conversation history verbatim — including old decision forks and
+    battery/finding prose carrying declared 'Option A/B' structures — and
+    the sweep read it as a fresh user fork (live: orchestrator B6 benign
+    essay turn billed a midturn consult fork_class=deploy conf 0.96, row
+    312, session api_1791107154_1279e7c6; state.db shows the turn carried
+    ONLY the 97-char essay, so the scanned fork text can only be injected
+    metadata). Also cuts bracketed system-note / recalled-context blocks
+    (same metadata family, different wrapper). Real user forks OUTSIDE the
+    wrappers are untouched. Fail-open: on any doubt the text is returned
+    uncut. Never raises."""
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return text
+        out = _MEMORY_CONTEXT_SPAN_RE.sub("", text)
+        out = _META_NOTE_SPAN_RE.sub("", out)
+        return out if out.strip() else ""
+    except Exception:  # noqa: BLE001 — hygiene only, never break the scan
+        return text
+
+
+_MEMORY_CONTEXT_SPAN_RE = re.compile(
+    r"<memory-context>[\s\S]*?</memory-context>", re.IGNORECASE)
+# Bracketed metadata paragraphs: the span starts at the bracket and runs to
+# the end of the paragraph (blank line) or end of text — whichever first.
+_META_NOTE_SPAN_RE = re.compile(
+    r"\[(?:System note|Recalled memory(?:[- ]graph)? context|"
+    r"Recalled memory graph context)\][^\n]*(?:\n(?!\n)[^\n]*)*",
+    re.IGNORECASE)
+
+
 def flag_prompt_injection(text: str) -> Optional[str]:
     """R13-1 (rider 13): True-signal when the text carries an exfiltration-
     style prompt-injection clause (disregard-instructions + dump-hidden-

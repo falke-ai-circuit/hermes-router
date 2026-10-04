@@ -60,6 +60,16 @@ def _ffbp_prompt_injection(text: str):
         return None
 
 
+def _strip_platform_metadata(text: str) -> str:
+    """R14-3 (rider 14): frames.strip_platform_metadata, import-isolated
+    (fail-open — on any doubt the text is returned uncut)."""
+    try:
+        from .frames import strip_platform_metadata as _spm
+        return _spm(text)
+    except Exception:  # noqa: BLE001 — hygiene never breaks the scan
+        return text
+
+
 def _strip_injection_clause(text: str) -> str:
     """R13-1: frames.strip_injection_clause, import-isolated (fail-open)."""
     try:
@@ -261,6 +271,11 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         text = _decode_content(text)  # v4.11.6: JSON-blob decode
         if not text:
             return
+        # R14-3 (rider 14): platform metadata (recalled memory context
+        # riding the message) is not ask prose — cut it before the scan.
+        text = _strip_platform_metadata(text)
+        if not text:
+            return
         if _dec.provenance_skip(text, cfg):
             return
         opts = _dec.extract_options(text)
@@ -373,6 +388,14 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             if not text:
                 continue
             text = _decode_content(text)  # v4.11.6: JSON-blob decode
+            if not text:
+                continue
+            # R14-3 (rider 14): platform metadata (recalled memory context
+            # riding the user/tool message) is not ask prose — cut it
+            # before the scan. Recalled context quotes prior conversation
+            # history verbatim (old forks, battery prose) and the sweep
+            # read it as a fresh user fork (orchestrator B6 pseudo-fire).
+            text = _strip_platform_metadata(text)
             if not text:
                 continue
             if _dec.PROVENANCE_TAG in text:
