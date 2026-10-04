@@ -197,7 +197,11 @@ def test_dispatch_manual_on_demand_gated(_reset, monkeypatch):
     _enable(monkeypatch)  # manual on
     d = router_core.dispatch("decide this: which one?", session_id=SID,
                              model="m")
-    assert d.lane == router_core.LANE_DECISION
+    # Rider 15 F4: an option-less manual decide is an OPEN question — it
+    # routes the FRONTIER consult (open-question form), never a Jev menu
+    # pick. The on_demand manual gate still governs: gated -> no F4 route.
+    assert d.reason == "manual_open_question_frontier"
+    assert d.mode == router_core.MODE_CONSULT
 
 
 # --------------------------------------------------------------------------

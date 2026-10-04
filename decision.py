@@ -152,7 +152,7 @@ _EMOTION_WORD_RE = re.compile(
 
 _FAMILIES: Dict[str, str] = {
     "manual_ask": (
-        r"\b(decide this|make the call|you decide|you choose|"
+        r"\b(decide (on )?this|make the call|you decide|you choose|"
         r"which (one )?should (we|i) (pick|choose|use|go with))\b"
     ),
     "which_approach": (
@@ -1558,7 +1558,16 @@ def _manual_trigger_in_text(text: str) -> bool:
     swallow; valmet D1b 'Now the real one, decide this: ...'). The trusted
     trigger is a colon-delimited explicit ask, so a midline
     'decide this:' (colon form only) is accepted — plain 'decide this'
-    prose mentions without the colon stay un-fired. Never raises."""
+    prose mentions without the colon stay un-fired. Never raises.
+
+    Rider 15 (R15-6 + F1): (a) the 'decide on this' family joins the
+    trusted trigger (line-start and colon forms — the T2c fixture routed
+    complexity/anchor because the trigger table only knew 'decide this');
+    (b) F1 edit-distance-1 typo tolerance on the trigger tokens — the
+    real-break fixtures 'thos' (ed-1 of 'this'), plus ed-1 verb drift,
+    fire the SAME lane as the canonical form. Line-start directive shapes
+    fire without a colon (R8-4 contract unchanged); midline fires on the
+    colon form only."""
     try:
         if not isinstance(text, str):
             return False
@@ -1566,12 +1575,82 @@ def _manual_trigger_in_text(text: str) -> bool:
             low = raw.strip().lower()
             if not low:
                 continue
-            if low.startswith(MANUAL_TRIGGER_PREFIX):
+            if _manual_trigger_tokens_match(low.split()):
                 return True
-            if re.search(r"(?<![\w-])decide this\s*:", low):
+            # Midline colon form: the words immediately before ':' must be
+            # the trigger family ('now the real one, decide this: ...').
+            # Both the last-2 and last-3 word windows are tried — the
+            # 3-word window covers 'decide on this', the 2-word window the
+            # plain family, and a longer narration tail must not defeat a
+            # real compound trigger.
+            head = low.split(":", 1)[0]
+            words = [w.strip(".,;!?\"'()") for w in head.split()]
+            words = [w for w in words if w]
+            if len(words) >= 2 and (_manual_trigger_tokens_match(words[-2:])
+                                    or _manual_trigger_tokens_match(words[-3:])):
                 return True
         return False
     except Exception:  # noqa: BLE001 — detection must never raise
+        return False
+
+
+def _ed_le1(a: str, b: str) -> bool:
+    """Rider 15 F1: True when the Damerau-Levenshtein distance between
+    a and b is <= 1 (substitution, insert, delete, OR adjacent
+    transposition — 'decied' is one transposition from 'decide' but
+    Levenshtein-2). Tiny strings only — trigger tokens. Never raises."""
+    try:
+        a, b = str(a or ""), str(b or "")
+        if abs(len(a) - len(b)) > 1:
+            return False
+        if a == b:
+            return True
+        # Restricted Damerau: adjacent transposition counts as 1.
+        if len(a) == len(b):
+            diffs = [i for i in range(len(a)) if a[i] != b[i]]
+            if len(diffs) == 2 and diffs[1] == diffs[0] + 1 \
+                    and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]]:
+                return True
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            cur = [i]
+            best = i
+            for j, cb in enumerate(b, 1):
+                cost = 0 if ca == cb else 1
+                v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                cur.append(v)
+                best = min(best, v)
+            if best > 1:
+                return False
+            prev = cur
+        return prev[-1] <= 1
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _manual_trigger_tokens_match(words: "list") -> bool:
+    """Rider 15 F1: tolerant trigger-token matcher. Canonical sequences:
+    ['decide','this'] and ['decide','on','this']. Each aligned token is
+    within edit distance 1 of its canonical ('decied this', 'decide
+    thos', 'decide on thos'). The composed F1 fixture shape 'thos this'
+    (object-typo reduplication — 'thos' ed-1 of 'this') matches the
+    2-word rule via the second clause. Never raises."""
+    try:
+        ws = [str(w or "").strip(".,;!?\"'()") for w in (words or [])]
+        ws = [w for w in ws if w]
+        if len(ws) == 2:
+            v, o = ws
+            if _ed_le1(v, "decide") and _ed_le1(o, "this"):
+                return True
+            # F1 fixture: 'thos this' — head is an ed-1 typo of 'this'
+            # (the object word reduplicated as the directive head).
+            if _ed_le1(v, "this") and _ed_le1(o, "this"):
+                return True
+            return False
+        if len(ws) == 3 and _ed_le1(ws[1], "on"):
+            return _ed_le1(ws[0], "decide") and _ed_le1(ws[2], "this")
+        return False
+    except Exception:  # noqa: BLE001
         return False
 
 

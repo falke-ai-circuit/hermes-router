@@ -1190,6 +1190,29 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         pass
                     _scan_text_m = _strip_injection_clause(user_text)
                 _mhit = _dlane_m.manual_line_hit(_scan_text_m, _dcfg_m)
+                if (_mhit is not None and not list(_mhit.get("options") or [])
+                        and not _dlane_m.has_declared_fork_structure(
+                            _scan_text_m)):
+                    # Rider 15 F4 (R15-8 pin option_less_decide): an
+                    # option-less 'decide (on) this: <open question>' is an
+                    # OPEN consult, not a Jev menu pick — the decision lane
+                    # needs a closed option set. Route the open question as
+                    # a FRONTIER consult (the anchored consult machinery:
+                    # banner + ledger + spend) and leave prose two-option
+                    # forms in the decision lane (post_fork_scan owns
+                    # those). Declared/explicit anchors unaffected.
+                    try:
+                        from hermes_router import _log_route as _lrf4
+                        _lrf4("PRE", session_id=session_id,
+                              event_detail="manual_open_question_frontier",
+                              lane=LANE_COMPLEXITY, mode=MODE_CONSULT,
+                              task_id=task_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    return _dec(LANE_COMPLEXITY, MODE_CONSULT,
+                                _primary_model(),
+                                "manual_open_question_frontier",
+                                orientation=False)
                 if _mhit is None and _inj_m:
                     # explicit suppressed pair: the fork died with the
                     # clause cut (no fork consult on the flagged turn).
@@ -1311,6 +1334,32 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                            stage1=str(meta.get("stage1")),
                            task_id=task_id, level=level)
                 route_complex = False
+            if (route_complex and override != "anchor"
+                    and _manual_stack.get("hit") is None):
+                # Rider 15 R15-7 (D1a residual): the benign-brief-frame gate
+                # (R13-2) gated the risk hint leg and the POST leg (R14-2) but
+                # NOT the PRE complexity/anchor consult — a benign setup brief
+                # ('brief me on vitest vs jest') that parses 2-3 pseudo-options
+                # still billed the anchor consult (live: valmet D1a, ledger row
+                # frontier_adversarial_parse_fail). The brief-frame gate now
+                # covers the anchor leg too: briefing/explaining frames with
+                # no decision imperative never consult. Decision imperatives
+                # are exempt inside the gate itself (decide-regex), so real
+                # forks and 'decide (on) this' asks are unaffected.
+                try:
+                    from . import decision as _dlane_bf
+
+                    if _dlane_bf._benign_brief_frame(user_text):
+                        from hermes_router import _log_route as _lrbf
+
+                        _lrbf("PRE", session_id=session_id,
+                              event_detail="complexity_pre_suppressed",
+                              reason="benign_brief_frame",
+                              stage1=str(meta.get("stage1")),
+                              task_id=task_id, level=level)
+                        route_complex = False
+                except Exception:  # noqa: BLE001 — gate must never break dispatch
+                    pass
             if route_complex:
                 # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no
                 # longer plans the task — it delivers an ORIENTATION BRIEF:

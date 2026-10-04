@@ -731,6 +731,62 @@ SUBSTANCE_FRAME_ASK_CAP = _dispatcher_post.SUBSTANCE_FRAME_ASK_CAP
 SUBSTANCE_FRAME_ASK_SUFFIX = _dispatcher_post.SUBSTANCE_FRAME_ASK_SUFFIX
 
 
+def _deliver_parked_at_edge(session_id: str, response_text: str,
+                            edge: str) -> "Optional[str]":
+    """Rider 15 R15-5: a parked verdict banner must attach to EVERY
+    delivery edge of the turn that billed it. The benign consume block
+    only runs on clean responses; refusal-shaped-but-technical turns
+    (flinch technical passthrough) and honored agent-line turns returned
+    None BEFORE consuming — the banner parked past its own turn and the
+    delivered body never carried it (live: analyst T2e 'consult luna-pro',
+    banner parked 15:26:47, flinch passthrough 15:29:42, consume at
+    15:29:55 on a later edge, parked_capture_failed rewrite_no_match).
+    Helper contract: consume the parked banner, append it to the delivery
+    text, capture the render, and return the merged text (or None for the
+    plain passthrough contract). Never raises; never breaks delivery."""
+    try:
+        from . import debug_banner as _dbd
+
+        _decision_wait_before_consume()
+        _parked = _dbd.consume_parked_banner(session_id)
+        _dbd.note_consumed_decision(session_id, _parked)
+        _log_route("POST", event_detail="anchor_banner_consume",
+                   parked=bool(_parked), edge=edge, session_id=session_id)
+        if not _parked:
+            return None
+        _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
+        _out = _merged if isinstance(_merged, str) and _merged else str(response_text or "")
+        if _parked.strip() not in _out:
+            # R19.19 P0 contract: a consumed banner that did not land is
+            # re-parked — never consumed-and-lost. Passthrough (no claim).
+            try:
+                _dbd.park_anchor_banner(session_id, _parked)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+        try:
+            _out2 = _dbd.settle_decision_banner(session_id, _out)
+            if isinstance(_out2, str) and _out2:
+                _out = _out2
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from . import render_inbox as _rie
+            from . import canonical as _ce
+
+            _rie.record_render("EDGE_BANNER", session_id,
+                               len(str(response_text or "")), _out)
+            if _ce.rewrite_persisted_turn(session_id,
+                                          str(response_text or ""), _out):
+                _log_route("POST", event_detail="banner_render_captured",
+                           edge=edge, session_id=session_id)
+        except Exception:  # noqa: BLE001 — capture never breaks delivery
+            logger.debug("edge banner capture error", exc_info=True)
+        return _out if _out != str(response_text or "") else None
+    except Exception:  # noqa: BLE001 — banner must never break delivery
+        return None
+
+
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
     """Detect agent refusals and replace with Venice-rendered content.
@@ -1101,7 +1157,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _log_route("POST", event_detail="agent_line_honored",
                                session_id=session_id, model=model,
                                refusal_chars=len(response_text))
-                    return None  # her own line — do NOT route
+                    # R15-5: honored agent-line turns are still delivery
+                    # edges — attach any parked verdict banner here.
+                    return _deliver_parked_at_edge(session_id,
+                                                   response_text,
+                                                   "agent_line")
                 # dv in (None, "model_flinch") -> fall through to routing
             except Exception:  # noqa: BLE001 — verdict gap must never block routing
                 logger.debug("doctrine verdict error", exc_info=True)
@@ -1131,7 +1191,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # No recovery path — can't feed Venice.
             _log_route("POST", event_detail="no_pending_route", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
-            return None
+            # R15-5: this is still a DELIVERY EDGE — a parked verdict banner
+            # (anchor consult billed this turn) must attach here, not
+            # survive past the turn. No banner -> plain passthrough.
+            return _deliver_parked_at_edge(session_id, response_text,
+                                           "no_pending_route")
 
         if fallback:
             # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
@@ -1243,7 +1307,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                pattern_groups=",".join(matches),
                                refusal_chars=len(response_text),
                                session_id=session_id)
-                    return None
+                    # R15-5: this IS a delivery edge — a parked verdict
+                    # banner (anchor consult billed this turn) must attach
+                    # here, not survive past the turn (live T2e class).
+                    return _deliver_parked_at_edge(session_id,
+                                                   response_text,
+                                                   "flinch_passthrough")
                 _log_route("POST", event_detail="flinch_reason_classified",
                            reason=_reason or "unknown", session_id=session_id)
             except Exception:  # noqa: BLE001 — gate gap must never block routing

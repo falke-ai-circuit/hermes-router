@@ -776,4 +776,17 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         return ("done", envelope)
     except Exception as exc:  # noqa: BLE001
         logger.debug("maybe_execute_anchored error: %s", exc)
+        # Rider 15 R15-5: a swallowed exception here is the silent-zero
+        # signature (claim staged=True, NO events, NO spend, NO banner —
+        # the four-leg dead turn). Never fail-open silently again: the
+        # failure is OBSERVABLE at route-log level before the pass-through.
+        try:
+            from hermes_router import _log_route as _lrx
+
+            _lrx("PRE", event_detail="anchor_execution_exception",
+                 fail_kind=str(exc)[:160],
+                 fail_type=type(exc).__name__,
+                 session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — observability never raises
+            pass
         return None

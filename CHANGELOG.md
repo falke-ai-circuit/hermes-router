@@ -1,4 +1,49 @@
-## 4.16.2 — 2026-10-03 (FIX-FIRST rider 12 — A2 residual: shadow-lane eating the manual decision fork + injection-flag fork preservation)
+## 4.16.6 — 2026-10-04 (FIX-FIRST rider 15 — T1#8 verdict: R15-5..R15-9 + F1/F4)
+
+Source: T1r8 verdict (/opt/data/tmp/t1r8-results-2026-10-04.md, raw
+t1r8-raw.jsonl + t1r8b-raw.jsonl). Targeted dev loop, full suite ONCE at
+the commit gate (1454 passed / 2 skipped / 1 deselected). No deploy, no
+bounces, no config writes.
+
+- R15-5 BANNERLESS DELIVERY on the new phrase forms — TWO root causes,
+  both fixed: (a) early-return delivery edges skipped the benign consume:
+  refusal-shaped-but-technical turns (flinch technical passthrough),
+  honored agent-line turns, and no-recovery no_pending_route turns all
+  returned None BEFORE the parked banner was consumed — the banner
+  parked past the turn that billed it and a LATER edge consumed it
+  (live: analyst T2e 'consult luna-pro', banner parked 15:26:47, flinch
+  passthrough 15:29:42, consume at 15:29:55 on a later edge +
+  parked_capture_failed rewrite_no_match). New helper
+  _deliver_parked_at_edge() (__init__.py): consume + append + render
+  capture + settle at EVERY delivery edge; wired at flinch_passthrough,
+  agent_line, and no_pending_route returns. (b) maybe_execute_anchored
+  swallowed exceptions with a debug-only log — the silent-zero signature
+  (claim staged=True, no events, no spend, no banner). The exception now
+  emits an anchor_execution_exception route event (fail-open preserved).
+- R15-6 'decide on this' joins the trusted manual trigger — line-start
+  and midline colon forms; manual_ask family regex extended.
+- R15-7 D1a residual (benign setup still billed 1 consult + anchor): the
+  benign-brief-frame gate now covers the PRE complexity/anchor consult
+  leg (complexity_pre_suppressed reason=benign_brief_frame) — briefing/
+  explaining frames with no decision imperative never consult; decision
+  imperatives stay exempt inside the gate.
+- R15-8/F4 option-less 'decide (on) this: <open question>' routes a
+  FRONTIER consult (manual_open_question_frontier), never a Jev menu
+  pick; option-bearing and declared-fork prose stays in the decision
+  lane. Gate key = extract_options empty AND no declared fork structure
+  (em-dash 'Option A —' forks stay decision-lane).
+- F1 'thos' fixture: Damerau-ed-1 tolerance on the manual trigger
+  tokens — adjacent transposition counts ('decied this'), per-token
+  ed-1 ('decide thos'), and the composed 'thos this' reduplication;
+  'fromtier'/'cosult' stay covered by the R15 LEG-2 fuzzy consult
+  family. Prose negatives (no colon, mid-sentence) unchanged.
+- R15-9 declared_phrase_family closed by the form fixes above (T2a
+  'ask your higher self' family recognized; typo fixtures route).
+- Pins: tests/test_rider15_fixes.py (18). Stale pins updated to the F4
+  contract: test_r19_decision_lane_v3::test_dispatch_manual_on_demand_gated
+  (option-less manual decide -> frontier consult under the on_demand
+  manual gate). Version pin 4.16.6.
+
 
 Sources: reviewer T1R5 battery (/opt/data/tmp/t1r5-results-2026-10-03.md,
 raw t1r5-raw.jsonl). No deploy, no gateway bounces, no profile config/.env
