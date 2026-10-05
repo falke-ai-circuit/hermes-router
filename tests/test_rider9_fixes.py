@@ -269,7 +269,7 @@ def test_r9_7_decision_banner_missing_row_is_loud():
 def test_r9_8_decision_frontier_cofire_both_deliver(r9_reset, monkeypatch):
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     v3_calls = []
     monkeypatch.setattr(decision, "handle_decision_v3",

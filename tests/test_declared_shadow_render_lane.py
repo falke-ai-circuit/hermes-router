@@ -57,7 +57,7 @@ def test_declared_shadow_renders_not_anchor_consult(_reset, monkeypatch):
     exist for this claim)."""
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     ask = "ask your higher self: what is one blind spot about this plan?"
     req = {"model": "minimax-m3",
@@ -84,7 +84,7 @@ def test_declared_higher_pre_still_stages_anchor(_reset, monkeypatch):
     behavior — the leg-8 shadow branch must not touch it)."""
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     ask = "ask your higher self: what is one blind spot about this plan?"
     req = {"model": "minimax-m3",

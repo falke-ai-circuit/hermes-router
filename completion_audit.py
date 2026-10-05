@@ -437,6 +437,25 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 ask = ""
         if not ask.strip():
             return None
+        # R16-2 (rider 16, D1a): the benign BRIEF frame now covers the ANCHOR
+        # leg — the completion-audit consult was the last ungated frontier
+        # arm: a benign setup/briefing ask ('brief me on the tradeoffs of X
+        # vs Y') billed frontier rows through the audit consult even with
+        # the PRE (R15-7) and POST fork-scan (R14-2) gates in place. A
+        # briefing frame with no decision imperative never consults here;
+        # decision imperatives are exempt inside the gate itself (the
+        # decide-regex), so real fork/closure audits are unaffected. Target
+        # ZERO frontier rows on benign setup turns. Fail-open: gate errors
+        # keep the legacy behavior.
+        try:
+            from .decision import _benign_brief_frame as _bf
+
+            if _bf(ask):
+                _log("audit_gate_skip", reason="benign_brief_frame",
+                     session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — gate is additive, fail-open
+            pass
         try:
             from . import router_core as _rc
 

@@ -107,7 +107,7 @@ def test_on_demand_matrix_shadow_lane_claims(monkeypatch, caps_tmp, model):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     _rr(lane="shadow")
     d = route_gate.claim_pass("work the problem", SID, model)
@@ -123,7 +123,7 @@ def test_on_demand_higher_post_claim_consumed_without_pre_envelope(monkeypatch, 
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     _rr(lane="higher-post")
     d = route_gate.claim_pass("work the problem", SID, "minimax-m3")
@@ -167,7 +167,7 @@ def test_consult_output_carries_higher_self_frame(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     captured = {}
 
-    def _fake_stage(sid, rd, role="primary"):
+    def _fake_stage(sid, rd, role="primary", **kw):
         captured["orientation"] = rd.orientation
         # The __init__ envelope builder composes the orientation marker via
         # frames.py (R8h: PROVENANCE-LOGGED metadata).
@@ -209,7 +209,7 @@ def test_double_declare_agent_then_user_via_middleware(monkeypatch, caps_tmp):
     the user phrase dedupes into the agent's claim (H7.5)."""
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary": {"route_id": rd.route_id})
+                        lambda sid, rd, role="primary", **kw: {"route_id": rd.route_id})
     # Leg 8: the declared shadow claim executes via the render chain — stub
     # the ladder so the test never egresses.
     monkeypatch.setattr(plugin, "_render_with_retry_ladder",

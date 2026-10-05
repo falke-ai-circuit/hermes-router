@@ -95,7 +95,7 @@ def test_shadow_claimed_turn_no_anchor_consult(monkeypatch):
 
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     handled = plugin._dispatcher_pre._dispatch_pass(
         "design a caching layer with tradeoffs", SID, "minimax-m3")
@@ -316,7 +316,7 @@ def test_fail_open_registry_unavailable(monkeypatch):
                             ts=0.0, override_used=None, route_id="r"))
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     plugin._dispatcher_pre._log_route = lambda *a, **k: None
     out = plugin._dispatcher_pre._dispatch_pass("ask", SID, "m")

@@ -125,7 +125,7 @@ def test_declare_then_gate_claims_and_stages_swap(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append((sid, rd)) or {"route_id": rd.route_id})
     dispatch_calls = []
     monkeypatch.setattr(plugin._dispatcher_pre, "_dispatch_pass",
@@ -150,7 +150,7 @@ def test_declared_shadow_stages_render_lane_not_anchor_swap(monkeypatch, caps_tm
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     _rr(lane="shadow")
     decision = route_gate.claim_pass("analyze this failure mode", SID, "minimax-m3")

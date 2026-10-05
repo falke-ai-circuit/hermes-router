@@ -185,7 +185,7 @@ def test_gate_claims_payload_form_via_middleware(monkeypatch):
 def test_gate_claims_anchor_this_payload_form(monkeypatch):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary": {"route_id": rd.route_id})
+                        lambda sid, rd, role="primary", **kw: {"route_id": rd.route_id})
     d = route_gate.claim_pass("anchor this: what is one blind spot?", SID, "minimax-m3")
     assert d.route is True and d.lane == "higher-pre"
     assert route_gate.peek_declared(SID) is None  # consumed (leg-3 semantics)

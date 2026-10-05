@@ -152,7 +152,7 @@ def test_no_intent_event_when_route_fires(_reset, monkeypatch):
     """A strict match routes — the near-miss signal must not also fire.
     The execution envelope lives in claim_pass (leg-5 seam lesson)."""
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         {"route_id": rd.route_id})
     text = "Ask shadow self to give her read"
     state.advance_turn_identity(SID, state.hash_text(text))

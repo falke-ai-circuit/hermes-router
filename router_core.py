@@ -27,6 +27,7 @@ pass-through. Never raises into middleware.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1600,11 +1601,18 @@ def _primary_model() -> Optional[str]:
 def stage_model_swap(session_id: str, decision: RouteDecision,
                      role: str = "primary",
                      model_override: Optional[Tuple[str, str]] = None,
-                     claim_source: str = ""
-                     ) -> Optional[Dict[str, Any]]:
+                     claim_source: str = "",
+                     payload: Any = None) -> Optional[Dict[str, Any]]:
     """Called by PRE after a COMPLEXITY decision: stage the per-call swap so
     the NEXT llm_execution middleware invocation (same session) performs the
     anchored call. Per-call, never persistent — the record is consumed once.
+
+    R16-2c (rider 16): the record carries a bounded deep COPY of the staged
+    request payload (`payload=`) so a POST delivery edge can recover an
+    ORPHANED swap (staged at PRE but never consumed by any llm_execution
+    pass of the turn — live: analyst A2 declared 'ask your higher self' ask,
+    staged=True 17:47:22, zero anchor events, 0 banners 0 rows). The copy is
+    dropped with the consume; capped by the 60s TTL. Never raises.
 
     R6 leg 1: model_override=(alias, model_id) builds the swap endpoint from
     the CONFIGURED primary's scheme/base/key with ONLY the model id swapped
@@ -1679,6 +1687,14 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
             "endpoint": ep,
             "staged_at": now,
         }
+        # R16-2c: bounded deep copy of the staged request payload for the
+        # POST-edge orphan recovery. Fail-open — a copy failure stages the
+        # swap WITHOUT the payload (recovery then fail-louds without retry).
+        if payload is not None:
+            try:
+                rec["payload"] = copy.deepcopy(payload)
+            except Exception:  # noqa: BLE001 — copy is best-effort
+                rec["payload"] = None
         with _PENDING_SWAP_LOCK:
             _PENDING_SWAP[session_id or ""] = rec
             _SWAP_DONE[key] = now

@@ -64,6 +64,10 @@ _lock = threading.Lock()
 # (session_id, original_refusal_hash) -> {turn_marker, "" for reconcile commits}
 _seen_refusal: Dict[Tuple[str, str], Set[str]] = {}
 _seen_content: Set[Tuple[str, str]] = set()  # (session_id, content_hash)
+# R16-2b (rider 16): session -> the LAST text this router successfully
+# rewrote into the persisted transcript (cascade anchor for multi-banner
+# turns — see rewrite_persisted_turn). In-process, best-effort only.
+_LAST_REWRITE: Dict[str, str] = {}
 _loaded = False
 
 
@@ -348,7 +352,19 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
     persisted transcript (reviewer probes api_1790976140_acd77605 /
     api_1790976260_827dbf1b: 0-char delivered bodies). The match is still
     scoped to the session's newest assistant row and only fires when a
-    parked banner is actually delivered over it."""
+    parked banner is actually delivered over it.
+
+    R16-2b (rider 16): CASCADE fallback for multi-banner turns. A second
+    parked delivery on the SAME turn captured rewrite_no_match: the first
+    rewrite already replaced the row's content with the first delivered
+    text, so the second banner's exact-match on the original response text
+    can never hit again — and when the row-presence discriminator also
+    failed, the banner was consumed-and-lost (live: valmet D1b compound
+    fork, rows billed, 0 banners). Fallback: when the exact match misses,
+    the newest assistant row whose content equals the LAST text this
+    session successfully rewrote (tracked below) is matched instead — the
+    cascade continues the same substitution chain, still scoped to rows
+    this router itself produced. Never matches arbitrary agent text."""
     if not session_id or not delivered_text:
         return False
     if not refusal_text and not allow_empty_match:
@@ -370,6 +386,22 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
                     "            ORDER BY id DESC LIMIT 1)",
                     (str(delivered_text), str(session_id), str(refusal_text)),
                 )
+                # R16-2b cascade: exact match missed — try the last text
+                # this router delivered for this session (the previous
+                # rewrite's output). Guarded to content this router itself
+                # wrote, never an arbitrary row.
+                if not cur.rowcount:
+                    _last = _LAST_REWRITE.get(str(session_id) or "")
+                    if _last:
+                        cur = conn.execute(
+                            "UPDATE messages SET content = ?, api_content = NULL"
+                            " WHERE id = (SELECT id FROM messages"
+                            "            WHERE session_id = ? AND role = 'assistant'"
+                            "              AND content = ?"
+                            "            ORDER BY id DESC LIMIT 1)",
+                            (str(delivered_text), str(session_id),
+                             str(_last)),
+                        )
             else:
                 cur = conn.execute(
                     "UPDATE messages SET content = ?, api_content = NULL"
@@ -380,7 +412,10 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
                     (str(delivered_text), str(session_id)),
                 )
             conn.commit()
-            return bool(cur.rowcount)
+            ok = bool(cur.rowcount)
+            if ok:
+                _LAST_REWRITE[str(session_id) or ""] = str(delivered_text)
+            return ok
         finally:
             conn.close()
     except Exception as exc:  # noqa: BLE001 — must never break the hook
@@ -399,4 +434,5 @@ def clear_for_tests() -> None:
     with _lock:
         _seen_refusal.clear()
         _seen_content.clear()
+        _LAST_REWRITE.clear()
         _loaded = False

@@ -107,7 +107,7 @@ def test_uncensored_directive_executes_shadow_render(_reset, monkeypatch):
     render branch (leg-8 machinery), NOT an anchor consult."""
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     monkeypatch.setattr(plugin, "_render_with_retry_ladder",
                         lambda c, m, p, s: ("LEG12 RENDER", 0))
@@ -185,7 +185,7 @@ def test_reminder_not_fired_on_quoted_line(_reset):
 def test_reminder_not_fired_when_route_fires(_reset, monkeypatch):
     """A strict directive routes — the advisory reminder must NOT also fire."""
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         {"route_id": rd.route_id})
     monkeypatch.setattr(plugin, "_render_with_retry_ladder",
                         lambda c, m, p, s: ("LEG12 RENDER", 0))

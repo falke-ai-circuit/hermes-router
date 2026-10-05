@@ -87,7 +87,7 @@ def test_declared_user_stamps_user_tag(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     d = route_gate.claim_pass("ask your higher self: what is one blind spot?",
                               SID, "minimax-m3")
@@ -100,7 +100,7 @@ def test_declared_agent_stamps_agent_tag(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     _rr(lane="shadow")
     d = route_gate.claim_pass("work the problem", SID, "minimax-m3")
@@ -137,7 +137,7 @@ def test_anchor_this_user_phrase_tags_user(monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     d = route_gate.claim_pass("anchor this: what is one blind spot?", SID,
                               "minimax-m3")
@@ -157,7 +157,7 @@ def test_usage_ledger_record_carries_resolved_initiator(tmp_path, monkeypatch,
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     route_gate.claim_pass("ask your higher self: blind spots?", SID, "minimax-m3")
     task_id = staged[0].task_id
@@ -178,7 +178,7 @@ def test_declared_agent_bills_agent_tag(tmp_path, monkeypatch, caps_tmp):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     staged = []
     monkeypatch.setattr(router_core, "stage_model_swap",
-                        lambda sid, rd, role="primary":
+                        lambda sid, rd, role="primary", **kw:
                         staged.append(rd) or {"route_id": rd.route_id})
     _rr(lane="higher-pre")
     route_gate.claim_pass("work the problem", SID, "minimax-m3")

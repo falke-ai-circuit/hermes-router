@@ -469,6 +469,178 @@ def bounded_replay(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         return api_kwargs
 
 
+# R16-4 (rider 16): bounded same-turn anchor retry registry. In-flight
+# retry workers register here so a POST delivery edge can wait bounded
+# for the verdict banner to park before consuming (mirror of the
+# decision lane's post_worker_wait contract). Never raises.
+_ANCHOR_RETRY_LOCK = threading.Lock()
+_ANCHOR_RETRIES: set = set()
+_ANCHOR_RETRY_MAX_CONCURRENT = 2
+ANCHOR_RETRY_TIMEOUT_S = 600  # extended budget: 2x the 300s socket timeout
+
+
+def pending_anchor_retries() -> int:
+    try:
+        with _ANCHOR_RETRY_LOCK:
+            return len(_ANCHOR_RETRIES)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def wait_for_anchor_retries(timeout_s: float = 20.0) -> int:
+    """Bounded wait for in-flight anchor retry workers to park their
+    verdict banner BEFORE a POST delivery edge consumes the parked slot.
+    Returns the wait actually spent (seconds, rounded). Never raises."""
+    try:
+        import time as _t
+
+        deadline = _t.time() + max(0.0, float(timeout_s or 0.0))
+        spent = 0.0
+        while _t.time() < deadline:
+            if pending_anchor_retries() <= 0:
+                return int(round(spent))
+            _t.sleep(0.2)
+            spent = min(deadline - _t.time() if deadline > _t.time()
+                        else 0.0, spent + 0.2) or spent
+        return int(round(float(timeout_s or 0.0)))
+    except Exception:  # noqa: BLE001 — wait must never break delivery
+        return 0
+
+
+def retry_anchored_async(session_id: str, rec: Dict[str, Any],
+                         api_kwargs: Dict[str, Any], ep: Any, *,
+                         base_timeout: int = 300) -> None:
+    """R16-4 (rider 16): schedule ONE bounded retry of a failed/timed-out
+    anchored consult. The retry runs off the turn path (daemon thread,
+    semaphored) with an extended socket timeout (2x base — the first probe's
+    >300s latency is provider-side; the code side must still land the
+    verdict). On success: tokens + frontier_consult ledger row (same R9-5
+    contract as the inline success arm) and the verdict PARKS through the
+    standard banner machinery, so the earliest delivery edge delivers it.
+    On second failure: fail-loud banner (anchored_call_failed) — never a
+    silent orphan. Never raises; never blocks the caller."""
+    try:
+        with _ANCHOR_RETRY_LOCK:
+            if len(_ANCHOR_RETRIES) >= _ANCHOR_RETRY_MAX_CONCURRENT:
+                logger.info("anchor_retry_skipped reason=cap_exhausted "
+                            "in_flight=%d", len(_ANCHOR_RETRIES))
+                return
+            _ANCHOR_RETRIES.add(session_id or "")
+        task_id = str((rec or {}).get("task_id") or "")
+        route_id = str((rec or {}).get("route_id") or "")
+
+        def _log(event: str, **fields: Any) -> None:
+            try:
+                import hermes_router as _hr
+
+                _hr._log_route("PRE", event_detail=event,
+                               session_id=str(session_id or ""), **fields)
+            except Exception:  # noqa: BLE001 — logging never raises
+                pass
+
+        def _worker() -> None:
+            try:
+                _log("anchor_retry_started", task_id=task_id,
+                     timeout_s=ANCHOR_RETRY_TIMEOUT_S)
+                content, cost, pt, ct = anchored_call(
+                    ep, bounded_replay(api_kwargs),
+                    timeout=ANCHOR_RETRY_TIMEOUT_S)
+                if not content:
+                    # second failure — fail loud, never silent
+                    _log("anchor_retry_failed", task_id=task_id,
+                         reason="anchored_call_failed")
+                    try:
+                        from . import debug_banner as _dbd
+
+                        if _dbd.debug_banner_enabled():
+                            _fb = _dbd.format_banner(
+                                lane="anchor", trigger="consult_failed",
+                                model=str(getattr(ep, "model", "") or "unknown"),
+                                endpoint="", tokens_in=0, tokens_out=0,
+                                est_cost=0.0, latency_s=0.0, retries=1,
+                                task_id=task_id, session_id=str(session_id or ""),
+                                route_id=route_id)
+                            _fb = ((_fb or "").rstrip().removesuffix("·").rstrip()
+                                   + " | anchored_call_failed (retry exhausted) ·")
+                            if _fb:
+                                _dbd.park_anchor_banner(
+                                    str(session_id or ""), _fb, task_id=task_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+                # SUCCESS: mirror the inline arm's obligations (R9-5 ledger +
+                # tokens tap) and park the verdict banner.
+                try:
+                    from .decision import ledger_write as _lw
+
+                    _lw({"session_id": str(session_id or ""),
+                         "task_id": task_id, "trigger": "frontier_consult",
+                         "fork_class": "frontier_consult",
+                         "model": str(getattr(ep, "model", "") or ""),
+                         "choice": "",
+                         "verdict_json": str(content or "")[:2000],
+                         "outcome": "completed"})
+                except Exception:  # noqa: BLE001 — ledger never breaks the lane
+                    pass
+                try:
+                    from . import usage_ledger as _ul
+
+                    if pt is not None or ct is not None:
+                        real_cost = cost if cost is not None else 0.0
+                        _ul.record_tokens(
+                            "anchor", str(getattr(ep, "model", "") or ""),
+                            str(session_id or ""), pt, ct, real_cost,
+                            "consult", task_id=task_id)
+                except Exception:  # noqa: BLE001 — observability only
+                    pass
+                try:
+                    from . import debug_banner as _dbd2
+
+                    if _dbd2.debug_banner_enabled():
+                        _ti, _to, _tc = 0, 0, 0.0
+                        _vb = _dbd2.format_banner(
+                            lane="frontier-anchor", trigger="consult_retry",
+                            model=str(getattr(ep, "model", "") or ""),
+                            endpoint="", tokens_in=_ti, tokens_out=_to,
+                            est_cost=_tc, latency_s=0.0, retries=1,
+                            task_id=task_id, session_id=str(session_id or ""),
+                            route_id=route_id)
+                        _vb = ((_vb or "").rstrip().removesuffix("·").rstrip()
+                               + " | verdict delivered ·\n\n"
+                               + str(content or "")[:2000])
+                        if _vb:
+                            _dbd2.park_anchor_banner(str(session_id or ""),
+                                                     _vb, task_id=task_id)
+                        _log("anchor_retry_delivered", task_id=task_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001 — worker must never crash the lane
+                logger.debug("anchor retry worker error", exc_info=True)
+            finally:
+                try:
+                    with _ANCHOR_RETRY_LOCK:
+                        _ANCHOR_RETRIES.discard(session_id or "")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception:  # noqa: BLE001 — scheduling must never break the turn
+        logger.debug("anchor retry schedule error", exc_info=True)
+        try:
+            with _ANCHOR_RETRY_LOCK:
+                _ANCHOR_RETRIES.discard(session_id or "")
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# Retired name (caller sites keep a stable entry point):
+def _retry_anchored_async(session_id: str, rec: Dict[str, Any],
+                          api_kwargs: Dict[str, Any], ep: Any, *,
+                          base_timeout: int = 300) -> None:
+    retry_anchored_async(session_id, rec, api_kwargs, ep,
+                         base_timeout=base_timeout)
+
+
 def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                            ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """The llm_execution middleware entry point for the complexity lane.
@@ -636,6 +808,22 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 pass
         content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
         if content is None:
+            # R16-4 (rider 16): anchored consult timed out / failed. The old
+            # path just returned None — the flash call passed through and the
+            # agent saw only the staged/verdict-pending state FOREVER (live:
+            # analyst luna-pro probe, first probe timed out >300s, the
+            # reprobe delivered only 'staged / verdict pending', decision
+            # ledger row 153 outcome=completed with an empty verdict on the
+            # SUCCESS arm but nothing when the call itself died). A long
+            # frontier generation is infra-side (provider latency beyond the
+            # socket timeout); the CODE side must not stop at the drop: a
+            # bounded same-turn retry worker re-enters the anchor with an
+            # extended timeout, and its verdict parks through the standard
+            # banner machinery the moment it lands (earliest delivery edge
+            # consumes it — same-turn when it lands inside the POST wait
+            # window, otherwise the next edge; never a silent orphan).
+            _retry_anchored_async(session_id, rec, api_kwargs, ep,
+                                  base_timeout=300)
             return None
         # R19.13 B+ 5b/5e: parse the adversarial block from the PRE verdict
         # (nullable, fail-open) and write the p_failure ledger row for

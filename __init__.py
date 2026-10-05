@@ -215,6 +215,18 @@ def _decision_wait_before_consume() -> None:
         _wait = float(_dcfg.get("post_worker_wait", 20) or 0)
         if _wait > 0:
             _dw.wait_for_workers(_wait)
+        # R16-4 (rider 16): the anchor retry worker (timed-out consult
+        # re-entered with an extended budget) parks the verdict banner the
+        # moment it lands — a POST edge must wait bounded for it too, or the
+        # same-turn delivery window closes before the verdict parks (live:
+        # analyst luna-pro first probe >300s, 'staged / verdict pending' with
+        # no verdict on any same-turn edge).
+        try:
+            from . import anchor_exec as _ax
+
+            _ax.wait_for_anchor_retries(_wait)
+        except Exception:  # noqa: BLE001 — wait must never break delivery
+            pass
     except Exception:  # noqa: BLE001 — wait must never break delivery
         pass
 
@@ -787,6 +799,42 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
         return None
 
 
+def _recover_orphan_anchor_swap(session_id: str) -> None:
+    """R16-2c (rider 16): POST-edge orphan recovery. A staged anchor swap
+    that is STILL pending when a delivery edge runs means no llm_execution
+    pass of the turn ever consumed it (hook seam miss — live: analyst A2
+    declared 'ask your higher self' ask staged at 17:47:22, zero anchor
+    events, 0 banners 0 rows). Consume the orphan and re-enter the anchor
+    with the staged payload copy through the R16-4 bounded retry worker:
+    the consult bills, ledgers, and its verdict parks for the earliest
+    delivery edge — never silently orphaned again. Never raises."""
+    try:
+        if not session_id:
+            return
+        from . import anchor_exec as _ax
+        from . import router_core as _rc
+
+        rec = _rc.pending_model_swap(session_id)
+        if not rec:
+            return
+        _payload = rec.get("payload")
+        _ep = rec.get("endpoint")
+        if not _payload or _ep is None:
+            _log_route("POST", event_detail="anchor_orphan_unrecoverable",
+                       reason="no_payload" if not _payload else "no_endpoint",
+                       task_id=str(rec.get("task_id") or ""),
+                       session_id=session_id)
+            return
+        _log_route("POST", event_detail="anchor_orphan_recovered",
+                   task_id=str(rec.get("task_id") or ""),
+                   route_id=str(rec.get("route_id") or ""),
+                   session_id=session_id)
+        _ax.retry_anchored_async(session_id, rec, copy.deepcopy(_payload),
+                                 _ep, base_timeout=300)
+    except Exception:  # noqa: BLE001 — recovery must never break delivery
+        logger.debug("orphan anchor swap recovery error", exc_info=True)
+
+
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
     """Detect agent refusals and replace with Venice-rendered content.
@@ -855,6 +903,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 logger.debug("empty-body parked-banner delivery error",
                              exc_info=True)
             return None
+
+        # R16-2c (rider 16): orphan recovery runs BEFORE any delivery branch
+        # of this edge — an unconsumed staged swap at transform time means
+        # no llm_execution pass of the turn ever executed the consult.
+        try:
+            _recover_orphan_anchor_swap(session_id)
+        except Exception:  # noqa: BLE001 — recovery must never break delivery
+            pass
 
         # R11 anti-bypass audit (POST turn close): provider-direct tool
         # calls this turn with no route -> ONE content-free
@@ -1571,18 +1627,52 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 router_core.record_anchor_backoff_failure(
                     session_id, str(rec.get("task_id") or ""),
                     reason="anchored_call_failed")
-            # v3.6 P0.2: provider-failure tap (anchor provider failed) +
-            # P0.5 route_skipped enrichment (fail_kind + finish_reason).
-            _tap_provider_failure(session_id, str((rec or {}).get("endpoint", {}).get("model", "")
-                                                  if rec else ""), "anchored_call_failed",
+            # v3.6 P0.2: provider-failure tap (anchor provider failed) + P0.5
+            # route_skipped enrichment (fail_kind + finish_reason).
+            # R16-1 (rider 16, T1r9 R9-1): rec['endpoint'] is an
+            # AnchorEndpoint OBJECT, not a dict — the old `.get("model")`
+            # here raised AttributeError mid-branch and the outer handler
+            # swallowed it: route_skipped NEVER reached the route log and
+            # the turn delivered bannerless with zero events (live: analyst
+            # 5a/5b/R15_6 turns, agent.log anchor_route_failed 404 only).
+            # getattr form + fail-loud parked banner below.
+            _fail_model = str(getattr(getattr(rec or {}, "endpoint", None),
+                                      "model", "") or "")
+            _tap_provider_failure(session_id, _fail_model,
+                                  "anchored_call_failed",
                                   fail_kind="anchor_5xx_or_transport", finish_reason="none")
             _log_route("PRE", event_detail="route_skipped",
                        lane=router_core.LANE_COMPLEXITY,
                        reason="anchored_call_failed" if rec else "no_swap",
                        fail_kind="anchored_call_failed" if rec else "no_swap",
                        finish_reason="none",
+                       model=_fail_model,
                        route_id=rec.get("route_id") if rec else None,
                        session_id=session_id)
+            # R16-1 (rider 16): fail-loud delivery — an anchored consult
+            # that billed nothing but failed must never deliver a silently
+            # bannerless body. Park a visible failure banner (same park/
+            # consume machinery as success banners) so the delivered body
+            # carries the failure same-turn. Fail-open, never breaks the
+            # flash passthrough.
+            try:
+                from . import debug_banner as _fdb
+                if _fdb.debug_banner_enabled() and rec:
+                    _fail_banner = _fdb.format_banner(
+                        lane="anchor", trigger="consult_failed",
+                        model=_fail_model or "unknown",
+                        endpoint="", tokens_in=0, tokens_out=0,
+                        est_cost=0.0, latency_s=0.0, retries=0,
+                        task_id=str(rec.get("task_id") or ""),
+                        session_id=session_id)
+                    _fail_banner = ((_fail_banner or "").rstrip()
+                                    .removesuffix("·").rstrip()
+                                    + " | anchored_call_failed ·")
+                    if _fail_banner:
+                        _fdb.park_anchor_banner(session_id, _fail_banner,
+                                                task_id=str(rec.get("task_id") or ""))
+            except Exception:  # noqa: BLE001 — banner never breaks the lane
+                pass
             try:
                 router_tools.count("route_skipped")
                 router_tools.note_skip_reason("anchored_call_failed" if rec else "no_swap")

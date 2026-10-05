@@ -1960,9 +1960,11 @@ def claim_pass(content: str, session_id: str, model: str,
                 if _override:
                     _staged = _rc.stage_model_swap(
                         session_id, _rd, model_override=_override,
-                        claim_source=str(decision.source or ""))
+                        claim_source=str(decision.source or ""),
+                        payload=request)
                 else:
-                    _staged = _rc.stage_model_swap(session_id, _rd)
+                    _staged = _rc.stage_model_swap(session_id, _rd,
+                                                   payload=request)
                 if _staged is None:
                     # R10-6 (rider 10): staging SILENTLY no-opped (return
                     # None — chain empty / dedupe / backoff). Marking the
