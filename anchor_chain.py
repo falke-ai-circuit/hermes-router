@@ -292,24 +292,12 @@ def _resolve_with_source(name: str,
             if norm and len(norm) >= 4 and \
                     (norm in alias_norm or alias_norm in norm):
                 return (alias, model_id, "alias")
-        # 3. the configured primary model id itself (explicit primary ask)
-        chain = load_anchor_chain()
-        primary = str(chain.primary.model if chain.primary is not None else "")
-        if primary and len(norm) >= 4:
-            p_low = primary.lower()
-            if norm in p_low or p_low in norm:
-                return (primary, primary, "primary")
-        # 4. R10/R10b: FINAL fallback — provider CATALOG match, scoped by
-        #    LANE (Goran 09-15: 'consult frontier using fable' must match
-        #    nous's catalog — 'anthropic/claude-fable-5.1' — NEVER venice's
-        #    bare 'claude-fable-5'; uncensored asks never match nous ids).
-        #    Same normalization, same >=4-char FP guard, same bidirectional
-        #    substring rule as steps 1-3. Deterministic tiebreak among
-        #    multiple lane-catalog matches: (a) id whose provider host
-        #    matches the lane's PRIMARY endpoint host, then (b) LONGEST
-        #    match ('fable 5.1' beats 'fable 5'), then (c) provider-prefixed
-        #    id over bare id. Fail-open to None on fetch failure (no
-        #    override — primary is used).
+        # Rider 17 R16-1: the CATALOG step now PRECEDES the primary step.
+        # The configured primary can itself be a bare alias-like id
+        # ('nous://fable') that the provider 404s — a 'fable' ask must hit
+        # the lane catalog ('anthropic/claude-fable-5.1'), never the bare
+        # primary id. Catalog fail-open to None -> primary is used (same
+        # fail-open contract as before).
         if len(norm) >= 4:
             primary_host = ""
             try:
@@ -337,6 +325,15 @@ def _resolve_with_source(name: str,
                              reverse=True)
                 best = matches[0][0]
                 return (best, best, "catalog")
+        # 4. the configured primary model id itself (explicit primary ask;
+        #    kept AFTER the catalog so a bare alias-like primary never
+        #    shadows a concrete catalog id — rider 17 R16-1).
+        chain = load_anchor_chain()
+        primary = str(chain.primary.model if chain.primary is not None else "")
+        if primary and len(norm) >= 4:
+            p_low = primary.lower()
+            if norm in p_low or p_low in norm:
+                return (primary, primary, "primary")
         return None
     except Exception:  # noqa: BLE001
         return None

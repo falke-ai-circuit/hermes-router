@@ -1678,6 +1678,27 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                 ep = anchor_chain.override_endpoint(ep, model_override[1])
         except Exception:  # noqa: BLE001 — override is best-effort
             pass
+        # Rider 17 R16-1: a consult must run a REAL provider model id, never
+        # the bare alias-like token the configured primary may itself be
+        # ('nous://fable' -> provider 404 "Model 'fable' not found"). When
+        # the lane catalog resolves the target to a CONCRETE id different
+        # from the endpoint model, upgrade the endpoint in-memory (config is
+        # never written). Aliases and explicit overrides are untouched.
+        try:
+            if not model_override:
+                _lane_scope = ("uncensored"
+                               if str(getattr(decision, "lane", "")) ==
+                               LANE_UNCENSORED else "frontier")
+                _tgt = (str(getattr(decision, "model_target", "") or "").strip()
+                        or str(ep.model or "").strip())
+                if _tgt:
+                    _resolved = anchor_chain.resolve_model_alias(_tgt,
+                                                                 _lane_scope)
+                    if _resolved and str(_resolved[1]).strip() \
+                            and str(_resolved[1]).strip() != str(ep.model or "").strip():
+                        ep = anchor_chain.override_endpoint(ep, _resolved[1])
+        except Exception:  # noqa: BLE001 — resolution is best-effort
+            pass
         rec = {
             "route_id": decision.route_id,
             "task_id": decision.task_id,

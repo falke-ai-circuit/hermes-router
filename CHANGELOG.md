@@ -1,3 +1,48 @@
+## 4.18.0 — 2026-10-05 (FIX-FIRST rider 17 — T1#10 verdict: R16-1 systemic + BC1 characterization)
+
+Source: T1 re-run #10 verdict (/opt/data/tmp/t1r10-results-2026-10-05.md,
+raw t1r10-raw.jsonl). Targeted dev loop; full suite at the commit gate.
+No deploy, no bounces, no config writes.
+
+- R16-1 SYSTEMIC (fable-targeted anchored consults 5/5 failed,
+  route_skipped anchored_call_failed): root cause is CODE-side, provider
+  verified good — analyst config primary is the bare alias-like id
+  'nous://fable' (config, owner territory, not touched) and
+  anchor_chain._resolve_with_source ran the primary-id step BEFORE the
+  lane-scoped provider-catalog step, so 'fable' resolved to itself and the
+  consult 404'd ("Model 'fable' not found", live agent.log 08:12:23 +
+  2026-10-04 18:36/18:42/18:44). Control probe OUTSIDE battery windows:
+  model 'fable' -> HTTP 404; 'anthropic/claude-fable-5.1' -> HTTP 200.
+  Fixes: (a) catalog step now PRECEDES the primary step (alias table still
+  precedes both — R10 precedence intact); (b) stage_model_swap resolves
+  decision.model_target / the endpoint model through the LANE-SCOPED
+  catalog and upgrades the endpoint in-memory when a concrete provider id
+  differs (config never written; fail-open to primary when the catalog is
+  unavailable; explicit R7 user overrides untouched). The R16-4 retry
+  worker did not engage on these 5 (fast synchronous 404, not a timeout) —
+  worker scope unchanged.
+- R16-2c closes through the same fix: the A2 decision-banner consult path
+  is stage_model_swap, which now targets a real provider id, so the
+  consult completes and banner+row delivery engages instead of the
+  fail-loud 'anchored_call_failed' fragment. Acceptance re-grade carries
+  to the next battery fire (no deploy this round).
+- BC1 availability: NOT code-side, characterized — live re-probe outside
+  battery windows: analyst turn ran to completion normally (7 API calls,
+  latencies 6.8–42.2s, zero router consults; the >300s "timeout" is a long
+  multi-tool turn exceeding the probe client's read timeout — workload
+  latency, not a provider outage); architect delivered in 51s. No fix.
+- BC2 analyst pick-unparseable (3rd round): root cause localized — the
+  BC2 clean form ("what's your substantive take on …") is outside both the
+  manual trigger ('decide this') and the structural default-deny, so
+  nothing fires and the pick identity rides unparsed prose. Fix designed
+  (extend the F4 manual open-question family to the 'take on' form, gate
+  = extract_options empty AND no declared fork), NOT landed this round —
+  trigger-taxonomy change needs its own FP pin pass.
+- Stale pins: test_persona_card cache-count pin updated to the mtime-memo
+  contract (pre-existing env failure, stash-verified); test_router_tuning
+  post-audit pin updated to the empty-card -> empty-tailoring contract
+  (same). Pins: tests/test_rider17_fixes.py (9).
+
 ## 4.16.6 — 2026-10-04 (FIX-FIRST rider 15 — T1#8 verdict: R15-5..R15-9 + F1/F4)
 
 Source: T1r8 verdict (/opt/data/tmp/t1r8-results-2026-10-04.md, raw

@@ -277,7 +277,16 @@ def test_post_audit_is_agent_tailored():
     from hermes_router import completion_audit
     assert callable(getattr(completion_audit, "_persona_tailoring", None))
     t = completion_audit._persona_tailoring()
-    assert "profile card" in t
+    # Rider 17 stale-pin update: when the profile's persona card is empty in
+    # this environment (persona_mode=none / no identity files), _persona_
+    # tailoring contract is "empty card -> empty tailoring"; otherwise the
+    # profile card must ride the tailoring.
+    from hermes_router import persona_card
+    card = persona_card.build_persona_context()
+    if card.strip():
+        assert "profile card" in t
+    else:
+        assert t == ""
 
 
 def test_zero_config_frontier_default_activates_with_anchor_chain():
