@@ -70,6 +70,72 @@ def _write_cache(prices: Dict[str, Any]) -> None:
         pass
 
 
+# Rider 18 A2 hardening: disk-backed LAST-KNOWN-GOOD catalog cache per
+# lane. provider_catalog_entries serves these entries when the live
+# catalog fetch fails/flakes (fresh post-deploy process, empty in-process
+# memo) so anchored consult resolution never falls back to a bare
+# alias-like primary id that 404s (live: analyst 17:29:33Z A2 —
+# model_target=fable, finish_reason=none, anchored_call_failed). Stale-ok
+# by design: only consulted when the live fetch yields nothing. Same
+# profile-home placement + 0o600 hygiene as the pricing cache.
+_CATALOG_CACHE_FILENAME = "hermes-router-catalog-cache.json"
+
+
+def _catalog_cache_path() -> str:
+    return _cache_path()  # same profile-home rule
+
+
+def _catalog_cache_file(lane: str) -> str:
+    p = _catalog_cache_path()
+    if not p:
+        return ""
+    return os.path.join(
+        os.path.dirname(p), _CATALOG_CACHE_FILENAME)
+
+
+def _write_catalog_cache(lane: str, entries: tuple) -> None:
+    p = _catalog_cache_file(lane)
+    if not p or not entries:
+        return
+    try:
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"lane": lane, "fetched_at": time.time(),
+                       "entries": [[eid, host] for eid, host in entries]},
+                      fh)
+        os.replace(tmp, p)
+        try:
+            os.chmod(p, 0o600)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001 — cache never breaks routing
+        pass
+
+
+def _load_catalog_cache(lane: str) -> tuple:
+    """Last-known-good (id, host) pairs for the lane from disk. Stale-ok:
+    this is a FAIL-OPEN fallback, not the primary source. Never raises."""
+    p = _catalog_cache_file(lane)
+    if not p or not os.path.exists(p):
+        return ()
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or data.get("lane") != lane:
+            return ()
+        raw = data.get("entries")
+        if not isinstance(raw, list):
+            return ()
+        out = []
+        for pair in raw:
+            if (isinstance(pair, (list, tuple)) and len(pair) == 2
+                    and str(pair[0]).strip()):
+                out.append((str(pair[0]).strip(), str(pair[1] or "")))
+        return tuple(out)
+    except Exception:  # noqa: BLE001 — cache never breaks routing
+        return ()
+
+
 def _chain_models_urls() -> Dict[str, str]:
     """model name -> /models base url, from hermes_router.chain entries."""
     out: Dict[str, str] = {}
@@ -281,8 +347,31 @@ def provider_catalog_entries(lane: str) -> tuple:
                     continue
                 seen.add(mid)
                 out.append((mid, host))
+        if out:
+            # Rider 18 A2 hardening: persist the last-known-good catalog
+            # per lane so a transient fetch failure (the live analyst
+            # 17:29:33Z A2 trigger — fresh post-deploy process, empty
+            # in-process memo, flaked catalog fetch -> fail-open to the
+            # bare alias-like primary 'fable' -> provider 404 ->
+            # anchored_call_failed) can still resolve concrete provider
+            # ids. Stale-ok: the cache is only consulted when the live
+            # fetch yields nothing, and the entry provenance is logged by
+            # the caller's normal resolution path. Never raises.
+            _write_catalog_cache(lane, tuple(out))
+        else:
+            # Live fetch empty (flake / outage): serve the disk-backed
+            # last-known-good entries instead of a bare-alias fail-open.
+            cached = _load_catalog_cache(lane)
+            if cached:
+                return tuple(cached)
         return tuple(out)
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 — fail-open, catalog never breaks routing
+        try:
+            cached = _load_catalog_cache(lane)
+            if cached:
+                return tuple(cached)
+        except Exception:  # noqa: BLE001
+            pass
         return ()
 
 

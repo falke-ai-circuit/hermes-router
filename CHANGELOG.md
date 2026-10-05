@@ -1,3 +1,27 @@
+## 4.19.0 — 2026-10-05 (FIX-FIRST rider 18 — lane-event naming + catalog disk cache)
+
+Finish-stage commit (attempt 2 — attempt 1 completed the fixes but hit
+the iteration cap before commit; tree carried at a690a7d). No deploy,
+no bounces, no config writes.
+
+- R16-1 lane-event naming: the manual_open_question_frontier route now
+  emits the LANE-NAMED `frontier_route_fired` event ahead of the legacy
+  `anchor_route_fired` lane=complexity event, which stays for backward
+  compat with the t1r10/r15/r16 pin contracts (t1r11 item 1: four-leg
+  battery patterns key on the lane-named route event).
+- A2 hardening (intermittent anchored_call_failed, live analyst
+  17:29:33Z: fresh post-deploy process, empty in-process memo, flaked
+  catalog fetch -> fail-open to the bare alias-like primary 'fable' ->
+  provider 404): provider_catalog_entries now persists a disk-backed
+  LAST-KNOWN-GOOD (id, host) catalog per lane (same profile-home
+  placement + 0o600 hygiene as the pricing cache, atomic tmp+replace
+  write) and serves it — stale-ok — only when the live fetch yields
+  nothing or raises. Config never written on any path.
+- Pins: tests/test_rider18_fixes.py (6 — frontier event naming +
+  backward-compat anchor event; cache write/hit, lane scoping,
+  corrupt-cache fail-open, no-config-write). Stale version pin
+  test_r10_catalog_resolution.py updated to 4.19.0.
+
 ## 4.18.0 — 2026-10-05 (FIX-FIRST rider 17 — T1#10 verdict: R16-1 systemic + BC1 characterization)
 
 Source: T1 re-run #10 verdict (/opt/data/tmp/t1r10-results-2026-10-05.md,

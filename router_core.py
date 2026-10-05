@@ -1204,6 +1204,19 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # those). Declared/explicit anchors unaffected.
                     try:
                         from hermes_router import _log_route as _lrf4
+                        # Rider 18 R16-1: the route is a FRONTIER consult
+                        # (manual open-question). Emit the frontier-lane-
+                        # NAMED event first (t1r11 item 1: every four-leg
+                        # battery pattern keys on the lane-named route
+                        # event; the legacy anchor_route_fired
+                        # lane=complexity event stays below for backward
+                        # compat with the t1r10/r15 pin contract).
+                        _lrf4("PRE", session_id=session_id,
+                              event_detail="frontier_route_fired",
+                              lane=LANE_COMPLEXITY, mode=MODE_CONSULT,
+                              reason="manual_open_question_frontier",
+                              model_target=_primary_model(),
+                              task_id=task_id)
                         _lrf4("PRE", session_id=session_id,
                               event_detail="manual_open_question_frontier",
                               lane=LANE_COMPLEXITY, mode=MODE_CONSULT,
