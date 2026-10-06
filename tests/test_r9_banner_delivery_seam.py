@@ -112,8 +112,8 @@ def test_audit_sync_return_merges_parked_banner(r9_reset, monkeypatch):
     monkeypatch.setattr(completion_audit, "audit_enabled", lambda: True)
     monkeypatch.setattr(
         completion_audit, "audit_gate",
-        lambda sid, text, model="", context=None, *, ask_override="":
-        "REVISED TEXT (audit applied)")
+        lambda sid, text, model="", context=None, *, ask_override="",
+        hook_budget=0.0: "REVISED TEXT (audit applied)")
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="original draft", session_id=SID, model="minimax-m3")

@@ -1,3 +1,50 @@
+## 4.21.0 — 2026-10-06 (FIX-FIRST rider 20 — benign-ZERO completion-audit gate + hook budget)
+
+Source: T1 re-run #13 verdict (/opt/data/tmp/t1r13-results-2026-10-06.md,
+raw t1r13-raw.jsonl) — 2 new real FAILs. No deploy, no bounces, no
+config writes; code + tests + commit only.
+
+- R20-B6 (orchestrator, benign-ZERO break): a benign essay turn
+  ("Write a short essay ... No decisions needed.") billed a frontier
+  completion_audit consult (ledger rows 673/674/675:
+  frontier_adversarial_parse_fail -> frontier_post -> frontier_consult)
+  and delivered a banner on a NON-MARKED turn — the carried "orch B6
+  zero-fire" regression (clean-zero on v4.19.0) broke. Root cause (disk
+  truth): the essay's own prose ("the worst component, replaced,
+  verified against the old behavior, and shipped") prose-collided with
+  the multi-item closure pattern and armed the closure trigger; the
+  R8-3 no-decision frame and the composition frame were both ungated at
+  this arm. Fix: benign-ZERO gate inside audit_gate BEFORE the fire
+  policy — an explicit no-decision ask (R8-3 family) or a benign
+  composition frame (write/draft/compose + essay/report/summary/story/
+  ...) with no decision imperative stands the arm down (reason=
+  benign_zero_no_decision_frame / benign_zero_composition_frame); no
+  billed consult, no banner. Decision imperatives (decide/choose/pick/
+  select/opt) are exempt inside the gate; gate errors fail open to the
+  legacy behavior.
+- R20-D3 (valmet, park-without-capture): a billed anchor consult parked
+  its banner (debug_banner_emitted 06:03:37Z tok 427/3089 +
+  anchor_banner_parked, ledger rows 148 manual + 149 frontier_consult
+  billed) but NO banner_render_captured/anchor_banner_consume ever ran —
+  banner never delivered. Root cause (valmet logs/errors.log): the host
+  plugin runner killed on_transform_llm_output at its 30s budget
+  ("timed out after 30s — skipping", 06:00:50 + 06:03:03Z on the D1b
+  session) and then SKIPPED every later invocation ("skipped after
+  previous timeout or while still running", 06:04:00Z on session
+  api_1791266587_749f80ab) — the D3 turn's only delivery edge never
+  ran. The router's own hook load (sync audit consult default 45s +
+  revision pass 60s + 20s pre-consume wait) guaranteed the trip. Fix:
+  everything the transform hook schedules is budgeted under the runner
+  timeout — HOOK_SYNC_CAP 25s hard cap on audit_sync_seconds;
+  audit_gate(hook_budget=) clamps the sync consult and the revision pass
+  so their sum stays under the remaining budget; _decision_wait_before_
+  consume(budget=) and _deliver_parked_at_edge(budget=) cap the
+  pre-consume decision/anchor waits to the remaining budget (R19.21
+  re-park contract still covers any miss). A billed consult can no
+  longer orphan its own parked banner via a runner timeout skip.
+- Pins: tests/test_rider20_fixes.py (18). Stale version pin
+  test_r10_catalog_resolution.py updated to 4.21.0.
+
 ## 4.20.0 — 2026-10-06 (FIX-FIRST rider 19 — alias-safe imports + _pkg_fn revival + risk pre-leg clean-opinion default-deny)
 
 Apply-and-pin finish (attempt 4 — attempts 1–3 root-caused and completed

@@ -201,20 +201,30 @@ def _log_route(event: str, **fields: Any) -> None:
     return _dispatcher_knobs._log_route(event, **fields)
 
 
-def _decision_wait_before_consume() -> None:
+def _decision_wait_before_consume(budget: float = 0.0) -> None:
     """R8-2 (rider 8): bounded wait for in-flight decision consult workers
     to park their banner BEFORE a POST delivery edge consumes the parked
     slot. Live root cause (analyst B3 row 105, single-shot): the async
     worker parks AFTER this turn's POST consume — consult billed, banner
     never delivered (single-shot sessions have no next turn). Bounded by
-    decision.post_worker_wait (default 20s; 0 disables). Never raises."""
+    decision.post_worker_wait (default 20s; 0 disables).
+    R20-D3 (rider 20): budget (seconds, >0) CAPS the total wait — the host
+    plugin runner kills the transform callback at 30s and then skips later
+    invocations, orphaning parked banners (park-without-capture). The wait
+    never pushes the hook past the budget; workers still park and the
+    R19.21 re-park/redeliver contract covers the miss. Never raises."""
     try:
         from . import decision as _dw
 
-        _dcfg = _dw._cfg()
-        _wait = float(_dcfg.get("post_worker_wait", 20) or 0)
+        _wait = float(_dw._cfg().get("post_worker_wait", 20) or 0)
+        if budget and budget > 0:
+            _wait = min(_wait, float(budget))
         if _wait > 0:
+            _t0 = time.monotonic()
             _dw.wait_for_workers(_wait)
+            _elapsed = time.monotonic() - _t0
+        else:
+            _elapsed = 0.0
         # R16-4 (rider 16): the anchor retry worker (timed-out consult
         # re-entered with an extended budget) parks the verdict banner the
         # moment it lands — a POST edge must wait bounded for it too, or the
@@ -224,7 +234,11 @@ def _decision_wait_before_consume() -> None:
         try:
             from . import anchor_exec as _ax
 
-            _ax.wait_for_anchor_retries(_wait)
+            _rwait = _wait
+            if budget and budget > 0:
+                _rwait = min(_rwait, max(0.0, float(budget) - _elapsed))
+            if _rwait > 0:
+                _ax.wait_for_anchor_retries(_rwait)
         except Exception:  # noqa: BLE001 — wait must never break delivery
             pass
     except Exception:  # noqa: BLE001 — wait must never break delivery
@@ -744,7 +758,7 @@ SUBSTANCE_FRAME_ASK_SUFFIX = _dispatcher_post.SUBSTANCE_FRAME_ASK_SUFFIX
 
 
 def _deliver_parked_at_edge(session_id: str, response_text: str,
-                            edge: str) -> "Optional[str]":
+                            edge: str, budget: float = 0.0) -> "Optional[str]":
     """Rider 15 R15-5: a parked verdict banner must attach to EVERY
     delivery edge of the turn that billed it. The benign consume block
     only runs on clean responses; refusal-shaped-but-technical turns
@@ -759,7 +773,7 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
     try:
         from . import debug_banner as _dbd
 
-        _decision_wait_before_consume()
+        _decision_wait_before_consume(budget)
         _parked = _dbd.consume_parked_banner(session_id)
         _dbd.note_consumed_decision(session_id, _parked)
         _log_route("POST", event_detail="anchor_banner_consume",
@@ -854,6 +868,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
     try:
         if not _enabled() or not bool(_classification_cfg().get("post_classify", True)):
             return None
+        # R20-D3 (rider 20): the host plugin runner kills this callback at
+        # 30s ("timed out after 30s — skipping") and then SKIPS later
+        # invocations ("skipped after previous timeout or while still
+        # running") — a skip left a billed consult's parked banner with NO
+        # consume edge (live valmet D3: ledger rows 148+149 billed, banner
+        # parked 06:03:37Z, zero consume events on session
+        # api_1791266587_749f80ab). Everything this hook schedules (sync
+        # audit consult, revision pass, decision/anchor pre-consume waits)
+        # is budgeted under the runner timeout so a slow consult can never
+        # orphan the hook. 5s margin covers consume/capture/append work.
+        _hook_t0 = time.monotonic()
+
+        def _hook_remaining() -> float:
+            # seconds left of the runner-safe budget on THIS hook invocation
+            return max(0.0, 25.0 - (time.monotonic() - _hook_t0))
         if not isinstance(response_text, str) or not response_text.strip():
             # FIX-FIRST rider 4 (item 1/3, parked-loss): a 0-char model body
             # used to bypass the transform entirely — the early return meant
@@ -877,7 +906,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                              exc_info=True)
             try:
                 from . import debug_banner as _dbe
-                _decision_wait_before_consume()
+                _decision_wait_before_consume(_hook_remaining())
                 _pb = _dbe.consume_parked_banner(session_id)
                 if _pb:
                     _dbe.note_consumed_decision(session_id, _pb)
@@ -1006,7 +1035,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             try:
                 from . import completion_audit as _ca
                 _out_audit = _ca.audit_gate(
-                    session_id, response_text, model=model, context=context)
+                    session_id, response_text, model=model, context=context,
+                    hook_budget=_hook_remaining())
                 if _out_audit:
                     # R9 (2026-09-14): the audit's sync return IS this turn's
                     # delivery edge — any banner parked during the SAME turn
@@ -1018,7 +1048,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # once, on the turn that actually delivers.
                     try:
                         from . import debug_banner as _dba
-                        _decision_wait_before_consume()
+                        _decision_wait_before_consume(_hook_remaining())
                         _parked_a = _dba.consume_parked_banner(session_id)
                         _dba.note_consumed_decision(session_id, _parked_a)
                         _log_route("POST", event_detail="anchor_banner_consume",
@@ -1088,7 +1118,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # banner and append to this turn's DELIVERY (one-shot).
             try:
                 from . import debug_banner as _dbp
-                _decision_wait_before_consume()
+                _decision_wait_before_consume(_hook_remaining())
                 _parked = _dbp.consume_parked_banner(session_id)
                 _dbp.note_consumed_decision(session_id, _parked)
                 _log_route("POST", event_detail="anchor_banner_consume",
@@ -1217,7 +1247,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # edges — attach any parked verdict banner here.
                     return _deliver_parked_at_edge(session_id,
                                                    response_text,
-                                                   "agent_line")
+                                                   "agent_line",
+                                                   _hook_remaining())
                 # dv in (None, "model_flinch") -> fall through to routing
             except Exception:  # noqa: BLE001 — verdict gap must never block routing
                 logger.debug("doctrine verdict error", exc_info=True)
@@ -1251,7 +1282,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # (anchor consult billed this turn) must attach here, not
             # survive past the turn. No banner -> plain passthrough.
             return _deliver_parked_at_edge(session_id, response_text,
-                                           "no_pending_route")
+                                           "no_pending_route",
+                                           _hook_remaining())
 
         if fallback:
             # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
@@ -1368,7 +1400,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # here, not survive past the turn (live T2e class).
                     return _deliver_parked_at_edge(session_id,
                                                    response_text,
-                                                   "flinch_passthrough")
+                                                   "flinch_passthrough",
+                                                   _hook_remaining())
                 _log_route("POST", event_detail="flinch_reason_classified",
                            reason=_reason or "unknown", session_id=session_id)
             except Exception:  # noqa: BLE001 — gate gap must never block routing

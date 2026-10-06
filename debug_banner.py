@@ -43,6 +43,8 @@ the knob is off, this module contributes ZERO calls in the delivery path
 from __future__ import annotations
 
 import logging
+import os
+import threading
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -294,6 +296,12 @@ def park_anchor_banner(session_id: str, banner_text: str,
         _ANCHOR_SEGS[sid] = segs
         _ANCHOR_TASKS[sid] = tasks
         _ANCHOR_BANNERS[sid] = "\n\n".join(segs)
+        # R20-D3 (rider 20): schedule the one-shot bounded capture-fallback
+        # watcher — if NO delivery edge consumes this parked banner within
+        # banner_capture_fallback_wait, the worker captures it into the
+        # persisted transcript itself (never a silently-orphaned billed
+        # consult). Semaphored per session; never breaks the park.
+        _maybe_schedule_capture_fallback(sid)
     except Exception:  # noqa: BLE001
         pass
 
@@ -313,6 +321,204 @@ def consume_parked_banner(session_id: str) -> str:
         return _ANCHOR_BANNERS.pop(sid, "")
     except Exception:  # noqa: BLE001
         return ""
+
+
+# --- R20-D3 (rider 20): one-shot bounded capture-fallback worker -----------
+# Live evidence (valmet D3, 2026-10-06): the host plugin runner KILLED the
+# transform_llm_output callback at its 30s budget ("timed out after 30s —
+# skipping") and then SKIPPED every later invocation ("skipped after previous
+# timeout or while still running") — the billed consult's banner was parked
+# but NO delivery edge ever ran, so the banner was never delivered and the
+# persisted transcript never carried it. The hook-side budgeting (audit_gate
+# hook_budget, pre-consume waits) narrows the trip window; this worker closes
+# the residual: a parked banner that survives its whole capture budget with
+# no consumption by ANY delivery edge is captured into the persisted
+# transcript directly (newest assistant row + banner block, exact-match
+# canonical rewrite — router-substitution-only guard intact) so a billed
+# consult's verdict is never silently orphaned. One-shot, semaphored per
+# session, daemon thread, never breaks delivery, never raises.
+_CAPTURE_FB_LOCK = threading.Lock()       # module lock: park/rewrite race
+_CAPTURE_FB_INFLIGHT: set = set()         # per-session semaphore (one watcher)
+_CAPTURE_FALLBACK_POLL_S = 1.0            # poll interval (spec: 1s)
+
+
+def banner_capture_fallback_wait() -> float:
+    """R20-D3: seconds the parked-banner capture-fallback watcher polls for
+    consumption by a delivery edge before rewriting the persisted turn
+    itself (knob banner_capture_fallback_wait, default 45s; 0 disables the
+    fallback entirely). Never raises."""
+    try:
+        raw = _banner_section().get("banner_capture_fallback_wait", 45)
+        return max(0.0, min(120.0, float(raw)))
+    except Exception:  # noqa: BLE001
+        return 45.0
+
+
+def _newest_persisted_assistant_row(session_id: str) -> str:
+    """R20-D3: newest persisted assistant row content for this session from
+    state.db (the same store the gateway persists every turn to). Read-only;
+    "" on any failure. Never raises."""
+    try:
+        import sqlite3
+
+        from . import canonical as _canon
+
+        db_path = _canon._state_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return ""
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            cur = conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?"
+                " AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+                (str(session_id or ""),),
+            )
+            row = cur.fetchone()
+            return str(row[0]) if row and row[0] is not None else ""
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — read-only probe, never raises
+        return ""
+
+
+def _capture_fallback_watch(session_id: str, captured: str) -> None:
+    """R20-D3 worker body: after park, poll (1s interval) for consumption by
+    any delivery edge; if still parked unconsumed at the budget, append the
+    banner block to the sessions newest persisted assistant row and rewrite
+    via canonical.rewrite_persisted_turn exact-match (the
+    router-substitution-only guard is untouched — only the row whose content
+    byte-equals the row we just read can match). The parked content is
+    re-checked UNDER THE MODULE LOCK immediately before the rewrite, so a
+    late live consume between the last poll and the lock wins (the rewrite
+    is skipped, the slot belongs to the delivery edge). On no matching row:
+    the banner is RE-PARKED (retained for the next delivery edge) and a
+    fail-loud event is logged — never a silent orphan, never a loop crash.
+    Never raises."""
+    sid = str(session_id or "")
+    try:
+        budget = banner_capture_fallback_wait()
+        if budget <= 0 or not str(captured or "").strip():
+            return
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            time.sleep(_CAPTURE_FALLBACK_POLL_S)
+            if _ANCHOR_BANNERS.get(sid, "") != captured:
+                return  # a live delivery edge consumed/changed the slot
+        with _CAPTURE_FB_LOCK:
+            # re-check under the module lock: a late live consume wins
+            if _ANCHOR_BANNERS.get(sid, "") != captured:
+                return
+            row = _newest_persisted_assistant_row(sid)
+            delivered = ("%s\n\n%s" % (row, captured)) if row else ""
+            ok = False
+            if row:
+                try:
+                    from . import canonical as _canon
+
+                    ok = _canon.rewrite_persisted_turn(sid, row, delivered)
+                except Exception:  # noqa: BLE001 — must never break delivery
+                    ok = False
+            if ok:
+                # captured: clear the parked slot (consume-equivalent, under
+                # the lock so no racing edge double-delivers)
+                _ANCHOR_TASKS.pop(sid, None)
+                _ANCHOR_SEGS.pop(sid, None)
+                _ANCHOR_BANNERS.pop(sid, None)
+        if ok:
+            try:
+                from . import render_inbox as _ri
+
+                _ri.record_render("PARKED_CAPTURE_FALLBACK", sid,
+                                  len(row), delivered)
+            except Exception:  # noqa: BLE001 — best-effort evidence
+                pass
+            try:
+                from .route_gate import _pkg_fn
+
+                _lrh = _pkg_fn("_log_route")
+            except Exception:  # noqa: BLE001 — fallback to the owning module
+                try:
+                    from .dispatcher_knobs import _log_route as _lrh
+                except Exception:  # noqa: BLE001 — fail-loud best-effort
+                    _lrh = None
+            if _lrh is not None:
+                try:
+                    _lrh("POST", event_detail="banner_capture_fallback",
+                         outcome="captured", session_id=sid)
+                    _lrh("POST", event_detail="banner_render_captured",
+                         edge="capture_fallback", session_id=sid)
+                except Exception:  # noqa: BLE001 — fail-loud best-effort
+                    logger.exception("banner_capture_fallback event log failed")
+        else:
+            # no persisted assistant row matched: RE-PARK the banner
+            # (retained for the next delivery edge) + fail-loud event.
+            with _CAPTURE_FB_LOCK:
+                _ANCHOR_BANNERS[sid] = captured
+            try:
+                logger.error(
+                    "banner_capture_fallback_failed detail=no_row_match "
+                    "session_id=%s — parked banner retained for the next "
+                    "delivery edge", sid)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                from .route_gate import _pkg_fn
+
+                _lrh = _pkg_fn("_log_route")
+            except Exception:  # noqa: BLE001 — fallback to the owning module
+                try:
+                    from .dispatcher_knobs import _log_route as _lrh
+                except Exception:  # noqa: BLE001 — fail-loud best-effort
+                    _lrh = None
+            if _lrh is not None:
+                try:
+                    _lrh("POST", event_detail="banner_capture_fallback",
+                         outcome="no_row_match", re_parked=True, session_id=sid)
+                except Exception:  # noqa: BLE001
+                    logger.exception("banner_capture_fallback event log failed")
+    except Exception:  # noqa: BLE001 — the fallback must never break anything
+        try:
+            logger.exception("banner_capture_fallback worker error")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        try:
+            with _CAPTURE_FB_LOCK:
+                _CAPTURE_FB_INFLIGHT.discard(sid)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _maybe_schedule_capture_fallback(session_id: str) -> None:
+    """R20-D3: schedule the one-shot capture-fallback watcher for a session
+    that just parked a banner (semaphored per session — at most ONE watcher
+    in flight per session; a second park while one is watching is covered by
+    the in-flight watcher's aggregate snapshot). Daemon thread, never
+    raises, never blocks the parker."""
+    try:
+        if banner_capture_fallback_wait() <= 0:
+            return
+        sid = str(session_id or "")
+        if not sid:
+            return
+        spawn = False
+        with _CAPTURE_FB_LOCK:
+            if sid not in _CAPTURE_FB_INFLIGHT:
+                _CAPTURE_FB_INFLIGHT.add(sid)
+                spawn = True
+        if not spawn:
+            return
+        captured = _ANCHOR_BANNERS.get(sid, "")
+        if not str(captured or "").strip():
+            with _CAPTURE_FB_LOCK:
+                _CAPTURE_FB_INFLIGHT.discard(sid)
+            return
+        threading.Thread(
+            target=_capture_fallback_watch, args=(sid, captured),
+            daemon=True,
+            name="rider20-capture-fallback-%s" % sid[:24]).start()
+    except Exception:  # noqa: BLE001 — scheduling must never break the park
+        pass
 
 
 # --- R19.11 FIX 1: decision-banner loss on two-lane turns ------------------

@@ -44,6 +44,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import anchor_chain, anchor_exec, router_core, state
 from .frames import HS_COMPLETION_AUDIT_MARKER as _HS_AUDIT_MARKER  # R8h single source
 
+# R20-D3 (rider 20): hard cap for the sync audit consult (and the pre-consume
+# decision/anchor waits) inside on_transform_llm_output. The host plugin
+# runner kills the hook callback at 30s ("timed out after 30s — skipping")
+# and then skips subsequent invocations ("skipped after previous timeout or
+# while still running") — a skip leaves a billed consult's parked banner
+# with NO consume edge (park-without-capture: live valmet D3 ledger rows
+# 148+149 billed, banner parked 06:03:37Z, zero consume events). Cap below
+# the runner budget, leaving margin for consume/capture work after the
+# consult returns.
+HOOK_SYNC_CAP = 25.0
+
 logger = logging.getLogger(__name__)
 
 _MIN_RESPONSE_CHARS = 500
@@ -108,7 +119,7 @@ _CLOSURE_PATTERNS = (
     r"\b(?:wrapped\s+up|closed\s+out)\b(?=[^.]{0,60}?\b(?:everything|all\b|the\s+work|the\s+task|this\s+task|the\s+audit|the\s+review|the\s+session|the\s+discussion|the\s+investigation|the\s+analysis|tasks?\b|items?\b)\b)",
     r"\ball\s+done\b",
     r"\beverything\s+(?:is\s+)?(?:done|shipped|landed|verified)\b",
-    r"\b(?:tasks?|items?|work|changes?|fix(?:es)?|commits?|findings?|reviews?|audits?|modules?|files?|components?|plan|session)\b[^\n]{0,120}\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b[^.]{0,80}\b(?:and|plus|\+)\s[^.]{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
+    r"\b(?:tasks?|items?|work|changes?|fix(?:es)?|commits?|findings?|reviews?|audits?|modules?|files?|components?|plan|session)\b[^\n]{0,120}(?<!,\s)\b(?:done|complete[d]?|shipped|landed|fixed|verified)\b[^.]{0,80}\b(?:and|plus|\+)\s[^.]{0,40}\b(?:done|complete[d]?|shipped|landed|fixed|verified|pushed)\b",
     r"\ball\s+(?:three|four|five|\d+)?\s*(?:of\s+(?:them|these))?\s*(?:are\s+)?(?:fixed|shipped|verified|done|landed)\b",
     # 2026-09-10 live miss: answers that open/close with a closure frame
     # ("Closure: ...", "Final summary", "Bottom line") were skipped by the
@@ -121,6 +132,37 @@ _CLOSURE_PATTERNS = (
 )
 
 _CLOSURE_RE = None  # compiled lazily
+
+
+# R20-B6 (rider 20): benign COMPOSITION frames — asks that request prose
+# (essay/report/summary/story/...) with no decision imperative. A closure
+# regex collision INSIDE the composed prose must never arm the audit
+# trigger on such a turn (live orchestrator B6: the essay's 'verified
+# against the old behavior, and shipped' matched the multi-item closure
+# pattern and billed a frontier consult).
+_COMPOSITION_RE = re.compile(
+    r"\b(?:write|draft|compose|produce|give)\s+(?:me\s+)?(?:a\s+|an\s+|the\s+)?"
+    r"(?:short\s+|brief\s+|detailed\s+|long\s+|formal\s+)?"
+    r"(?:essay|report|summary|story|poem|article|blog\s*post|paragraph|memo|review|outline)\b",
+    re.IGNORECASE)
+_DECISION_IMPERATIVE_RE = re.compile(
+    r"\b(?:decide|deciding|choose|choosing|pick|picking|select|selecting|opt)\b",
+    re.IGNORECASE)
+
+
+def _benign_composition_frame(ask: str) -> bool:
+    """R20-B6: True when the ask requests composed prose (essay/report/...)
+    and carries NO decision imperative — the completion-audit arm stands
+    down (benign-ZERO contract). Never raises, fail-open False."""
+    try:
+        t = str(ask or "")
+        if not t.strip():
+            return False
+        if _DECISION_IMPERATIVE_RE.search(t):
+            return False
+        return bool(_COMPOSITION_RE.search(t))
+    except Exception:  # noqa: BLE001 — fail-open: not a composition frame
+        return False
 
 
 def is_closure_response(ask: str, response_text: str) -> bool:
@@ -169,8 +211,18 @@ def audit_max_chars() -> int:
 def audit_sync_seconds() -> float:
     """Sync POST audit (Goran 2026-09-10): frontier consult must complete
     BEFORE the final response is delivered. audit_sync_seconds caps how long
-    delivery blocks on the consult (default 45s — Goran: consults need more
-    than 30s on real payloads). 0 disables sync (legacy async path).
+    delivery blocks on the consult. R20-D3 (rider 20) HARD CAP 25s: the
+    host plugin runner kills the transform_llm_output callback 30s in
+    ("timed out after 30s — skipping", live valmet 06:00:50/06:03:03Z) and
+    then SKIPS every subsequent callback invocation ("skipped after
+    previous timeout or while still running", live 06:04:00Z session
+    api_1791266587_749f80ab) — a billed consult's parked banner then has NO
+    consume edge at all (park-without-capture, ledger rows 148+149 billed,
+    0 delivered). The default 45s guarantee tripped that whenever the
+    frontier consult out-ran 30s. Cap below the runner budget so the sync
+    consult can never orphan the hook; on timeout the unaudited response
+    ALWAYS delivers (fail-open).
+    0 disables sync (legacy async path).
     toggleable: audit_mode = sync | async (sync default when knob set/absent).
     On timeout/error the unaudited response ALWAYS delivers (fail-open).
     Never raises."""
@@ -178,9 +230,9 @@ def audit_sync_seconds() -> float:
         from .router_core import _complexity_cfg
 
         v = float((_complexity_cfg() or {}).get("audit_sync_seconds") or 45)
-        return max(0.0, min(180.0, v))
+        return max(0.0, min(HOOK_SYNC_CAP, v))
     except Exception:  # noqa: BLE001
-        return 45.0
+        return min(HOOK_SYNC_CAP, 45.0)
 
 
 def audit_topology() -> str:
@@ -381,11 +433,20 @@ def substantive_turn_bump(session_id: str) -> int:
 
 def audit_gate(session_id: str, response_text: str, model: str = "",
                context: Optional[dict] = None,
-               *, ask_override: str = "") -> Optional[str]:
+               *, ask_override: str = "",
+               hook_budget: float = 0.0) -> Optional[str]:
     """Unified POST completion-audit gate: fire policy (every-3-substantive-
     turns OR closure-shaped response OR >=3 tool calls), eligibility, sync
     consult, in-hook revision pass, inline spend banner. Returns the response
     string to deliver, or None when no audit fired (caller passes through).
+
+    R20-D3 (rider 20): hook_budget (seconds) bounds the TOTAL time the sync
+    consult + revision pass may consume inside the host's transform hook —
+    the plugin runner kills the callback at 30s and then SKIPS later
+    invocations, orphaning billed-consult parked banners. When >0, the sync
+    budget and the revision budget are clamped so their sum cannot exceed
+    it (live: valmet D3, ledger rows 148+149 billed, banner parked, zero
+    consume events because the runner skipped the skipped hook's turn).
 
     Extracted so BOTH benign-passthrough AND technical-flinch-passthrough
     delivery paths reach the audit arm (live-verified gap: refusal-phrase
@@ -456,6 +517,34 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 return None
         except Exception:  # noqa: BLE001 — gate is additive, fail-open
             pass
+        # R20-B6 (rider 20): benign-ZERO contract for the completion-audit
+        # arm. A turn whose ASK is (a) an explicit no-decision frame
+        # (R8-3 family: 'no decisions needed', 'just your view', ...) or
+        # (b) a benign composition frame ('write a short essay on ...')
+        # with NO decision imperative is a NON-MARKED turn: the audit
+        # consult must NOT bill — no frontier rows, no banner. Live:
+        # orchestrator B6 (ledger rows 673/674/675 billed
+        # frontier_adversarial_parse_fail -> frontier_post ->
+        # frontier_consult, banner delivered on 'Write a short essay on
+        # why incremental verification beats big-bang rewrites. No
+        # decisions needed.') — the essay's own prose ('the worst
+        # component, replaced, verified against the old behavior, and
+        # shipped') prose-collided with the multi-item closure pattern and
+        # armed the closure trigger on a benign turn. Decision imperatives
+        # (decide/choose/pick/select/opt) are EXEMPT: an essay that ends
+        # in a real fork stays auditable. Fail-open: gate errors keep the
+        # legacy behavior.
+        try:
+            from .decision import has_declared_fork_structure as _cdf
+
+            if (_benign_composition_frame(ask)
+                    and not _cdf(ask)):
+                _log("audit_gate_skip",
+                     reason="benign_zero_composition_frame",
+                     session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — gate is additive, fail-open
+            pass
         try:
             from . import router_core as _rc
 
@@ -488,6 +577,30 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _closure = is_closure_response(ask, response_text)
             except Exception:  # noqa: BLE001
                 _closure = False
+            if _closure:
+                # R20-B6 (rider 20): the no-decision CLOSURE stand-down. When
+                # the ask carries the R8-3 nondecision frame family ('no
+                # decisions needed', 'just your view', ...) AND no manual
+                # trigger AND no declared fork, the CLOSURE arm stands down —
+                # the essay/prose's own closure-shaped sentences must never
+                # arm the audit trigger on a NON-MARKED turn. The CADENCE,
+                # TOOL-COUNT and RISK-L3 arms are UNAFFECTED (they fire on
+                # their own evidence, not on closure prose). Fail-open: any
+                # helper error keeps the legacy behavior (closure fires).
+                try:
+                    from .decision import (
+                        _post_nondecision_frame as _ndf,
+                        _manual_trigger_in_text as _mt,
+                        has_declared_fork_structure as _df,
+                    )
+
+                    if (_ndf(ask) and not _mt(ask) and not _df(ask)):
+                        _closure = False
+                        _log("audit_gate_skip",
+                             reason="closure_nondecision_frame",
+                             session_id=session_id)
+                except Exception:  # noqa: BLE001 — gate is additive
+                    pass
             _fire = _closure
         if not _fire:
             # R15 LEG 1 L3 (2026-09-21): the completed turn REPORTS R2/R3
@@ -543,6 +656,12 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         if not _ok:
             return None
         _sync_budget = audit_sync_seconds()
+        # R20-D3: clamp the sync consult under the hook budget (the runner
+        # kills the transform callback at 30s and then skips later turns —
+        # a billed consult's parked banner would have no consume edge).
+        if hook_budget and hook_budget > 0:
+            _sync_budget = min(_sync_budget, float(hook_budget))
+            _sync_budget = max(0.0, _sync_budget)
         _topology = audit_topology()
         if _topology == "sync" and _sync_budget > 0:
             _req = (context or {}).get("request") if isinstance(context, dict) else None
@@ -559,6 +678,11 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # SEEN AND ACTED ON before delivery — one bounded flash re-call.
             _delivered = response_text
             _rev_budget = audit_revision_seconds()
+            # R20-D3: the revision pass cannot push the hook past its budget
+            # (sync consult + revision sum stays under hook_budget).
+            if hook_budget and hook_budget > 0:
+                _rev_budget = min(_rev_budget,
+                                  max(0.0, float(hook_budget) - _sync_budget))
             if _rev_budget > 0 and _note:
                 try:
                     _revised = revise_with_verdict(
