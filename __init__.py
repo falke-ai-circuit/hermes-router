@@ -347,7 +347,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
     """
-    _hs_rule_injected = _hs_inject_pass(request)
+    _hs_rule_injected = _hs_inject_pass(
+        request, session_id=_session_id_from_context(**context))  # rider 22
     try:
         def _hs_pass():
             """Propagate an in-place rule injection through the framework's

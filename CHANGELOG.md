@@ -1,3 +1,46 @@
+## 4.23.0 — 2026-10-06 (FIX-FIRST rider 22 — higher-self rule delivery-boundary seam: stamped delivery + once-per-context dedupe)
+
+Defect: the higher-self integration rule was appended as a bare system
+message with NO provenance stamp (frames.inject_higher_self_rule), and its
+dedupe (marker scan of the request's own messages) could never see the
+injected message across turns — the gateway rebuilds the context each turn
+without persisting it — so the rule re-injected on EVERY turn, surfacing at
+the agent's turn seam as raw unmarked rule/turn prose appended directly
+after tool results (shape (b); live-replicated during the rider-22 session
+itself, 15+ samples). Prior incident intel: the injected block circulated
+between tool results during audits (reviewer 2026-10-03 audit pass); the
+rider-17b seam-gate design (stamped-delivery-or-nothing + broken dedupe)
+was scoped but never landed.
+
+- Emission seam disk-truth: frames.py inject_higher_self_rule (the only
+  append path for the rule text), wired via dispatcher_pre._hs_inject_pass
+  (pass 1) from __init__.on_llm_request.
+- Stamped delivery (item 2): every append now carries BOTH the rule heading
+  (HIGHER-SELF INTEGRATION RULE) and the platform provenance stamp
+  ([HIGHER-SELF SEAM | PLATFORM-INTERNAL | PROVENANCE-LOGGED]). Rule text
+  that cannot be stamped (empty/non-str) is suppressed entirely — fail-quiet
+  on the rule text, fail-loud in the log (rule_delivery_suppressed).
+- Dedupe (item 3): two layers — the in-context marker scan (kept) plus a
+  process latch keyed on session_id (context-derived at the on_llm_request
+  call site; first-message-content hash fallback when no session id binds),
+  storing the delivered stamped text: a context gets at most one seam
+  append, and the previous turn's append is never duplicated even when the
+  gateway does not persist the injected message. A DIFFERENT rule text
+  (config variant change) is a new delivery, not a duplicate; latch bounded
+  (512, prune-oldest); reset_rule_latch() test hook.
+- Marked-turn preservation (item 4): orientation/reflection envelopes and
+  the completion-audit note are NOT this path and flow byte-unchanged —
+  pins assert the full marked format intact and that the rule's seam stamp
+  is NOT prepended to marked envelopes.
+- Pins: tests/test_rider22_fixes.py (14): stamped append (both markers),
+  unstampable-rule-text suppression, no-session-id compat, no
+  re-injection across consecutive fresh requests (the live defect shape),
+  in-request idempotence, per-session isolation, hash-key fallback,
+  variant-change reinjection, pass-level session-id wiring, disabled-seam
+  no-append, marked orientation/reflection envelopes intact,
+  stamp-not-prepended-to-marked, forged-unmarked detection contract.
+- Full suite green. No deploy, no bounces, no config writes.
+
 ## 4.22.0 — 2026-10-06 (FIX-FIRST rider 21 — FABLE-PIN: consults pin to config frontier, fable only on explicit request)
 
 Disaster class: fable 5.1 burned money on the nous portal (live: analyst

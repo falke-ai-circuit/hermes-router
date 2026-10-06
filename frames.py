@@ -34,6 +34,7 @@ marker text must not contradict the show-freely doctrine).
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, Optional
 
@@ -552,14 +553,132 @@ def higher_self_rule_enabled() -> bool:
         return False
 
 
-def inject_higher_self_rule(request: dict) -> None:
-    """Idempotent once-per-context injection: append the standing rule (at
-    the ACTIVE variant) as a system-role message if no marked rule message
-    exists yet. Mutates request in place; failure-isolated by the caller."""
-    msgs = (request or {}).get("messages")
-    if not isinstance(msgs, list):
-        return
-    for m in msgs:
-        if isinstance(m, dict) and m.get("role") == "system" and HIGHER_SELF_RULE_MARKER in str(m.get("content") or ""):
-            return
-    msgs.append({"role": "system", "content": higher_self_rule()})
+def inject_higher_self_rule(request: dict, session_id: str = "") -> bool:
+    """RIDER 22 (Goran-direct): stamped-delivery + once-per-context seam.
+
+    Delivery-boundary contract: the integration rule NEVER leaves this
+    append path without its provenance stamp — the appended system message
+    content carries BOTH the rule heading (HIGHER_SELF_RULE_MARKER) and the
+    platform provenance stamp (HS_SEAM_MARKER). If a stamped text cannot be
+    produced (empty/non-str rule text or stamping failure), the append is
+    SUPPRESSED entirely: fail-quiet for the rule text, fail-loud in the log
+    (rule_delivery_suppressed). Dedupe is two-layer:
+      (a) marker scan of the request's own messages (in-context dedupe),
+      (b) process latch keyed on session_id (or a hash of the context's
+          first message when no session id is available) + the injected
+          rule TEXT — a turn gets at most one seam append, and the previous
+          turn's append is never duplicated even when the gateway does not
+          persist the injected system message across turns.
+    Marked-turn deliveries (orientation/reflection envelopes) are NOT this
+    path and flow unchanged. Returns True when a message was appended.
+    Never raises."""
+    try:
+        msgs = (request or {}).get("messages")
+        if not isinstance(msgs, list):
+            return False
+        for m in msgs:
+            if (isinstance(m, dict) and m.get("role") == "system"
+                    and HIGHER_SELF_RULE_MARKER in str(m.get("content") or "")):
+                return False  # (a) already carried in-context
+        rule_text = higher_self_rule()
+        stamped = (HS_SEAM_MARKER + "\n" + rule_text) if (
+            isinstance(rule_text, str) and rule_text.strip()) else ""
+        if not stamped or HIGHER_SELF_RULE_MARKER not in stamped \
+                or HS_SEAM_MARKER not in stamped:
+            # (2) unmarkable rule text at the delivery boundary -> suppress
+            # the append entirely; fail-loud in the log, never break routing.
+            try:
+                logging.getLogger("hermes_router.frames").error(
+                    "rule_delivery_suppressed rule_text=%r stampable=%s",
+                    str(rule_text)[:120], bool(stamped))
+            except Exception:  # noqa: BLE001 — logging must never raise
+                pass
+            return False
+        key = _rule_context_key(msgs, session_id)
+        if key and _rule_already_delivered(key, stamped):
+            return False  # (b) previous-turn append not duplicated
+        msgs.append({"role": "system", "content": stamped})
+        if key:
+            _rule_latch_store(key, stamped)
+        return True
+    except Exception:  # noqa: BLE001 — identity frame must never break routing
+        try:
+            logging.getLogger("hermes_router.frames").exception(
+                "rule_delivery_suppressed reason=exception")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
+# --- rider 22: once-per-context latch (cross-turn dedupe) -------------------
+
+_RULE_LATCH_LOCK = None  # lazy: threading.Lock created on first use
+_RULE_LATCH: Dict[str, str] = {}
+_RULE_LATCH_MAX = 512
+
+
+def _rule_context_key(msgs: list, session_id: str) -> str:
+    """Stable per-context key: session_id when bound, else a hash of the
+    context's first message content (the gateway re-sends the full context
+    every turn, so the first message is turn-stable). Empty when nothing is
+    available to key on (caller then relies on the marker scan alone)."""
+    import hashlib
+
+    try:
+        if str(session_id or "").strip():
+            return "sid:" + str(session_id)
+        for m in (msgs or []):
+            if isinstance(m, dict):
+                c = m.get("content")
+                if isinstance(c, str) and c.strip():
+                    return "hash:" + hashlib.sha256(
+                        c.encode("utf-8", "replace")).hexdigest()[:32]
+    except Exception:  # noqa: BLE001 — key derivation must never raise
+        return ""
+    return ""
+
+
+def _rule_already_delivered(key: str, stamped_text: str) -> bool:
+    """True when THIS context already received this exact stamped rule text
+    (previous-turn append — never duplicate). Bounded latch; prunes oldest
+    entries past _RULE_LATCH_MAX. Never raises."""
+    global _RULE_LATCH_LOCK
+    try:
+        import threading
+
+        if _RULE_LATCH_LOCK is None:
+            _RULE_LATCH_LOCK = threading.Lock()
+        with _RULE_LATCH_LOCK:
+            return _RULE_LATCH.get(key) == stamped_text
+    except Exception:  # noqa: BLE001 — dedupe failure must not suppress delivery
+        return False
+
+
+def _rule_latch_store(key: str, stamped_text: str) -> None:
+    global _RULE_LATCH_LOCK
+    try:
+        import threading
+
+        if _RULE_LATCH_LOCK is None:
+            _RULE_LATCH_LOCK = threading.Lock()
+        with _RULE_LATCH_LOCK:
+            if key not in _RULE_LATCH and len(_RULE_LATCH) >= _RULE_LATCH_MAX:
+                for k in list(_RULE_LATCH.keys())[:len(_RULE_LATCH) - _RULE_LATCH_MAX + 1]:
+                    _RULE_LATCH.pop(k, None)
+            _RULE_LATCH[key] = stamped_text
+    except Exception:  # noqa: BLE001 — latch failure must not break routing
+        pass
+
+
+def reset_rule_latch() -> None:
+    """Test hook: clear the once-per-context latch."""
+    global _RULE_LATCH_LOCK
+    try:
+        import threading
+
+        if _RULE_LATCH_LOCK is None:
+            _RULE_LATCH_LOCK = threading.Lock()
+        with _RULE_LATCH_LOCK:
+            _RULE_LATCH.clear()
+    except Exception:  # noqa: BLE001
+        pass

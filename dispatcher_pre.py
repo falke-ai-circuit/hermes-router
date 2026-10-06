@@ -133,19 +133,23 @@ def _banner_tokens_from_last_write(lane: str, session_id: str) -> "tuple[int, in
 # ---------------------------------------------------------------------------
 
 
-def _hs_inject_pass(request: Any) -> bool:
+def _hs_inject_pass(request: Any, session_id: str = "") -> bool:
     """Pass 1 — higher-self identity rule (Goran 2026-09-08): once per
     context, the agent is told that frontier-derived marked turns are her own
     higher-self reflections - parity with the shadow-self doctrine.
     Idempotent (marker dedupe), only when a frontier seam is active.
     Injected FIRST so gate pass-through returns in on_llm_request still
-    propagate it. Returns True when a message was appended."""
+    propagate it. Returns True when a message was appended.
+    RIDER 22: session_id (bound from the context kwargs by the caller) rides
+    into frames.inject_higher_self_rule so the once-per-context latch keys
+    per session — the gateway does not persist the injected system message
+    across turns, so the marker scan alone re-injected on every turn."""
     try:
         from .frames import higher_self_rule_enabled, inject_higher_self_rule  # R8h
 
         if higher_self_rule_enabled():
             _before = len((request or {}).get("messages") or [])
-            inject_higher_self_rule(request)
+            inject_higher_self_rule(request, session_id=str(session_id or ""))
             return len((request or {}).get("messages") or []) > _before
     except Exception:  # noqa: BLE001 - identity frame must never break routing
         logger.debug("higher-self rule injection error", exc_info=True)
