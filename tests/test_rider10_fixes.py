@@ -406,6 +406,8 @@ def test_r10_4_risk_consult_fires_decision_stack(r10_reset, monkeypatch):
     monkeypatch.setattr(rc, "_lane_enabled",
                         lambda lane: lane != rc.LANE_COMPLEXITY)
     monkeypatch.setattr(rc, "_consult_cooldown_knob", lambda: 0)
+    # R21 FABLE-PIN: a risk consult fires only with a config frontier entry.
+    monkeypatch.setattr(rc, "_primary_model", lambda: "z-ai/glm-5.3")
     # stash a manual decision hit so the stack has something to fire
     monkeypatch.setattr(rc, "_manual_line_hit_probe", None, raising=False)
     import hermes_router.decision as dl

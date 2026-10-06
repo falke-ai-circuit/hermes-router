@@ -155,7 +155,7 @@ hermes_router:
     pre_cooldown_seconds: 600
     post_audit_min_turns: 3
   anchor_chain:
-    primary: openrouter://anthropic/claude-fable-5.1
+    primary: nous://z-ai/glm-5.3
     judge: openrouter://openai/o4-mini     # verification/consult tier
     overflow: pass_through                  # fail/over-cap → main model + route_skipped log
     daily_cap_usd: 2.0                      # non-tunable floor; raise only via router_control

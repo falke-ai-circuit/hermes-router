@@ -159,6 +159,14 @@ def test_item1_emit_failure_is_fail_loud_not_silent(_reset, monkeypatch, caplog)
         raise RuntimeError("simulated emit failure")
 
     monkeypatch.setattr(plugin, "_log_route", _boom)
+    # R21 FABLE-PIN: consults fire only with a config frontier entry — give
+    # the dispatch a concrete primary so the emit-failure pin still drives
+    # the manual_open_question_frontier path.
+    _chain = mock.Mock()
+    _ep = mock.Mock(model="z-ai/glm-5.3")
+    _chain.endpoint_for.return_value = _ep
+    monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain",
+                        lambda: _chain)
     with caplog.at_level(logging.WARNING, logger="hermes_router.router_core"):
         d = router_core.dispatch("decide this: how should we restructure the "
                                  "audit pipeline? I want your open take.",
@@ -243,17 +251,29 @@ def test_item3_clean_opinion_stands_down(_reset, monkeypatch):
     assert not any(str(ev).startswith("risk_consult_fire") for ev in evs), evs
 
 
-def test_item3_real_risky_ask_still_fires(_reset):
+def test_item3_real_risky_ask_still_fires(_reset, monkeypatch):
     """FP pin: the default-deny is STRUCTURAL — a real risky ask keeps
-    its frontier risk consult."""
+    its frontier risk consult (R21: config carries a concrete frontier
+    primary so the consult is allowed to fire)."""
+    _chain = mock.Mock()
+    _ep = mock.Mock(model="z-ai/glm-5.3")
+    _chain.endpoint_for.return_value = _ep
+    monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain",
+                        lambda: _chain)
     d = router_core.dispatch(RISKY_ASK, session_id=SID + "-fp1", model="m")
     assert d.mode == router_core.MODE_CONSULT
     assert d.reason == "risk_r3"
 
 
-def test_item3_risky_opinion_with_declared_fork_still_fires(_reset):
+def test_item3_risky_opinion_with_declared_fork_still_fires(_reset, monkeypatch):
     """FP pin: an opinion-shaped ask WITH a declared fork structure never
-    stands down (the fork is real consult material)."""
+    stands down (the fork is real consult material; R21: concrete config
+    frontier primary so the consult is allowed to fire)."""
+    _chain = mock.Mock()
+    _ep = mock.Mock(model="z-ai/glm-5.3")
+    _chain.endpoint_for.return_value = _ep
+    monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain",
+                        lambda: _chain)
     d = router_core.dispatch(RISKY_OPINION_WITH_FORK,
                              session_id=SID + "-fp2", model="m")
     assert d.mode == router_core.MODE_CONSULT

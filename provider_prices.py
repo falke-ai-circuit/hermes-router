@@ -78,6 +78,9 @@ def _write_cache(prices: Dict[str, Any]) -> None:
 # model_target=fable, finish_reason=none, anchored_call_failed). Stale-ok
 # by design: only consulted when the live fetch yields nothing. Same
 # profile-home placement + 0o600 hygiene as the pricing cache.
+# R21 FABLE-PIN: consults pin to the CONFIG frontier primary verbatim; a
+# fable target fires only on explicit per-request naming — otherwise the
+# staging seam fail-closes (fable_target_not_explicit), never 404s.
 _CATALOG_CACHE_FILENAME = "hermes-router-catalog-cache.json"
 
 
@@ -356,7 +359,11 @@ def provider_catalog_entries(lane: str) -> tuple:
             # anchored_call_failed) can still resolve concrete provider
             # ids. Stale-ok: the cache is only consulted when the live
             # fetch yields nothing, and the entry provenance is logged by
-            # the caller's normal resolution path. Never raises.
+            # the caller's normal resolution path. (R21 FABLE-PIN: consults
+            # now pin to the CONFIG frontier primary verbatim — a fable
+            # target fires only on explicit per-request naming, so a
+            # mispinned primary fail-closes instead of 404ing.) Never
+            # raises.
             _write_catalog_cache(lane, tuple(out))
         else:
             # Live fetch empty (flake / outage): serve the disk-backed

@@ -152,26 +152,30 @@ def _consult_decision(model_target="fable", lane=None):
 
 
 def test_stage_model_swap_resolves_fable_target(monkeypatch):
-    """R16-1 fix at the staging seam: a model_target=fable consult stages an
-    endpoint whose model is the catalog-resolved concrete id."""
-    _cfg(monkeypatch, primary="nous://fable", models=None)
+    """R16-1 fix at the staging seam + R21 FABLE-PIN: the catalog still
+    upgrades a bare alias-like primary to a CONCRETE provider id — pinned
+    here with a NON-fable id (a fable target is R21 fail-closed; the
+    fable resolution contract itself is pinned at resolve_model_alias
+    level + in test_rider21_fixes)."""
+    _cfg(monkeypatch, primary="nous://gpt-5", models=None)
     _catalog(monkeypatch)
-    rec = router_core.stage_model_swap(SID, _consult_decision("fable"))
+    rec = router_core.stage_model_swap(SID, _consult_decision("gpt 5"))
     assert rec is not None
     ep = rec["endpoint"]
-    assert ep.model == "anthropic/claude-fable-5.1", ep.model
+    assert ep.model == "openai/gpt-5.6-luna-pro", ep.model
     # scheme/base/key unchanged — same provider chain, only the model swapped
     assert ep.scheme == "nous"
 
 
 def test_stage_model_swap_resolves_bare_primary_endpoint(monkeypatch):
     """Declared consults stage model_target=None + the configured primary
-    endpoint — a bare alias-like primary must be upgraded the same way."""
-    _cfg(monkeypatch, primary="nous://fable", models=None)
+    endpoint — a bare alias-like primary must be upgraded the same way
+    (non-fable id per R21)."""
+    _cfg(monkeypatch, primary="nous://gpt-5", models=None)
     _catalog(monkeypatch)
     rec = router_core.stage_model_swap(SID, _consult_decision(None))
     assert rec is not None
-    assert rec["endpoint"].model == "anthropic/claude-fable-5.1"
+    assert rec["endpoint"].model == "openai/gpt-5.6-luna-pro"
 
 
 def test_stage_model_swap_failopen_primary(monkeypatch):
@@ -222,13 +226,13 @@ def test_anchored_failure_skip_carries_resolved_model(monkeypatch):
     (now-resolved) model id — never the empty-model field t1r10 recorded
     ('model=' on every fable failure)."""
     from hermes_router.router_core import LANE_COMPLEXITY, MODE_CONSULT
-    _cfg(monkeypatch, primary="nous://fable", models=None)
+    _cfg(monkeypatch, primary="nous://gpt-5", models=None)
     _catalog(monkeypatch)
     plugin.state.clear()
-    dec = _consult_decision("fable")
+    dec = _consult_decision("gpt 5")
     assert router_core.stage_model_swap(SID, dec) is not None
     # the staged record's endpoint model is concrete before execution reads it
     rec = router_core.peek_pending_swap(SID)
     assert rec is not None
-    assert str(rec["endpoint"].model) == "anthropic/claude-fable-5.1"
+    assert str(rec["endpoint"].model) == "openai/gpt-5.6-luna-pro"
     assert LANE_COMPLEXITY and MODE_CONSULT  # import contract pin

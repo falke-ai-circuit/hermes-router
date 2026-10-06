@@ -1,3 +1,39 @@
+## 4.22.0 — 2026-10-06 (FIX-FIRST rider 21 — FABLE-PIN: consults pin to config frontier, fable only on explicit request)
+
+Disaster class: fable 5.1 burned money on the nous portal (live: analyst
+2026-10-06 13:50-13:59Z — risk_r2 + manual_open_question_frontier consults
+resolved model_target=fable -> anthropic/claude-fable-5.1 and billed, while
+the profile config frontier primary was nous://z-ai/glm-5.3). User directive
+(verbatim intent): "hermes router should use frontier defined in config, not
+deviate. Do not use fable unless specified in the frontier request to use
+fable or custom model." No deploy, no bounces, no config writes.
+
+- Config-pinned consults (R21 item 1): every consult target resolves from
+  the config anchor_chain.primary (frontier/consult setting) VERBATIM —
+  hardcoded fable primary removed from the chain example (anchor_chain.py
+  docstring + README config example now nous://z-ai/glm-5.3); provider
+  comment rows (provider_prices.py catalog-cache notes) updated with the
+  R21 pin rule.
+- Fable only on explicit per-request specification (R21 item 2): new
+  fail-closed guard at the single staging choke (router_core.
+  stage_model_swap) — a final staged model in the fable family with NO
+  declared_user named-model override naming fable refuses to stage (None,
+  fable_target_not_explicit logged; config-pinned fable primary, catalog/
+  alias upgrades, non-user overrides all fail-closed; no billed consult,
+  no banner).
+- Fail-closed, no silent fallback (R21 item 3): config with NO frontier
+  entry (anchor_chain.primary unresolvable) -> consults do NOT fire — new
+  _consult_no_frontier_config() gate stands the consult down at every fire
+  site (complexity stage1/override_anchor, complexity_orientation,
+  override_anchor L0+L1, risk_r*, manual_open_question_frontier) with
+  reason=consult_no_frontier_config (flash-direct, no route event, no
+  staging).
+- Explicit-fable pass-through preserved: a declared_user named-model
+  override naming fable still stages exactly as asked (R7 user-only rule
+  untouched; fable via 'consult fable' works, never otherwise).
+- Pins: tests/test_rider21_fixes.py (8). Stale version pin:
+  test_r10_catalog_resolution.py -> 4.22.0. plugin.yaml 4.22.0 + CHANGELOG.
+
 ## 4.21.0 — 2026-10-06 (FIX-FIRST rider 20 — benign-ZERO completion-audit gate + hook budget)
 
 Source: T1 re-run #13 verdict (/opt/data/tmp/t1r13-results-2026-10-06.md,

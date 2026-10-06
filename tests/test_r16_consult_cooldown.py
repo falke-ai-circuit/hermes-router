@@ -34,6 +34,10 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
     monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R21 FABLE-PIN: consults fire only with a config frontier entry — give
+    # every cooldown test a concrete primary so consult-fire pins still drive.
+    monkeypatch.setattr(router_core, "_primary_model",
+                        lambda: "z-ai/glm-5.3")
     yield
     router_core._cooldown_test_reset()
 

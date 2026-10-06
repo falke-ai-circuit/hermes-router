@@ -4,7 +4,14 @@ lane (v3.0.0).
 ANCHOR CHAIN (config, per-deployment — ZERO endpoint knowledge in code):
 
   anchor_chain:
-    primary: openrouter://anthropic/claude-fable-5.1
+    primary: nous://z-ai/glm-5.3   # config frontier/consult model
+
+R21 FABLE-PIN (Goran 10-06): the consult target is the CONFIG primary —
+the frontier/consult model setting, used verbatim. The router NEVER
+deviates to any hardcoded default; a fable-family target fires ONLY when
+the user's own request explicitly names fable (declared_user named-model
+override). Config with no anchor_chain.primary entry -> consults fail
+CLOSED (consult_no_frontier_config; no silent fallback to any model).
     judge: openrouter://openai/o4-mini        # verification/consult tier
     overflow: pass_through                     # fail/over-cap -> flash + route_skipped log
 

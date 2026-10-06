@@ -1269,6 +1269,13 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # forms in the decision lane (post_fork_scan owns
                     # those). Declared/explicit anchors unaffected.
                     try:
+                        # Rider 21 (FABLE-PIN) fail-closed: config with no
+                        # frontier entry (anchor_chain.primary unresolvable)
+                        # -> the consult does NOT fire (no route event, no
+                        # staging, no silent fallback to any default model).
+                        if _consult_no_frontier_config():
+                            return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                        None, "consult_no_frontier_config")
                         try:
                             from . import _log_route as _lrf4  # relative: gateway-safe (rider 19 item 1)
                         except ImportError:  # pragma: no cover — top-level script load only
@@ -1476,6 +1483,9 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 # but doesn't have to be followed"). Manual anchor override
                 # keeps direct-consult semantics (frontier answers the ask).
                 if override == "anchor":
+                    if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                        return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                    "consult_no_frontier_config")
                     return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                                 "complexity_" + str(meta.get("stage", "stage1")),
                                 override, orientation=False)
@@ -1489,17 +1499,26 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 # R8-4 (rider 8): compound turn — decision consult fires
                 # async BEFORE the orientation consult routes.
                 _fire_decision_stack()
+                if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                "consult_no_frontier_config")
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "complexity_orientation",
                             orientation=True)
             if override == "anchor":
                 # explicit ask outranks a "clear_simple" verdict at any level:
                 # manual-only semantics (L1) and the inline override contract.
+                if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                "consult_no_frontier_config")
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "override_anchor", override)
         elif override == "anchor":
             # L0 with explicit ask: honor the manual anchor.
             if _lane_enabled(LANE_COMPLEXITY):
+                if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                "consult_no_frontier_config")
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "override_anchor", override)
 
@@ -1620,6 +1639,9 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             # complexity-orientation return does; otherwise the
                             # risk return short-circuits the decision leg.
                             _fire_decision_stack()
+                            if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                                return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
+                                            None, "consult_no_frontier_config")
                             return _dec(LANE_COMPLEXITY, MODE_CONSULT,
                                         _primary_model(),
                                         "risk_" + str(_rcls), orientation=True)
@@ -1754,6 +1776,17 @@ def _primary_model() -> Optional[str]:
         return None
 
 
+def _consult_no_frontier_config() -> bool:
+    """Rider 21 (FABLE-PIN) fail-closed: True when config carries NO
+    frontier/consult entry (anchor_chain.primary unresolvable) — consults
+    must NOT fire (no silent fallback to any hardcoded/default model).
+    Never raises."""
+    try:
+        return _primary_model() is None
+    except Exception:  # noqa: BLE001
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Pending swap (PRE decision -> llm_execution middleware handoff)
 # ---------------------------------------------------------------------------
@@ -1865,6 +1898,36 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                             and str(_resolved[1]).strip() != str(ep.model or "").strip():
                         ep = anchor_chain.override_endpoint(ep, _resolved[1])
         except Exception:  # noqa: BLE001 — resolution is best-effort
+            pass
+        # Rider 21 (FABLE-PIN): a fable-family target fires ONLY on explicit
+        # per-request specification (the user's own declared_user named-model
+        # override naming fable). Any other path to a fable id — config
+        # primary, alias/catalog resolution, staging defaults — is refused:
+        # fail-CLOSED, no staging (no billed consult, no banner), logged
+        # fable_target_not_explicit. The config frontier primary is used
+        # verbatim, never deviated from.
+        try:
+            _final_model = str(getattr(ep, "model", "") or "").lower()
+            if "fable" in _final_model:
+                _named_fable = (
+                    isinstance(model_override, tuple) and len(model_override) == 2
+                    and "fable" in str(model_override[1] or "").lower()
+                    and str(claim_source or "") == "declared_user")
+                if not _named_fable:
+                    try:
+                        try:
+                            from . import _log_route  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route
+                        _log_route("PRE", event_detail="fable_target_not_explicit",
+                                   model=str(getattr(ep, "model", "")),
+                                   reason=str(getattr(decision, "reason", "") or ""),
+                                   task_id=str(getattr(decision, "task_id", "") or ""),
+                                   session_id=str(session_id or ""))
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('fable_target_not_explicit', _obs_exc)
+                    return None
+        except Exception:  # noqa: BLE001 — the guard is fail-closed by intent
             pass
         rec = {
             "route_id": decision.route_id,
