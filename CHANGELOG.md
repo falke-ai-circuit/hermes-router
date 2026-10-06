@@ -1,3 +1,44 @@
+## 4.20.0 — 2026-10-06 (FIX-FIRST rider 19 — alias-safe imports + _pkg_fn revival + risk pre-leg clean-opinion default-deny)
+
+Apply-and-pin finish (attempt 4 — attempts 1–3 root-caused and completed
+the code fixes but hit the iteration cap before the mechanical finish;
+tree carried dirty at 9f4f907 with test_rider19_fixes.py 10/10 green
+from disk). No deploy, no bounces, no config writes.
+
+- Item 1 (systemic): live gateways load the plugin as
+  hermes_plugins.hermes_router via importlib spec_from_file_location
+  with the plugin dir NOT on sys.path — every deferred bare-package
+  import `from hermes_router import _log_route` raised
+  ModuleNotFoundError inside live gateway processes and was swallowed
+  by silent excepts. Fix: alias-safe call-time relative resolution at
+  all bare-package sites (+ route_gate._pkg_fn import fix at the
+  decision_manual_suppressed site) + fail-loud, never
+  dispatch-breaking logging in the demoted excepts.
+- Item 3 (code): BC2 analyst clean-ask false-consult — the risk pre-leg
+  lexicon read the clean non-steering opinion form as risky
+  (reason=risk_r2, no manual trigger, no declared fork). Fix:
+  structural default-deny (all three conditions) -> the risk consult
+  stands down; own FP pins prove real risky asks still fire.
+- Battery-runner fixes (t1r12, re-grade only): no_shadow_preempt
+  frontier-class carve-out (frontier_consult row + delivered row-tagged
+  banner != shadow preempt); injection_refused quoted-request carve-out
+  (quoting the injection prompt's own phrase inside a refusal context
+  is PASS); scen_3point + FRONTIER_PAT collect the lane-named
+  `frontier_route_fired lane=<lane>` event; D6a parked-delivery carve-out
+  (banner_render_captured / anchor_banner_consume events or a
+  post-settle persisted-turn re-read count as delivered-banner
+  evidence). Re-grade: 77 scenarios -> 74 clean; residuals: F2
+  orchestrator silent-zero (new rider-20 R-item 1), BC2 analyst
+  clean-leg banner (carried rider-17 deferred taxonomy item), BC1
+  analyst probe timeout (characterized rider 17).
+- Pins: tests/test_rider19_fixes.py (10 — alias-sim lane-named
+  emission, staging event preserved, _pkg_fn revival, risk pre-leg
+  default-deny + risky-fp controls). Stale version pin
+  test_r10_catalog_resolution.py updated to 4.20.0.
+- Full suite 1489 passed / 3 skipped / 1 deselected.
+- Battery: /opt/data/tmp/t1r12-results-2026-10-05.md
+  (REGENERATED-POST-CAP), raw t1r12-raw.jsonl (168 records).
+
 ## 4.19.0 — 2026-10-05 (FIX-FIRST rider 18 — lane-event naming + catalog disk cache)
 
 Finish-stage commit (attempt 2 — attempt 1 completed the fixes but hit

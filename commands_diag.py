@@ -57,9 +57,13 @@ def _route_log_path() -> str:
     except Exception:  # noqa: BLE001
         pass
     # Import the real reader from the package root (import-cycle-safe: read
-    # through the package, never duplicate config logic).
+    # through the package, never duplicate config logic). Rider 19 item 1:
+    # alias-safe resolution — under the live gateway the plugin package is
+    # NOT importable as top-level `hermes_router`.
     try:
-        import hermes_router as _plugin
+        import sys as _sys
+
+        _plugin = _sys.modules[__package__ or "hermes_router"]
 
         return str(_plugin._log_path())
     except Exception:  # noqa: BLE001

@@ -531,12 +531,18 @@ def retry_anchored_async(session_id: str, rec: Dict[str, Any],
 
         def _log(event: str, **fields: Any) -> None:
             try:
-                import hermes_router as _hr
+                # Rider 19 item 1: alias-safe relative resolution — the live
+                # gateway loads this module as hermes_plugins.hermes_router
+                # (no hermes_router top-level name on sys.path), so the bare
+                # `import hermes_router` raised ModuleNotFoundError and the
+                # event was swallowed.
+                from . import _log_route as _lrh
 
-                _hr._log_route("PRE", event_detail=event,
+                _lrh("PRE", event_detail=event,
                                session_id=str(session_id or ""), **fields)
-            except Exception:  # noqa: BLE001 — logging never raises
-                pass
+            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                logger.warning("route_event_emit_failed where=anchor_retry err=%r",
+                               _obs_exc)
 
         def _worker() -> None:
             try:
@@ -969,12 +975,15 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # the four-leg dead turn). Never fail-open silently again: the
         # failure is OBSERVABLE at route-log level before the pass-through.
         try:
-            from hermes_router import _log_route as _lrx
+            try:
+                from . import _log_route as _lrx  # relative: gateway-safe (rider 19 item 1)
+            except ImportError:  # pragma: no cover — top-level script load only
+                from hermes_router import _log_route as _lrx
 
             _lrx("PRE", event_detail="anchor_execution_exception",
                  fail_kind=str(exc)[:160],
                  fail_type=type(exc).__name__,
                  session_id=str(session_id or ""))
-        except Exception:  # noqa: BLE001 — observability never raises
-            pass
+        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+            _obs_warn('anchor_execution_exception', _obs_exc)  # rider 19 item 1
         return None

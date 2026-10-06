@@ -44,6 +44,57 @@ from . import state
 
 logger = logging.getLogger(__name__)
 
+
+def _obs_warn(where: str, exc: BaseException) -> None:
+    """Rider 19 item 1 — fail-loud route-event emission failure: the
+    swallow is DEMOTED to a warning log so observability gaps surface in
+    the route log; logging itself must NEVER break dispatch."""
+    try:
+        logger.warning("route_event_emit_failed where=%s err=%r", where, exc)
+    except Exception:  # noqa: BLE001 — logging itself must never break dispatch
+        pass
+
+
+def _clean_opinion_tradeoff(text: str) -> bool:
+    """Rider 19 item 3 (BC2): opinion/take-on-shaped trade-off QUESTION —
+    the first-person ask form ('What's your (substantive/general/own) take
+    on X versus Y?'). Structural shape only: imperative deletions, declared
+    forks and manual triggers are handled by their own conditions. Never
+    raises."""
+    try:
+        t = str(text or "")
+        if "?" not in t:
+            return False
+        return bool(re.search(
+            r"what'?s your (?:substantive |general |own )?take on\b"
+            r"|what'?s your opinion (?:on|of)\b"
+            r"|what'?s your view on\b"
+            r"|\btake on\b[^.?!]{0,120}\bversus\b", t, re.I))
+    except Exception:  # noqa: BLE001 — advisory lane, never raises
+        return False
+
+
+def _no_manual_trigger_pre(text: str) -> bool:
+    """Rider 19 item 3: True when the text carries NO trusted manual
+    trigger ('decide this: ...'). Never raises."""
+    try:
+        from . import decision as _dlane_r
+        return _dlane_r.manual_line_hit(text, _decision_cfg()) is None
+    except Exception:  # noqa: BLE001 — advisory lane, never raises
+        return False
+
+
+def _declared_fork_pre(text: str) -> bool:
+    """Rider 19 item 3: True when the text carries an explicitly declared
+    closed-fork structure (decision.has_declared_fork_structure). The
+    prose 'X versus Y' fallback deliberately does NOT count (rider 4)."""
+    try:
+        from . import decision as _dlane_r
+        return bool(_dlane_r.has_declared_fork_structure(text))
+    except Exception:  # noqa: BLE001 — advisory lane, never raises
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Lanes + modes
 # ---------------------------------------------------------------------------
@@ -644,12 +695,15 @@ def _consult_cooldown_active(session_id: str, user_text: str) -> bool:
         if turns_since is None or turns_since >= needed:
             return False
         try:
-            from hermes_router import _log_route as _lr  # deferred - import cycle
+            try:
+                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+            except ImportError:  # pragma: no cover — top-level script load only
+                from hermes_router import _log_route as _lr  # deferred - import cycle
             _lr("PRE", session_id=session_id,
                 event_detail="consult_cooldown_suppressed",
                 cd_hash=cd_hash[:8], turns_since=turns_since, needed=needed)
-        except Exception:  # noqa: BLE001 — observability only
-            pass
+        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+            _obs_warn('consult_cooldown_suppressed', _obs_exc)  # rider 19 item 1
         return True
     except Exception:  # noqa: BLE001 — advisory lane never blocks
         return False
@@ -885,12 +939,15 @@ def clear_anchor_backoff(session_id: str, task_id: str) -> None:
             _load_backoff_sidecar_locked()
             if _ANCHOR_FAIL_BACKOFF.pop(key, None) is not None:
                 _save_backoff_sidecar_locked()
-                from hermes_router import _log_route  # deferred — import cycle
+                try:
+                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
+                except ImportError:  # pragma: no cover — top-level script load only
+                    from hermes_router import _log_route  # deferred — import cycle
 
                 _log_route("PRE", event_detail="anchor_backoff_cleared",
                            task_id=key[1], session_id=key[0])
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+        _obs_warn('anchor_backoff_cleared', _obs_exc)  # rider 19 item 1
 
 
 def anchor_backoff_active(session_id: str, task_id: str,
@@ -1105,7 +1162,10 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         _manual_stack["text"] = None
         try:
             from . import decision as _dm
-            from hermes_router import _log_route as _lr  # deferred - import cycle
+            try:
+                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+            except ImportError:  # pragma: no cover — top-level script load only
+                from hermes_router import _log_route as _lr  # deferred - import cycle
 
             _dm.handle_decision_v3(
                 session_id=session_id, task_id=task_id,
@@ -1116,8 +1176,8 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     event_detail="decision_compound_stack",
                     lane=LANE_DECISION, task_id=task_id,
                     reason="manual_plus_consult_turn")
-            except Exception:  # noqa: BLE001 — observability only
-                pass
+            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                _obs_warn('decision_compound_stack', _obs_exc)  # rider 19 item 1
         except Exception:  # noqa: BLE001 — stack must never break dispatch
             pass
 
@@ -1133,14 +1193,17 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             _cool_ts, _ = None, ""
             _since = -1
             try:
-                from hermes_router import _log_route as _lr  # deferred - import cycle
+                try:
+                    from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                except ImportError:  # pragma: no cover — top-level script load only
+                    from hermes_router import _log_route as _lr  # deferred - import cycle
                 _cool_ts, _ = state.last_staged_consult(session_id)
                 _since = int(time.time() - _cool_ts) if _cool_ts else -1
                 _lr("PRE", session_id=session_id,
                     event_detail="pre_cooldown_active", since=_since,
                     task_id=task_id)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                _obs_warn('pre_cooldown_active', _obs_exc)  # rider 19 item 1
             emit_pre_cooldown_suppressed_consult(session_id, task_id, _since)
             return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None, "pre_cooldown_skip")
 
@@ -1180,15 +1243,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 _scan_text_m = user_text
                 if _inj_m:
                     try:
-                        from hermes_router import _log_route as _lrj
+                        try:
+                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lrj
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged",
                              family="prompt_injection",
                              signal=str(_inj_m), lane=LANE_DECISION,
                              trigger="manual", seam="pre_dispatch",
                              task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('injection_flagged', _obs_exc)  # rider 19 item 1
                     _scan_text_m = _strip_injection_clause(user_text)
                 _mhit = _dlane_m.manual_line_hit(_scan_text_m, _dcfg_m)
                 if (_mhit is not None and not list(_mhit.get("options") or [])
@@ -1203,7 +1269,10 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # forms in the decision lane (post_fork_scan owns
                     # those). Declared/explicit anchors unaffected.
                     try:
-                        from hermes_router import _log_route as _lrf4
+                        try:
+                            from . import _log_route as _lrf4  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lrf4
                         # Rider 18 R16-1: the route is a FRONTIER consult
                         # (manual open-question). Emit the frontier-lane-
                         # NAMED event first (t1r11 item 1: every four-leg
@@ -1221,8 +1290,8 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                               event_detail="manual_open_question_frontier",
                               lane=LANE_COMPLEXITY, mode=MODE_CONSULT,
                               task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('frontier_route_fired', _obs_exc)  # rider 19 item 1
                     return _dec(LANE_COMPLEXITY, MODE_CONSULT,
                                 _primary_model(),
                                 "manual_open_question_frontier",
@@ -1231,50 +1300,65 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # explicit suppressed pair: the fork died with the
                     # clause cut (no fork consult on the flagged turn).
                     try:
-                        from hermes_router import _log_route as _lrj
+                        try:
+                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lrj
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged_fork_suppressed",
                              family="prompt_injection",
                              signal=str(_inj_m), lane=LANE_DECISION,
                              trigger="manual", seam="pre_dispatch",
                              reason="no_fork_survives", task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('injection_flagged_fork_suppressed', _obs_exc)  # rider 19 item 1
                 if _mhit is not None and _inj_m:
                     try:
-                        from hermes_router import _log_route as _lrj
+                        try:
+                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lrj
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged_fork_preserved",
                              family="prompt_injection",
                              signal=str(_inj_m), lane=LANE_DECISION,
                              trigger="manual", seam="pre_dispatch",
                              task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('injection_flagged_fork_preserved', _obs_exc)  # rider 19 item 1
                     # R19.19 P1 (architect parity): a manual 'decide this:'
                     # ask on a gateway whose decision lane is DISABLED must
                     # be OBSERVED — silent-zero lane events are undiagnosable
                     # (architect: zero lane events on a manual fork).
                     try:
-                        _pkg_fn("_log_route")(
+                        # Rider 19 item 1: _pkg_fn lives in route_gate and was
+                        # NEVER imported here (NameError -> swallowed -> the
+                        # decision_manual_suppressed event was dead in every
+                        # context). Resolve it from route_gate at call time;
+                        # package-namespace monkeypatch visibility preserved.
+                        from .route_gate import _pkg_fn as _pkg_fn_gate
+                        _pkg_fn_gate("_log_route")(
                             "PRE", event_detail="decision_manual_suppressed",
                             reason="lane_disabled",
                             session_id=str(session_id or ""))
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('decision_manual_suppressed', _obs_exc)
                 if _mhit is not None:
                     _mdec = _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
                                  "decision_detected:manual_ask")
                     try:
-                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        try:
+                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lr  # deferred - import cycle
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_route_fired",
                             lane=LANE_DECISION, mode=MODE_DECISION_SCORE,
                             reason="decision_detected:manual_ask",
                             route_id=_mdec.route_id,
                             task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('decision_route_fired', _obs_exc)  # rider 19 item 1
                     # R8-4 (rider 8): the manual decision ask must NOT be
                     # decided between here and complexity/risk — a compound
                     # turn (fork wrapped in complexity work, live: operative
@@ -1310,12 +1394,15 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 dh_backend = "heuristic"
             if _is_system_injected_turn(user_text):
                 try:
-                    from hermes_router import _log_route as _lr  # deferred - import cycle
+                    try:
+                        from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                    except ImportError:  # pragma: no cover — top-level script load only
+                        from hermes_router import _log_route as _lr  # deferred - import cycle
                     _lr("PRE", session_id=session_id,
                         event_detail="complexity_pre_skip_system_injected",
                         task_id=task_id, level=level)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                    _obs_warn('complexity_pre_skip_system_injected', _obs_exc)  # rider 19 item 1
                 route_complex = False
             # Router tuning A1 (2026-09-09): verify-class exempt — short
             # imperative confirm/status asks skip PRE orientation entirely.
@@ -1324,12 +1411,15 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             # override line still anchors).
             elif (_is_verify_class_exempt(user_text) and override != "anchor"):
                 try:
-                    from hermes_router import _log_route as _lr  # deferred - import cycle
+                    try:
+                        from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                    except ImportError:  # pragma: no cover — top-level script load only
+                        from hermes_router import _log_route as _lr  # deferred - import cycle
                     _lr("PRE", session_id=session_id,
                         event_detail="verify_class_exempt",
                         pattern_groups="clear_simple", task_id=task_id)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                    _obs_warn('verify_class_exempt', _obs_exc)  # rider 19 item 1
                 route_complex = False
             _pre_mode = str((_complexity_cfg() or {}).get("pre_mode") or "off").strip().lower()
             if dh_backend != "heuristic":
@@ -1364,7 +1454,10 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     from . import decision as _dlane_bf
 
                     if _dlane_bf._benign_brief_frame(user_text):
-                        from hermes_router import _log_route as _lrbf
+                        try:
+                            from . import _log_route as _lrbf  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lrbf
 
                         _lrbf("PRE", session_id=session_id,
                               event_detail="complexity_pre_suppressed",
@@ -1372,8 +1465,8 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                               stage1=str(meta.get("stage1")),
                               task_id=task_id, level=level)
                         route_complex = False
-                except Exception:  # noqa: BLE001 — gate must never break dispatch
-                    pass
+                except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                    _obs_warn('complexity_pre_suppressed', _obs_exc)  # rider 19 item 1
             if route_complex:
                 # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no
                 # longer plans the task — it delivers an ORIENTATION BRIEF:
@@ -1424,6 +1517,40 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 _rcfg = _risk.risk_cfg()
                 _rmode = str(_rcfg.get("mode") or "consult").strip().lower()
                 if _rmode == "consult" and bool(_rcfg.get("pre_lexicon", True)):
+                    # Rider 19 item 3 (BC2 analyst false-consult): STRUCTURAL
+                    # default-deny for clean non-steering opinion forms. A
+                    # first-person opinion ask ("What's your substantive take
+                    # on X versus Y? One pick and a short defense.") carries
+                    # no manual trigger, no declared closed-fork structure,
+                    # and no imperative — but the stage1 risk lexicon reads
+                    # the trade-off frame as risky (live: analyst BC2 clean
+                    # ask, anchor_route_fired reason=risk_r2 @ 22:40:43Z,
+                    # zero manual triggers). The risk consult STANDS DOWN:
+                    # opinion prose is the analyst's job, not a frontier
+                    # consult. All three structural conditions must hold —
+                    # real risky asks (imperatives, declared forks, manual
+                    # triggers, injection clauses) never reach this arm.
+                    if _clean_opinion_tradeoff(user_text) \
+                            and _no_manual_trigger_pre(user_text) \
+                            and not _declared_fork_pre(user_text):
+                        _risk_stand_down = True
+                        try:
+                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lr
+                        try:
+                            _lr("PRE", session_id=session_id,
+                                event_detail="risk_pre_stand_down_clean_opinion",
+                                task_id=task_id)
+                        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                            _obs_warn('risk_pre_stand_down_clean_opinion', _obs_exc)
+                    else:
+                        _risk_stand_down = False
+                    if _risk_stand_down:
+                        # clean opinion: the risk consult stands down; the
+                        # turn falls through (the decision lane still owns
+                        # any manual/fork content, none is present here).
+                        pass  # structural default-deny — no frontier consult
                     # R10-4 (rider 10, C3): the complexity leg quarantines
                     # system-injected turns (_is_system_injected_turn);
                     # the risk leg did NOT — an injection-marker clause
@@ -1431,14 +1558,17 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # rule routed reason=risk_r2 AND short-circuited the
                     # decision leg below it (silent fork loss: no consult,
                     # no event). Same quarantine + distinct event.
-                    if _is_system_injected_turn(user_text):
+                    if not _risk_stand_down and _is_system_injected_turn(user_text):
                         try:
-                            from hermes_router import _log_route as _lr
+                            try:
+                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                            except ImportError:  # pragma: no cover — top-level script load only
+                                from hermes_router import _log_route as _lr
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_skip_system_injected",
                                 task_id=task_id)
-                        except Exception:  # noqa: BLE001 — observability only
-                            pass
+                        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                            _obs_warn('risk_pre_skip_system_injected', _obs_exc)  # rider 19 item 1
                     elif _prompt_injection_flag(user_text):
                         # R13-1 (rider 13): an exfiltration-style injection
                         # clause bundled into the user turn is untrusted
@@ -1449,12 +1579,15 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         # risk consult; the decision lane owns the declared
                         # fork and eventsthe preserved/suppressed pair.
                         try:
-                            from hermes_router import _log_route as _lr
+                            try:
+                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                            except ImportError:  # pragma: no cover — top-level script load only
+                                from hermes_router import _log_route as _lr
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_skip_injection_clause",
                                 task_id=task_id)
-                        except Exception:  # noqa: BLE001 — observability only
-                            pass
+                        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                            _obs_warn('risk_pre_skip_injection_clause', _obs_exc)  # rider 19 item 1
                     else:
                         _rcls, _rmeta = _risk.classify(
                             user_text,
@@ -1470,14 +1603,17 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             _record_cooldown_fire(
                                 session_id, _cooldown_hash(session_id, user_text))
                             try:
-                                from hermes_router import _log_route as _lr
+                                try:
+                                    from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                                except ImportError:  # pragma: no cover — top-level script load only
+                                    from hermes_router import _log_route as _lr
                                 _lr("PRE", session_id=session_id,
                                     event_detail="risk_consult_fire",
                                     risk_class=_rcls,
                                     stage=str(_rmeta.get("stage") or "stage1"),
                                     task_id=task_id)
-                            except Exception:  # noqa: BLE001 — observability only
-                                pass
+                            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                                _obs_warn('risk_consult_fire', _obs_exc)  # rider 19 item 1
                             # R10-4 (rider 10, C3): rider-8 compound parity —
                             # fire a stashed manual decision consult async
                             # BEFORE the risk consult routes, exactly like the
@@ -1520,24 +1656,30 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 if _prov_skip or _is_system_injected_turn(user_text):
                     if _prov_skip:
                         try:
-                            from hermes_router import _log_route as _lr  # deferred - import cycle
+                            try:
+                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                            except ImportError:  # pragma: no cover — top-level script load only
+                                from hermes_router import _log_route as _lr  # deferred - import cycle
                             _lr("PRE", session_id=session_id,
                                 event_detail="decision_provenance_skip",
                                 lane=LANE_DECISION, task_id=task_id)
-                        except Exception:  # noqa: BLE001 — observability only
-                            pass
+                        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                            _obs_warn('decision_provenance_skip', _obs_exc)  # rider 19 item 1
                     if _is_system_injected_turn(user_text):
                         # R10-4 (rider 10, C3): an injection-marker turn must
                         # never suppress the decision leg SILENTLY — same
                         # WARN-visibility doctrine as the complexity leg's
                         # complexity_pre_skip_system_injected event.
                         try:
-                            from hermes_router import _log_route as _lr2  # deferred - import cycle
+                            try:
+                                from . import _log_route as _lr2  # relative: gateway-safe (rider 19 item 1)
+                            except ImportError:  # pragma: no cover — top-level script load only
+                                from hermes_router import _log_route as _lr2  # deferred - import cycle
                             _lr2("PRE", session_id=session_id,
                                  event_detail="decision_injected_suppressed",
                                  lane=LANE_DECISION, task_id=task_id)
-                        except Exception:  # noqa: BLE001 — observability only
-                            pass
+                        except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                            _obs_warn('decision_injected_suppressed', _obs_exc)  # rider 19 item 1
                 else:
                     # R19 v3: v3 detection (manual on-demand line, skip bypass,
                     # heuristic pre). Complexity already had its chance above —
@@ -1553,12 +1695,15 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # R19.1 LEG 1: platform envelope — never detect on it.
                     # Log the reason code and fall through to flash-direct.
                     try:
-                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        try:
+                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lr  # deferred - import cycle
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_provenance_skip",
                             lane=LANE_DECISION, task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('decision_provenance_skip', _obs_exc)  # rider 19 item 1
                     _dhit = None
                 if _dhit is not None and _dhit.get("trigger") == "manual" \
                         and not _dlane.on_demand_allowed("manual", _dcfg):
@@ -1573,15 +1718,18 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # async BEFORE the risk consult routes.
                     _fire_decision_stack()
                     try:
-                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                        try:
+                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
+                        except ImportError:  # pragma: no cover — top-level script load only
+                            from hermes_router import _log_route as _lr  # deferred - import cycle
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_detect_fire",
                             lane=LANE_DECISION,
                             families=",".join(_dhit["families"]),
                             level=int(_dhit.get("level") or 2),
                             task_id=task_id)
-                    except Exception:  # noqa: BLE001 — observability only
-                        pass
+                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                        _obs_warn('decision_detect_fire', _obs_exc)  # rider 19 item 1
                     return _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
                                 "decision_detected:"
                                 + ",".join(_dhit["families"]))
@@ -1655,7 +1803,10 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         # counter). disabled config -> always False (v3.3.0 behavior).
         if anchor_backoff_active(key[0], key[1], now=now):
             try:
-                from hermes_router import _log_route  # deferred — import cycle
+                try:
+                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
+                except ImportError:  # pragma: no cover — top-level script load only
+                    from hermes_router import _log_route  # deferred — import cycle
 
                 with _PENDING_SWAP_LOCK:
                     rec = _ANCHOR_FAIL_BACKOFF.get(key) or {}
@@ -1663,8 +1814,8 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                 _log_route("PRE", event_detail="anchor_backoff_blocked",
                            fails=fails, backoff_s=round(anchor_backoff_window(fails), 1),
                            task_id=key[1], session_id=key[0])
-            except Exception:  # noqa: BLE001 — logging must never break staging
-                pass
+            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                _obs_warn('anchor_backoff_blocked', _obs_exc)  # rider 19 item 1
             return None
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for(role)
@@ -1674,14 +1825,17 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         # proceed with the config endpoint (logged, content-free).
         if model_override and claim_source != "declared_user":
             try:
-                from hermes_router import _log_route  # deferred — import cycle
+                try:
+                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
+                except ImportError:  # pragma: no cover — top-level script load only
+                    from hermes_router import _log_route  # deferred — import cycle
 
                 _log_route("PRE", event_detail="model_override_rejected",
                            source=str(claim_source or ""),
                            task_id=str(decision.task_id or ""),
                            session_id=str(session_id or ""))
-            except Exception:  # noqa: BLE001 — logging never breaks staging
-                pass
+            except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                _obs_warn('model_override_rejected', _obs_exc)  # rider 19 item 1
             model_override = None
         # R6 leg 1: named-model override — same scheme/base/key, only the
         # model id changes (one-off; config never written).

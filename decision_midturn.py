@@ -773,8 +773,12 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
             from hermes_router import _log_route as _lr
         _lr(event, lane="decision", trigger=TRIGGER,
             session_id=str(session_id or ""), **fields)
-    except Exception:  # noqa: BLE001 — logging never breaks the lane
-        pass
+    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never breaks the lane (rider 19 item 1)
+        try:
+            logger.warning("route_event_emit_failed where=decision_midturn "
+                           "event=%s err=%r", event, _obs_exc)
+        except Exception:  # noqa: BLE001 — logging itself never breaks the lane
+            pass
 
 
 # -----------------------------------------------------------------------
