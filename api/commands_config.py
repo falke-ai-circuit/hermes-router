@@ -406,7 +406,8 @@ def _chain_entry_mut_inner(section: Dict[str, Any], knob_tail: str, value: objec
 def _apply_cap_set(value: object) -> Tuple[bool, str]:
     """Cap set: raise-only via bump_cap, landing in write_plugin_section."""
     try:
-        from . import anchor_chain, config_writer
+        from .. import anchor_chain
+        from . import config_writer
 
         section = config_writer.read_plugin_section()
         ac_block = section.get("anchor_chain")
@@ -816,7 +817,7 @@ def _record_rollback(previous_section: Dict[str, Any], changed_keys: List[str]) 
 
 def _cmd_cap(args: List[str]) -> str:
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         if not args or args[0].lower() == "get":
             chain = anchor_chain.load_anchor_chain()
@@ -839,7 +840,7 @@ def _cmd_cap(args: List[str]) -> str:
                 want = float(args[1])
             except (TypeError, ValueError):
                 return "rejected: cap must be a number"
-            from . import anchor_chain as _ac
+            from .. import anchor_chain as _ac
 
             chain = _ac.load_anchor_chain()
             if want < chain.daily_cap_usd or want < _ac.DEFAULT_DAILY_CAP_USD:

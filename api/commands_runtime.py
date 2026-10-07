@@ -192,7 +192,8 @@ def _cmd_confirm(args: List[str]) -> str:
 
 def _execute_confirmed_cap_set(args_l: List[str]) -> str:
     try:
-        from . import anchor_chain, config_writer
+        from .. import anchor_chain
+        from . import config_writer
 
         want = float(args_l[1])
         chain = anchor_chain.load_anchor_chain()
@@ -249,7 +250,7 @@ def _execute_confirmed_config_set(args_l: List[str]) -> str:
 
 async def _cmd_ping() -> str:
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for("judge") or chain.endpoint_for("primary")
@@ -262,7 +263,7 @@ async def _cmd_ping() -> str:
             "temperature": 0.0,
         })
         # Key resolution mirrors _resolve_key: env first, profile dotenv fallback.
-        from .anchor_exec import _resolve_key
+        from ..anchor_exec import _resolve_key
 
         api_key = _resolve_key(ep)
         if not api_key:
@@ -303,7 +304,7 @@ async def _cmd_ping() -> str:
         if not content.strip():
             return "ping: FAILED (empty response)"
         # Honest spend: reuse the pricing math from the response usage when present.
-        from . import usage_ledger
+        from .. import usage_ledger
 
         it, ot = None, None
         try:
@@ -317,7 +318,7 @@ async def _cmd_ping() -> str:
             pass
         cost = usage_ledger.estimate_cost(ep.model, it, ot) if (it is not None or ot is not None) else None
         if cost is None:
-            from .anchor_exec import estimate_tokens_from_payload
+            from ..anchor_exec import estimate_tokens_from_payload
 
             est_in, est_out = estimate_tokens_from_payload(payload_json and json.loads(payload_json))
             cost = anchor_chain.estimate_call_cost(ep, est_in, est_out, chain.pricing)
@@ -349,7 +350,7 @@ def _cmd_frontier(args: List[str]) -> str:
             return ("usage: /router frontier pre on|off | post on|off|always | state")
         what = args[0].lower().lstrip("/")
         if what == "state" or (len(args) < 2 and what in ("pre", "post")):
-            from .router_core import _complexity_cfg
+            from ..router_core import _complexity_cfg
 
             comp = _complexity_cfg() or {}
             return ("frontier pre=%s post=%s   (pre: route|shadow|off; post: off|complex|always)"

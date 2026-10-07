@@ -112,7 +112,7 @@ def _parse_log_line(line: str) -> Optional[Tuple[str, str, Dict[str, str]]]:
 
 def _state_db_path() -> str:
     try:
-        from . import session_store
+        from .. import session_store
 
         return session_store._state_db_path()
     except Exception:  # noqa: BLE001
@@ -272,7 +272,7 @@ def _fmt_stats(tokens_agg: Dict[str, Any], since_ts: float, session_id: str) -> 
 
 def _cmd_stats(args: List[str]) -> str:
     try:
-        from . import anchor_chain, usage_ledger
+        from .. import anchor_chain, usage_ledger
 
         window = "today"
         session_filter = ""
@@ -506,7 +506,8 @@ def _cmd_doctor(args: List[str]) -> str:
     try:
         do_ping = "--ping" in args
         lines: List[str] = []
-        from . import anchor_chain, canonical, config_writer, usage_ledger
+        from .. import anchor_chain, canonical, usage_ledger
+        from . import config_writer
 
         section = config_writer.read_plugin_section()
         if section:
@@ -561,14 +562,14 @@ def _cmd_doctor(args: List[str]) -> str:
 
         if do_ping:
             try:
-                from . import anchor_chain as _ac
+                from .. import anchor_chain as _ac
 
                 chain = _ac.load_anchor_chain()
                 ep = chain.endpoint_for("judge") or chain.endpoint_for("primary")
                 if ep is None:
                     lines.append("ping: no anchor endpoint configured")
                 else:
-                    from .anchor_exec import anchored_call
+                    from ..anchor_exec import anchored_call
 
                     payload = {"messages": [{"role": "user", "content": "Reply with the single word: OK"}],
                                "max_tokens": _commands().DOCTOR_PING_MAX_TOKENS, "temperature": 0.0}

@@ -10,7 +10,7 @@ from unittest import mock
 
 import pytest
 
-import hermes_router.commands as commands
+import hermes_router.api.commands as commands
 import hermes_router.core.usage_ledger as usage_ledger
 
 
@@ -44,7 +44,7 @@ def _isolate(tmp_path, monkeypatch):
 def test_bare_router_is_menu_and_reads_nothing():
     """Bare /router must NOT call router_status / read_plugin_section /
     read any ledger. Any state read = invariant violation."""
-    import hermes_router.router_tools as rt
+    import hermes_router.api.router_tools as rt
 
     with mock.patch.object(rt, "router_status", side_effect=AssertionError("STATE READ ON BARE")) as _s, \
          mock.patch.object(commands, "_query_sessions", side_effect=AssertionError("db read on bare")):

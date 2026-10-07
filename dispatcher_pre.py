@@ -35,7 +35,7 @@ from . import canonical
 from . import classifier
 from . import router
 from . import router_core
-from . import router_tools
+from .api import router_tools
 from . import state
 
 logger = logging.getLogger(__name__)

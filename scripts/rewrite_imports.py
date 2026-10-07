@@ -33,6 +33,13 @@ MODULE_MAP = {
     "usage_ledger": "core.usage_ledger",
     "routing_caps": "core.routing_caps",
     "decisions": "core.decisions",
+    # P3a: api/ cluster
+    "router_tools": "api.router_tools",
+    "commands": "api.commands",
+    "commands_config": "api.commands_config",
+    "commands_diag": "api.commands_diag",
+    "commands_runtime": "api.commands_runtime",
+    "config_writer": "api.config_writer",
 }
 
 

@@ -99,10 +99,10 @@ def reload_requested_at() -> float:
 def router_status() -> str:
     """Read-only lane/router status. Never raises; JSON string result."""
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
         from . import config_writer
-        from . import decision_head
-        from . import router_core
+        from .. import decision_head
+        from .. import router_core
 
         section = config_writer.read_plugin_section()
         cx_block = section.get("complexity")
@@ -167,7 +167,7 @@ def _resolve_endpoint_from_model(model_ref: str) -> Optional[str]:
     Returns the model id on success (the config stores the URI verbatim).
     None when unresolvable — never invent endpoint knowledge in code."""
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         if not isinstance(model_ref, str) or "://" not in model_ref:
             return None
@@ -194,7 +194,7 @@ def router_control(action: str = "", lane: str = "", level: Any = None,
     """Single validated-action control tool. Returns a JSON string result.
     Never raises; every invalid input returns ok=false with a reason."""
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
         from . import config_writer
 
         action = (action or "").strip().lower()
@@ -312,7 +312,7 @@ def router_control(action: str = "", lane: str = "", level: Any = None,
                                "detail": "dirty-flag set; config re-read per call (no gateway bounce)"})
 
         if action == "set_decision_head":
-            from . import decision_head
+            from .. import decision_head
 
             if not decision_head.set_backend(backend):
                 return json.dumps({"ok": False, "error": "invalid_backend",
@@ -358,8 +358,8 @@ def _request_routing(lane: str = "", session_id: str = "") -> str:
     registry is in-process single-owner state owned by route_gate — no
     second writer is introduced. Never raises."""
     try:
-        from . import route_gate
-        from . import routing_caps
+        from .. import route_gate
+        from .. import routing_caps
 
         lane_n = (lane or "").strip().lower()
         if lane_n not in route_gate.VALID_ROUTE_LANES:
@@ -400,13 +400,13 @@ def _ping() -> str:
     """Live smoke: ONE call, cheap model (judge tier), max_tokens<=64.
     Fails open with ok=false + reason; never raises. No key -> ok=false."""
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for("judge") or chain.endpoint_for("primary")
         if ep is None:
             return json.dumps({"ok": False, "error": "no_anchor_endpoint_configured"})
-        from .anchor_exec import anchored_call
+        from ..anchor_exec import anchored_call
 
         payload = {"messages": [{"role": "user", "content": "Reply with the single word: OK"}],
                    "max_tokens": 16, "temperature": 0.0}
