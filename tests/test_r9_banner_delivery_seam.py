@@ -191,4 +191,6 @@ def test_render_path_consume_uses_local_import(r9_reset, monkeypatch):
     locally (no reliance on the banner-build block's `_db` binding)."""
     import inspect
     src = inspect.getsource(plugin.on_transform_llm_output)
-    assert "from . import debug_banner as _dbp2" in src
+    # P3a moved the hook into gate/orchestration.py — the local import is
+    # a parent-package import there (two dots), not a sibling `from .`.
+    assert "from .. import debug_banner as _dbp2" in src

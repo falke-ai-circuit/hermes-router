@@ -519,6 +519,13 @@ def _lane_map_from_registry() -> dict:
     return merged
 
 
+from hermes_router.lanes import builtins as _lane_builtins  # noqa: F401
+# P3a-repair: builtins must be imported BEFORE the _LANE_MAP computation —
+# registration happens at builtins import time; without this the hub's
+# import order (api.commands at __init__:45, route_gate at :182) baked an
+# EMPTY lane map at module-load (parity test caught it post-commit).
+
+
 _LANE_MAP = _lane_map_from_registry()  # P2: sourced from lanes/builtins.py
 
 
