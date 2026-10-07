@@ -159,6 +159,85 @@ def swallow_count() -> Dict[str, int]:
         return dict(_SWALLOW_COUNT)
 
 
+def record_swallow(gate: str, exc: BaseException, **fields: Any) -> None:
+    """Record one swallow at a hand-rolled boundary (P6). Emits the same
+    `router.swallow` warning row + per-gate counter as isolate() — used by
+    migrated except-sites that keep their own catch/return shape (the
+    exception boundary is preserved exactly; only the SILENCE dies)."""
+    with _SWALLOW_LOCK:
+        _SWALLOW_COUNT[gate] = _SWALLOW_COUNT.get(gate, 0) + 1
+    try:
+        logger.warning("router.swallow gate=%s err=%r %s", gate, exc,
+                       " ".join(f"{k}={v}" for k, v in fields.items()
+                                if v is not None))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+_SEAM_LOCK = threading.Lock()
+_SEAM_FIRES: Dict[str, int] = {}
+_SEAM_REGISTERED = False
+_TURN_SEAMS = ("llm_request", "llm_execution", "transform_llm_output",
+               "transform_tool_result")
+
+
+def seam_probe_register(ctx: Any) -> None:
+    """§2.7 seam liveness probe — register each plugin seam with an atomic
+    fire counter. The on_* entry points increment via seam_probe_fire(); a
+    zero-fire seam after the first turn-identity advance emits
+    `seam_dead_on_arrival`. No extra middleware is registered (the probe
+    must not alter the host's middleware chain)."""
+    try:
+        for seam in _TURN_SEAMS:
+            with _SEAM_LOCK:
+                _SEAM_FIRES.setdefault(seam, 0)
+    except Exception:  # noqa: BLE001 — the probe never breaks registration
+        pass
+
+
+def seam_probe_fire(seam: str) -> None:
+    with _SEAM_LOCK:
+        _SEAM_FIRES[seam] = _SEAM_FIRES.get(seam, 0) + 1
+
+
+def seam_fires() -> Dict[str, int]:
+    """Snapshot of the §2.7 seam fire counters (/router diag + router_status)."""
+    with _SEAM_LOCK:
+        return dict(_SEAM_FIRES)
+
+
+def seam_probe_maybe_advance() -> None:
+    """Turn-identity advanced (state.record_last_seen): run the §2.7
+    dead-seam check ONCE per process (first advance only)."""
+    global _SEAM_REGISTERED
+    if _SEAM_REGISTERED:
+        return
+    _SEAM_REGISTERED = True
+    seam_dead_on_arrival_check()
+
+
+def seam_dead_on_arrival_check() -> Dict[str, int]:
+    """Called after the first turn-identity advance: any registered seam
+    with ZERO fires emits `seam_dead_on_arrival` and is returned (surfaced
+    via /router diag + router_status). Once-per-process."""
+    with _SEAM_LOCK:
+        zero = [s for s, n in _SEAM_FIRES.items() if n == 0]
+    for s in zero:
+        try:
+            logger.warning("seam_dead_on_arrival seam=%s", s)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _tlm_log("POST", event_detail="seam_dead_on_arrival", seam=s)
+        except Exception:  # noqa: BLE001
+            pass
+    return {s: _SEAM_FIRES.get(s, 0) for s in _TURN_SEAMS}
+
+
+def _tlm_log(event: str, **fields: Any) -> None:
+    log_route(event, **fields)
+
+
 def isolate(gate: str, fn: Callable[[], T], *, on_fail: Any = "pass",
             **fields: Any):
     """Uniform fail-isolation (§2.5). ALWAYS emits a swallow log row and

@@ -96,6 +96,26 @@ def reload_requested_at() -> float:
 # ---------------------------------------------------------------------------
 
 
+def _swallow_counts() -> "dict":
+    """P6: isolate()/swallow counters by gate (telemetry-visible only)."""
+    try:
+        from ..core import telemetry as _t
+
+        return _t.swallow_count()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _seam_fires() -> "dict":
+    """P6 §2.7: seam liveness probe fire counters."""
+    try:
+        from ..core import telemetry as _t
+
+        return _t.seam_fires()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def router_status() -> str:
     """Read-only lane/router status. Never raises; JSON string result."""
     try:
@@ -148,6 +168,8 @@ def router_status() -> str:
             "decision_head": decision_head.status(),
             "pending_swap": bool(pend),
             "anchor_backoff_active": router_core.anchor_backoff_active_count(),
+            "swallow_counts": _swallow_counts(),
+            "seam_fires": _seam_fires(),
             "debug_banner": int(section.get("debug_banner", 1)) if not isinstance(section.get("debug_banner"), bool) else (1 if section.get("debug_banner") else 0),
             "struggle_feeder": "armed",
             "reload_dirty_flag_ts": reload_requested_at(),

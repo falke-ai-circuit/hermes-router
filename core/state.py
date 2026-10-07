@@ -167,6 +167,14 @@ def record_last_seen(session_id: str, content: str) -> None:
             _LAST_SEEN[session_id] = content or ""
             while len(_LAST_SEEN) > _LAST_SEEN_MAX:
                 _LAST_SEEN.pop(next(iter(_LAST_SEEN)))
+    try:
+        # §2.7 seam liveness probe: the first turn-identity advance runs
+        # the dead-on-arrival check (zero-fire seams emit fail-loud rows).
+        from hermes_router.core import telemetry as _t
+
+        _t.seam_probe_maybe_advance()
+    except Exception:  # noqa: BLE001 — the probe never breaks state
+        pass
 
 
 def get_last_seen(session_id: str) -> Optional[str]:

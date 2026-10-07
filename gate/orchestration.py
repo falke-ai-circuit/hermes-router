@@ -261,6 +261,13 @@ def _deliver_render_pass(*args: Any, **kwargs: Any) -> dict:
 
 
 def on_llm_request(*, request, original_request, **context) -> dict:
+    try:
+        from ..core.telemetry import seam_probe_fire
+
+        seam_probe_fire("llm_request")
+    except Exception:  # noqa: BLE001 — probe never breaks the seam
+        pass
+
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
     """
@@ -752,6 +759,12 @@ def _recover_orphan_anchor_swap(session_id: str) -> None:
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
+    try:
+        from ..core.telemetry import seam_probe_fire
+
+        seam_probe_fire("transform_llm_output")
+    except Exception:  # noqa: BLE001 — probe never breaks the seam
+        pass
     """Detect agent refusals and replace with Venice-rendered content.
     Return a non-empty string to REPLACE the response; None to pass through.
     First plugin to return non-empty wins (turn_finalizer.py:557-561).
@@ -1466,6 +1479,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
 
 def on_llm_execution(*, request, next_call, **context) -> Any:
+    try:
+        from ..core.telemetry import seam_probe_fire
+
+        seam_probe_fire("llm_execution")
+    except Exception:  # noqa: BLE001 — probe never breaks the seam
+        pass
+
     """LLM EXECUTION middleware for the anchored call. When a model swap was
     staged for this session (PRE dispatcher pass), run the FULL request
     against the anchor endpoint via a per-call client:
@@ -1741,6 +1761,12 @@ def on_transform_terminal_output(*, command: str = "", output: Any = None,
                                  returncode: int = 0, task_id: str = "",
                                  env_type: str = "",
                                  **context) -> None:
+    try:
+        from ..core.telemetry import seam_probe_fire
+
+        seam_probe_fire("transform_terminal_output")
+    except Exception:  # noqa: BLE001 — probe never breaks the seam
+        pass
     """R19.2 ADDENDUM 4 — SEAM 1: transform_terminal_output platform hook.
     Core fires this after EVERY terminal tool result, mid-run (live-verified
     seam; transform_tool_result is dead-from-birth on 0.21.4). The single

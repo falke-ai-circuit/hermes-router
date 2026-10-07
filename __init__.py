@@ -293,58 +293,62 @@ def __getattr__(name: str):
 
 
 def register(ctx) -> None:
-    """Wire hooks + middleware + tools. Registration errors are logged, never
-    raised (a broken registration would disable the whole plugin in one
-    profile)."""
-    try:
-        ctx.register_middleware("llm_request", on_llm_request)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: register_middleware(llm_request) failed: %s", exc)
-    try:
-        ctx.register_middleware("llm_execution", on_llm_execution)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: register_middleware(llm_execution) failed: %s", exc)
-    try:
-        ctx.register_hook("transform_llm_output", on_transform_llm_output)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: register_hook(transform_llm_output) failed: %s", exc)
+    """Wire hooks + middleware + tools. Registration errors are isolated
+    (P6 stage-1: the registration path migrates to core.telemetry.isolate —
+    a failure emits the `router.swallow` warning row + per-gate counter
+    surfaced via /router diag + router_status, never raised; a broken
+    registration would disable the whole plugin in one profile)."""
+    from .core import telemetry as _t
+
+    def _reg(gate: str, fn) -> None:
+        _t.isolate(gate, fn, on_fail="pass")
+
+    _reg("register.llm_request",
+         lambda: ctx.register_middleware("llm_request", on_llm_request))
+    _reg("register.llm_execution",
+         lambda: ctx.register_middleware("llm_execution", on_llm_execution))
+    _reg("register.transform_llm_output",
+         lambda: ctx.register_hook("transform_llm_output",
+                                   on_transform_llm_output))
     # R19.2 ADDENDUM 4: midturn decision hook SEAM 1 — fires after every
     # terminal tool result, mid-run. Registration failure never disables
     # other lanes.
-    try:
-        ctx.register_hook("transform_terminal_output",
-                          on_transform_terminal_output)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: "
-                     "register_hook(transform_terminal_output) failed: %s",
-                     exc)
+    _reg("register.transform_terminal_output",
+         lambda: ctx.register_hook("transform_terminal_output",
+                                   on_transform_terminal_output))
     # v3.0.0: router control tools (phase 3) — registered defensively so a
     # tool registration failure never disables the middleware lanes.
-    try:
+    def _reg_tools() -> None:
         from . import router_tools
+
         router_tools.register(ctx)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: router_tools registration failed: %s", exc)
+
+    _reg("register.router_tools", _reg_tools)
     # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated
-    # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off), registered in its own
-    # try/except so a registration failure NEVER disables the middleware
-    # lanes. commands.register_slash_command performs the collision self-check
-    # and the flagship gateway-authz posture self-check (blueprint 6b.1)
-    # internally and logs the one-line posture verdict.
-    try:
+    # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off). commands.
+    # register_slash_command performs the collision self-check and the
+    # flagship gateway-authz posture self-check (blueprint 6b.1) internally
+    # and logs the one-line posture verdict.
+    def _reg_slash() -> None:
         from . import commands
+
         commands.register_slash_command(ctx)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("uncensored-router: slash command registration failed: %s", exc)
+
+    _reg("register.slash_command", _reg_slash)
     # P4 (proposal §2.3): LOAD-TIME VALIDATION pass — validate the whole
     # resolved config section once at plugin load; schema violations
     # (partial blocks / type mismatches) emit fail-loud telemetry rows
     # instead of surfacing as silent Nones mid-turn. Never raises.
-    try:
+    def _reg_validate() -> None:
         from .core import config_access as _ca
 
         _viol = _ca.validate_config()
         if _viol:
-            logger.warning("hermes-router: config load validation found %d schema violation(s)", _viol)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("hermes-router: config load validation failed: %s", exc)
+            logger.warning(
+                "hermes-router: config load validation found %d schema violation(s)",
+                _viol)
+
+    _reg("register.config_validation", _reg_validate)
+    # P6 §2.7: seam liveness probe — register the fire counters (no extra
+    # middleware; the on_* entries increment via seam_probe_fire).
+    _reg("register.seam_probe", lambda: _t.seam_probe_register(ctx))
