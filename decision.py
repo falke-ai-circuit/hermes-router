@@ -739,8 +739,10 @@ def score(frame: Dict[str, Any], task_text: str,
         )
         from . import semantic_classifier as _sc
 
+        from .core import budgets as _budgets
         payload = json.dumps({"messages": [{"role": "user", "content": prompt}],
-                              "max_tokens": 512, "temperature": 0.0})
+                              "max_tokens": _budgets.budget("consult")["max_tokens"],
+                              "temperature": 0.0})
         body = _sc._hermes_aux_call(payload, int(timeout))
         if body is None:
             _record_failure(cfg)
@@ -2476,6 +2478,7 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
               ) -> Tuple[Optional[str], Dict[str, Any], str]:
     """Openrouter jev-router adapter (the pre-v4.13.2 jev branch, extracted
     unchanged for the D3 fallback chain). Never raises."""
+    from .core import budgets as _budgets
     meta: Dict[str, Any] = {}
     try:
         model = str(cfg.get("jev_model") or DEFAULTS["jev_model"])
@@ -2491,7 +2494,8 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
                 REASON_BACKEND_ERROR
         data = _http_post_json(endpoint,
                                {"Authorization": "Bearer %s" % key}, {
-            "model": model, "temperature": 0.0, "max_tokens": 512,
+            "model": model, "temperature": 0.0,
+            "max_tokens": _budgets.budget("verdict")["max_tokens"],
             "response_format": {"type": "json_object"},
             "messages": [{"role": "user", "content": prompt}],
         }, timeout)
@@ -2521,7 +2525,8 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
             return extracted, meta, "ok"
         data2 = _http_post_json(endpoint,
                                 {"Authorization": "Bearer %s" % key}, {
-            "model": model, "temperature": 0.0, "max_tokens": 512,
+            "model": model, "temperature": 0.0,
+            "max_tokens": _budgets.budget("verdict")["max_tokens"],
             "response_format": {"type": "json_object"},
             "messages": [{"role": "user",
                           "content": prompt + "\n\nRespond ONLY with "
@@ -2623,10 +2628,12 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             # the plumbing stub for conductor live tests (NO Jev credits).
             model = str(cfg.get("model") or DEFAULTS["model"])
             from . import semantic_classifier as _sc
+            from .core import budgets as _budgets
 
             payload = json.dumps({"messages": [{"role": "user",
                                                 "content": prompt}],
-                                  "max_tokens": 512, "temperature": 0.0})
+                                  "max_tokens": _budgets.budget("verdict")["max_tokens"],
+                                  "temperature": 0.0})
             body = _sc._hermes_aux_call(payload, int(timeout))
             meta = dict(meta, model=model, endpoint="hermes-auxiliary",
                         latency_s=round(time.time() - t0, 2))

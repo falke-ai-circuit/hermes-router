@@ -14,7 +14,7 @@ render arrives pre-structured in the agent's own format standards.
 
 Fail-open: any problem → empty string → render proceeds method-less (current
 behavior). mtime-cached like persona_card. Config override:
-uncensored_router.render_method_spec (inline string wins if set).
+hermes_router.render_method_spec (inline string wins if set).
 """
 from __future__ import annotations
 

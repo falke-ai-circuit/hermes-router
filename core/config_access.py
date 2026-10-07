@@ -178,6 +178,132 @@ def providers_custom() -> Dict[str, Any]:
         return {}
 
 
+# -----------------------------------------------------------------------
+# Typed get() + load-time validation (P4, proposal §2.3)
+# -----------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def _walk(section: Dict[str, Any], path: str) -> Any:
+    """Walk a dotted path through the router section. Returns _MISSING when
+    any segment is absent/non-dict (leaf values may legitimately be None)."""
+    parts = str(path).split(".")
+    node: Any = section
+    for part in parts:
+        if not isinstance(node, dict):
+            return _MISSING
+        node = node.get(part, _MISSING)
+        if node is _MISSING:
+            return _MISSING
+    return node
+
+
+def _type_ok(value: Any, expected: Any) -> bool:
+    if expected is bool:
+        return isinstance(value, bool)
+    if expected is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, expected)
+
+
+def get(path: str, default: Any = None) -> Any:
+    """Typed config read — THE read primitive (proposal §2.3).
+
+    Validates `path` against core/schema.SCHEMA. On missing key: emits a
+    `config_key_missing` telemetry row and returns the SCHEMA typed default
+    (never silently None). On type mismatch: emits a `config_key_type_mismatch`
+    row and returns the typed default. On explicit None with nullable=True:
+    returns None (no row). Never raises.
+    """
+    try:
+        from . import telemetry
+
+        k = telemetry_key(path)
+        if k is None:
+            telemetry.log_route("config_key_unknown", path=path)
+            return default
+        value = _walk(router_section(), path)
+        if value is _MISSING:
+            telemetry.log_route("config_key_missing", path=path)
+            return default if default is not None else k.default
+        if value is None and k.nullable:
+            return None
+        if not _type_ok(value, k.type):
+            telemetry.log_route("config_key_type_mismatch", path=path,
+                                type=_type_name(value), expected=k.type.__name__)
+            return default if default is not None else k.default
+        return value
+    except Exception:  # noqa: BLE001 — config read must never raise
+        return default
+
+
+def telemetry_key(path: str) -> Any:
+    """SCHEMA key lookup — split out so callers/tests can probe the
+    inventory without triggering a read. Never raises."""
+    try:
+        from . import schema
+
+        return schema.key(path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _type_name(value: Any) -> str:
+    try:
+        return type(value).__name__
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def validate_config() -> int:
+    """LOAD-TIME VALIDATION pass (proposal §2.3 best-practice adjustment):
+    validate the whole resolved section once at plugin load — one telemetry
+    row per schema violation (missing key / type mismatch), so a drifted
+    config surfaces as a log row at boot instead of a silent None mid-turn.
+    Returns the violation count. Never raises."""
+    violations = 0
+    try:
+        from . import schema
+        from . import telemetry
+
+        section = router_section()
+        if not isinstance(section, dict):
+            return 0
+        for k in schema.SCHEMA:
+            try:
+                value = _walk(section, k.path)
+                if value is _MISSING:
+                    # A wholly-absent parent block is a profile that simply
+                    # hasn't tuned that section — NOT a violation (every
+                    # missing key still gets its typed default via get()).
+                    # A PARTIAL block (parent present, leaf missing) IS a
+                    # violation — the operator set the block and dropped a
+                    # key it expects.
+                    parent = _walk(section, k.path.rsplit(".", 1)[0]) \
+                        if "." in k.path else _MISSING
+                    if "." not in k.path or parent is not _MISSING:
+                        telemetry.log_route("config_key_missing", path=k.path,
+                                            at="load_validation")
+                        violations += 1
+                    continue
+                if value is None and k.nullable:
+                    continue
+                if not _type_ok(value, k.type):
+                    telemetry.log_route("config_key_type_mismatch", path=k.path,
+                                        type=_type_name(value),
+                                        expected=k.type.__name__,
+                                        at="load_validation")
+                    violations += 1
+            except Exception:  # noqa: BLE001 — per-key isolation
+                violations += 1
+        return violations
+    except Exception:  # noqa: BLE001
+        return violations
+
+
 def reset_cache() -> None:
     """Test hook — clear the co-located yaml cache."""
     _cache["mtime"] = None

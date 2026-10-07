@@ -495,7 +495,7 @@ def _novel_text(tool_result_text: str, prog: Dict[str, Any], seen: set) -> bool:
 
 def _int_knob(name: str, default: int) -> int:
     """Top-level router-section int knob via config_access (live-read,
-    dual-section hermes_router -> uncensored_router). Never raises."""
+    single canonical reader). Never raises."""
     try:
         from . import config_access
         return int((config_access.router_section() or {}).get(name, default))
@@ -583,7 +583,7 @@ def _cooldown_hash(session_id: str, text: str) -> str:
 
 def consult_cooldown_turns() -> int:
     """complexity.consult_cooldown_turns (int, default 5, 0=disabled) via
-    the canonical dual-block reader (legacy uncensored_router wins).
+    the canonical reader.
     Public knob accessor — patchable in tests, same shape as
     pre_cooldown_seconds/post_audit_min_turns. Never raises."""
     try:
@@ -603,7 +603,7 @@ def _consult_cooldown_knob() -> int:
 
 def aux_consult_min_interval() -> int:
     """complexity.aux_consult_min_interval_sec (int, default 300, 0=disabled)
-    via the canonical dual-block reader (legacy uncensored_router wins).
+    via the canonical reader.
     R18 (Goran 09-24): machine-detected aux_intent consults are paced per
     session — no second aux consult within the interval. Declared-user
     consults are never gated. Public knob accessor — patchable in tests.
@@ -777,9 +777,8 @@ def _pre_cooldown_active(session_id: str, task_id: str = "") -> bool:
 
 
 def _complexity_cfg() -> Dict[str, Any]:
-    """Read the complexity block from the plugin config (hermes_router
-    canonical first, legacy uncensored_router fallback — same dual-section
-    discipline as _complexity_level). {} on miss. Never raises.
+    """Read the complexity block from the plugin config (the canonical
+    hermes_router section — single-reader discipline as _complexity_level). {} on miss. Never raises.
 
     Fix (2026-09-07, live-caught): load_config() in profile gateways resolves
     to the GLOBAL home config (no router section) → complexity was pinned at

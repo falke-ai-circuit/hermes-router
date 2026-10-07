@@ -107,24 +107,14 @@ def parse_verdict(text: Optional[str]) -> Optional[str]:
 
 def _classification_cfg(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Plugin config classification block. Explicit `cfg` arg wins (tests);
-    otherwise read config.yaml. v3.0.0 rename backward-compat: "hermes_router"
-    section first, legacy "uncensored_router" fallback. {} on miss."""
+    otherwise read config.yaml via the canonical reader (v3.8 step-2
+    consolidation). {} on miss."""
     if cfg is not None:
         return cfg if isinstance(cfg, dict) else {}
     try:
-        from hermes_cli.config import load_config
+        from .core import config_access
 
-        c = load_config()
-        if isinstance(c, dict):
-            section = c.get("hermes_router")
-            if isinstance(section, dict) and section:
-                cls = section.get("classification")
-                return cls if isinstance(cls, dict) else {}
-            section = c.get("uncensored_router")
-            if isinstance(section, dict):
-                cls = section.get("classification")
-                return cls if isinstance(cls, dict) else {}
-        return {}
+        return config_access.sub_block("classification")
     except Exception:  # noqa: BLE001
         return {}
 

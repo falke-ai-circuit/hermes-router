@@ -66,24 +66,17 @@ STATUS_REASONS = {
 
 
 def _load_router_config() -> Dict[str, Any]:
-    """Read the plugin config section from config.yaml. Returns {} on miss.
+    """Read the plugin config section. Returns {} on miss.
 
-    v3.0.0 rename backward-compat: "hermes_router" section first, legacy
-    "uncensored_router" fallback (matches __init__._cfg).
-    Mirrors web/xai/provider.py::_load_xai_web_config pattern.
+    v3.8 step-2 consolidation: the SINGLE canonical reader is
+    core/config_access.router_section() (3-tier resolution, mtime-keyed
+    cache; the legacy rename fallback died in P0.5 — fleet purge proven).
+    Mirrors web/xai/provider.py::_load_xai_web_config.
     """
     try:
-        from hermes_cli.config import load_config
+        from .core import config_access
 
-        cfg = load_config()
-        if isinstance(cfg, dict):
-            section = cfg.get("hermes_router")
-            if isinstance(section, dict) and section:
-                return section
-            section = cfg.get("uncensored_router")
-            if isinstance(section, dict):
-                return section
-        return {}
+        return config_access.router_section()
     except Exception as exc:  # noqa: BLE001
         logger.debug("Could not load hermes_router config: %s", exc)
         return {}

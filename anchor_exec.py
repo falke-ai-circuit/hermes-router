@@ -272,9 +272,10 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         # sees "anchor cal failed" on a perfectly healthy chain.
         try:
             from . import config_access as _ca
+            from .core import budgets as _budgets
             _eff = (_ca.sub_block("anchor_chain") or {}).get("reasoning_effort")
             _mt = payload.get("max_tokens")
-            _tiny_probe = isinstance(_mt, int) and _mt < 500
+            _tiny_probe = _budgets.is_probe(_mt)
             if isinstance(_eff, str) and _eff.strip() and not _tiny_probe:
                 payload["reasoning_effort"] = _eff.strip()
         except Exception:  # noqa: BLE001 — config read must never break anchor

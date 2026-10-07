@@ -1248,8 +1248,10 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
             "REVIEW POINTS TO INCORPORATE:\n" + (verdict_note or "")[:4000] + "\n\n"
             "FINAL RESPONSE (output only the response):"
         )
+        from .core import budgets as _budgets
         payload = {"messages": [{"role": "user", "content": prompt}],
-                   "max_tokens": 12000, "temperature": 0.2,
+                   "max_tokens": _budgets.budget("completion_audit")["max_tokens"],
+                   "temperature": 0.2,
                    "reasoning_effort": "max"}
         from openai import OpenAI
 
@@ -1347,7 +1349,10 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # into empty_response BEFORE any verdict was emitted (battery-proven
         # 09-10: finish=length, 10254 reasoning chars, 0 verdict). 12000
         # matches the uncensored-chain floor: thinking room + full verdict.
-        api_kwargs = {"messages": msgs, "max_tokens": 12000, "temperature": 0.2}
+        from .core import budgets as _budgets
+        api_kwargs = {"messages": msgs,
+                      "max_tokens": _budgets.budget("completion_audit")["max_tokens"],
+                      "temperature": 0.2}
         # cap check mirrors the PRE lane; consult is small but respects spend
         est_in, est_out = anchor_exec.estimate_tokens_from_payload(api_kwargs)
         est_cost = anchor_chain.estimate_call_cost(ep, est_in, est_out, chain.pricing)

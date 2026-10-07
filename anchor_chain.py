@@ -156,8 +156,8 @@ def parse_anchor_uri(uri: str, role: str) -> Optional[AnchorEndpoint]:
 
 
 def load_anchor_chain() -> AnchorChainCfg:
-    """Read anchor_chain from the plugin config section (hermes_router first,
-    legacy uncensored_router fallback — same rule as __init__._cfg). Never
+    """Read anchor_chain from the plugin config section (the canonical
+    hermes_router section — single reader since v3.8 step-2). Never
     raises; missing/empty blocks give an empty chain (lane inert)."""
     try:
         from . import config_access

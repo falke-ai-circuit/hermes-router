@@ -195,16 +195,10 @@ def semantic_gate_enabled(cfg: Optional[Dict[str, Any]] = None) -> bool:
         if isinstance(cfg, dict):
             cls = cfg.get("classification")
             return bool((cls or {}).get("semantic_gate", False)) if isinstance(cls, dict) else False
-        from hermes_cli.config import load_config
+        from .core import config_access
 
-        c = load_config()
-        section = None
-        if isinstance(c, dict):
-            section = c.get("hermes_router")
-            if not (isinstance(section, dict) and section):
-                section = c.get("uncensored_router")
-        cls = (section or {}).get("classification") if isinstance(section, dict) else None
-        return bool(cls.get("semantic_gate", False)) if isinstance(cls, dict) else False
+        cls = config_access.sub_block("classification")
+        return bool(cls.get("semantic_gate", False))
     except Exception:  # noqa: BLE001
         return False
 

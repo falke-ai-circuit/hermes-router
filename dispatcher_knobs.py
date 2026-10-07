@@ -265,9 +265,8 @@ def thread_digest_asks() -> int:
 
 def render_max_chars() -> int:
     """Config read: render_max_chars (int, optional, default 0 = uncapped).
-    Read through _plugin()._cfg() so both `hermes_router:` and the legacy
-    `uncensored_router:` section are honored (existing dual-section
-    semantics). Never raises."""
+    Read through _plugin()._cfg() so the canonical hermes_router section
+    is honored (single canonical reader since v3.8 step-2). Never raises."""
     try:
         val = _plugin()._cfg().get("render_max_chars", 0)
         limit = int(val)

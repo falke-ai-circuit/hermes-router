@@ -336,3 +336,15 @@ def register(ctx) -> None:
         commands.register_slash_command(ctx)
     except Exception as exc:  # noqa: BLE001
         logger.error("uncensored-router: slash command registration failed: %s", exc)
+    # P4 (proposal §2.3): LOAD-TIME VALIDATION pass — validate the whole
+    # resolved config section once at plugin load; schema violations
+    # (partial blocks / type mismatches) emit fail-loud telemetry rows
+    # instead of surfacing as silent Nones mid-turn. Never raises.
+    try:
+        from .core import config_access as _ca
+
+        _viol = _ca.validate_config()
+        if _viol:
+            logger.warning("hermes-router: config load validation found %d schema violation(s)", _viol)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("hermes-router: config load validation failed: %s", exc)
