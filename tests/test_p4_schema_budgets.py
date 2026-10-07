@@ -48,7 +48,7 @@ def test_b_no_max_tokens_literals_outside_budgets():
         for i, line in enumerate(open(path, encoding="utf-8"), 1):
             if pat.search(line):
                 hits.append("%s:%d" % (rel, i))
-    assert sorted(hits) == ["api/router_tools.py:412"], (
+    assert sorted(hits) == ["api/router_tools.py:434"], (
         "bare max_tokens literals outside core/budgets.py: %s" % hits)
 
 
