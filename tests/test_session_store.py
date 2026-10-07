@@ -85,7 +85,7 @@ def test_readonly_uri_mode(tmp_db):
 
 def test_path_resolution_uses_get_hermes_home(tmp_path, monkeypatch):
     """_state_db_path() = get_hermes_home() / 'state.db' — no hardcoded home."""
-    import hermes_router.session_store as ss
+    import hermes_router.core.session_store as ss
     fake_home = tmp_path / "hermes-home"
     fake_home.mkdir()
     (fake_home / "state.db").write_bytes(b"")  # exists → path check passes

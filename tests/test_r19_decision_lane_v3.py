@@ -60,7 +60,7 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(router_core, "consult_cooldown_turns",
                         lambda: 0, raising=True)
     # zero-network guard: pricing lookup must never egress in tests
-    monkeypatch.setattr("hermes_router.usage_ledger.estimate_cost",
+    monkeypatch.setattr("hermes_router.core.usage_ledger.estimate_cost",
                         lambda *a, **k: 0.0, raising=True)
     monkeypatch.setattr(decision, "_ledger_connect",
                         lambda db_path="": _tmp_conn(tmp_path))

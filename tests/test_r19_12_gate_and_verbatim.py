@@ -40,7 +40,7 @@ def _env(monkeypatch, tmp_path):
     conn.close()
     monkeypatch.setattr(decision, "_ledger_connect",
                         lambda db_path="": sqlite3.connect(path))
-    monkeypatch.setattr("hermes_router.usage_ledger.estimate_cost",
+    monkeypatch.setattr("hermes_router.core.usage_ledger.estimate_cost",
                         lambda *a, **k: 0.0, raising=True)
     yield path
     decision.reset_limits()

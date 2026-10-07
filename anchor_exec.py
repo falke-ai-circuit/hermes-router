@@ -975,10 +975,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # the four-leg dead turn). Never fail-open silently again: the
         # failure is OBSERVABLE at route-log level before the pass-through.
         try:
-            try:
-                from . import _log_route as _lrx  # relative: gateway-safe (rider 19 item 1)
-            except ImportError:  # pragma: no cover — top-level script load only
-                from hermes_router import _log_route as _lrx
+            from .core.telemetry import log_route as _lrx  # P1: core telemetry (import cycle broken)
 
             _lrx("PRE", event_detail="anchor_execution_exception",
                  fail_kind=str(exc)[:160],

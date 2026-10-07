@@ -162,7 +162,7 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
     such, and policy_version stays advisory. Returns True when enqueued.
     Never raises."""
     try:
-        from . import suggestions
+        from .. import suggestions
 
         rec: Dict[str, Any] = {
             "schema": SCHEMA_NAME,

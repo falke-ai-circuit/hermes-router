@@ -125,7 +125,7 @@ def _isolate_canonical_ledger(tmp_path, monkeypatch):
     patches only — no sys.modules injection (a fake hermes_constants leaks
     into hermes_cli.config / persona_card import chains)."""
     try:
-        import hermes_router.canonical as _canon
+        import hermes_router.core.canonical as _canon
     except ImportError:
         yield
         return

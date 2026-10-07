@@ -118,7 +118,7 @@ def get_last_canonical_answer(session_id: str, max_chars: int = 2000) -> str:
         db_path = _state_db_path()
         if not db_path or not os.path.exists(db_path):
             return ""
-        from . import persona_card as _pc
+        from .. import persona_card as _pc
 
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
         try:

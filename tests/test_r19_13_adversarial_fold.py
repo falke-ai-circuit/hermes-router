@@ -15,7 +15,7 @@ chain; glm-5.3 carries the attack.
 import json
 import sqlite3
 
-import hermes_router.config_access as _cac
+import hermes_router.core.config_access as _cac
 from hermes_router import anchor_exec as AE
 from hermes_router import completion_audit as CA
 from hermes_router import decision as D

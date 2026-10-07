@@ -19,7 +19,7 @@ import hermes_router.router as router
 
 _REAL_READ_KEY = router._read_key  # original, for live tests that need real key files
 from hermes_router import state
-from hermes_router.state import hash_text
+from hermes_router.core.state import hash_text
 
 KEY_FILE = os.path.expanduser("~/.hermes/profiles/shadow/.secrets/venice_key")
 LIVE_SKIPPED = not os.path.exists(KEY_FILE)

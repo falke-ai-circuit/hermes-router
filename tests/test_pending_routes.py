@@ -15,7 +15,8 @@ PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 
-import state
+import hermes_router as _hr
+import hermes_router.state as state
 
 
 @pytest.fixture(autouse=True)

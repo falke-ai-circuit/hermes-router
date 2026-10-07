@@ -26,14 +26,33 @@ from . import persona_card
 from . import router
 from . import semantic_classifier
 from . import refusal_doctrine
-from . import session_store
-from . import state
+from .core import canonical
+from .core import config_access  # noqa: F401 — re-export (single config accessor)
+from .core import decisions  # noqa: F401 — re-export
+from .core import routing_caps  # noqa: F401 — re-export
+from .core import session_store
+from .core import state
+from .core import telemetry
+from .core import usage_ledger  # noqa: F401 — re-export
+from .core.telemetry import _impl as _log_route  # moved impl (P1)
+
+# P1: legacy-path module aliases in sys.modules so EVERY import spelling of
+# the moved modules keeps working (package attrs, `import hermes_router.X`,
+# `from hermes_router.X import Y`, monkeypatch string targets) — one shared
+# module object per module (conftest Trap 5: single-namespace discipline).
+# Registered here, not lazily, so even attribute access before first use
+# resolves identically. This is the back-compat shim; direct `hermes_router.core.X`
+# imports are the new canonical spelling (see scripts/rewrite_imports.py).
+import sys as _sys
+for _m in (canonical, config_access, decisions, routing_caps,
+           session_store, state, telemetry, usage_ledger):
+    _sys.modules.setdefault(f"{__name__}.{_m.__name__.rsplit('.', 1)[-1]}", _m)
 from . import anchor_chain
 from . import anchor_exec
 from . import complexity
 from . import router_core
 from . import router_tools
-from . import canonical
+from .core.telemetry import _impl as _log_route  # moved impl (P1)
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +62,14 @@ logger = logging.getLogger(__name__)
 
 # H4 (reviewer audit 2026-09-02): default log under HERMES_HOME (profile-scoped)
 # instead of shared cross-profile /tmp. Config override still wins.
-try:
-    from .persona_card import _hermes_home as _pchome  # noqa: F401
-except Exception:  # noqa: BLE001
-    def _pchome() -> str:  # type: ignore[misc]
-        return os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-DEFAULT_LOG_PATH = os.path.join(os.path.abspath(_pchome()), "uncensored-router.log")
-DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+# P1: ownership MOVED to core.telemetry (identical computation via
+# hermes_constants.get_hermes_home / HERMES_HOME env fallback); the hub keeps
+# the same names as aliases for back-compat patch targets.
+DEFAULT_LOG_PATH = telemetry.DEFAULT_LOG_PATH
+DEFAULT_LOG_MAX_BYTES = telemetry.DEFAULT_LOG_MAX_BYTES
 DEFAULT_PENDING_TTL = 300
 
-_LOG_LOCK = threading.Lock()
+_LOG_LOCK = telemetry._LOG_LOCK
 
 
 def _persona_system_prompt(request: Optional[dict]) -> str:
@@ -190,15 +207,11 @@ def _substance_frame() -> str:
 
 
 def _log_path() -> str:
-    return _dispatcher_knobs._log_path()
+    return telemetry._log_path()
 
 
 def _log_max_bytes() -> int:
-    return _dispatcher_knobs._log_max_bytes()
-
-
-def _log_route(event: str, **fields: Any) -> None:
-    return _dispatcher_knobs._log_route(event, **fields)
+    return telemetry._log_max_bytes()
 
 
 def _decision_wait_before_consume(budget: float = 0.0) -> None:

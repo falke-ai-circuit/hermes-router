@@ -12,7 +12,7 @@ Pin battery:
 """
 import json
 
-import hermes_router.config_access as _cac
+import hermes_router.core.config_access as _cac
 import hermes_router.debug_banner as _dbgmod
 from hermes_router import decision as D
 from hermes_router import debug_banner as DB

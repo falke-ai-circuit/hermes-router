@@ -56,7 +56,7 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(decision, "_cfg", lambda: dict(decision.DEFAULTS))
     monkeypatch.setattr(router_core, "_decision_cfg",
                         lambda: dict(decision.DEFAULTS))
-    monkeypatch.setattr("hermes_router.usage_ledger.estimate_cost",
+    monkeypatch.setattr("hermes_router.core.usage_ledger.estimate_cost",
                         lambda *a, **k: 0.0, raising=True)
     monkeypatch.setattr(decision, "_ledger_connect",
                         lambda db_path="": _tmp_conn(tmp_path))

@@ -767,10 +767,7 @@ def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
 
 def _log(session_id: str, event: str, **fields: Any) -> None:
     try:
-        try:
-            from . import _log_route as _lr  # relative: gateway-safe
-        except ImportError:
-            from hermes_router import _log_route as _lr
+        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
         _lr(event, lane="decision", trigger=TRIGGER,
             session_id=str(session_id or ""), **fields)
     except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never breaks the lane (rider 19 item 1)

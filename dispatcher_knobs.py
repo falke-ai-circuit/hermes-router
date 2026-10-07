@@ -316,33 +316,11 @@ def _log_max_bytes() -> int:
 
 
 def _log_route(event: str, **fields: Any) -> None:
-    """Append one line to the route log. Never raises. Rotates past max bytes."""
-    if not bool(_plugin()._cfg().get("log_routes", True)):
-        return
-    from datetime import datetime, timezone
+    """P1: implementation MOVED to core.telemetry; delegate kept for
+    back-compat (the hub attribute binds core.telemetry._impl directly)."""
+    from hermes_router.core import telemetry as _telemetry
 
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    parts = [f"{k}={v}" for k, v in fields.items() if v is not None]
-    line = f"{ts} {event} " + " ".join(parts) + "\n"
-    path = _plugin()._log_path()
-    max_bytes = _plugin()._log_max_bytes()
-    try:
-        with _plugin()._LOG_LOCK:
-            try:
-                if os.path.exists(path) and os.path.getsize(path) > max_bytes:
-                    os.replace(path, path + ".1")
-            except OSError:
-                pass
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(line)
-            # H4 (reviewer audit 2026-09-02): route logs carry session ids and
-            # content lengths — owner-only. Best-effort; never breaks routing.
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-    except OSError:
-        pass
+    return _telemetry.log_route(event, **fields)
 
 
 def _extract_last_user_message(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:

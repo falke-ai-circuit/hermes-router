@@ -162,7 +162,7 @@ def estimate_cost(model: str, input_tokens: Optional[int],
     R19.14 FIX 3: the MEASURED fallback table covers OpenRouter-hosted
     reflex models the catalog misses. Never raises."""
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         pricing = anchor_chain.load_anchor_chain().pricing
         prices = pricing.get(str(model or "")) if isinstance(pricing, dict) else None
@@ -170,9 +170,9 @@ def estimate_cost(model: str, input_tokens: Optional[int],
             # Goran 09-09 ruling (supersedes static estimates): prices come
             # FROM THE PROVIDER. Fetch per-model pricing from the chain
             # provider's /models endpoint (cached); unknown model -> 0.0.
-            from .provider_prices import provider_price_for
+            from .. import provider_prices as _pp
 
-            prices = provider_price_for(str(model or ""))
+            prices = _pp.provider_price_for(str(model or ""))
             if not isinstance(prices, dict):
                 # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-
                 # hosted reflex models (typesafe/jev-router) were billing

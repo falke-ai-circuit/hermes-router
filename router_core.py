@@ -311,7 +311,7 @@ def _prune_locked(now: float) -> None:
 def task_id_for(session_id: str, user_text: str, model: str = "") -> str:
     """Task hash: session + normalized user text + model. The task unit is the
     user ask, not the provider call (Astra: tasks, not messages)."""
-    from .state import hash_text
+    from .core.state import hash_text
 
     return hash_text((session_id or "") + "\x00" + (user_text or "").strip()[:4000] + "\x00" + (model or ""))[:24]
 
@@ -346,7 +346,7 @@ def record_provider_failure(task_id: str, failure_signature: str) -> int:
     only the hash was kept, which made the struggle classifier decorative
     (a 16-hex hash matches no infra pattern). Never raises."""
     try:
-        from .state import hash_text
+        from .core.state import hash_text
 
         sig = hash_text(failure_signature or "")[:16]
         with _LOCK:
@@ -379,7 +379,7 @@ def record_tool_call(task_id: str, tool_result_text: str, turn_key: str) -> int:
     updates the progress marker. NO gate reads them yet (Phases 1+ do; Phase
     0 is wiring only, zero behavior change)."""
     try:
-        from .state import hash_text
+        from .core.state import hash_text
 
         h = hash_text(tool_result_text or "")
         with _LOCK:
@@ -695,10 +695,7 @@ def _consult_cooldown_active(session_id: str, user_text: str) -> bool:
         if turns_since is None or turns_since >= needed:
             return False
         try:
-            try:
-                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-            except ImportError:  # pragma: no cover — top-level script load only
-                from hermes_router import _log_route as _lr  # deferred - import cycle
+            from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
             _lr("PRE", session_id=session_id,
                 event_detail="consult_cooldown_suppressed",
                 cd_hash=cd_hash[:8], turns_since=turns_since, needed=needed)
@@ -939,10 +936,7 @@ def clear_anchor_backoff(session_id: str, task_id: str) -> None:
             _load_backoff_sidecar_locked()
             if _ANCHOR_FAIL_BACKOFF.pop(key, None) is not None:
                 _save_backoff_sidecar_locked()
-                try:
-                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
-                except ImportError:  # pragma: no cover — top-level script load only
-                    from hermes_router import _log_route  # deferred — import cycle
+                from .core.telemetry import log_route as _log_route  # P1: core telemetry (import cycle broken)
 
                 _log_route("PRE", event_detail="anchor_backoff_cleared",
                            task_id=key[1], session_id=key[0])
@@ -1162,10 +1156,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         _manual_stack["text"] = None
         try:
             from . import decision as _dm
-            try:
-                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-            except ImportError:  # pragma: no cover — top-level script load only
-                from hermes_router import _log_route as _lr  # deferred - import cycle
+            from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
 
             _dm.handle_decision_v3(
                 session_id=session_id, task_id=task_id,
@@ -1193,10 +1184,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             _cool_ts, _ = None, ""
             _since = -1
             try:
-                try:
-                    from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                except ImportError:  # pragma: no cover — top-level script load only
-                    from hermes_router import _log_route as _lr  # deferred - import cycle
+                from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                 _cool_ts, _ = state.last_staged_consult(session_id)
                 _since = int(time.time() - _cool_ts) if _cool_ts else -1
                 _lr("PRE", session_id=session_id,
@@ -1243,10 +1231,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 _scan_text_m = user_text
                 if _inj_m:
                     try:
-                        try:
-                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lrj
+                        from .core.telemetry import log_route as _lrj  # P1: core telemetry (import cycle broken)
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged",
                              family="prompt_injection",
@@ -1276,10 +1261,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         if _consult_no_frontier_config():
                             return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
                                         None, "consult_no_frontier_config")
-                        try:
-                            from . import _log_route as _lrf4  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lrf4
+                        from .core.telemetry import log_route as _lrf4  # P1: core telemetry (import cycle broken)
                         # Rider 18 R16-1: the route is a FRONTIER consult
                         # (manual open-question). Emit the frontier-lane-
                         # NAMED event first (t1r11 item 1: every four-leg
@@ -1307,10 +1289,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # explicit suppressed pair: the fork died with the
                     # clause cut (no fork consult on the flagged turn).
                     try:
-                        try:
-                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lrj
+                        from .core.telemetry import log_route as _lrj  # P1: core telemetry (import cycle broken)
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged_fork_suppressed",
                              family="prompt_injection",
@@ -1321,10 +1300,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         _obs_warn('injection_flagged_fork_suppressed', _obs_exc)  # rider 19 item 1
                 if _mhit is not None and _inj_m:
                     try:
-                        try:
-                            from . import _log_route as _lrj  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lrj
+                        from .core.telemetry import log_route as _lrj  # P1: core telemetry (import cycle broken)
                         _lrj("PRE", session_id=session_id,
                              event_detail="injection_flagged_fork_preserved",
                              family="prompt_injection",
@@ -1354,10 +1330,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     _mdec = _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
                                  "decision_detected:manual_ask")
                     try:
-                        try:
-                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lr  # deferred - import cycle
+                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_route_fired",
                             lane=LANE_DECISION, mode=MODE_DECISION_SCORE,
@@ -1401,10 +1374,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 dh_backend = "heuristic"
             if _is_system_injected_turn(user_text):
                 try:
-                    try:
-                        from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                    except ImportError:  # pragma: no cover — top-level script load only
-                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                    from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                     _lr("PRE", session_id=session_id,
                         event_detail="complexity_pre_skip_system_injected",
                         task_id=task_id, level=level)
@@ -1418,10 +1388,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             # override line still anchors).
             elif (_is_verify_class_exempt(user_text) and override != "anchor"):
                 try:
-                    try:
-                        from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                    except ImportError:  # pragma: no cover — top-level script load only
-                        from hermes_router import _log_route as _lr  # deferred - import cycle
+                    from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                     _lr("PRE", session_id=session_id,
                         event_detail="verify_class_exempt",
                         pattern_groups="clear_simple", task_id=task_id)
@@ -1461,10 +1428,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     from . import decision as _dlane_bf
 
                     if _dlane_bf._benign_brief_frame(user_text):
-                        try:
-                            from . import _log_route as _lrbf  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lrbf
+                        from .core.telemetry import log_route as _lrbf  # P1: core telemetry (import cycle broken)
 
                         _lrbf("PRE", session_id=session_id,
                               event_detail="complexity_pre_suppressed",
@@ -1553,10 +1517,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             and _no_manual_trigger_pre(user_text) \
                             and not _declared_fork_pre(user_text):
                         _risk_stand_down = True
-                        try:
-                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lr
+                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                         try:
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_stand_down_clean_opinion",
@@ -1579,10 +1540,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # no event). Same quarantine + distinct event.
                     if not _risk_stand_down and _is_system_injected_turn(user_text):
                         try:
-                            try:
-                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                            except ImportError:  # pragma: no cover — top-level script load only
-                                from hermes_router import _log_route as _lr
+                            from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_skip_system_injected",
                                 task_id=task_id)
@@ -1598,10 +1556,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         # risk consult; the decision lane owns the declared
                         # fork and eventsthe preserved/suppressed pair.
                         try:
-                            try:
-                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                            except ImportError:  # pragma: no cover — top-level script load only
-                                from hermes_router import _log_route as _lr
+                            from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                             _lr("PRE", session_id=session_id,
                                 event_detail="risk_pre_skip_injection_clause",
                                 task_id=task_id)
@@ -1622,10 +1577,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                             _record_cooldown_fire(
                                 session_id, _cooldown_hash(session_id, user_text))
                             try:
-                                try:
-                                    from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                                except ImportError:  # pragma: no cover — top-level script load only
-                                    from hermes_router import _log_route as _lr
+                                from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                                 _lr("PRE", session_id=session_id,
                                     event_detail="risk_consult_fire",
                                     risk_class=_rcls,
@@ -1678,10 +1630,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 if _prov_skip or _is_system_injected_turn(user_text):
                     if _prov_skip:
                         try:
-                            try:
-                                from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                            except ImportError:  # pragma: no cover — top-level script load only
-                                from hermes_router import _log_route as _lr  # deferred - import cycle
+                            from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                             _lr("PRE", session_id=session_id,
                                 event_detail="decision_provenance_skip",
                                 lane=LANE_DECISION, task_id=task_id)
@@ -1693,10 +1642,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         # WARN-visibility doctrine as the complexity leg's
                         # complexity_pre_skip_system_injected event.
                         try:
-                            try:
-                                from . import _log_route as _lr2  # relative: gateway-safe (rider 19 item 1)
-                            except ImportError:  # pragma: no cover — top-level script load only
-                                from hermes_router import _log_route as _lr2  # deferred - import cycle
+                            from .core.telemetry import log_route as _lr2  # P1: core telemetry (import cycle broken)
                             _lr2("PRE", session_id=session_id,
                                  event_detail="decision_injected_suppressed",
                                  lane=LANE_DECISION, task_id=task_id)
@@ -1717,10 +1663,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # R19.1 LEG 1: platform envelope — never detect on it.
                     # Log the reason code and fall through to flash-direct.
                     try:
-                        try:
-                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lr  # deferred - import cycle
+                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_provenance_skip",
                             lane=LANE_DECISION, task_id=task_id)
@@ -1740,10 +1683,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                     # async BEFORE the risk consult routes.
                     _fire_decision_stack()
                     try:
-                        try:
-                            from . import _log_route as _lr  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route as _lr  # deferred - import cycle
+                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
                         _lr("PRE", session_id=session_id,
                             event_detail="decision_detect_fire",
                             lane=LANE_DECISION,
@@ -1836,10 +1776,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         # counter). disabled config -> always False (v3.3.0 behavior).
         if anchor_backoff_active(key[0], key[1], now=now):
             try:
-                try:
-                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
-                except ImportError:  # pragma: no cover — top-level script load only
-                    from hermes_router import _log_route  # deferred — import cycle
+                from .core.telemetry import log_route as _log_route  # P1: core telemetry (import cycle broken)
 
                 with _PENDING_SWAP_LOCK:
                     rec = _ANCHOR_FAIL_BACKOFF.get(key) or {}
@@ -1858,10 +1795,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         # proceed with the config endpoint (logged, content-free).
         if model_override and claim_source != "declared_user":
             try:
-                try:
-                    from . import _log_route  # relative: gateway-safe (rider 19 item 1)
-                except ImportError:  # pragma: no cover — top-level script load only
-                    from hermes_router import _log_route  # deferred — import cycle
+                from .core.telemetry import log_route as _log_route  # P1: core telemetry (import cycle broken)
 
                 _log_route("PRE", event_detail="model_override_rejected",
                            source=str(claim_source or ""),
@@ -1915,10 +1849,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                     and str(claim_source or "") == "declared_user")
                 if not _named_fable:
                     try:
-                        try:
-                            from . import _log_route  # relative: gateway-safe (rider 19 item 1)
-                        except ImportError:  # pragma: no cover — top-level script load only
-                            from hermes_router import _log_route
+                        from .core.telemetry import log_route as _log_route  # P1: core telemetry (import cycle broken)
                         _log_route("PRE", event_detail="fable_target_not_explicit",
                                    model=str(getattr(ep, "model", "")),
                                    reason=str(getattr(decision, "reason", "") or ""),

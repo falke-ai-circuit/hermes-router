@@ -200,7 +200,7 @@ def routing_cap_usd() -> float:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         chain = anchor_chain.load_anchor_chain()
         cap = float(getattr(chain, "daily_cap_usd", 0.0) or 0.0)
@@ -209,7 +209,7 @@ def routing_cap_usd() -> float:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from . import anchor_chain
+        from .. import anchor_chain
 
         return float(anchor_chain.DEFAULT_DAILY_CAP_USD)
     except Exception:  # noqa: BLE001
@@ -412,14 +412,14 @@ def deny_routing(agent_id: str, lane: str, initiator: str,
     except Exception:  # noqa: BLE001
         pass
     try:
-        from . import debug_banner as _db
+        from .. import debug_banner as _db
 
         _db.park_anchor_banner(str(session_id or ""),
                                denied_banner_text(spend, cap))
     except Exception:  # noqa: BLE001 — banner must never break the gate
         pass
     try:
-        from . import router_tools
+        from .. import router_tools
 
         router_tools.count("denied_cap")
     except Exception:  # noqa: BLE001

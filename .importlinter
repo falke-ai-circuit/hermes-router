@@ -1,0 +1,84 @@
+# import-linter configuration (P1) — dispatch binding: import-linter for the
+# layers contract, NOT a hand-rolled AST audit. Run:
+#     PYTHONPATH=/opt/data/plugins lint-imports
+# (parent dir must be importable — grimp locates the package through sys.path).
+#
+# NOTE (P1): the TARGET layers contract (api > gate > passes > features > lanes
+# > core) cannot be declared active yet — import-linter requires every layer
+# package to exist, and api/gate/passes/features/lanes are created in P3a/P4.
+# When those land, replace the forbidden contracts below with:
+#
+#     [importlinter:contract:layers-target]
+#     name = L0-L4 target layering
+#     type = layers
+#     layers = hermes_router.api,hermes_router.gate,hermes_router.passes,hermes_router.features,hermes_router.lanes,hermes_router.core
+#
+# Active NOW:
+[importlinter]
+root_packages =
+    hermes_router
+include_external_packages = True
+
+[importlinter:contract:core-purity]
+name = core/ must not import other hermes_router modules (L0)
+type = forbidden
+source_modules = hermes_router.core
+forbidden_modules =
+    hermes_router,
+    hermes_router.anchor_chain,
+    hermes_router.anchor_exec,
+    hermes_router.benchmarks,
+    hermes_router.bypass_watch,
+    hermes_router.classifier,
+    hermes_router.commands,
+    hermes_router.commands_config,
+    hermes_router.commands_diag,
+    hermes_router.commands_runtime,
+    hermes_router.complexity,
+    hermes_router.completion_audit,
+    hermes_router.config_writer,
+    hermes_router.decision,
+    hermes_router.decision_head,
+    hermes_router.decision_midturn,
+    hermes_router.decision_miner,
+    hermes_router.debug_banner,
+    hermes_router.dispatcher_knobs,
+    hermes_router.dispatcher_post,
+    hermes_router.dispatcher_pre,
+    hermes_router.flinch_reason,
+    hermes_router.frames,
+    hermes_router.intent_classifier,
+    hermes_router.method_card,
+    hermes_router.persona_card,
+    hermes_router.provider_prices,
+    hermes_router.provenance_footer,
+    hermes_router.reflex,
+    hermes_router.refusal_doctrine,
+    hermes_router.render_inbox,
+    hermes_router.render_payload,
+    hermes_router.risk,
+    hermes_router.route_gate,
+    hermes_router.router,
+    hermes_router.router_core,
+    hermes_router.router_tools,
+    hermes_router.semantic_classifier,
+    hermes_router.suggestions
+# Known function-local late-binds moved INTO core unchanged at P1 (they existed
+# before the move to break import cycles; documented carry set, must only
+# shrink). ignore list is version-controlled.
+ignore_imports =
+    hermes_router.core.canonical.persona_card -> hermes_router.persona_card
+    hermes_router.core.usage_ledger.anchor_chain -> hermes_router.anchor_chain
+    hermes_router.core.usage_ledger.provider_prices -> hermes_router.provider_prices
+    hermes_router.core.routing_caps.anchor_chain -> hermes_router.anchor_chain
+    hermes_router.core.routing_caps.debug_banner -> hermes_router.debug_banner
+    hermes_router.core.routing_caps.router_tools -> hermes_router.router_tools
+    hermes_router.core.decisions.suggestions -> hermes_router.suggestions
+
+[importlinter:contract:core-no-cli]
+name = core/ must not import hermes_cli (except the config_access adapter)
+type = forbidden
+source_modules = hermes_router.core
+forbidden_modules = hermes_cli
+ignore_imports =
+    hermes_router.core.config_access.hermes_cli -> hermes_cli.config

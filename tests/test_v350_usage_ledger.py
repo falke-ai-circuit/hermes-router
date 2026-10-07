@@ -9,7 +9,7 @@ from collections import deque
 
 import pytest
 
-import hermes_router.usage_ledger as usage_ledger
+import hermes_router.core.usage_ledger as usage_ledger
 
 
 @pytest.fixture(autouse=True)

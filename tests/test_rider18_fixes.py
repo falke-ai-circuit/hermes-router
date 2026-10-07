@@ -228,7 +228,7 @@ def test_catalog_cache_no_config_write(monkeypatch, tmp_path):
     """The cache path never writes router config: only the catalog cache
     file appears in the (isolated) home, and the config section object
     is untouched after both hit and miss paths."""
-    import hermes_router.config_access as ca
+    import hermes_router.core.config_access as ca
     section = dict(ca.router_section())
     _cat(monkeypatch, tmp_path, _nous_catalog())
     provider_prices.provider_catalog_entries("frontier")

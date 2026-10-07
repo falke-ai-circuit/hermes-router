@@ -21,7 +21,7 @@ import os
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ACCESSOR = os.path.join(REPO, "config_access.py")
+ACCESSOR = os.path.join(REPO, "core", "config_access.py")  # P1: accessor moved to core/
 
 LEGACY = "uncensored_router"
 
@@ -84,6 +84,6 @@ def test_legacy_mention_allowlist_only_shrinks():
 def test_accessor_surface_intact(tier, fn):
     """The 3-tier resolution + cache semantics survive the purge: the public
     accessor surface is unchanged (import-time probe)."""
-    import hermes_router.config_access as ca  # noqa: F401
+    import hermes_router.core.config_access as ca  # noqa: F401
 
     assert callable(getattr(ca, fn))
