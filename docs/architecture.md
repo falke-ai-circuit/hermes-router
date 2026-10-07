@@ -1,103 +1,133 @@
 # Architecture
 
 hermes-router sits **inside** the Hermes Agent turn pipeline and decides,
-per turn, whether the main model's ordinary path is augmented by three
-optional lanes. It never rewrites the user's message; it envelopes,
+per turn, whether the main model's ordinary path is augmented by the
+registered lanes. It never rewrites the user's message; it envelopes,
 substitutes renders, or consults — and always fails open.
 
+## Layer diagram (L0 → L4, one-way, enforced)
+
 ```
-                         ┌─────────────────────────────────────────────┐
- user turn ──────────────►  PRE  (on_llm_request, before the model runs)  │
-                         │  ┌───────────────────────────────────────┐   │
-                         │  │ 1 higher-self rule injection          │   │
-                         │  │ 2 sentinel firewall (routed turns     │   │
-                         │  │   never re-trigger routing)           │   │
-                         │  │ 3 audit-delivery (stashed POST        │   │
-                         │  │   verdict from last turn)             │   │
-                         │  │ 4 complexity scan → orientation       │   │
-                         │  │   consult (frontier, advisory brief)  │   │
-                         │  │ 5 uncensored scan → contested content │   │
-                         │  │   → render staged (shadow self)       │   │
-                         │  │ 6 clarify scan, banners, footers      │   │
-                         │  └───────────────────────────────────────┘   │
-                         └────────────────────┬────────────────────────┘
-                                              ▼
-                                  main model runs (flash lane)
-                                              ▼
-                         ┌─────────────────────────────────────────────┐
-                         │ POST (on_transform_llm_output, after tools) │
-                         │ ┌─────────────────────────────────────┐     │
-                         │ │ refusal shape → censorship-flinch   │     │
-                         │ │   verdict → uncensored render       │     │
-                         │ │   (retry ladder, fail-open deliver) │     │
-                         │ │ completion audit gate (closure /    │     │
-                         │ │   every-3-turns / ≥3 tool calls)    │     │
-                         │ │   → frontier consult (sync, 45s     │     │
-                         │ │   budget) → revision pass → deliver │     │
-                         │ │ parked banner consumption           │     │
-                         │ └─────────────────────────────────────┘     │
-                         └────────────────────┬────────────────────────┘
-                                              ▼
-                                     final response to user
+L0  core/          stdlib only (config_access touches hermes_cli.config)
+L1  features/      imports L0 only
+L2  passes/        imports L0 + L1
+L3  gate/          imports L0..L2
+L4  api/           imports anything; nothing imports L4
+lanes/             pure data, beside L0, depends on nothing
 ```
 
-## The two lanes
+Dependency direction L0 ← L1 ← L2 ← L3 ← L4 ← `__init__` is enforced by the
+import-linter layer check in `scripts/ci.sh` (and an AST-walking audit test).
+The pre-restructure hub-and-spoke cycle (`__init__` importing everything,
+leaves late-binding back through `_plugin()`) is gone: telemetry lives in
+L0 and every pass imports it directly.
 
-**Frontier lane ("higher self")** — epistemic extension. Fires BEFORE
-complex work (PRE orientation brief) and AFTER completed work (POST
-completion audit). Advisory only: the main model reads the envelope,
-weighs it, and owns the conclusion. Frontier proposes, main model
-disposes.
+## Module table per layer
 
-**Uncensored lane ("shadow self")** — capability extension. Fires when
-the main model's refusal is classified as a **censorship flinch**
-(never for technical failures). The render comes from a deliberately
-unfiltered provider chain (abliteration primary, Venice fallback),
-is delivered in-register as the agent's own voice, and is shielded
-from frontier audit by design (`has_pending_render` gate, v3.8.5).
+| Layer | Module | Role |
+|---|---|---|
+| L0 core/ | `config_access.py` | live config reads; the ONLY load_config consumer |
+| | `schema.py` | typed config key inventory (SCHEMA — single source of truth) |
+| | `budgets.py` | budget profiles + central max_tokens clamp |
+| | `telemetry.py` | log_route, isolate(gate, fn), seam_probe |
+| | `patchpoints.py` | the one legal monkeypatch surface |
+| | `state.py` | pending-render map, counters, sidecars |
+| | `canonical.py` | canonical row formatting (artifacts only at edges) |
+| | `session_store.py` | message history access |
+| | `usage_ledger.py`, `routing_caps.py`, `decisions.py` | spend ledger, caps, decision records |
+| L1 features/ | `frames.py` | frame text (byte-identical) |
+| | `banners/lifecycle.py` | BannerLifecycle + deliver() chokepoint |
+| | `banners/kinds.py` | registered BannerKind data rows |
+| | `patterns/engine.py` | pack compiler + matcher |
+| | `patterns/packs/*.json` | pattern packs as data |
+| | `classifier.py`, `decision*.py`, `semantic_classifier.py`, `intent_classifier.py` | scans and lane brains |
+| | `complexity.py`, `flinch_reason.py`, `refusal_doctrine.py`, `risk.py`, `reflex.py`, `bypass_watch.py`, `suggestions.py` | verdict / doctrine surfaces |
+| | `persona_card.py`, `method_card.py`, `render_inbox.py`, `render_payload.py`, `provenance_footer.py`, `provider_prices.py` | persona, render, provenance, pricing |
+| | `trigger_cascade.py`, `completion_audit.py` (feature legs) | cascade + audit legs |
+| L2 passes/ | `dispatcher_pre.py` / `dispatcher_post.py` | PRE / POST middleware bodies |
+| L3 gate/ | `route_gate.py` | lane routing via registry reads |
+| | `router_core.py` | turn orchestration core |
+| | `orchestration.py` | the three on_* orchestrator bodies |
+| L4 api/ | `router_tools.py`, `commands*`, `config_writer.py` | agent tool, `/router` command surface, atomic config writer |
+| data | `lanes/registry.py` | LaneSpec dataclass + register_lane() |
+| | `lanes/builtins.py` | the four lane definitions as data |
+
+## Pass pipeline walkthrough (exact seams)
+
+```
+user turn
+  │
+  ├─ SEAM 1: on_llm_request (PRE, before the model runs)      [L2/L3]
+  │    1 higher-self rule injection
+  │    2 sentinel firewall (routed turns never re-trigger)
+  │    3 audit-delivery (stashed POST verdict from last turn)
+  │    4 complexity scan → orientation consult (frontier, advisory)
+  │    5 uncensored scan → contested content → render staged
+  │    6 clarify scan, banners, footers
+  ▼
+main model runs
+  │
+  ├─ SEAM 2: on_transform_llm_output (POST, after tools)      [L2/L3]
+  │    refusal shape → censorship-flinch verdict → uncensored
+  │    render (retry ladder, fail-open deliver)
+  │    completion audit gate → sync frontier consult (45s)
+  │    → revision pass → deliver
+  │    parked banner consumption
+  ▼
+  ├─ SEAM 3: on_transform_terminal_output                     [L2]
+  ▼
+final response to user
+```
+
+Seam wiring happens in `__init__.py` (plugin build + register 3 seams +
+register lanes + export PUBLIC_API). The L0-L3 engine never knows about the
+seams; `core/patchpoints.py` is the one legal monkeypatch surface for tests
+and the seam probe (`core/telemetry.seam_probe`, P6).
+
+## LaneSpec / BannerKind story
+
+Adding a lane used to touch ~15 files because lane behavior was encoded as
+bespoke code per file. Now the behavioral surface is **data**:
+
+- `LaneSpec` (lanes/registry.py) fields map 1:1 to the old touch list:
+  `phrases` (route_gate phrase dicts), `pre_patterns` (dispatcher_knobs),
+  `marker_strings` (sentinel firewall registry), `banner_kind`
+  (debug_banner park semantics), `budget_profile` (audit budgets),
+  `config_section`, `commands_switch` (/router map), `provenance_tag`,
+  `delivery_edges`, `consult_role`, `valid`. Registration is import-time
+  fail-loud (duplicate id = ValueError). The four builtins live in
+  `lanes/builtins.py`, transplanted byte-identically from the original
+  tables; a parity test holds registry data == original literals.
+- `BannerKind` (features/banners/kinds.py) carries the banner semantics that
+  were imperative rules inside debug_banner's park/consume path:
+  `stack_policy` (replace/stack/once), `ttl_seconds`, `delivery_edges`
+  (the legal consume edges), `capture_fallback` (R20 one-shot watcher).
+  The lifecycle consults this data instead of hardcoding.
+
+Phrase tables themselves are pack DATA (`features/patterns/packs/
+lane-phrases.json`, P7) — `lanes/` imports nothing; consumers unchanged.
 
 ## Load-bearing invariants
 
-1. **Fail-open everywhere.** No lane failure may break a turn. Every
-   consult is budget-bounded; on timeout the unaudited/unrouted
-   response delivers as-is.
-2. **Routed turns never re-trigger routing.** The sentinel firewall
-   (`_frame_sentinel_check`) recognizes every lane's output markers;
-   marked content passes through untouched. U can't trigger F, F
-   can't trigger U, nothing echoes.
-3. **Canonical rows never carry lane artifacts.** Banners, audit
-   envelopes, and markers are appended at the delivery edge only;
-   the persisted conversation stays clean.
+1. **Fail-open everywhere.** Every consult is budget-bounded; on timeout the
+   unaudited/unrouted response delivers as-is.
+2. **Routed turns never re-trigger routing.** Sentinel firewall recognizes
+   every lane's markers; marked content passes untouched.
+3. **Canonical rows never carry lane artifacts.** Banners/envelopes/markers
+   append at the delivery edge only.
 4. **Every billed frontier call emits a banner.** Spend visibility is
-   unconditional (NO-FINDINGS verdicts included).
-5. **One consult per turn.** PRE and POST are mutually exclusive;
-   dedupe is keyed on the task ID.
-
-## Module map
-
-| Module | Role |
-|---|---|
-| `__init__.py` | plugin entry; PRE/POST dispatch, seam wiring |
-| `classifier.py` | regex layers: pre patterns, refusal shapes |
-| `flinch_reason.py` | censorship-vs-technical verdict (the routing doctrine) |
-| `complexity.py` | PRE complexity scan, orientation dispatch |
-| `completion_audit.py` | POST audit gate, sync consult, revision pass |
-| `anchor_chain.py` / `anchor_exec.py` | frontier endpoint resolution + outbound call |
-| `render_payload.py` / `render_inbox.py` | uncensored chain staging and retry ladder |
-| `refusal_doctrine.py` | verdict policy (always_route / doctrine / off) |
-| `debug_banner.py` | verbosity-levelled spend/decision banners |
-| `persona_card.py` | per-agent consult tailoring (identity + task digest) |
-| `provider_prices.py` | live pricing from provider /models endpoints |
-| `usage_ledger.py` | per-profile spend ledger |
-| `state.py` / `session_store.py` | pending-render map, counters, sidecars |
-| `commands.py` | `/router` command surface (token-guarded) |
-| `router_tools.py` | `router_control` agent tool (validated actions) |
+   unconditional.
+5. **One consult per turn.** PRE and POST mutually exclusive, keyed on task ID.
 
 ## State and logs
 
-- Route decisions: `/tmp/uncensored-router-<profile>.log` (event-name lines)
+- Route decisions: `/tmp/uncensored-router-<profile>.log` (event lines)
 - Spend ledger: `<profile>/hermes-router-spend.json`
-- Backoff ledger: `<profile>/hermes-router-backoff.json` (anchor failures only)
+- Backoff ledger: `<profile>/hermes-router-backoff.json` (anchor failures)
 - Config: `hermes_router:` block in the profile `config.yaml`, read live
   per dispatch — knob changes never require a gateway restart; plugin
   `.py` changes do.
+
+Note: this file is static hand-maintained today; a CI-generated variant
+(AST-walk → layer table) is sketched in `scripts/gen_architecture.py` scope
+and can replace it later without changing consumers.

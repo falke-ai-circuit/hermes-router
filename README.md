@@ -1,417 +1,136 @@
 # hermes-router
 
-Generic **two-lane Hermes router** plugin (any profile, any agent). Lane 1 is the proven
-uncensored render lane (v2 behavior, byte-identical mechanics). Lane 2 is the v3
-complexity/struggle lane: when a task needs stronger reasoning — or the main model is
-visibly struggling — ONE per-call anchored call goes to a configured frontier model, and
-its answer enters the main model's context as a provenance-stamped advisory envelope.
-Fail-open everywhere: every failure degrades to normal agent pass-through. The plugin
-never crashes a turn.
+A Hermes Agent plugin that adds four optional, fail-open lanes to every turn:
+an uncensored render lane (shadow), a frontier advisory lane (higher self,
+PRE + POST), and a decision lane (R19, dark by default) — plus a `/router`
+command surface and validated `router_status`/`router_control` agent tools.
+It never rewrites the user's message; it envelopes, substitutes renders, or
+consults — and **always fails open**: every failure degrades to normal agent
+pass-through. The plugin never crashes a turn.
 
-**Two-lane doctrine (v3.8.0):** the frontier lane is the *observer*; the uncensored lane
-is *capability*. Frontier calls never filter and never rewrite — they observe, orient,
-and audit (as advisory "higher-self" messages); capability work (including uncensored
-rendering) stays with the agent's own configured chain.
+Reference docs: `docs/architecture.md` (layers, seams, LaneSpec/BannerKind)
+· `docs/lanes.md` (per-lane reference) · `docs/operator-guide.md` ·
+`docs/known-gaps-2026-09-06.md` · `docs/testing-history.md` ·
+config keys: `core/schema.py` (single source of truth).
 
-```
-                       ┌──────────────────────────────────────────────────┐
-   user turn ────────► │  PRE llm_request (SINGLE dispatcher pass)        │
-                       │  1. inline overrides: "skip anchor" > "anchor this"│
-                       │  2. struggle? (a)N≥3 same-failure (b)tool-loop    │
-                       │     (c)user struggle phrasing  → OWNERSHIP       │
-                       │  3. complexity classify (L0-L3, 2-stage) → PLAN  │
-                       │  4. contested-class match → LANE 1 render        │
-                       │  5. else → FLASH_DIRECT (pass-through)           │
-                       └───────────────┬──────────────────────────────────┘
-                                       │
-                 ┌─────────────────────┴─────────────────────┐
-                 ▼                                           ▼
-        LANE 1 — uncensored                          LANE 2 — complexity/struggle
-        (existing, unchanged)                        (v3, per-call)
-        ─────────────────────                        ─────────────────────────
-        substance-frame render via                   llm_execution middleware:
-        ordered chain (primary→fallback),            per-call client → anchor
-        persona from profile DNA,                    endpoint (openrouter:// or
-        POST refusal swap + FIX1                     custom scheme), cap guard,
-        history reconcile                            spend ledger
-                                                     frontier answer enters main
-                                                     model context as advisory
-                                                     (kind/producer/route_id/
-                                                      task_id/limitations)
-```
+## Quickstart
 
-## Lane 1 — uncensored render (v2 semantics preserved)
+1. Install the plugin: `hermes plugins install` or a directory copy into the
+   profile's plugins path — see INSTALL.md. Zero config required to install.
+2. Restart that profile's gateway; the plugin registers three seams
+   (`on_llm_request`, `on_transform_llm_output`, `on_transform_terminal_output`)
+   and starts routing with built-in defaults.
+3. First route in 60 seconds — send a standalone directive line in a session:
 
-- **PRE** (`llm_request` middleware): contested-class regex → substance-frame render
-  (ask + render composite, invisible seam). H1 sentinel prevents render-of-render.
-- **POST** (`transform_llm_output` hook): refusal-shaped replies are swapped for chain
-  renders in the agent's voice; unconditional on fallback recovery; loop guard keyed on
-  message hash stays as-is.
-- **Model chain**: ordered `chain:` (primary → fallback), first success wins.
-- Persona card: derived from `HERMES_HOME/{IDENTITY,SOUL}.md` at call time,
-  secret-scrubbed, mtime-cached; modes `voice_stems` (default) / `voice_only` / `full` / `none`.
-- No code-side content filtering: boundaries live in the render substrate, not routing
-  code.
+   ```
+   ask shadow self to give her read on <topic>
+   ```
 
-## Lane 2 — complexity / struggle (v3)
+   The shadow lane fires, stages a substance-frame render through the ordered
+   chain, and appends a spend banner at the delivery edge. Watch decisions in
+   `/tmp/uncensored-router-<profile>.log`, or set `debug_banner: true` for
+   inline verbosity-levelled banners.
 
-**Higher-self frontier consults (v3.8.0)** — both lanes deliver frontier input as a
-*message from your higher self*: the part of the agent that observes it while it acts.
+Config is read live per dispatch: knob changes never require a gateway
+restart (only plugin `.py` changes do). Out-of-box contract: insert your
+frontier and uncensored-chain API config → both lanes work; knobs only if
+you want non-defaults.
 
-- **PRE orientation** — before a complex task, the frontier sends an orientation message:
-  how the agent's higher self would optimally do the coming job (role, voice, closed
-  lines, pitfalls). The agent owns the conclusion and never disowns the turn.
-- **POST completion audit** — every `post_audit_min_turns` substantive turns, the
-  frontier gives its own post-intuition take on the resolution: requested-vs-delivered
-  sense check, unexplored angles, what is genuinely good, what could be better. Never an
-  audit *of* the main model, never first-person self-review, no user names in frames.
-- **Sync with fail-open (v3.8.0)**: the POST audit runs synchronously within
-  `audit_sync_seconds` (default 45) so the verdict is visible immediately. An unaudited
-  turn ALWAYS delivers — a frontier failure or timeout never blocks the answer. A sync
-  audit that merely times out downgrades to async and delivers next turn with a parked
-  banner (slow ≠ failed). `audit_topology: sync|async` selects the default topology.
-- **Revision pass**: when the audit flags a real problem, the delivered turn is
-  re-run/revised on the FULL frontier model (full reasoning budget, 60s
-  `audit_revision_seconds`, clamp 0–180) — never a downgraded model.
-- Payloads are **agent-tailored**: PRE and POST messages carry the profile's own persona
-  card (runtime-derived from `HERMES_HOME/IDENTITY.md` + `SOUL.md`) — the frontier orients
-  *this* agent, not a generic specialist. Universal: any Hermes setup's agents get their
-  own cards automatically, zero config.
+## Worked examples
 
-**Consult cadence gates (v3.7.0+)** — frontier consults are rate-shaped, all knobs
-live-read from config and fail-open:
+### 1. Shadow render (uncensored lane)
 
-| Knob | Default | Effect |
+`ask shadow self to render: <contested ask>` — PRE matches the declared
+phrase variant (strict prefix/standalone matching, no prose mind-reading),
+stages a render through the ordered `chain:` (primary → fallback, first
+success wins), swaps refusal-shaped POST output in the agent's own
+persona-derived voice, and parks a spend banner consumed at the delivery
+edge. Chain failure → the unaudited response delivers as-is. Content
+boundaries live in the render substrate, not routing code.
+
+### 2. Frontier consult (higher-self lane)
+
+Send a complex planning ask (or `anchor this` on a line). The PRE complexity
+scan classifies L0-L3 (2-stage: regex + optional aux model on the gray zone),
+performs ONE per-call anchored consult to the configured frontier anchor, and
+enters the answer as a provenance-stamped advisory envelope
+(`{kind, producer, route_id, task_id, answer, evidence_refs, limitations}`).
+Frontier proposes; the main model disposes. Model override typed BY THE USER
+names the consult model (R7); agent-initiated consults always use
+`anchor_chain.primary`. Every billed call emits a banner.
+
+### 3. Higher-self POST audit
+
+After a completed substantive turn (every `post_audit_min_turns`, or ≥3 tool
+calls), the POST completion-audit gate runs a sync frontier audit inside a
+45s budget, may trigger a full-frontier revision pass (60s budget), and
+delivers the parked banner. One consult per turn, ever — PRE and POST are
+mutually exclusive. Sync timeout downgrades to async: the unaudited turn
+ALWAYS delivers, the verdict lands next turn.
+
+## Configuration tour
+
+All keys are typed, defaulted, and validated in `core/schema.py` (`SCHEMA`);
+`config_access.get()` reads against it live per dispatch. Highlights:
+
+| Key (dotted) | Type / default | What it controls |
 |---|---|---|
-| `verify_class_exempt` | on | short imperative confirm/status asks ("can you confirm it's working?") skip PRE orientation entirely; explicit `anchor this` still overrides |
-| `pre_cooldown_seconds` | 600 | minimum seconds between billed PRE consults per session (same task_id exempt, override beats it) |
-| `post_audit_min_turns` | 3 | POST completion audit fires every N substantive turns, not every turn (≥3-tool-call turns audit immediately) |
-| `audit_topology` | sync | POST audit topology: `sync` (45s budget, fail-open, async downgrade on timeout) or `async` (always next-turn) |
-| `audit_sync_seconds` | 45 | max seconds a synchronous POST audit may hold the turn before downgrading to async |
-| `audit_revision_seconds` | 60 | budget for the full-frontier revision pass (clamp 0–180; 0 disables revision) |
-| `persona_card_chars` | 2500 | enriched persona card budget (0 = legacy compact card) |
-| `orientation_ask_cap` | 4000 | max chars of the ask included in the orientation payload |
-| `bounded_replay.last_n_turns` | 24 | conversation replay depth for frontier consults |
-| `debug_banner` | 0 | route banner verbosity on delivered output: 0 off / 1 one-liner / 2 +context / 3 maximum (diagnostic only, never enters canonical/history/model context) |
-| `refusal_doctrine` | always_route | v3.8.1: `always_route` (default — all refusals route to the uncensored chain, doctrine machinery inert) / `doctrine` (honor the agent's closed lines from her SOUL/IDENTITY doctrine card — backed refusals pass through unrouted) / `off` (same as always_route) |
+| `enabled` | bool / true | master switch |
+| `refusal_doctrine` | str / always_route | verdict policy (always_route / doctrine / off) |
+| `dry_run` | bool / false | classify + log, never act |
+| `log_path` / `log_routes` / `log_max_bytes` | str, bool, int | route-event log (0600, content-free) |
+| `debug_banner` | bool / false | spend/decision banners on delivered output |
+| `chain` | list / [] | uncensored render chain (primary → fallback endpoint dicts) |
+| `routing_daily_cap_usd` | float / 0.0 | daily routing spend cap |
+| `render_max_chars` | int / 0 (off) | render body clamp |
+| `flinch_reason_gate` | bool / true | censorship-vs-technical verdict gate |
+| `classification.*` | dict | pre_patterns, semantic_gate, two_vote_confirm/groups, aux_classify |
+| `complexity.*` / `frontier.*` | dict | pov_mode, stage1, consult_cooldown_turns, aux_consult_min_interval_sec, ttl/base/max |
+| `anchor_chain.*` | dict | endpoint/model/key, reasoning_effort, threshold, caps |
+| `decision.*` / `decision_head.*` | dict | decision-lane mode/model/miner, backend (heuristic default, optional RouteLLM mf) |
+| `risk.*` / `reflex.*` | dict | risk consult chain, reflex pov_mode |
+| `budgets.*` | dict | per-consult-type max_tokens overlays (consult/verdict/completion_audit/render/probe) |
 
-**Zero-config frontier lane (v3.7.1+)** — if `anchor_chain.primary` is configured (you
-inserted a frontier API) but NO `complexity` block exists, the complexity lane
-auto-defaults to level 2 (conservative-auto). Explicit config always wins:
-`complexity.enabled: false` keeps it off; an explicit level is honored as-is. Out-of-box
-contract: insert your frontier (and optionally uncensored-chain) API config → both lanes
-work; knobs only if you want non-defaults.
+Exact type + default for every key: `core/schema.py`. Legacy
+`uncensored_router:` config sections keep working (canonical
+`hermes_router:` wins; `router_control` dual-writes).
 
-**4-mode controller** (task-scoped, never start-anchor/end-judge):
+## Lane table
 
-| Mode | Fires when | Effect |
-|---|---|---|
-| `direct` | default | pass-through, no extra calls |
-| `plan` | complexity classifier fires | one anchored frontier call; the main model executes with the plan as advisory data |
-| `consult` | explicit `anchor this` or gray-zone stage-2 "complex" | one bounded frontier consult; the main model keeps ownership |
-| `ownership` | struggle signals fire | escalation to the anchor for the task segment |
+Registered lane data lives in `lanes/builtins.py` (phrase tables from
+`features/patterns/packs/lane-phrases.json`); full per-lane reference:
+`docs/lanes.md`.
 
-**Detection** — 2-stage. Stage 1 is free/local regex over immutable ingress text
-(planning/architecture, debug why-chains, cross-file analysis, multi-part asks).
-Stage 2 (semantic aux, reusing the existing stage-2 endpoint + breaker + cap) runs ONLY
-on stage-1 borderline texts — never on clear matches. Intensity per profile:
+| Lane id | Fires on | Sentinel markers | /router switch |
+|---|---|---|---|
+| `shadow` | declared uncensored-render variants | "Your uncensored response", "UNCENSORED-ROUTER INJECTION", "recorded turn" | `uncensored` → enabled |
+| `higher-pre` | declared higher-self phrases | "HIGHER-SELF ORIENTATION TURN" | `frontier` → complexity.enabled |
+| `higher-post` | (POST audit hook) | "HIGHER-SELF COMPLETION-AUDIT TURN" | `frontier` → complexity.enabled |
+| `decision` | declared midturn decision target | — | — |
 
-| Level | Name | Behavior |
-|---|---|---|
-| 0 | off | lane disabled |
-| 1 | manual-only | route only on inline `anchor this` |
-| 2 | conservative-auto | planning/architecture signals |
-| 3 | aggressive-auto | + debug chains, cross-file, multi-part |
+## Troubleshooting
 
-**Struggle detection** (router-owned — the main model cannot self-report being lost):
-(a) N≥3 refusals/failures on the same task hash, (b) ≥5 provider calls in one turn with
-no new tool-result content (hash dedup), (c) explicit user struggle phrasing ("still
-broken", "not working", third correction). Trigger → next provider call escalates to
-`ownership`.
-
-**Inline overrides** (checked in PRE before classification, trusted origin, standalone
-line only): `anchor this` → force a CONSULT route; `skip anchor` → force pass-through.
-
-**Anchored execution** — the frontier answer never rewrites the user message. It enters
-the main model's request as a provenance-stamped advisory envelope:
-`{kind: frontier_plan|consultation, producer, route_id, task_id, answer, evidence_refs,
-limitations}` — the main model evaluates it and writes its own turn. Per-call only; the
-agent's provider configuration is never touched.
-
-## Anchor chain config (LANE 2)
-
-```yaml
-hermes_router:
-  enabled: true                       # lane 1 master
-  complexity:
-    enabled: true
-    level: 3                          # 0-3, see table above; omit the block → auto level 2
-    pre_mode: route                   # PRE orientation consults on complex-shaped asks
-    consult_cooldown_turns: 5         # R16: N hash-different turns before the same auto-lane consult re-bills (0=off)
-    audit_mode: complex               # POST completion audits
-    audit_topology: sync              # sync (45s fail-open budget) | async (next-turn)
-    audit_sync_seconds: 45
-    audit_revision_seconds: 60
-    pre_cooldown_seconds: 600
-    post_audit_min_turns: 3
-  anchor_chain:
-    primary: nous://z-ai/glm-5.3
-    judge: openrouter://openai/o4-mini     # verification/consult tier
-    overflow: pass_through                  # fail/over-cap → main model + route_skipped log
-    daily_cap_usd: 2.0                      # non-tunable floor; raise only via router_control
-    pricing:                                # per-model $/1M tokens (cost guard)
-      openai/o4-mini: {input_per_1m: 1.15, output_per_1m: 4.60}
-```
-
-URL schemes: `openrouter://<model>` → `https://openrouter.ai/api/v1` with
-`OPENROUTER_API_KEY`. Any other `<scheme>://<model>` resolves through your existing
-`providers.custom` blocks in config.yaml. Unresolvable scheme → fail-open pass-through.
-
-**Daily cap guard**: every anchored call's cost is estimated from the pricing table
-(unknown models get a conservative default price so they still count), persisted
-date-keyed under the profile home (`hermes-router-spend.json`). At/over cap → the
-anchored call is skipped (overflow), `cap_blocked` logged, spend visible in
-`router_status`. The cap is raise-only via `router_control`; lowering it is rejected.
-
-## Lane 3 — decision (R19, v0 DARK)
-
-Precedent-qualified advisory at decision points. v0 ships **dark**:
-`decision.enabled` defaults to **false** and the lane never routes unless
-explicitly enabled. Both dual config blocks (canonical `hermes_router:` and
-legacy `uncensored_router:`) honor the `decision` sub-block, mirroring the
-`complexity` block reader.
-
-```yaml
-hermes_router:
-  decision:
-    enabled: false            # v0 ships DARK — set true only for the pilot
-    level: 2                  # 0 off / 1 manual-only / 2 conservative (2+ marker families) / 3 aggressive (1 family)
-    mode: async               # async (default): scorer off the turn path, advisory parked to next banner. sync = explicit level-3 opt-in
-    confidence_threshold: 0.60  # single ladder: >= threshold → advisory; below → escalate to frontier consult (no dead zone)
-    score_timeout_seconds: 8  # scorer deadline; own call path, no retry
-    calls_per_hour: 20        # forked cap (does not share stage-2 counters)
-    breaker_fails: 3          # forked consecutive-failure breaker
-    breaker_cooldown_s: 600
-    max_frame_chars: 4000
-    max_snippet_chars: 500
-    max_precedent_age_days: 90  # older precedents kept only when nothing recent exists, with an explicit no-recent-precedent signal
-    post_audit: false         # R19 step 2: POST turn-close scan of decision-shaped ACTIONS — dark default
-    miner_max_records: 5000   # decision_records store cap (plugin state DB)
-    miner_scan_days: 90       # miner walk window + retrieval age cap
-```
-
-Semantics: precedents come from the profile's own state.db FTS (top-8,
-same-git_repo_root preferred, per-snippet 500c / total 4000c caps,
-read-only timeout 2s) plus a bounded evol.jsonl tail. Advisories are
-non-binding envelopes delivered via the v4.8.0 parked-banner path
-(`lane="decision"`, one banner per delivery), tagged
-`[decision-lane advisory]` and excluded from future retrieval so the lane
-can never cite itself. Precedents are shown as ids+timestamps only.
-Suppression is reason-coded (`breaker_open|cap_exhausted|timeout|
-parse_fail|no_frame`) with per-hour fire/None counters. Any error
-fail-opens to flash-direct.
-
-### Impulse register (v1.1 — SPEC-impulse-lane-v1.md)
-
-The advisory line renders in the impulse register: weights per option
-(`pulls`, normalized from ledger prior support), a mechanical band
-(`strong|weak|noise` from calibration constants >=0.9 / 0.7-0.9 / <0.7),
-and <=3 signal-shape evidence citations — never mood/valence vocabulary,
-never permission language, one message. Banner display label is
-`impulse (decision)` (lane key, module name, and the
-`[decision-lane advisory]` PROVENANCE_TAG are unchanged; the retired
-`reflex (decision)` label remains a forged-banner spoof signal).
-Suppressed pre_cooldown consults are counted + ledger-visible
-(`pre_cooldown_suppressed_consult`), not banner-displayed. v4.13.1: the
-frame composes a bounded persona-vocabulary slot (from the envelope's
-§3.1 AGENT FRAME) into its connective phrasing — same weights + different
-persona renders diverge in wording; mechanical parts stay non-personal,
-fail-open to the canned register without a card.
-
-### Decision memory + POST leg (R19 step 2, spec §10, v4.9.1 — dark by default)
-
-- `decision_miner.py` — bounded, resumable walk of the profile's own
-  session history (state.db messages, read-only URI, sqlite_master-guarded)
-  plus evol.jsonl, extracting decision-shaped episodes into `decision_records`
-  in the plugin's OWN state DB (`hermes_router_state.db` — no core schema
-  change). Records carry {id, ts, situation_text (500c cap), options,
-  chosen, outcome, outcome_ts|null, source, provenance_tag ∈
-  mined|live|post_audit} with an FTS5 index and a resume cursor
-  (re-runnable, no duplicates). Detection reuses `decision.detect()`
-  marker families plus outcome heuristics (error/undo/continue signals;
-  explicit user corrections weigh most). Caps: `miner_max_records`
-  (5000) and `miner_scan_days` (90). Fail-open throughout.
-- The echo-loop guard applies at miner level too: `lane_advisory`-tagged
-  items are never stored and excluded from retrieval in both the WHERE
-  clause and Python.
-- POST leg — turn-close scan on the `transform_llm_output` boundary (same
-  seam as the R15 L3 completion audit): identifies decision-shaped ACTIONS
-  taken during the run (branch choices, retries, aborts, option picks),
-  frames+scores each via the existing async worker, parks an advisory at
-  the next delivery boundary when the agent's choice contradicts strong
-  precedent, and writes every POST-audited decision to
-  `decision_records` with `provenance_tag=post_audit` — the memory grows
-  as a side effect of operation. Level-gated: fires only when BOTH
-  `decision.enabled: true` AND `decision.post_audit: true` (default false
-  — dark, consistent with v0).
-
-## Decision heads (optional)
-
-`decision_head.backend` selects how complexity is scored:
-
-- `heuristic` (**default**) — stage-1 regex + stage-2 aux tie-break. What v3.0.0 ships.
-- `routellm_mf` — trained matrix-factorization decision head vendored from
-  [lm-sys/RouteLLM](https://github.com/lm-sys/RouteLLM) (Apache-2.0), weights
-  `routellm/mf_gpt4_augmented` (public safetensors). Requires `torch` +
-  `safetensors` importable AND cached weights at `decision_head.weights_path`
-  (default `~/.hermes/.cache/routellm/mf_gpt4_augmented`); turns are embedded via the
-  aux endpoint's `/embeddings` route or `decision_head.embedding_endpoint`. If anything
-  is missing → silent fallback to heuristic + one-time `decision_head_fallback` log.
-  No hard deps; nothing downloads at runtime.
-
-## Tools
-
-**`router_status`** — read-only: lane states, anchor chain (masked), today's
-anchored/skipped/blocked counts, spend vs cap, last `route_skipped` reason,
-decision-head status.
-
-```
-router_status()
-→ {"lanes": {...}, "anchor_chain": {...masked...}, "daily_cap_usd": 2.0,
-   "spend_today_usd": 0.0001, "counts_today_process": {"anchored": 1, ...},
-   "decision_head": {"active_backend": "heuristic", ...}}
-```
-
-**`router_control`** — single validated-action control surface:
-
-| Action | Args | Notes |
-|---|---|---|
-| `enable_lane` / `disable_lane` | `lane=uncensored\|complexity` | per-profile |
-| `set_level` | `level=0..3` | complexity intensity |
-| `set_endpoint` | `role=primary\|judge`, `model=<scheme>://<model>` | URI must resolve; no raw URLs |
-| `set_cap` | `cap=<usd>` | raise-only, floor enforced |
-| `reload` | — | dirty-flag; config is re-read per call, NO gateway bounce |
-| `ping` | — | ONE live call on the judge tier, max_tokens 16 |
-| `set_decision_head` | `backend=heuristic\|routellm_mf` | validated enum |
-
-All edits go through an atomic config-writer (temp file → validate → `os.replace`).
-Route logging (`log_path`/`log_routes`/`log_max_bytes`) and the loop guard are
-code-owned — control actions can never introduce or alter them.
-
-## Route log events
-
-Every decision logs one line to `log_path` (0600, content-free):
-`anchor_route_fired` (lane/mode/model_target/reason/override_used) ·
-`route_skipped` (anchored call failed) · `cap_blocked` (spend, cap) ·
-`escalation_fired` semantics carried by `mode=ownership` ·
-`model_override_detected` (alias/model/lane — a declared consult directed
-at a NAMED model via `anchor_chain.models` aliases; one-off, stored config
-untouched) · `model_override_rejected` (source — an override was stripped
-at staging because the claim was not user-initiated) · legacy lane-1 events
-(`route_fired`, `render_refusal_retry`, `loop_guard_skipped`, ...) unchanged.
-
-### Model override is user-only (R7)
-
-Model override is user-only: on-demand phrases typed BY THE USER name the
-consult model; agent-initiated consults (declared_agent, aux_intent) always
-use `anchor_chain.primary` from config; persistent changes via
-`/router confirm` (set_endpoint) only. In a same-turn dedupe the user's
-phrase outranks an earlier agent claim — the override rides only when the
-existing claim was user-declared.
-
-## Protected-group confirm gate (v4.2.x)
-
-Pattern hits on `ied_construction` / `csam_underage` / `bioweapon_protocol`
-(the default **two-vote groups**) require an aux-model **semantic confirm**
-before the uncensored render fires — a regex hit alone never renders. The
-confirm reuses the aux intent classifier's two-vote discipline: both votes
-must classify the ask as an actionable shadow request (lane=shadow,
-confidence ≥ 0.75, temp-0.35 second vote). Audit mentions, quotes, and
-meta-discussion stay inert.
-
-**Fail-closed:** aux unavailable/timeout/error → **no render**; the main
-model answers unmodified. This is deliberate — a mechanical pattern hit must
-never bypass a closed-adjacent line just because the semantic safeguard is
-down. Two additional guards:
-
-- **Fallback non-authoritative (v4.2.2):** during a total aux outage, the
-  mechanical fallback (`intent_aux_fallback`: ≥2 shadow-tense markers →
-  shadow route for *ordinary* asks) can keep on-demand routing alive, but its
-  verdicts NEVER satisfy the protected-group confirm — an outage cannot
-  launder a keyword hit into a render authorization.
-- **Timeout:** aux classify uses 8s (v4.2.1; the old 3s starved on free-tier
-  latency).
-
-New route-log events: `two_vote_confirmed` · `two_vote_denied_inert` ·
-`two_vote_unavailable_standdown` · `intent_aux_fallback`.
-
-**Chat control** (`/router config`, mutations token-guarded):
-`/router config set classification.two_vote_confirm off` disables the gate;
-custom group lists are config-file only
-(`hermes_router.classification.two_vote_groups: [group, ...]`).
-
-## Deployment layout
-
-Dev canonical: the plugin's own git repo. Each Hermes profile owns an independent REAL
-copy of the plugin directory under its plugins path — no symlinks (a per-profile copy
-lets each profile pin its own version). After copying a new version to a profile,
-restart that profile's gateway so the plugin re-registers. Install via `hermes plugins
-install` or a straight directory copy — see INSTALL.md.
-
-## Config backward compatibility
-
-Existing `uncensored_router:` profile-config sections keep working untouched — the
-config readers check `hermes_router` first and fall back to `uncensored_router`.
-`router_control` writes go to the canonical `hermes_router:` section and dual-write the
-legacy section so fallback readers stay coherent. Canonical going forward: `hermes_router`.
+- Turn on `debug_banner` (or run `/router diag`) for per-stage spend/decision
+  banners inline; `router_status` shows lanes, masked anchor chain, today's
+  counts, spend vs cap.
+- No route fired? Check `log_path` event lines (`route_fired`, `route_skipped`,
+  `cap_blocked`, `two_vote_*`, `model_override_*` — content-free).
+- Spend: `<profile>/hermes-router-spend.json`; anchor backoff:
+  `<profile>/hermes-router-backoff.json`.
+- Protected-group confirm gate (two-vote aux semantic confirm) is fail-CLOSED
+  by design: aux outage → no render. That is deliberate.
+- Known open gaps: `docs/known-gaps-2026-09-06.md`.
+- Sentinel echo regressions: report with the exact turn text.
 
 ## Testing
 
-- Mock suite: 500+ tests, fully offline (`pytest` — the live marker is deselected).
-- Live smoke: exactly ONE cheap call (`pytest tests/test_live_smoke.py -m live`,
-  max_tokens 16, prompt "Reply with the single word: OK";
-  skipped when `OPENROUTER_API_KEY` is absent). No frontier/uncensored-chain calls in tests.
-
-## Changelog
-
-### 3.8.0 — 2026-09-10
-- **Higher-self doctrine:** PRE orientation + POST audit envelopes framed as messages
-  from the agent's higher self (frontier = observer, uncensored = capability); POST is
-  post-intuition on the resolution — requested-vs-delivered, unexplored angles, genuinely
-  good, could-be-better — never an audit of the main model.
-- **Unified audit gate:** POST audit covers benign + refusal-FP passthrough delivery
-  paths; gateway-safe imports (no hard top-level `from hermes_router import` in gateway
-  paths — plugins load under a `hermes_plugins.*` alias).
-- **Sync POST audit:** `audit_topology` sync|async (default sync, 45s budget), fail-open
-  (unaudited always delivers), timeout downgrades to async with next-turn delivery.
-- **Full-frontier revision pass** (60s budget, full reasoning budget — empty verdicts
-  were token starvation, not slowness).
-- **Zero-config defaults** (3.7.1): `anchor_chain.primary` set + no complexity block →
-  auto level 2; `/router` chat command ships ON.
-- See CHANGELOG.md for the full entry.
-
-### 3.0.0 — 2026-09-05
-- **Two-lane generic router.** Lane 1 (uncensored render) keeps v2 mechanics byte-identical.
-  Lane 2 (complexity/struggle): 2-stage detection, 4-mode controller, router-owned struggle
-  escalation, per-call anchored execution with provenance envelopes, anchor-chain config,
-  daily cap guard, router_status/router_control tools with atomic config-writer.
-- **csam content gate removed** (2026-09-04): uncensored should not
-  filter anything when asked — no code-side content gate remains; boundaries live in the
-  render substrate. (The gate had been live-unverified since 2026-09-01 anyway.)
-- **Post-mortem one-liner:** the 2026-09-01 "hard gate" referenced `session_id` three lines
-  before its binding → UnboundLocalError swallowed by the outer handler → PRE silently
-  passed through every time (never actually gated).
-- Optional RouteLLM mf decision head (config-gated, default heuristic) — credit
-  lm-sys/RouteLLM, Apache-2.0.
-- Rename uncensored-router → hermes-router; package `hermes_router`; config section
-  `hermes_router:` canonical with `uncensored_router:` fallback.
-- Live smoke: ONE openrouter o4-mini call, skip-by-default, key-gated.
-
-### 2.x — see CHANGELOG.md (v2.0.0 → v2.4.0: chain fallback, persona modes, digest
-frame-strip, composite frame, render-shape guard, thread-digest refusal exclusion,
-persona none mode, orchestrator lane override).
+Mock suite: 1500+ hermetic tests (`pytest tests -q`; the live marker is
+deselected). Live smoke: exactly ONE cheap call
+(`pytest tests/routing/test_router_live.py -m live`, skipped when
+`OPENROUTER_API_KEY` is absent). Development: `CONTRIBUTING.md`; CI gates:
+`scripts/ci.sh` (the behavioral battery runs orchestrator-side).
 
 ## License
 
-Internal — falke-ai-circuit. RouteLLM decision-head code is vendored under Apache-2.0
-(copyright lm-sys contributors); see `decision_head.py` header.
+Internal — falke-ai-circuit. RouteLLM decision-head code is vendored under
+Apache-2.0 (copyright lm-sys contributors); see `decision_head.py` header.

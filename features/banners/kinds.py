@@ -5,8 +5,9 @@ imperative rules accreted per rider inside debug_banner's park/consume path
 (proposal §2.2):
 
 - R9d (Goran 09-14): one LLM call = exactly one banner; a re-park for the
-  SAME task_id REPLACES its segment — expressed as dedupe_key_template
-  (per-session per-task ledger) applied inside the stack policy.
+  SAME task_id REPLACES its segment — the park store keys on the bare
+  session_id (verbatim pre-P5 behavior); the dead dedupe_key_template
+  data row was removed in P8a (conductor non-blocking note: no consumer).
 - R19.16 FIX 4 (Goran addendum): ALL fired banners stack — the parked
   aggregate is ONE BLOCK, one segment per fired banner, in fire order —
   expressed as stack_policy="stack".
@@ -27,7 +28,6 @@ from typing import Dict, FrozenSet
 @dataclass(frozen=True)
 class BannerKind:
     kind_id: str                       # "anchor_debug" | "hs_orientation" | ...
-    dedupe_key_template: str           # "{session}|{lane}|{task_id}"
     stack_policy: str                  # "replace" (R9d) | "stack" (R19.16) | "once"
     ttl_seconds: int
     delivery_edges: FrozenSet[str]     # edges where consume is legal
@@ -70,7 +70,6 @@ _ANCHOR_EDGES: FrozenSet[str] = frozenset({
 
 register(BannerKind(
     kind_id="anchor",
-    dedupe_key_template="{session}|{task_id}",  # R9d per-session per-task ledger
     stack_policy="stack",                       # R19.16 aggregate stack
     ttl_seconds=0,                              # parks persist until consumed
     delivery_edges=_ANCHOR_EDGES,
