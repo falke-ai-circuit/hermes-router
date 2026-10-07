@@ -1053,9 +1053,20 @@ def claim_execution_guard(session_id: str):
         yield
     except Exception:
         try:
-            from . import debug_banner as _db
+            from .core import telemetry as _tlm_c
+            from .features.banners import lifecycle as _bll_c
 
-            _db.consume_parked_banner(session_id)  # release parked banner
+            try:
+                _bll_c.LIFECYCLE.deliver(session_id, "", "anchor",
+                                         "claim_release", mode="discard",
+                                         log_edge="claim_release")
+            except _bll_c.IllegalDeliveryEdge as _ide_c:
+                # chokepoint fail-open: the turn body delivery is
+                # unaffected (I2 intact); telemetry row instead of a
+                # silent miss.
+                _tlm_c.log_route("POST", event_detail="banner_deliver_fail",
+                                 kind_id=_ide_c.kind_id, edge=_ide_c.edge,
+                                 session_id=session_id)
         except Exception:  # noqa: BLE001
             logger.debug("claim guard banner release error", exc_info=True)
         try:

@@ -243,282 +243,75 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
         return delivery_text if isinstance(delivery_text, str) else ""
 
 
-# --- §10.4 anchor-banner delivery parking (one-shot per session) ---
+# --- §10.4 anchor-banner delivery parking — OWNERSHIP MOVED (P5) ----------
+# park / consume / expire / capture-fallback now live in
+# features/banners/lifecycle.py (BannerLifecycle, proposal §2.2). The
+# imperative bodies were transplanted verbatim; these thin delegates keep
+# the historical names for the call sites and the test suite. The state
+# dicts stay HERE (the live test surface) and the lifecycle operates on
+# them — behavior byte-identical (Binding 1).
 _ANCHOR_BANNERS: Dict[str, str] = {}
 _ANCHOR_BANNER_MAX = 32
-
-
-def park_anchor_banner(session_id: str, banner_text: str,
-                       task_id: str = "") -> None:
-    """Park an anchor banner for delivery on this session's next turn.
-    Bounded map (32 sessions, FIFO eviction). Never raises.
-    R9d (Goran 09-14): one LLM call = exactly one banner. A re-park for the
-    SAME task_id REPLACES (the call retried/re-emitted); a park for a NEW
-    task_id accumulates.
-    R19.16 FIX 4 (Goran addendum): ALL fired banners stack — the parked
-    aggregate is ONE BLOCK with one segment per FIRED banner, in fire
-    order (higher-self frontier + reflex decision segments coexist).
-    Latest-wins starvation is gone: a midturn reflex verdict can no longer
-    consume/replace the frontier banner slot (or vice versa). Identical
-    re-parks dedupe; canonical delivery text is NEVER trimmed to make
-    banner room (append_banner attaches the block; only the banner block
-    itself is bounded)."""
-
-    try:
-        if len(_ANCHOR_BANNERS) >= _ANCHOR_BANNER_MAX:
-            _ANCHOR_BANNERS.pop(next(iter(_ANCHOR_BANNERS)), None)
-            _ANCHOR_TASKS.pop(next(iter(_ANCHOR_TASKS)), None)
-        sid = str(session_id or "")
-        seg = str(banner_text or "").strip()[:MAX_BANNER_CHARS]
-        if not seg:
-            return
-        segs = list(_ANCHOR_SEGS.get(sid, []))
-        tasks = list(_ANCHOR_TASKS.get(sid, []))
-        if task_id and task_id in tasks:
-            # R9d retry: replace THAT task's segment ATOMICALLY (fire order
-            # kept) — a park's internal blank lines never split segments.
-            idx = tasks.index(task_id)
-            if idx < len(segs):
-                segs[idx] = seg
-            else:
-                segs.append(seg)
-        elif seg in segs:
-            return  # identical re-park (same content) — dedupe
-        else:
-            segs.append(seg)
-            tasks.append(str(task_id or ""))
-        # bound: keep the most recent segments (banner side only — the
-        # canonical delivery text is never trimmed)
-        while len(segs) > _MAX_PARK_SEGMENTS:
-            segs.pop(0)
-            if tasks:
-                tasks.pop(0)
-        _ANCHOR_SEGS[sid] = segs
-        _ANCHOR_TASKS[sid] = tasks
-        _ANCHOR_BANNERS[sid] = "\n\n".join(segs)
-        # R20-D3 (rider 20): schedule the one-shot bounded capture-fallback
-        # watcher — if NO delivery edge consumes this parked banner within
-        # banner_capture_fallback_wait, the worker captures it into the
-        # persisted transcript itself (never a silently-orphaned billed
-        # consult). Semaphored per session; never breaks the park.
-        _maybe_schedule_capture_fallback(sid)
-    except Exception:  # noqa: BLE001
-        pass
-
 
 _MAX_PARK_SEGMENTS = 4
 _ANCHOR_TASKS: Dict[str, list] = {}
 _ANCHOR_SEGS: Dict[str, list] = {}
 
 
-def consume_parked_banner(session_id: str) -> str:
-    """Return and clear the parked anchor banner for this session (or "").
-    R19.16 FIX 4: clears the fire-order task ledger too."""
+def _lifecycle():
+    """The BannerLifecycle singleton (banner ownership, P5)."""
+    from .features.banners.lifecycle import LIFECYCLE
+
+    return LIFECYCLE
+
+
+def park_anchor_banner(session_id: str, banner_text: str,
+                       task_id: str = "") -> None:
+    """Delegate: BannerLifecycle.park for the registered "anchor" kind.
+    Semantics (R9d per-task replace, R19.16 stack, identical re-park
+    dedupe, bounded map) are the kind's stack_policy data — unchanged."""
     try:
-        sid = str(session_id or "")
-        _ANCHOR_TASKS.pop(sid, None)
-        _ANCHOR_SEGS.pop(sid, None)
-        return _ANCHOR_BANNERS.pop(sid, "")
+        from .features.banners import kinds as _bk
+
+        _lifecycle().park(_bk.get("anchor"), session_id, task_id, banner_text)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def consume_parked_banner(session_id: str) -> str:
+    """Delegate: BannerLifecycle.consume for the "anchor" kind."""
+    try:
+        from .features.banners import kinds as _bk
+
+        return _lifecycle().consume(_bk.get("anchor"), session_id, "",
+                                    "claim_release")
     except Exception:  # noqa: BLE001
         return ""
 
 
-# --- R20-D3 (rider 20): one-shot bounded capture-fallback worker -----------
-# Live evidence (valmet D3, 2026-10-06): the host plugin runner KILLED the
-# transform_llm_output callback at its 30s budget ("timed out after 30s —
-# skipping") and then SKIPPED every later invocation ("skipped after previous
-# timeout or while still running") — the billed consult's banner was parked
-# but NO delivery edge ever ran, so the banner was never delivered and the
-# persisted transcript never carried it. The hook-side budgeting (audit_gate
-# hook_budget, pre-consume waits) narrows the trip window; this worker closes
-# the residual: a parked banner that survives its whole capture budget with
-# no consumption by ANY delivery edge is captured into the persisted
-# transcript directly (newest assistant row + banner block, exact-match
-# canonical rewrite — router-substitution-only guard intact) so a billed
-# consult's verdict is never silently orphaned. One-shot, semaphored per
-# session, daemon thread, never breaks delivery, never raises.
-_CAPTURE_FB_LOCK = threading.Lock()       # module lock: park/rewrite race
-_CAPTURE_FB_INFLIGHT: set = set()         # per-session semaphore (one watcher)
-_CAPTURE_FALLBACK_POLL_S = 1.0            # poll interval (spec: 1s)
-
-
 def banner_capture_fallback_wait() -> float:
-    """R20-D3: seconds the parked-banner capture-fallback watcher polls for
-    consumption by a delivery edge before rewriting the persisted turn
-    itself (knob banner_capture_fallback_wait, default 45s; 0 disables the
-    fallback entirely). Never raises."""
+    """R20-D3 knob read — delegated to the lifecycle (never raises)."""
     try:
-        raw = _banner_section().get("banner_capture_fallback_wait", 45)
-        return max(0.0, min(120.0, float(raw)))
+        return _lifecycle().banner_capture_fallback_wait()
     except Exception:  # noqa: BLE001
         return 45.0
 
 
-def _newest_persisted_assistant_row(session_id: str) -> str:
-    """R20-D3: newest persisted assistant row content for this session from
-    state.db (the same store the gateway persists every turn to). Read-only;
-    "" on any failure. Never raises."""
-    try:
-        import sqlite3
-
-        from . import canonical as _canon
-
-        db_path = _canon._state_db_path()
-        if not db_path or not os.path.exists(db_path):
-            return ""
-        conn = sqlite3.connect(db_path, timeout=2.0)
-        try:
-            cur = conn.execute(
-                "SELECT content FROM messages WHERE session_id = ?"
-                " AND role = 'assistant' ORDER BY id DESC LIMIT 1",
-                (str(session_id or ""),),
-            )
-            row = cur.fetchone()
-            return str(row[0]) if row and row[0] is not None else ""
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001 — read-only probe, never raises
-        return ""
-
-
-def _capture_fallback_watch(session_id: str, captured: str) -> None:
-    """R20-D3 worker body: after park, poll (1s interval) for consumption by
-    any delivery edge; if still parked unconsumed at the budget, append the
-    banner block to the sessions newest persisted assistant row and rewrite
-    via canonical.rewrite_persisted_turn exact-match (the
-    router-substitution-only guard is untouched — only the row whose content
-    byte-equals the row we just read can match). The parked content is
-    re-checked UNDER THE MODULE LOCK immediately before the rewrite, so a
-    late live consume between the last poll and the lock wins (the rewrite
-    is skipped, the slot belongs to the delivery edge). On no matching row:
-    the banner is RE-PARKED (retained for the next delivery edge) and a
-    fail-loud event is logged — never a silent orphan, never a loop crash.
-    Never raises."""
-    sid = str(session_id or "")
-    try:
-        budget = banner_capture_fallback_wait()
-        if budget <= 0 or not str(captured or "").strip():
-            return
-        deadline = time.monotonic() + budget
-        while time.monotonic() < deadline:
-            time.sleep(_CAPTURE_FALLBACK_POLL_S)
-            if _ANCHOR_BANNERS.get(sid, "") != captured:
-                return  # a live delivery edge consumed/changed the slot
-        with _CAPTURE_FB_LOCK:
-            # re-check under the module lock: a late live consume wins
-            if _ANCHOR_BANNERS.get(sid, "") != captured:
-                return
-            row = _newest_persisted_assistant_row(sid)
-            delivered = ("%s\n\n%s" % (row, captured)) if row else ""
-            ok = False
-            if row:
-                try:
-                    from . import canonical as _canon
-
-                    ok = _canon.rewrite_persisted_turn(sid, row, delivered)
-                except Exception:  # noqa: BLE001 — must never break delivery
-                    ok = False
-            if ok:
-                # captured: clear the parked slot (consume-equivalent, under
-                # the lock so no racing edge double-delivers)
-                _ANCHOR_TASKS.pop(sid, None)
-                _ANCHOR_SEGS.pop(sid, None)
-                _ANCHOR_BANNERS.pop(sid, None)
-        if ok:
-            try:
-                from . import render_inbox as _ri
-
-                _ri.record_render("PARKED_CAPTURE_FALLBACK", sid,
-                                  len(row), delivered)
-            except Exception:  # noqa: BLE001 — best-effort evidence
-                pass
-            try:
-                from .route_gate import _pkg_fn
-
-                _lrh = _pkg_fn("_log_route")
-            except Exception:  # noqa: BLE001 — fallback to the owning module
-                try:
-                    from .dispatcher_knobs import _log_route as _lrh
-                except Exception:  # noqa: BLE001 — fail-loud best-effort
-                    _lrh = None
-            if _lrh is not None:
-                try:
-                    _lrh("POST", event_detail="banner_capture_fallback",
-                         outcome="captured", session_id=sid)
-                    _lrh("POST", event_detail="banner_render_captured",
-                         edge="capture_fallback", session_id=sid)
-                except Exception:  # noqa: BLE001 — fail-loud best-effort
-                    logger.exception("banner_capture_fallback event log failed")
-        else:
-            # no persisted assistant row matched: RE-PARK the banner
-            # (retained for the next delivery edge) + fail-loud event.
-            with _CAPTURE_FB_LOCK:
-                _ANCHOR_BANNERS[sid] = captured
-            try:
-                logger.error(
-                    "banner_capture_fallback_failed detail=no_row_match "
-                    "session_id=%s — parked banner retained for the next "
-                    "delivery edge", sid)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                from .route_gate import _pkg_fn
-
-                _lrh = _pkg_fn("_log_route")
-            except Exception:  # noqa: BLE001 — fallback to the owning module
-                try:
-                    from .dispatcher_knobs import _log_route as _lrh
-                except Exception:  # noqa: BLE001 — fail-loud best-effort
-                    _lrh = None
-            if _lrh is not None:
-                try:
-                    _lrh("POST", event_detail="banner_capture_fallback",
-                         outcome="no_row_match", re_parked=True, session_id=sid)
-                except Exception:  # noqa: BLE001
-                    logger.exception("banner_capture_fallback event log failed")
-    except Exception:  # noqa: BLE001 — the fallback must never break anything
-        try:
-            logger.exception("banner_capture_fallback worker error")
-        except Exception:  # noqa: BLE001
-            pass
-    finally:
-        try:
-            with _CAPTURE_FB_LOCK:
-                _CAPTURE_FB_INFLIGHT.discard(sid)
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def _maybe_schedule_capture_fallback(session_id: str) -> None:
-    """R20-D3: schedule the one-shot capture-fallback watcher for a session
-    that just parked a banner (semaphored per session — at most ONE watcher
-    in flight per session; a second park while one is watching is covered by
-    the in-flight watcher's aggregate snapshot). Daemon thread, never
-    raises, never blocks the parker."""
+    """Delegate: the R20-D3 watcher scheduler now lives on the lifecycle;
+    the class-level lock/semaphore objects are aliased below so the test
+    surface (DB._CAPTURE_FB_LOCK / _CAPTURE_FB_INFLIGHT) is unchanged."""
     try:
-        if banner_capture_fallback_wait() <= 0:
-            return
-        sid = str(session_id or "")
-        if not sid:
-            return
-        spawn = False
-        with _CAPTURE_FB_LOCK:
-            if sid not in _CAPTURE_FB_INFLIGHT:
-                _CAPTURE_FB_INFLIGHT.add(sid)
-                spawn = True
-        if not spawn:
-            return
-        captured = _ANCHOR_BANNERS.get(sid, "")
-        if not str(captured or "").strip():
-            with _CAPTURE_FB_LOCK:
-                _CAPTURE_FB_INFLIGHT.discard(sid)
-            return
-        threading.Thread(
-            target=_capture_fallback_watch, args=(sid, captured),
-            daemon=True,
-            name="rider20-capture-fallback-%s" % sid[:24]).start()
-    except Exception:  # noqa: BLE001 — scheduling must never break the park
+        _lifecycle()._maybe_schedule_capture_fallback(session_id)
+    except Exception:  # noqa: BLE001
         pass
+
+
+from .features.banners.lifecycle import LIFECYCLE as _LIFECYCLE  # noqa: E402
+
+_CAPTURE_FB_LOCK = _LIFECYCLE._CAPTURE_FB_LOCK          # shared module lock
+_CAPTURE_FB_INFLIGHT = _LIFECYCLE._CAPTURE_FB_INFLIGHT  # shared semaphore
+
 
 
 # --- R19.11 FIX 1: decision-banner loss on two-lane turns ------------------

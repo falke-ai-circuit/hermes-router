@@ -806,14 +806,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _hub().logger.debug("decision midturn banner (empty-body) error",
                              exc_info=True)
             try:
-                from .. import debug_banner as _dbe
+                from ..core import telemetry as _tlm_e
+                from ..features.banners import lifecycle as _bll_e
                 _hub()._decision_wait_before_consume(_hook_remaining())
-                _pb = _dbe.consume_parked_banner(session_id)
+                try:
+                    _pb = _bll_e.LIFECYCLE.deliver(
+                        session_id, "", "anchor", "empty_body", mode="body",
+                        log_edge="empty_body")
+                except _bll_e.IllegalDeliveryEdge as _ide_e:
+                    # chokepoint fail-open: the empty body is still
+                    # delivered as-is (I2 intact); telemetry row.
+                    _tlm_e.log_route("POST", event_detail="banner_deliver_fail",
+                                     kind_id=_ide_e.kind_id, edge=_ide_e.edge,
+                                     session_id=session_id)
+                    _pb = ""
                 if _pb:
-                    _dbe.note_consumed_decision(session_id, _pb)
-                    _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                               parked=True, edge="empty_body",
-                               session_id=session_id)
                     try:
                         from .. import render_inbox as _rie
                         _rie.record_render("EMPTY_BODY_BANNER", session_id,
@@ -948,40 +955,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # single-shot guarantee: the consume happens exactly
                     # once, on the turn that actually delivers.
                     try:
-                        from .. import debug_banner as _dba
+                        from ..core import telemetry as _tlm_a
+                        from ..features.banners import lifecycle as _bll_a
                         _hub()._decision_wait_before_consume(_hook_remaining())
-                        _parked_a = _dba.consume_parked_banner(session_id)
-                        _dba.note_consumed_decision(session_id, _parked_a)
-                        _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                                   parked=bool(_parked_a),
-                                   edge="audit_sync", session_id=session_id)
-                        if _parked_a:
-                            # R9: live knob read (append_banner's own gate)
-                            # — OFF -> banner consumed and dropped, never
-                            # appended from a stale park.
-                            _merged = _dba.append_banner(
-                                _out_audit, "\n" + _parked_a)
-                            if _merged:
-                                _out_audit = _merged
-                            # R19.19 P0 (reviewer: 3 historical + 2/2 live
-                            # consults vanished at this seam): a consumed
-                            # banner that did NOT land in the delivered body
-                            # (knob off / empty-base clause / render
-                            # replacement) is RE-PARKED for next-turn
-                            # delivery — never consumed-and-lost. The
-                            # verdict also persists via the frontier ledger
-                            # row, so nothing is unrecoverable.
-                            if _parked_a.strip() not in str(_out_audit or ""):
-                                try:
-                                    _dba.park_anchor_banner(session_id,
-                                                            _parked_a)
-                                    _hub()._log_route("POST",
-                                               event_detail=
-                                               "banner_redelivered_next_turn",
-                                               edge="audit_sync",
-                                               session_id=session_id)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                        try:
+                            _out_audit = _bll_a.LIFECYCLE.deliver(
+                                session_id, _out_audit, "anchor",
+                                "audit_sync", log_edge="audit_sync")
+                        except _bll_a.IllegalDeliveryEdge as _ide_a:
+                            # chokepoint fail-open: the body is still
+                            # delivered (I2 intact); telemetry row instead
+                            # of a silent miss.
+                            _tlm_a.log_route(
+                                "POST", event_detail="banner_deliver_fail",
+                                kind_id=_ide_a.kind_id, edge=_ide_a.edge,
+                                session_id=session_id)
                     except Exception:  # noqa: BLE001 — banner never breaks delivery
                         pass
                     # FIX-FIRST rider 4 (item 1, parked-loss): the audit_sync
@@ -1018,39 +1006,38 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # Benign delivery — §10.4: consume any parked frontier-anchor
             # banner and append to this turn's DELIVERY (one-shot).
             try:
+                from ..core import telemetry as _tlm_b
                 from .. import debug_banner as _dbp
+                from ..features.banners import lifecycle as _bll_b
                 _hub()._decision_wait_before_consume(_hook_remaining())
-                _parked = _dbp.consume_parked_banner(session_id)
-                _dbp.note_consumed_decision(session_id, _parked)
-                _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                           parked=bool(_parked), edge="benign",
-                           session_id=session_id)
+                try:
+                    _merged_b = _bll_b.LIFECYCLE.deliver(
+                        session_id, response_text, "anchor", "benign",
+                        log_edge="benign")
+                except _bll_b.IllegalDeliveryEdge as _ide_b:
+                    # chokepoint fail-open: the body is still delivered
+                    # (I2 intact); telemetry row instead of a silent miss.
+                    _tlm_b.log_route("POST", event_detail="banner_deliver_fail",
+                                     kind_id=_ide_b.kind_id, edge=_ide_b.edge,
+                                     session_id=session_id)
+                    return _attach_unrouted(response_text) \
+                        if _unrouted_banner else None
+                # the landed banner text (for the R10-5 capture-repark
+                # blocks below) — recovered from the merged delivery text
+                # (append_banner joins with blank lines).
+                _parked = ""
+                if isinstance(_merged_b, str) and _merged_b and \
+                        _merged_b != str(response_text or ""):
+                    _parked = _merged_b[len(str(response_text or "")):] \
+                        .lstrip("\n")
+                if not _parked:
+                    # a re-parked (vanish-path) banner is back in the slot —
+                    # the R10-5 capture blocks below still need its text.
+                    _parked = _bll_b.LIFECYCLE.peek(session_id)
                 if _parked:
-                    # R9: return the appended text whenever the consume
-                    # yielded a banner — the previous equality-drop
-                    # (`if _out != response_text`) silently discarded a
-                    # consumed banner when append_banner returned the base
-                    # unchanged (e.g. empty-base clause). One-shot consume
-                    # means a dropped append is unrecoverable. Live knob
-                    # read via append_banner's own gate (R8c semantics:
-                    # read per dispatch; OFF -> consumed and dropped).
-                    _merged_b = _dbp.append_banner(response_text,
-                                                   "\n" + _parked)
-                    # R19.21 (operative parity): a consumed banner that did
-                    # NOT land in the delivered body (knob off / empty-base
-                    # clause) is RE-PARKED for next-turn delivery — the
-                    # benign edge had the same vanish as the audit_sync
-                    # seam (worst ratio 8 consumes/1 delivered).
-                    if _parked.strip() not in str(_merged_b or ""):
-                        try:
-                            _dbp.park_anchor_banner(session_id, _parked)
-                            _hub()._log_route("POST",
-                                       event_detail=
-                                       "banner_redelivered_next_turn",
-                                       edge="benign",
-                                       session_id=session_id)
-                        except Exception:  # noqa: BLE001
-                            pass
+                    # R9/R19.21: consume+append+repark-on-vanish are the
+                    # chokepoint's (deliver) semantics now — _merged_b is
+                    # the delivered text.
                     _final_b = _dbp.settle_decision_banner(session_id,
                                                            _merged_b)
                     # FIX-FIRST rider 4 (item 1, parked-loss): the benign
@@ -1423,21 +1410,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # swallowed by the except -> consumed banner silently dropped).
         try:
             from .. import debug_banner as _dbp2
+            from ..core import telemetry as _tlm_r
+            from ..features.banners import lifecycle as _bll_r
             _rendered_pre_banner = rendered
-            _parked = _dbp2.consume_parked_banner(session_id)
-            _dbp2.note_consumed_decision(session_id, _parked)
-            if _parked:
-                rendered = _dbp2.append_banner(rendered, "\n" + _parked)
-                # R19.21 (operative parity): same vanish recovery as the
-                # benign edge — a consumed banner that did NOT land in the
-                # delivered render is RE-PARKED for next-turn delivery.
-                if _parked.strip() not in str(rendered or ""):
-                    _dbp2.park_anchor_banner(session_id, _parked)
-                    _hub()._log_route("POST",
-                               event_detail="banner_redelivered_next_turn",
-                               edge="uncensored-render",
-                               session_id=session_id)
-                else:
+            try:
+                _merged_r = _bll_r.LIFECYCLE.deliver(
+                    session_id, rendered, "anchor", "pre_render",
+                    log_edge="uncensored-render", log_consume=False)
+            except _bll_r.IllegalDeliveryEdge as _ide_r:
+                # chokepoint fail-open: the rendered body is still
+                # delivered (I2 intact); telemetry row instead of a
+                # silent miss.
+                _tlm_r.log_route("POST", event_detail="banner_deliver_fail",
+                                 kind_id=_ide_r.kind_id, edge=_ide_r.edge,
+                                 session_id=session_id)
+            else:
+                if isinstance(_merged_r, str) and _merged_r and \
+                        _merged_r != str(rendered or ""):
+                    rendered = _merged_r
                     # FIX-FIRST rider 4 (item 1, parked-loss): the render
                     # seam's own rewrite (canonical line above) ran BEFORE
                     # this consume, so the persisted row held the
