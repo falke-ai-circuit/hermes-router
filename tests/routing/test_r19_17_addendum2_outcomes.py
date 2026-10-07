@@ -23,6 +23,26 @@ import pytest
 from hermes_router import decision as D
 
 
+@pytest.fixture(autouse=True)
+def _no_v3_egress(monkeypatch):
+    """P8c: the rescan tests dispatch async decision workers whose backend
+    call runs on a daemon thread — in full-suite order a straggler fires the
+    REAL aux/backend seam after its own test's fixtures are gone, and the
+    egress attempt lands in a LATER test's _zero_network_guard scope
+    (teardown ERROR rotation: r19_17/r19_18) and can open the breaker for
+    the v3 breaker test. Patch both egress seams for the whole module and
+    join any in-flight workers before the fixtures unwind."""
+    import hermes_router.semantic_classifier as _sc
+
+    monkeypatch.setattr(_sc, "aux_raw_call",
+                        lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(D, "call_backend",
+                        lambda *a, **k: (None, {}, D.REASON_BACKEND_ERROR),
+                        raising=True)
+    yield
+    D.wait_for_workers(5.0)
+
+
 @pytest.fixture()
 def _reset_lane():
     """Isolate shared lane state (breaker/caps/rescan registry) per test —
