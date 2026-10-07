@@ -486,61 +486,6 @@ def test_r10_5_benign_capture_miss_is_loud_and_reparked(
         "banner must be re-parked for next-turn delivery"
 
 
-def test_r10_6_legacy_anchor_chain_survives_modern_section(
-        r10_reset, monkeypatch, tmp_path):
-    """A profile whose hermes_router block carries ONLY decision still gets
-    anchor_chain/log_path/pricing from the legacy uncensored_router block."""
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "hermes_router:\n"
-        "  decision:\n"
-        "    enabled: true\n"
-        "uncensored_router:\n"
-        "  anchor_chain:\n"
-        "    primary: nous://z-ai/glm-5.3\n"
-        "    pricing:\n"
-        "      z-ai/glm-5.3:\n"
-        "        input_per_1m: 0.89\n"
-        "        output_per_1m: 2.8\n"
-        "  log_path: /tmp/legacy-r10.log\n")
-    monkeypatch.setattr(config_access, "_coLocatedPath", lambda: str(cfg_path))
-    monkeypatch.setattr(config_access, "router_section",
-                        config_access._REAL_router_section)
-    # force the yaml path: the process-level reader must not resolve
-    import sys as _sys
-    monkeypatch.setitem(_sys.modules, "hermes_cli.config", None)
-    monkeypatch.setitem(_sys.modules, "hermes_cli", None)
-    config_access._cache.update({"path": None, "mtime": 0, "section": {}})
-    sec = config_access.router_section()
-    assert isinstance(sec.get("anchor_chain"), dict) \
-        and sec["anchor_chain"].get("primary")
-    assert sec.get("log_path") == "/tmp/legacy-r10.log"
-    assert isinstance(sec.get("decision"), dict) \
-        and sec["decision"].get("enabled") is True
-
-
-def test_r10_6_modern_keys_win_over_legacy(r10_reset, monkeypatch, tmp_path):
-    """When BOTH sections carry a key, the MODERN value wins (no regression
-    on existing overrides)."""
-    cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(
-        "hermes_router:\n"
-        "  anchor_chain:\n"
-        "    primary: nous://openai/gpt-6-astra-pro\n"
-        "uncensored_router:\n"
-        "  anchor_chain:\n"
-        "    primary: nous://z-ai/glm-5.3\n")
-    monkeypatch.setattr(config_access, "_coLocatedPath", lambda: str(cfg_path))
-    monkeypatch.setattr(config_access, "router_section",
-                        config_access._REAL_router_section)
-    import sys as _sys
-    monkeypatch.setitem(_sys.modules, "hermes_cli.config", None)
-    monkeypatch.setitem(_sys.modules, "hermes_cli", None)
-    config_access._cache.update({"path": None, "mtime": 0, "section": {}})
-    sec = config_access.router_section()
-    assert sec["anchor_chain"]["primary"] == "nous://openai/gpt-6-astra-pro"
-
-
 def test_r10_6_staging_none_keeps_claim_reexecutable(r10_reset, monkeypatch):
     """A staged=None declared claim is NOT marked executed and logs
     declared_claim_standdown_unexecuted reason=staging_no_record — the

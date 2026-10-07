@@ -9,16 +9,22 @@
 #   decision_head._decision_head_cfg (load_config only — blind to profile
 #       co-located config; the 2026-09-07 L0-pinning bug class)
 #   anchor_chain (load_config only for section + providers)
-#   persona_card (load_config only, no legacy fallback)
+#   persona_card (load_config only, no fallback)
 #
 # Canonical read order (2026-09-09 consolidation):
 #   1. hermes_cli.config.load_config() → section "hermes_router"
-#      (legacy "uncensored_router" honored when canonical absent)
 #   2. profile-co-located <plugin_root>/../config.yaml (same keys) — rescues
 #      profile gateways whose process-level load_config resolves the global
 #      home (the 2026-09-07 live-caught failure)
 #   3. last-good in-process cache (thread executors may lose the profile
 #      context mid-turn)
+#
+# Legacy-section note (P0.5, 2026-10-07): the legacy config section and the
+# R10-6 key-merge fallback are DELETED. The legacy sections were purged from
+# every profile config fleet-wide (parity-proven merge into the canonical
+# section; pre-purge backups at /opt/data/tmp/backup_*_config_pre_purge.yaml),
+# so the fallback had no reachable input. The canonical-first read order and
+# the 3-tier resolution + cache semantics are unchanged.
 #
 # Caching: mtime-keyed on the co-located yaml (edits land on next read with
 # no bounce). load_config() is called fresh each time (Hermes core already
@@ -27,7 +33,7 @@
 # Never raises. Returns {} on total miss — every caller already handles {}.
 from typing import Any, Dict, Optional
 
-_SECTION_KEYS = ("hermes_router", "uncensored_router")
+_SECTION_KEYS = ("hermes_router",)
 
 _cache: Dict[str, Any] = {"mtime": None, "path": None, "section": None}
 
@@ -59,16 +65,10 @@ def _read_yaml(path: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as fh:
             cfg = yaml.safe_load(fh) or {}
         section: Dict[str, Any] = {}
-        legacy: Optional[Dict[str, Any]] = None
         for key in _SECTION_KEYS:
             sec = cfg.get(key)
-            if isinstance(sec, dict) and sec:
-                if not section:
-                    section = sec
-                elif not legacy:
-                    legacy = sec
-        # R10-6: fill sub-blocks the chosen section lacks from the legacy one.
-        section = _merge_legacy(section, legacy)
+            if isinstance(sec, dict) and sec and not section:
+                section = sec
         _cache["path"] = path
         _cache["mtime"] = st.st_mtime
         _cache["section"] = dict(section)
@@ -77,30 +77,9 @@ def _read_yaml(path: str) -> Dict[str, Any]:
         return {}
 
 
-def _merge_legacy(section: Dict[str, Any], legacy: Optional[Dict[str, Any]]
-                  ) -> Dict[str, Any]:
-    """R10-6 (rider 10): fill sub-blocks/keys the CHOSEN section lacks from
-    the LEGACY section (modern wins per-key). Failure class this kills:
-    a profile whose hermes_router block is non-empty (e.g. only decision)
-    while anchor_chain/log_path/pricing still live under legacy
-    uncensored_router — the either-or section choice silently dropped the
-    legacy keys (live: conductor — anchor chain vanished, every declared
-    frontier consult staged None and died with the claim marked executed,
-    spend ledger frozen since Sep 30, zero frontier_consult rows)."""
-    try:
-        if not isinstance(legacy, dict):
-            return dict(section)
-        merged = dict(section)
-        for key, val in legacy.items():
-            if key not in merged or merged.get(key) in (None, {}, ""):
-                merged[key] = val
-        return merged
-    except Exception:  # noqa: BLE001 — config read must never raise
-        return dict(section)
-
 
 def router_section() -> Dict[str, Any]:
-    """The plugin's config section (hermes_router / legacy uncensored_router).
+    """The plugin's config section ("hermes_router").
     Single canonical reader for the whole plugin. Never raises."""
     # 1. process-level config (Hermes core, mtime-cached internally)
     section: Optional[Dict[str, Any]] = None
@@ -117,19 +96,6 @@ def router_section() -> Dict[str, Any]:
     except Exception:  # noqa: BLE001
         section = None
     if isinstance(section, dict) and section:
-        # R10-6: merge legacy keys the modern section lacks.
-        legacy = None
-        try:
-            for key in _SECTION_KEYS:
-                if cfg.get(key) is section:
-                    continue
-                cand = cfg.get(key)
-                if isinstance(cand, dict) and cand:
-                    legacy = cand
-                    break
-        except Exception:  # noqa: BLE001
-            legacy = None
-        section = _merge_legacy(section, legacy)
         _cache["section"] = dict(section)
         _cache["path"] = None  # process-level read wins; drop stale yaml key
         return dict(section)
