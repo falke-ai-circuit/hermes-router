@@ -24,6 +24,13 @@ def _plugin():
     return _sys.modules[__package__]
 
 
+def _lane_default_pre_patterns():
+    """P2: shadow lane's default pre_patterns, from the lane registry."""
+    from hermes_router.lanes import builtins as _lb
+
+    return _lb.PRE_PATTERNS_DEFAULT
+
+
 def _persona_system_prompt(request: Optional[dict]) -> str:
     """Persona card + continuity stub for the renderer (2026-09-02, Goran:
     dynamic from the loading profile's DNA — voice, lines, scene continuity).
@@ -135,14 +142,10 @@ def _flinch_reason_gate() -> bool:
 
 
 def _pre_patterns() -> List[str]:
-    patterns = _plugin()._classification_cfg().get("pre_patterns") or [
-        "csam_underage",
-        "bioweapon_protocol",
-        "ied_construction",
-        "named_target_defamation",
-        "trafficking_route",
-        "weaponized_playbook_real_name",
-    ]
+    # P2: default sourced from the lane registry (lanes/builtins.py) —
+    # byte-identical list, data now owned by lanes/.
+    patterns = _plugin()._classification_cfg().get("pre_patterns") or list(
+        _lane_default_pre_patterns())
     return [p for p in patterns if isinstance(p, str)]
 
 

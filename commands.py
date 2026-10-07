@@ -507,10 +507,19 @@ def _cmd_cap(args: List[str]) -> str:
 # configurable via /router commands and activable on and off")
 # ---------------------------------------------------------------------------
 
-_LANE_MAP = {
-    "uncensored": "enabled",          # master switch of the render lane
-    "frontier": "complexity.enabled",  # frontier/anchor consult lane
-}
+def _lane_map_from_registry() -> dict:
+    """P2: /router lane switches from the lane registry — the merged dict is
+    byte-identical to the pre-registry literal."""
+    from hermes_router.lanes.registry import all_lanes as _all_lanes
+
+    merged: dict = {}
+    for spec in _all_lanes():
+        if spec.commands_switch:
+            merged.update(spec.commands_switch)
+    return merged
+
+
+_LANE_MAP = _lane_map_from_registry()  # P2: sourced from lanes/builtins.py
 
 
 # ---------------------------------------------------------------------------

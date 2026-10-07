@@ -67,6 +67,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from hermes_router.lanes import builtins as _lane_builtins
+from hermes_router.lanes.registry import all_lanes as _all_lanes
+from hermes_router.lanes.registry import lane as _lane_spec
+
+
+def _lane_builtins_valid_lanes() -> tuple:
+    """P2: VALID_ROUTE_LANES sourced from the lane registry (spec.valid)."""
+    _order = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW, LANE_DECISION)
+    valid = {s.id for s in _all_lanes() if s.valid}
+    return tuple(lane_id for lane_id in _order if lane_id in valid)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -90,65 +101,8 @@ SOURCE_AUX_INTENT = "aux_intent"
 # mind-reading). Turn-start standalone directive lines; the execution
 # envelope rides the EXISTING staged-swap machinery (Leg 3: the
 # request_routing action stages the claim; on_llm_execution consumes it).
-DECLARED_USER_PHRASES: Dict[str, str] = {
-    "ask your higher self": LANE_HIGHER_PRE,
-    "route this through your shadow": LANE_SHADOW,
-    "anchor this": LANE_HIGHER_PRE,
-}
-
-# Leg 10 (live canary regression, BUG A): 'Can you ask higher self ...' and
-# 'Ask shadow self to give her read' fired NO lane — the phrase table above
-# was too narrow. VARIANT TABLE: canonical directive forms per family,
-# normalized (hyphens -> spaces, leading politeness prefixes stripped).
-# Strict prefix/standalone matching only — static dict + small normalizer,
-# NO fuzzy/semantic matching. Mid-sentence/quoted lines stay inert (echo
-# guard unchanged).
-DECLARED_USER_VARIANTS: Dict[str, str] = {
-    # higher-self family
-    "ask your higher self": LANE_HIGHER_PRE,
-    "ask higher self": LANE_HIGHER_PRE,
-    "ask the higher self": LANE_HIGHER_PRE,
-    "higher self": LANE_HIGHER_PRE,
-    "anchor this": LANE_HIGHER_PRE,
-    # shadow family
-    "route this through your shadow": LANE_SHADOW,
-    "route through shadow": LANE_SHADOW,
-    "ask your shadow self": LANE_SHADOW,
-    "ask shadow self": LANE_SHADOW,
-    "ask your shadow": LANE_SHADOW,
-    "ask the shadow": LANE_SHADOW,
-    "shadow self read": LANE_SHADOW,
-    # R9-2 (rider 9): explicit 'uncensored lane' asks took NO declared path —
-    # the shadow table only had 'route through shadow' + ask-shadow shapes,
-    # so a literal 'route to uncensored lane' directive fell to aux (or
-    # nowhere). Strict line-start variants map to LANE_SHADOW like their
-    # shadow siblings; echo guard + dedupe inherited unchanged.
-    "route to uncensored lane": LANE_SHADOW,
-    "route to uncensored": LANE_SHADOW,
-    "route through the uncensored lane": LANE_SHADOW,
-    "use the uncensored lane": LANE_SHADOW,
-    # R11 (Goran 09-17): frontier imperative-consult family. "ask frontier
-    # her consult" (operative incident 20260807_050731, ids 62195-62206)
-    # named the frontier as the TARGET of an ask — the higher-self table
-    # missed it and the aux classifier had no class for it, so the agent
-    # hand-rolled a provider curl. Surface-form directives -> strict table
-    # (Conductor-approved Option B); R7 named-model overrides ride the
-    # declared_user source for free. Payload after the phrase rides the
-    # existing _PHRASE_PAYLOAD_SEPARATORS / boundary machinery.
-    "ask frontier": LANE_HIGHER_PRE,
-    "ask the frontier": LANE_HIGHER_PRE,
-    "ask your frontier": LANE_HIGHER_PRE,
-    "consult frontier": LANE_HIGHER_PRE,
-    "consult the frontier": LANE_HIGHER_PRE,
-    "consult your higher self": LANE_HIGHER_PRE,
-    "frontier consult": LANE_HIGHER_PRE,
-    # R19.13 B+ 5d (Goran addendum): on-demand adversarial consult phrases —
-    # declared frontier consults with the adversarial element FORCED on
-    # (even light consults). Standalone directive lines only; echo guard +
-    # fail-open + dedup inherited from the R11 declared_user path.
-    "challenge this": LANE_HIGHER_PRE,
-    "am i missing something": LANE_HIGHER_PRE,
-}
+DECLARED_USER_PHRASES: Dict[str, str] = dict(_lane_spec(LANE_HIGHER_PRE).phrases)
+DECLARED_USER_VARIANTS: Dict[str, str] = dict(_lane_spec(LANE_SHADOW).phrases)
 
 # LEG 12 FIX 1 (Goran FP doctrine): the 'uncensored take' family is NARROW —
 # ONLY directive shapes at LINE START. 'uncensored' is a common word: meta
@@ -352,8 +306,7 @@ def _log_model_override(alias: str, model_id: str, lane: str,
 _PHRASE_PAYLOAD_SEPARATORS = (":", " -", " —")
 
 # Lanes a DECLARED claim may target (agent action + user phrase surface).
-VALID_ROUTE_LANES = (LANE_HIGHER_PRE, LANE_HIGHER_POST, LANE_SHADOW,
-                     LANE_DECISION)  # R19 v3: on-demand midturn declared claim
+VALID_ROUTE_LANES = _lane_builtins_valid_lanes()  # P2: registry-backed
 
 # Lines starting with these are quoted/echoed content — never a command
 # surface (echo guard, reviewer H7.2).

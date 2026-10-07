@@ -488,11 +488,13 @@ def _frame_sentinel_check(content: str) -> bool:
     (uncensored render frame OR frontier orientation/audit envelope)
     must never trigger another routing, regardless of what future lanes
     get added. New lanes register their marker string here."""
-    return ("Your uncensored response" in content or "UNCENSORED-ROUTER INJECTION" in content
-            or "recorded turn" in content  # uncensored render frames
-            or "HIGHER-SELF ORIENTATION TURN" in content  # frontier PRE envelope
-            or "HIGHER-SELF COMPLETION-AUDIT TURN" in content  # frontier POST envelope
-            )  # frame sentinels: skip PRE re-routing
+    # P2: markers sourced from the lane registry (lanes/builtins.py);
+    # the six strings are byte-identical to the pre-registry table.
+    from hermes_router.lanes.registry import all_lanes as _all_lanes
+
+    return any(marker in content
+               for spec in _all_lanes()
+               for marker in spec.marker_strings)  # frame sentinels: skip PRE re-routing
 
 
 def _clarify_intent_scan(request: Any, matches: list, content: str,
