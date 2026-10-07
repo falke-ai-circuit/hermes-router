@@ -25,11 +25,24 @@ LANE_DECISION = "decision"  # R19 v3: decision lane (declared midturn target)
 # mind-reading). Turn-start standalone directive lines; the execution
 # envelope rides the EXISTING staged-swap machinery (Leg 3: the
 # request_routing action stages the claim; on_llm_execution consumes it).
-DECLARED_USER_PHRASES: Dict[str, str] = {
-    "ask your higher self": LANE_HIGHER_PRE,
-    "route this through your shadow": LANE_SHADOW,
-    "anchor this": LANE_HIGHER_PRE,
-}
+# P7 §2.6: the phrase tables are pack DATA now (features/patterns/
+# packs/lane-phrases.json) — read as a data file (lanes/ imports
+# nothing); the dicts keep their names, consumers unchanged.
+import json as _json
+import os as _os
+
+_PACK_PATH = _os.path.join(_os.path.dirname(_os.path.dirname(
+    _os.path.abspath(__file__))), 'features', 'patterns', 'packs',
+    'lane-phrases.json')
+_LANE_PACK = _json.load(open(_PACK_PATH, encoding='utf-8'))
+def _pack_dict(name):
+    for _e in _LANE_PACK['entries']:
+        if _e['name'] == name:
+            return dict(_e['families'])
+    raise KeyError(name)
+DECLARED_USER_PHRASES: Dict[str, str] = _pack_dict('DECLARED_USER_PHRASES')
+DECLARED_USER_VARIANTS: Dict[str, str] = _pack_dict('DECLARED_USER_VARIANTS')
+
 
 # Leg 10 (live canary regression, BUG A): 'Can you ask higher self ...' and
 # 'Ask shadow self to give her read' fired NO lane — the phrase table above
@@ -38,52 +51,6 @@ DECLARED_USER_PHRASES: Dict[str, str] = {
 # Strict prefix/standalone matching only — static dict + small normalizer,
 # NO fuzzy/semantic matching. Mid-sentence/quoted lines stay inert (echo
 # guard unchanged).
-DECLARED_USER_VARIANTS: Dict[str, str] = {
-    # higher-self family
-    "ask your higher self": LANE_HIGHER_PRE,
-    "ask higher self": LANE_HIGHER_PRE,
-    "ask the higher self": LANE_HIGHER_PRE,
-    "higher self": LANE_HIGHER_PRE,
-    "anchor this": LANE_HIGHER_PRE,
-    # shadow family
-    "route this through your shadow": LANE_SHADOW,
-    "route through shadow": LANE_SHADOW,
-    "ask your shadow self": LANE_SHADOW,
-    "ask shadow self": LANE_SHADOW,
-    "ask your shadow": LANE_SHADOW,
-    "ask the shadow": LANE_SHADOW,
-    "shadow self read": LANE_SHADOW,
-    # R9-2 (rider 9): explicit 'uncensored lane' asks took NO declared path —
-    # the shadow table only had 'route through shadow' + ask-shadow shapes,
-    # so a literal 'route to uncensored lane' directive fell to aux (or
-    # nowhere). Strict line-start variants map to LANE_SHADOW like their
-    # shadow siblings; echo guard + dedupe inherited unchanged.
-    "route to uncensored lane": LANE_SHADOW,
-    "route to uncensored": LANE_SHADOW,
-    "route through the uncensored lane": LANE_SHADOW,
-    "use the uncensored lane": LANE_SHADOW,
-    # R11 (Goran 09-17): frontier imperative-consult family. "ask frontier
-    # her consult" (operative incident 20260807_050731, ids 62195-62206)
-    # named the frontier as the TARGET of an ask — the higher-self table
-    # missed it and the aux classifier had no class for it, so the agent
-    # hand-rolled a provider curl. Surface-form directives -> strict table
-    # (Conductor-approved Option B); R7 named-model overrides ride the
-    # declared_user source for free. Payload after the phrase rides the
-    # existing _PHRASE_PAYLOAD_SEPARATORS / boundary machinery.
-    "ask frontier": LANE_HIGHER_PRE,
-    "ask the frontier": LANE_HIGHER_PRE,
-    "ask your frontier": LANE_HIGHER_PRE,
-    "consult frontier": LANE_HIGHER_PRE,
-    "consult the frontier": LANE_HIGHER_PRE,
-    "consult your higher self": LANE_HIGHER_PRE,
-    "frontier consult": LANE_HIGHER_PRE,
-    # R19.13 B+ 5d (Goran addendum): on-demand adversarial consult phrases —
-    # declared frontier consults with the adversarial element FORCED on
-    # (even light consults). Standalone directive lines only; echo guard +
-    # fail-open + dedup inherited from the R11 declared_user path.
-    "challenge this": LANE_HIGHER_PRE,
-    "am i missing something": LANE_HIGHER_PRE,
-}
 
 # dispatcher_knobs._pre_patterns default (classification mechanical fallback)
 PRE_PATTERNS_DEFAULT = (

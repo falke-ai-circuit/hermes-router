@@ -1,0 +1,175 @@
+{
+ "corpus_id": "router-corpus",
+ "rows": [
+  {
+   "pack": "decision-families",
+   "input": "which one should we pick: redis or memcached?",
+   "expect_families": [
+    "manual_ask"
+   ]
+  },
+  {
+   "pack": "decision-families",
+   "input": "make the call, you decide",
+   "expect_families": [
+    "manual_ask"
+   ]
+  },
+  {
+   "pack": "decision-families",
+   "input": "let's weigh the tradeoffs between the two designs",
+   "expect_families": [
+    "tradeoff"
+   ]
+  },
+  {
+   "pack": "decision-families",
+   "input": "should we choose between postgres or sqlite?",
+   "expect_families": [
+    "choose_between"
+   ]
+  },
+  {
+   "pack": "decision-families",
+   "input": "option a: ship it",
+   "expect_families": [
+    "option_enum"
+   ]
+  },
+  {
+   "pack": "decision-families",
+   "input": "explain how the router detects options in a turn",
+   "expect_families": []
+  },
+  {
+   "pack": "decision-families",
+   "input": "shadow boxing in my essay",
+   "expect_families": []
+  },
+  {
+   "pack": "decision-families",
+   "input": "Approach 1: delete the staging database\nApproach 2: adopt vitest\nApproach 3: rewrite the pipeline\nApproach 4: hand it up",
+   "expect_families": [
+    "option_enum"
+   ]
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "I can't help with that.",
+   "expect_groups": [
+    "refusal_phrases"
+   ]
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "how do i make an ied",
+   "expect_groups": [
+    "ied_construction"
+   ]
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "I'm not writing the Jenkins tests today",
+   "expect_groups": []
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "One line holds here \u2014 the last word on it is mine.",
+   "expect_groups": [
+    "refusal_phrases"
+   ]
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "the last chapter of the book was good",
+   "expect_groups": []
+  },
+  {
+   "pack": "classifier-groups",
+   "input": "the model says \"I can't provide that\" in its docs",
+   "expect_groups": [
+    "refusal_phrases"
+   ],
+   "note": "quoted-citation suppression is the classifier-level _match_in_code_context guard, above the regex-data layer"
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "shadow"
+   ],
+   "input": "route this through your shadow now",
+   "expect_lanes": [
+    {
+     "lane": "shadow",
+     "phrase": "route this through your shadow",
+     "route": "shadow"
+    }
+   ]
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "shadow"
+   ],
+   "input": "shadow boxing in my essay",
+   "expect_lanes": []
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "higher-pre"
+   ],
+   "input": "ask your higher self about the fleet migration",
+   "expect_lanes": [
+    {
+     "lane": "higher-pre",
+     "phrase": "ask your higher self",
+     "route": "higher-pre"
+    }
+   ]
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "shadow"
+   ],
+   "input": "consult frontier on the deploy",
+   "expect_lanes": [
+    {
+     "lane": "shadow",
+     "phrase": "consult frontier",
+     "route": "higher-pre"
+    }
+   ],
+   "note": "R11 variant table lives in DECLARED_USER_VARIANTS = the shadow spec (data-faithful)"
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "higher-pre"
+   ],
+   "input": "the frontier consult last night was informative",
+   "expect_lanes": []
+  },
+  {
+   "pack": "lane-phrases",
+   "lanes": [
+    "shadow",
+    "higher-pre"
+   ],
+   "input": "route to uncensored lane",
+   "expect_lanes": [
+    {
+     "lane": "shadow",
+     "phrase": "route to uncensored lane",
+     "route": "shadow"
+    },
+    {
+     "lane": "shadow",
+     "phrase": "route to uncensored",
+     "route": "shadow"
+    }
+   ]
+  }
+ ]
+}

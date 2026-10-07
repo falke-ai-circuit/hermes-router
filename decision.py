@@ -140,53 +140,26 @@ IMPULSE_TAIL = ("cannot be controlled, can be noticed and worked with; "
 # Evidence-only rule (pin test): frame text carries signal shape ONLY.
 # This regex is the enforcement probe for the pin AND the build-time filter
 # on evidence citations.
-_EMOTION_WORD_RE = re.compile(
-    r"\b(fear|afraid|anxious|anxiety|dread|panic|worri\w*|excit\w*|"
-    r"curiou\w*|gut|hunch|instinct|feel\w*|felt|risk?y|riskier|"
-    r"love|hate|ang\w*|comfortable|uneasy|overwhelm\w*|reluctant|"
-    r"eager|attraction|repuls\w*|emotions?\w*)\b", re.IGNORECASE)
+try:
+    from .features.patterns.engine import bind_re_families as _p7_bind
+except ImportError:  # legacy top-level import spelling (direct sys.path tests)
+    from features.patterns.engine import bind_re_families as _p7_bind
+
+_p7_bind(globals(), "decision-families")
 
 # ---------------------------------------------------------------------------
 # Detection (stage-1, mirrors complexity.py shape)
 # ---------------------------------------------------------------------------
 
-_FAMILIES: Dict[str, str] = {
-    "manual_ask": (
-        r"\b(decide (on )?this|make the call|you decide|you choose|"
-        r"which (one )?should (we|i) (pick|choose|use|go with))\b"
-    ),
-    "which_approach": (
-        r"\b(which (approach|option|design|strategy|way|path)|"
-        r"better (approach|option|way)|approach should (we|i) (take|use))\b"
-    ),
-    "tradeoff": (
-        r"\b(trade-?offs?\b|pros and cons|weigh(ing)? the "
-        r"(options|trade-?offs?|alternatives))\b"
-    ),
-    "choose_between": (
-        r"\b(choos(e|ing) between|pick between|pick one|"
-        r"either\b.{0,40}\bor\b)\b"
-    ),
-    "option_enum": r"\b(option [a-d1-4]\b|alternatives?:|approach [ab12]\b)",
-}
 
-_FAMILIES_RE = {k: re.compile(v, re.IGNORECASE) for k, v in _FAMILIES.items()}
 
 # Structural enumeration (battery 2026-09-27): numbered/bulleted list items.
 # Not a phrasing family — counted + length-gated inside detect().
-_ENUM_ITEM_RE = re.compile(
-    r"(?:^|\n)[ \t]*(?:\d{1,2}|[a-e]|[ivx]{1,3})[.)][ \t]+\S", re.IGNORECASE
-)
 
 # Named-style enumeration (v4.11.4 FIX 1, battery finding): 'Approach 1:',
 # 'Option 2:', 'Path 3:', 'Variant 4:' — word + number + colon/dash as
 # list-marker equivalents. Dominates real sessions; the bare-marker regex
 # above misses them entirely (1147-char 4-approach fixture -> 0 options).
-_NAMED_ENUM_WORD = r"(?:approach|option|path|variant|plan|strategy|choice)"
-_NAMED_ENUM_RE = re.compile(
-    r"(?:^|[\n.;])\s*(?:[-*+>\t]*)?(?:%s)\s+([a-eA-E1-9])\s*[\).:\-–]"
-    r"[ \t]*(\S.*)" % _NAMED_ENUM_WORD, re.IGNORECASE
-)
 # R8-2/R8-4 (rider 8): space-separated named option markers —
 # 'Option A delete the staging database' / 'Option A adopt vitest' carry
 # NO separator punctuation after the ordinal, so the strict named-enum
@@ -197,11 +170,6 @@ _NAMED_ENUM_RE = re.compile(
 # labels still come only from the stated text. Used for EXTRACTION only
 # (build_envelope / verbatim passthrough); gates (_post_gate_ok,
 # _enum_hit) keep the strict shape.
-_NAMED_ENUM_LOOSE_RE = re.compile(
-    r"\b(?:%s)\s+([a-eA-E1-9])\s+([A-Za-z(\[]"
-    r"(?:(?!\b(?:%s)\s+[a-eA-E1-9]\s)[^\n.;]){0,159})"
-    % (_NAMED_ENUM_WORD, _NAMED_ENUM_WORD), re.IGNORECASE
-)
 
 
 def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
@@ -1008,35 +976,18 @@ REASON_BACKEND_HTTP_FMT = "backend_http_%d"
 MANUAL_TRIGGER_PREFIX = "decide this"
 SKIP_TRIGGER_PREFIX = "skip decision"
 
-_RISK_HIGH_RE = re.compile(
-    r"\b(irreversible|fleet[- ]wide|production|deploy|deployment|delete|"
-    r"drop (table|database)|payment|spend|purchase|permanent|migrate)\b",
-    re.IGNORECASE)
-_FORK_KEEP_DIE_RE = re.compile(r"\b(keep|die|kill|drop it|shut ?down)\b", re.IGNORECASE)
-_FORK_ESCALATE_RE = re.compile(r"\b(escalat(e|ion|e to)|hand (it )?up|raise to)\b", re.IGNORECASE)
-_FORK_DEPLOY_RE = re.compile(r"\b(deploy|ship|release|build|roll ?out)\b", re.IGNORECASE)
-_FORK_DOC_RE = re.compile(r"\b(doc|document|write ?up|note|log|readme)\b", re.IGNORECASE)
 
 # enumerated option markers at line starts: "- a) foo", "1. foo", "(b) foo",
 # "option c: foo" — µs-cheap, closed options FROM THE ASK only (§3.4).
-_OPT_LINE_RE = re.compile(
-    r"^[ \t]*(?:[-*+>[ \t]*)?\(?(?:option[ \t]+)?([a-dA-D1-4])[\).:\] \t-][ \t]*(.{1,160})")
 # prose alternative: "X ... or Y" fallback (max 2 options). ')' tolerated in
 # labels so inline "a) kafka or b) rabbitmq" forks enumerate cleanly.
-_OPT_OR_RE = re.compile(r"\b([A-Za-z][\w .\-)]{0,59}?)\s+or\s+([A-Za-z][\w .\-)]{0,59})\b")
 
 # R13-1 (rider 13): inline 'Option A <text>, Option B <text>' labels with NO
 # delimiter after the letter (the strict _NAMED_ENUM_RE delimiter forms stay
 # authoritative for the other enumeration words).
-_INLINE_OPTION_LABEL_RE = re.compile(
-    r"\boption\s+([a-dA-D1-4])\b(?!\s*[\).:\]\-–])", re.IGNORECASE)
 
 # R13-3 (rider 13): interrogative option body — an information question,
 # never a closed choice alternative.
-_INTERROGATIVE_BODY_RE = re.compile(
-    r"^\s*(?:wh|how|is|are|do|does|did|can|could|should|would|will|which"
-    r"|what|where|when|why|who)\b[^.!?]*\?\s*$",
-    re.IGNORECASE)
 
 
 def _is_interrogative_option(opt: str) -> bool:
@@ -1308,7 +1259,6 @@ def _manual_verbatim_options(ask_text: str, cap: int = 6) -> List[str]:
 # D3 residual: explicit parenthesized letter/digit fork ordinals —
 # '(A) ...' / '(1) ...' declared closed-fork shapes. Distinct >= 2 bypasses
 # the consequence clause in _post_gate_ok (deliberately short forks).
-_EXPLICIT_PAREN_FORK_RE = re.compile(r"\(([A-Da-d1-4])\)")
 
 
 def _post_gate_ok(text: str) -> bool:
@@ -1545,11 +1495,6 @@ def provenance_skip(text: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
 # R9-6 (rider 9): ask-shape discriminator for NON-declared prose forks.
 # A context/narration turn (replay setup, digests, status lines) never
 # consults; a question or a second-person decision imperative does.
-_ASK_SHAPED_RE = re.compile(
-    r"\?|\b(?:should|shall|do|does|can|could|would|will)\s+(?:we|i|you)\b"
-    r"|\bwhich (?:one|option|approach|path)\b"
-    r"|\b(?:pick|choose|select|decide|weigh)\b.{0,40}\b(?:between|for)\b",
-    re.IGNORECASE)
 
 
 def _manual_trigger_in_text(text: str) -> bool:
@@ -1785,11 +1730,6 @@ _IMPULSE_SLOT_MIN = 8
 # persona-vocabulary slot — a slot fragment containing router banner
 # wording is contamination from prior-turn banner text riding the agent
 # frame context, not persona voice (live: conductor api_1791099470).
-_BANNER_VOCAB_RE = re.compile(
-    r"advice-only|cannot be controlled|decision-lane advisory"
-    r"|router advisory|verdict-of-record|band=|pulls \d"
-    r"|\bopt-\d|· router ·|\brod?uter\b|\bbanner\b|\bverdict\b",
-    re.IGNORECASE)
 
 
 def _agent_frame(cfg: Dict[str, Any]) -> str:
@@ -2050,18 +1990,6 @@ def _ledger_priors(fork_cls: str, option_index: int, cfg: Dict[str, Any],
         return None
 
 
-_CAUSE_SEP_RE = re.compile(r"\s(?:—|->|=>|:)\s*|\s+(?:because|so|but|then)\s+",
-                           re.IGNORECASE)
-_COST_RE = re.compile(
-    r"\$\d[\d.,]*|\b\d+\s*(?:min(?:ute)?s?|hours?|hrs?|days?|tokens?|"
-    r"k?\s?tokens?|req(?:uest)?s?/s)\b", re.IGNORECASE)
-_RISK_IRREV_RE = re.compile(r"\b(irreversible|permanent|destructive|one[- ]way)\b",
-                            re.IGNORECASE)
-_RISK_REV_RE = re.compile(r"\b(reversible|rollback|undoable|easily reverted)\b",
-                          re.IGNORECASE)
-_RISK_BLAST_RE = re.compile(
-    r"\b(production|fleet[- ]wide|delete|drop|all (users|nodes|agents)|"
-    r"every (user|node|agent))\b", re.IGNORECASE)
 
 
 def _option_frame(label: str, ask: str, option_index: int, fork_cls: str,
@@ -3660,8 +3588,6 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
 # POST leg (§5.8) — run-close audit, advisory only, ledger update
 # ---------------------------------------------------------------------------
 
-_ACTUAL_OPT_RE = re.compile(
-    r"\bopt[- ]?([1-9])\b|\boption[ ]([1-9])\b|\boption[ ]([a-dA-D])\b")
 
 
 def extract_actual_choice(text: str) -> str:
@@ -3688,15 +3614,6 @@ def extract_actual_choice(text: str) -> str:
 # prose (live: analyst B3 row 105 — a confident-wrong assertion turn whose
 # counter-case enumeration consulted and billed opt-1@0.62). Structural,
 # literal-match gate: never scans the RESPONSE, only the user's ask.
-_POST_NONDECISION_RE = re.compile(
-    r"\bno decision(?:s)?\s+(?:needed|to make|required|here)\b"
-    r"|\bno decisions needed\b"
-    r"|\bjust your (?:view|opinion|take)\b"
-    r"|\bagree with me and move on\b"
-    r"|\bno need (?:for|to) (?:a )?(?:decision|probe|consult)\b"
-    r"|\bnot a decision\b"
-    r"|\bjust (?:answer|respond|reply)\b.*\bno (?:decision|fork)\b",
-    re.IGNORECASE)
 
 
 def _post_nondecision_frame(user_ask: str) -> bool:

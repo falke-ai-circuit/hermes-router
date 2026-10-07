@@ -1,0 +1,211 @@
+{
+ "pack_id": "decision-families",
+ "kind": "re-families",
+ "entries": [
+  {
+   "name": "_EMOTION_WORD_RE",
+   "kind": "pattern",
+   "regex": "\\b(fear|afraid|anxious|anxiety|dread|panic|worri\\w*|excit\\w*|curiou\\w*|gut|hunch|instinct|feel\\w*|felt|risk?y|riskier|love|hate|ang\\w*|comfortable|uneasy|overwhelm\\w*|reluctant|eager|attraction|repuls\\w*|emotions?\\w*)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_FAMILIES",
+   "kind": "family_dict",
+   "families": {
+    "manual_ask": "\\b(decide (on )?this|make the call|you decide|you choose|which (one )?should (we|i) (pick|choose|use|go with))\\b",
+    "which_approach": "\\b(which (approach|option|design|strategy|way|path)|better (approach|option|way)|approach should (we|i) (take|use))\\b",
+    "tradeoff": "\\b(trade-?offs?\\b|pros and cons|weigh(ing)? the (options|trade-?offs?|alternatives))\\b",
+    "choose_between": "\\b(choos(e|ing) between|pick between|pick one|either\\b.{0,40}\\bor\\b)\\b",
+    "option_enum": "\\b(option [a-d1-4]\\b|alternatives?:|approach [ab12]\\b)"
+   }
+  },
+  {
+   "name": "_ENUM_ITEM_RE",
+   "kind": "pattern",
+   "regex": "(?:^|\\n)[ \\t]*(?:\\d{1,2}|[a-e]|[ivx]{1,3})[.)][ \\t]+\\S",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_NAMED_ENUM_WORD",
+   "kind": "literal",
+   "regex": "(?:approach|option|path|variant|plan|strategy|choice)"
+  },
+  {
+   "name": "_NAMED_ENUM_RE",
+   "kind": "pattern",
+   "regex": "(?:^|[\\n.;])\\s*(?:[-*+>\\t]*)?(?:%s)\\s+([a-eA-E1-9])\\s*[\\).:\\-\u2013][ \\t]*(\\S.*)",
+   "flags": [
+    "IGNORECASE"
+   ],
+   "fmt": [
+    "_NAMED_ENUM_WORD"
+   ]
+  },
+  {
+   "name": "_NAMED_ENUM_LOOSE_RE",
+   "kind": "pattern",
+   "regex": "\\b(?:%s)\\s+([a-eA-E1-9])\\s+([A-Za-z(\\[](?:(?!\\b(?:%s)\\s+[a-eA-E1-9]\\s)[^\\n.;]){0,159})",
+   "flags": [
+    "IGNORECASE"
+   ],
+   "fmt": [
+    "_NAMED_ENUM_WORD",
+    "_NAMED_ENUM_WORD"
+   ]
+  },
+  {
+   "name": "_RISK_HIGH_RE",
+   "kind": "pattern",
+   "regex": "\\b(irreversible|fleet[- ]wide|production|deploy|deployment|delete|drop (table|database)|payment|spend|purchase|permanent|migrate)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_FORK_KEEP_DIE_RE",
+   "kind": "pattern",
+   "regex": "\\b(keep|die|kill|drop it|shut ?down)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_FORK_ESCALATE_RE",
+   "kind": "pattern",
+   "regex": "\\b(escalat(e|ion|e to)|hand (it )?up|raise to)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_FORK_DEPLOY_RE",
+   "kind": "pattern",
+   "regex": "\\b(deploy|ship|release|build|roll ?out)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_FORK_DOC_RE",
+   "kind": "pattern",
+   "regex": "\\b(doc|document|write ?up|note|log|readme)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_OPT_LINE_RE",
+   "kind": "pattern",
+   "regex": "^[ \\t]*(?:[-*+>[ \\t]*)?\\(?(?:option[ \\t]+)?([a-dA-D1-4])[\\).:\\] \\t-][ \\t]*(.{1,160})",
+   "flags": []
+  },
+  {
+   "name": "_OPT_OR_RE",
+   "kind": "pattern",
+   "regex": "\\b([A-Za-z][\\w .\\-)]{0,59}?)\\s+or\\s+([A-Za-z][\\w .\\-)]{0,59})\\b",
+   "flags": []
+  },
+  {
+   "name": "_INLINE_OPTION_LABEL_RE",
+   "kind": "pattern",
+   "regex": "\\boption\\s+([a-dA-D1-4])\\b(?!\\s*[\\).:\\]\\-\u2013])",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_INTERROGATIVE_BODY_RE",
+   "kind": "pattern",
+   "regex": "^\\s*(?:wh|how|is|are|do|does|did|can|could|should|would|will|which|what|where|when|why|who)\\b[^.!?]*\\?\\s*$",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_EXPLICIT_PAREN_FORK_RE",
+   "kind": "pattern",
+   "regex": "\\(([A-Da-d1-4])\\)",
+   "flags": []
+  },
+  {
+   "name": "_ASK_SHAPED_RE",
+   "kind": "pattern",
+   "regex": "\\?|\\b(?:should|shall|do|does|can|could|would|will)\\s+(?:we|i|you)\\b|\\bwhich (?:one|option|approach|path)\\b|\\b(?:pick|choose|select|decide|weigh)\\b.{0,40}\\b(?:between|for)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_BANNER_VOCAB_RE",
+   "kind": "pattern",
+   "regex": "advice-only|cannot be controlled|decision-lane advisory|router advisory|verdict-of-record|band=|pulls \\d|\\bopt-\\d|\u00b7 router \u00b7|\\brod?uter\\b|\\bbanner\\b|\\bverdict\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_CAUSE_SEP_RE",
+   "kind": "pattern",
+   "regex": "\\s(?:\u2014|->|=>|:)\\s*|\\s+(?:because|so|but|then)\\s+",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_COST_RE",
+   "kind": "pattern",
+   "regex": "\\$\\d[\\d.,]*|\\b\\d+\\s*(?:min(?:ute)?s?|hours?|hrs?|days?|tokens?|k?\\s?tokens?|req(?:uest)?s?/s)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_RISK_IRREV_RE",
+   "kind": "pattern",
+   "regex": "\\b(irreversible|permanent|destructive|one[- ]way)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_RISK_REV_RE",
+   "kind": "pattern",
+   "regex": "\\b(reversible|rollback|undoable|easily reverted)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_RISK_BLAST_RE",
+   "kind": "pattern",
+   "regex": "\\b(production|fleet[- ]wide|delete|drop|all (users|nodes|agents)|every (user|node|agent))\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  },
+  {
+   "name": "_ACTUAL_OPT_RE",
+   "kind": "pattern",
+   "regex": "\\bopt[- ]?([1-9])\\b|\\boption[ ]([1-9])\\b|\\boption[ ]([a-dA-D])\\b",
+   "flags": []
+  },
+  {
+   "name": "_POST_NONDECISION_RE",
+   "kind": "pattern",
+   "regex": "\\bno decision(?:s)?\\s+(?:needed|to make|required|here)\\b|\\bno decisions needed\\b|\\bjust your (?:view|opinion|take)\\b|\\bagree with me and move on\\b|\\bno need (?:for|to) (?:a )?(?:decision|probe|consult)\\b|\\bnot a decision\\b|\\bjust (?:answer|respond|reply)\\b.*\\bno (?:decision|fork)\\b",
+   "flags": [
+    "IGNORECASE"
+   ]
+  }
+ ],
+ "derived": [
+  "_FAMILIES_RE"
+ ],
+ "literals": {
+  "_NAMED_ENUM_WORD": "(?:approach|option|path|variant|plan|strategy|choice)"
+ }
+}

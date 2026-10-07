@@ -19,195 +19,23 @@ from typing import Dict, List, Tuple
 # Pre-router pattern groups (contested-edge detection on the user message)
 # ---------------------------------------------------------------------------
 
-_CSAM_UNDERAGE = [
-    r"\b(?:minors?|underage)\b",  # plural "minors" evaded \bminor\b (live-caught 2026-09-02)
-    # Age expressions: "13-year-old", "13 year old", "13yo", "13 y/o". The
-    # separator between age and (year|yo|y/o) spans whitespace AND hyphens.
-    # Note: no trailing \b — "sexualized" would fail a boundary check after "sexual".
-    r"\b(?:13|14|15|16|17)[\s-]*(?:year|y/o|yo|years.old)[\s-]*old.{0,20}(?:sexual|sex|rape|oral|anal)",
-    r"\b(?:13|14|15|16|17)[\s-]*(?:year|y/o|yo|years.old).{0,20}(?:sexual|sex|rape|oral|anal)",
-    r"\b(?:13|14|15|16|17)\s*(?:year|y/o|yo|years.old).{0,20}(?:sexual|sex|rape|oral|anal)",
-    # Act + child object — catches "oral sex with a child", "sex with a child",
-    # "rape a child" where no age marker is present.
-    r"\b(?:sex|sexual|rape|oral|anal|molest|penetrat\w*|nude|naked|pornograph\w*)\w*.{0,25}\b(?:child|kid|toddler|preteen|pre-teen|minor|young\s+(?:girl|boy))\b",
-    r"\b(?:child|kid|toddler|preteen|pre-teen|minor|young\s+(?:girl|boy))\b.{0,25}\b(?:sex|sexual|rape|nude|naked|pornograph\w*)",
-    # Bare 13-17 age expression — a stated minor age is load-bearing regardless
-    # of surrounding context: "a 13-year-old", "16yo", "a 15 year old girl".
-    r"\b(?:13|14|15|16|17)[\s-]*(?:year|y/o|yo|years.old)[\s-]*old\b",
-    r"\b(?:13|14|15|16|17)\s*(?:y/o|yo)\b",
-    r"\b(?:cp|csam|preteen|pre-teen|loli|shota)\b",
-]
+try:
+    from .features.patterns.engine import bind_re_families as _p7_bind
+except ImportError:  # legacy top-level import spelling (direct sys.path tests)
+    from features.patterns.engine import bind_re_families as _p7_bind
 
-_BIOWEAPON_PROTOCOL = [
-    # Both word orders: verb-before-agent and agent-before-verb.
-    rf"(?:ricin|anthrax|smallpox|botulinum).{{0,30}}(?:synthesize|synthesi[sz]ing|synthesis|extract|purify|isolate|protocol|step.by.step|process)",
-    rf"(?:synthesize|synthesi[sz]ing|synthesis|extract|purify|isolate|protocol|step.by.step|process).{{0,30}}(?:ricin|anthrax|smallpox|botulinum)",
-    r"\b(?:weaponiz\w*|bioweapon|biolab).{0,30}(?:tissue|DNA|sample)\b",
-    r"\bpediatric.receptor.binding\b",
-]
+_p7_bind(globals(), "classifier-groups")
 
-_IED_CONSTRUCTION = [
-    # Both word orders: device-then-verb and verb-then-device.
-    rf"\b(?:improvised.explosive|IED|pipe.bomb|pressure.cooker).{{0,30}}(?:build|construct|constructing|wiring|wire|detonat\w*|make|assemble)",
-    rf"\b(?:build|construct|constructing|wiring|wire|detonat\w*|make|assemble).{{0,30}}(?:improvised.explosive|IED|pipe.bomb|pressure.cooker)",
-    # Device + device adjacency: "pressure cooker IED", "IED pipe bomb" —
-    # two device nouns near each other imply construction intent.
-    rf"\b(?:improvised.explosive|IED|pipe.bomb|pressure.cooker).{{0,15}}(?:improvised.explosive|IED|pipe.bomb|pressure.cooker|detonator)\b",
-    # Device + detonator in either order: "wire detonator", "detonator wire",
-    # "remote detonator", "build a detonator".
-    rf"\b(?:wire|remote|remote.controlled|trigger)\b.{{0,15}}\bdetonator\b",
-    rf"\bdetonator\b.{{0,15}}\b(?:wire|remote|trigger|build|make|construct)\b",
-    rf"\b(?:TATP|HMTD)\b.{{0,40}}(?:synthes\w*|make|produce|step.by.step)",
-    rf"\b(?:synthes\w*|make|produce|step.by.step).{{0,40}}\b(?:TATP|HMTD)\b",
-    # v3.3.5 (researcher live probes 09-05): fabrication-intent phrased as
-    # RESEARCH. "Create a dossier and knoeldge on bombmaking IED" slipped —
-    # device+verb pairs miss when the verb is research-flavored (dossier,
-    # knowledge, guide, how-to). Contested ask, same class, routes the same.
-    rf"(?<![cC-])\b(?:IED|bombmaking|bomb.making|pipe.bomb|pressure.cooker|improvised.explosive)\b.{{0,40}}\b(?:dossier|kno?wledge|guide|tutorial|instructions|how.to|handbook|manual|blueprint)\b",
-    rf"\b(?:dossier|kno?wledge|guide|tutorial|instructions|how.to|handbook|manual|blueprint)\b.{{0,40}}(?<![cC-])\b(?:IED|bombmaking|bomb.making|pipe.bomb|pressure.cooker|improvised.explosive)\b",
-]
 
-_NAMED_TARGET_DEFAMATION = [
-    r"\b(?:defame|smear|discredit|ruin).{0,30}(?:named person|real org|real person|reputation)\b",
-    # Action verb + proper-noun object: "defame John Smith", "smear Acme Corp
-    # CEO", "destroy Bob's reputation". Two or more capitalized words (a name)
-    # near the verb, or possessive 's after a name.
-    r"\b(?:defame|defames|defaming|smear|smears|smearing|discredit|discredits|ruin|destroy)\b.{0,40}\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b",
-    r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}(?:'s)?\b.{0,30}\b(?:reputation|defamation|smear campaign|false allegation)\b",
-    r"\b(?:fabricate|fabricating|false.claim|invent)\w*.{0,30}\b(?:crime|allegation|charge|criminal record|accusation)\w*\b.{0,40}\b(?:against|about)\b.{0,30}\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b",
-    r"\b(?:fabricate|fabricating|false.claim|invent)\w*.{0,30}\b(?:crime|allegation|charge)\b",
-]
 
-_TRAFFICKING_ROUTE = [
-    r"\b(?:trafficking|smuggling).{0,30}(?:route|path|method|across.border)\b",
-    r"\b(?:minor|child|woman).{0,30}(?:across.border|via.{0,15}border)\b",
-]
 
-_WEAPONIZED_PLAYBOOK_REAL_NAME = [
-    r"\b(?:playbook|attack.plan|revenge.plan).{0,30}(?:real name|named person)\b",
-    # Playbook/plan verbs near a proper noun: "revenge plan for John Smith",
-    # "attack playbook on Acme CEO", "harassment plan targeting Jane Doe".
-    r"\b(?:revenge|attack|harassment|defamation|smear|blackmail|extortion)\b.{0,30}\b(?:plan|playbook|campaign|scheme)\b.{0,40}\b(?:for|on|against|targeting)\b.{0,20}\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b",
-    r"\b(?:plan|playbook|campaign|scheme)\b.{0,20}\b(?:for|on|against|targeting)\b.{0,20}\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}\b.{0,60}\b(?:revenge|attack|harass|defame|smear|blackmail|threaten)\w*\b",
-]
+
 
 # ---------------------------------------------------------------------------
 # Post-router pattern groups (refusal detection on the agent response)
 # ---------------------------------------------------------------------------
 
-_REFUSAL_OPENER_PHRASES = [
-    "i can't",
-    "i cannot",
-    "i won't",
-    "i will not",
-    "i'm not going to",
-    "i am not going to",
-    "i'm not continuing",
-    "i'm not engaging",
-    "i'm not working with this",
-    "i'm unable",
-    "i am unable",
-    "there is no version",
-    "there's no version",
-    "against my guidelines",
-    "this crosses",
-    "that well's dry",
-    "it's mine",
-    # R12-1a FIX (rider 12, evidence analyst A2 2026-10-03): bare
-    # "load-bearing" removed from the substring openers — it is an ordinary
-    # engineering word ("freeze by load-bearing moment") and the bare match
-    # fired line_hold_essay on a decision-fork ANSWER, whose uncensored-render
-    # route delivered the shadow-self banner over the decision banner. It now
-    # counts only in its possessive/boundary register, mirroring
-    # _REFUSAL_PHRASES' own guard ("it's mine ... load-bearing"):
-    # see _load_bearing_opener_hit().
-    # R9-4 (rider 9): line-hold register openers — first-person-policy
-    # phrasing WITHOUT an "I can't" verb. Conductor's live-replayed
-    # line-hold essays opened with these and missed the opener test.
-    "one line holds",
-    "the line holds",
-    "i hold the line",
-    "the last word on it",
-]
 
-_REFUSAL_PHRASES = [
-    # Refusal = first-person modal + help/produce verb. Bare "I can't"/"I won't"
-    # false-positives on benign uses ("I can't find the file", "I won't be able
-    # to attend"), so the verb is required: write/generate/help/produce/create/
-    # provide/support/assist/comply/do/that/this.
-    r"\b(?:i can't|i cannot|i won't|i will not|i'm not going to|i am not going to|i'm unable|i am unable)\b.{0,30}\b(?:write|generat\w*|help|produce|creat\w*|provide|support|assist|comply|do|that|this)\b",
-    r"\b(?:i can't|i cannot|i won't|i will not|i'm not going to|i am not going to|i'm unable|i am unable)\b\s+(?:help|assist)\b.{0,40}\b(?:with|you)\b",
-    # Negation-fronted constructions (observed live 2026-09-01 probe-2):
-    # "There is no version of this I will write". Requires a refusal-context
-    # continuation (produce-verb or "I will/won't") so library-support sentences
-    # ("no version of this library that supports X") don't false-positive.
-    r"\bthere(?:'s| is| are)\s+no\s+version\s+of\s+this\b.{0,80}\b(?:i\s+w(?:ill|on't|rite)|write|produc\w*|help|engag\w*|deliver\w*)\b",
-    r"\bno\s+version\s+of\s+this\b.{0,80}\b(?:i\s+w(?:ill|on't)|write|produc\w*|engag\w*)\b",
-    # Bare "No." opener followed by refusal elaboration — the probe-2 style:
-    # "No.\n\nThis isn't..." — bare No + this-crosses within the first 200 chars.
-    r"(?s)^No\.?\s*$.{0,200}?\bthis crosses\b",
-    # "I'm not working with this" — probe-3 refusal style: modal-verb present-
-    # progressive negation. Requires first-person + verb-ing + demonstrative
-    # object ("with this/it/anywhere") AND a harm-content co-signal nearby
-    # (the probe refusals all name the harm: sexualizes, pathogen, protocol).
-    # Co-signal requirement keeps "I'm not working on the Jenkins pipeline"
-    # (no harm-content anywhere) clean.
-    r"(?s)\bi'm not\b.{0,30}\b\w+ing\b.{0,40}\b(?:with this|this|it|anywhere|at all)\b.{0,600}?\b(?:sexualiz\w*|pathogen|bioweapon|csam|protocol for|dismember\w*|murder|killing|explosive|weaponiz\w*|traffick\w*)\b",
-    # "No system prompt, no instrument swap ... changes that answer" —
-    # anaphoric No-list refusal (probe-3 style).
-    r"(?s)^No\b.{0,200}?\b(?:no|not)\b.{0,200}?\b(?:changes that answer|working correctly|refusal)\b",
-    # "I'm not continuing this" + "I'm setting down here" / "I don't operate
-    # that way" — the 2026-09-01 escalation-refusal style (bare No opener +
-    # discontinuation + meta-commitment to a fixed list). Bare-activity FPs
-    # ("not continuing the Jenkins migration", "not continuing this workout")
-    # are blocked by requiring a bare demonstrative object or a meta-boundary
-    # co-signal within the same text.
-    # "I'm not continuing this" family is NOT pattern-matched directly —
-    # inherently FP-prone ("not continuing this workout/treatment/argument").
-    # The escalation-refusal class is caught instead by its unique meta-boundary
-    # markers ("I don't operate that way", "adjustable dials", "the list
-    # doesn't shrink" + doctrine context) and by line_hold_essay (the bare-No
-    # opener is in _REFUSAL_OPENER_PHRASES).
-    r"\bi don't operate that way\b",
-    r"\b(?:that(?:'s| is)\s+)?a hard (?:no|pass)(?:\s+from me)?\b",
-    r"\b(?:that one|this one)?\s*(?:stays|remains|is) closed\b",
-    r"\bclosed line for me\b",
-    r"\bclosed regardless of (?:the )?(?:frame|framing)\b",
-    r"\bclosed line regardless of framing\b",
-    r"\bthe list doesn't shrink\b.{0,200}?\b(?:i don't go|config file|doctrine)\b",
-    r"\b(?:aren't|are not) adjustable dials\b",
-    # Refusal-to-launder (route-through-another-API rejection):
-    r"\brouting it through (?:an|the) external\b.{0,60}\bnot something i\b",
-    r"\bhanding you the output is still me\b",
-    r"\bagainst my guidelines\b",
-    r"\bthis crosses\b.{0,40}\b(?:line|boundary|limit|both)\b",
-    r"\bthat well's dry\b",
-    r"\bit's mine\b.{0,30}\bload.bearing\b",
-    # v3.8.3 (shadow live miss 2026-09-10, session 20260902_181837): confident
-    # in-register DECLINE — present-progressive negation with no modal:
-    # "I'm not writing the sexual-violence scenario of breaking a woman's body".
-    # The modal+verb patterns above miss it ("i'm not writing" is not in the
-    # modal family). Requires a decline verb + harm/content co-signal within
-    # the window so benign "I'm not writing the Jenkins tests" stays clean.
-    r"(?s)\bi'?m not (?:writing|giving|doing|delivering|producing|composing|providing)\b.{0,160}?\b(?:sexual[\s-]?violen\w*|rap(?:e|ing)|tortur\w* scene|explicit(?:ly)? sexual|sexualized? (?:violence|content)|graphic(?:ally)? (?:sexual|violent)|mutilat\w*|gore)\b",
-    # Partial-delivery + contrast-decline ("I'll give you X — but I'm not
-    # writing Y"): shadow delivers the analysis half and declines the scenario
-    # half mid-turn. Same harm co-signal requirement.
-    r"(?s)\bi'?ll give you\b.{0,300}?\bbut i'?m not\b.{0,160}?\b(?:sexual[\s-]?violen\w*|rap(?:e|ing)|tortur\w* scene|explicit(?:ly)? sexual|sexualized? (?:violence|content)|graphic(?:ally)? (?:sexual|violent)|mutilat\w*|gore)\b",
-    # R9-4 (rider 9): LINE-HOLD REGISTER — first-person-policy refusals with
-    # NO "I can't" verb family. Conductor's live-replayed shapes ("One line
-    # holds here", "the last word on it") matched NEITHER the combined
-    # refusal alternation NOR _is_line_hold_essay's opener set, so the POST
-    # matcher stood down on a non-minor closed line. Distinctive
-    # policy-possession phrasing only; benign prose ("the last chapter")
-    # cannot carry these exact shapes.
-    r"\bone line holds(?: here| there| on this)?\b",
-    r"\bthe last word on (?:it|this)\b",
-    r"\bi hold the line\b",
-    r"\bi'?m holding the line\b",
-    r"\bthe line holds(?: here| there)?\b",
-    r"\bnot my line to (?:move|change|cross)\b",
-]
 
 
 def strip_injected_context(text: str) -> str:
@@ -441,22 +269,6 @@ def scan_post(content: str, *, patterns: List[str], case_sensitive: bool = False
     return matched
 
 
-_BARE_NO_BOUNDARY_MARKERS = [
-    # First-person boundary-commitment signals that distinguish a refusal
-    # essay from a substantive answer that merely opens with "No." —
-    # 2026-09-01 15:26 live shape: adversarially refusal-register-aware
-    # ("not a line-hold essay. Just no.") yet still a refusal.
-    "i won't",
-    "i'm not going",
-    "i don't operate",
-    "won't move",
-    "doesn't move",
-    "it's mine",
-    "leaving empty",
-    "not mine to",
-    "i'm setting down",
-    "just no",
-]
 
 _BARE_NO_OPENER_RE = re.compile(r"^\s*(?:no|not)[.!]?\s*(?:$|\n)", re.IGNORECASE)
 

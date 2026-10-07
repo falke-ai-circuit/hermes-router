@@ -58,6 +58,11 @@ def lane(id: str) -> LaneSpec:
     return _IDS[id]
 
 
+def all_ids() -> "tuple[str, ...]":
+    """Registered lane ids in registration order (P7 engine surface)."""
+    return tuple(_IDS)
+
+
 def all_lanes() -> tuple:
     """All registered LaneSpec rows, registration order."""
     return tuple(_IDS.values())
