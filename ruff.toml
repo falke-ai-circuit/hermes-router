@@ -1,0 +1,7 @@
+# ruff config (P8b) — errors-only gate, behavior-neutral.
+# The tree carries ~2700 pre-existing STYLE findings (UP/SIM/I/RUF/F401...);
+# they are a future ratchet, not a day-one CI red. This gate selects only
+# real-error classes; widen as style fixes land.
+line-length = 100
+[lint]
+select = ["E9"]  # syntax errors

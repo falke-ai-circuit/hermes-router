@@ -8,9 +8,11 @@ FAILED=0
 
 step() { echo "=== $1 ==="; }
 
-step "ruff"
+step "ruff (errors-only gate; style classes are a future ratchet — see ruff.toml)"
 if command -v ruff >/dev/null 2>&1; then
     ruff check . || FAILED=1
+elif python3 -m ruff --version >/dev/null 2>&1; then
+    python3 -m ruff check . || FAILED=1
 else
     echo "SKIP: ruff not installed"
 fi
