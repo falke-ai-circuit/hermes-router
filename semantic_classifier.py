@@ -6,7 +6,7 @@ in router.py. Reusing router.call() would inherit the 300s timeout, the
 50-token classification.
 
 Design (reviewer amendments #2/#3 + blueprint §4, ALL required):
-- Endpoint from hermes_router.classification.aux_endpoint (url/model/
+- Endpoint from .classification.aux_endpoint (url/model/
   key_env/key_file/max_tokens/timeout_seconds) — mirrors the venice endpoint
   block shape. Key resolution: key_file first (curl config-file keeps it out
   of argv), key_env fallback (env acceptable per blueprint §2 — it is not a

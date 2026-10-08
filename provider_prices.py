@@ -140,7 +140,7 @@ def _load_catalog_cache(lane: str) -> tuple:
 
 
 def _chain_models_urls() -> Dict[str, str]:
-    """model name -> /models base url, from hermes_router.chain entries."""
+    """model name -> /models base url, from .chain entries."""
     out: Dict[str, str] = {}
     try:
         try:

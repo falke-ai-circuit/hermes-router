@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from hermes_router.lanes.registry import LaneSpec, register_lane
+from ..lanes.registry import LaneSpec, register_lane
 
 LANE_HIGHER_PRE = "higher-pre"
 LANE_HIGHER_POST = "higher-post"

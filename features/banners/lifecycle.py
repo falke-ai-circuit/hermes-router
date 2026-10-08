@@ -18,8 +18,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from hermes_router.core import telemetry as _tlm
-from hermes_router.features.banners import kinds as _kinds
+from ...core import telemetry as _tlm
+from ...features.banners import kinds as _kinds
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ _MAX_BANNER_CHARS_IMPORT = None  # imported lazily from debug_banner
 
 def _db():
     """Late-bind the banner formatter module (owns the state dicts)."""
-    import hermes_router.debug_banner as _m
+    from ... import debug_banner as _m
 
     return _m
 
@@ -239,7 +239,7 @@ class BannerLifecycle:
             import os
             import sqlite3
 
-            from hermes_router.core import canonical as _canon
+            from ...core import canonical as _canon
 
             db_path = _canon._state_db_path()
             if not db_path or not os.path.exists(db_path):
@@ -287,7 +287,7 @@ class BannerLifecycle:
                 ok = False
                 if row:
                     try:
-                        from hermes_router.core import canonical as _canon
+                        from ...core import canonical as _canon
 
                         ok = _canon.rewrite_persisted_turn(
                             sid, row, delivered)
@@ -301,7 +301,7 @@ class BannerLifecycle:
                     db._ANCHOR_BANNERS.pop(sid, None)
             if ok:
                 try:
-                    from hermes_router import render_inbox as _ri
+                    from ... import render_inbox as _ri
 
                     _ri.record_render("PARKED_CAPTURE_FALLBACK", sid,
                                       len(row), delivered)

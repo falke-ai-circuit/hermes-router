@@ -50,7 +50,7 @@ from .api import router_tools  # noqa: F401
 
 # P1: legacy-path module aliases in sys.modules so EVERY import spelling of
 # the moved modules keeps working (package attrs, `import hermes_router.X`,
-# `from hermes_router.X import Y`, monkeypatch string targets) — one shared
+# `from .X import Y`, monkeypatch string targets) — one shared
 # module object per module (conftest Trap 5: single-namespace discipline).
 # Registered here, not lazily, so even attribute access before first use
 # resolves identically. This is the back-compat shim; direct `hermes_router.core.X`

@@ -140,10 +140,7 @@ IMPULSE_TAIL = ("cannot be controlled, can be noticed and worked with; "
 # Evidence-only rule (pin test): frame text carries signal shape ONLY.
 # This regex is the enforcement probe for the pin AND the build-time filter
 # on evidence citations.
-try:
-    from .features.patterns.engine import bind_re_families as _p7_bind
-except ImportError:  # legacy top-level import spelling (direct sys.path tests)
-    from features.patterns.engine import bind_re_families as _p7_bind
+from .features.patterns.engine import bind_re_families as _p7_bind
 
 _p7_bind(globals(), "decision-families")
 

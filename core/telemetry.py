@@ -23,7 +23,7 @@ import os
 import threading
 from typing import Any, Callable, Dict, Optional, TypeVar
 
-from hermes_router.core import patchpoints
+from ..core import patchpoints
 
 T = TypeVar("T")
 
@@ -66,7 +66,7 @@ def _config() -> Dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        from hermes_router.core import config_access
+        from .core import config_access
 
         sec = config_access.router_section()
         return sec if isinstance(sec, dict) else {}

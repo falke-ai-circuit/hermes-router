@@ -19,10 +19,7 @@ from typing import Dict, List, Tuple
 # Pre-router pattern groups (contested-edge detection on the user message)
 # ---------------------------------------------------------------------------
 
-try:
-    from .features.patterns.engine import bind_re_families as _p7_bind
-except ImportError:  # legacy top-level import spelling (direct sys.path tests)
-    from features.patterns.engine import bind_re_families as _p7_bind
+from .features.patterns.engine import bind_re_families as _p7_bind
 
 _p7_bind(globals(), "classifier-groups")
 

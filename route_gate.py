@@ -67,9 +67,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from hermes_router.lanes import builtins as _lane_builtins
-from hermes_router.lanes.registry import all_lanes as _all_lanes
-from hermes_router.lanes.registry import lane as _lane_spec
+from .lanes import builtins as _lane_builtins
+from .lanes.registry import all_lanes as _all_lanes
+from .lanes.registry import lane as _lane_spec
 
 
 def _lane_builtins_valid_lanes() -> tuple:

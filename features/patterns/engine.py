@@ -98,7 +98,7 @@ def match(text: str, lanes: Optional[List[str]] = None) -> List[Dict[str, str]]:
     Phrase matching is strict containment on the raw text (the corpus
     parity surface — routing continues to run through the registry/lane
     machinery, which owns normalizers and standalone-line discipline)."""
-    from hermes_router.lanes import registry as _reg
+    from ...lanes import registry as _reg
 
     hits: List[Dict[str, str]] = []
     t = str(text or "")

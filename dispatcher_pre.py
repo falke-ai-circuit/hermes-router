@@ -490,7 +490,7 @@ def _frame_sentinel_check(content: str) -> bool:
     get added. New lanes register their marker string here."""
     # P2: markers sourced from the lane registry (lanes/builtins.py);
     # the six strings are byte-identical to the pre-registry table.
-    from hermes_router.lanes.registry import all_lanes as _all_lanes
+    from .lanes.registry import all_lanes as _all_lanes
 
     return any(marker in content
                for spec in _all_lanes()

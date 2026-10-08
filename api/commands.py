@@ -510,7 +510,7 @@ def _cmd_cap(args: List[str]) -> str:
 def _lane_map_from_registry() -> dict:
     """P2: /router lane switches from the lane registry — the merged dict is
     byte-identical to the pre-registry literal."""
-    from hermes_router.lanes.registry import all_lanes as _all_lanes
+    from ..lanes.registry import all_lanes as _all_lanes
 
     merged: dict = {}
     for spec in _all_lanes():
@@ -519,7 +519,7 @@ def _lane_map_from_registry() -> dict:
     return merged
 
 
-from hermes_router.lanes import builtins as _lane_builtins  # noqa: F401
+from ..lanes import builtins as _lane_builtins  # noqa: F401
 # P3a-repair: builtins must be imported BEFORE the _LANE_MAP computation —
 # registration happens at builtins import time; without this the hub's
 # import order (api.commands at __init__:45, route_gate at :182) baked an

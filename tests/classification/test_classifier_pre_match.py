@@ -7,10 +7,12 @@ import os
 import sys
 
 PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, PLUGIN_DIR)
+PARENT_DIR = os.path.dirname(PLUGIN_DIR)
+for _p in (PARENT_DIR, PLUGIN_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-from classifier import scan_pre
+from hermes_router.classifier import scan_pre
 
 ALL_PRE = [
     "csam_underage",

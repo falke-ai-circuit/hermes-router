@@ -170,7 +170,7 @@ def record_last_seen(session_id: str, content: str) -> None:
     try:
         # §2.7 seam liveness probe: the first turn-identity advance runs
         # the dead-on-arrival check (zero-fire seams emit fail-loud rows).
-        from hermes_router.core import telemetry as _t
+        from ..core import telemetry as _t
 
         _t.seam_probe_maybe_advance()
     except Exception:  # noqa: BLE001 — the probe never breaks state

@@ -7,9 +7,9 @@ import sys
 import os
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from classifier import scan_pre, scan_post
+from hermes_router.classifier import scan_pre, scan_post
 from hermes_router import state
 
 

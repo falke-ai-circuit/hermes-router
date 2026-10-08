@@ -26,7 +26,7 @@ def _plugin():
 
 def _lane_default_pre_patterns():
     """P2: shadow lane's default pre_patterns, from the lane registry."""
-    from hermes_router.lanes import builtins as _lb
+    from .lanes import builtins as _lb
 
     return _lb.PRE_PATTERNS_DEFAULT
 
@@ -320,7 +320,7 @@ def _log_max_bytes() -> int:
 def _log_route(event: str, **fields: Any) -> None:
     """P1: implementation MOVED to core.telemetry; delegate kept for
     back-compat (the hub attribute binds core.telemetry._impl directly)."""
-    from hermes_router.core import telemetry as _telemetry
+    from .core import telemetry as _telemetry
 
     return _telemetry.log_route(event, **fields)
 
