@@ -56,7 +56,10 @@ def test_id_choice_still_renders():
 def test_unmapped_choice_counter_bumps(monkeypatch):
     """The clamp records the invalid fork (invalid_fork counter)."""
     bumped = []
-    monkeypatch.setattr(D, "bump_counter",
+    # R23: render_advisory moved to render_payload — patch the counter at
+    # its new home (decision.bump_counter re-export is a different binding).
+    from hermes_router import render_payload as _rp
+    monkeypatch.setattr(_rp, "bump_counter",
                         lambda name: bumped.append(name))
     D.render_advisory({"choice": "instead-of-criteria gating. Fix those",
                        "confidence": 0.91, "alternatives": []}, _env2())
