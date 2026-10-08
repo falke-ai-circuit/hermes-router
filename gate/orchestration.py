@@ -10,13 +10,44 @@ __init__ module globals, because _hub() resolves the same attribute.
 """
 from __future__ import annotations
 
+import importlib
 import sys
 from typing import Any, Dict, List, Optional
 
 
-def _hub():
-    """Late-bound package hub (call time — no import cycle)."""
-    return sys.modules["hermes_router"]
+def _hub() -> Any:
+    """Late-bound package hub (call time — no import cycle).
+
+    Resolves the hub module under BOTH import roots:
+      - test/dev root:     ``hermes_router`` (tests/conftest.py)
+      - gateway root:      ``hermes_plugins.<slug>`` (hermes_cli/plugins.py
+        ``_load_dir_module`` registers the plugin as a namespace child, so a
+        hardcoded ``sys.modules['hermes_router']`` raised KeyError on every
+        LIVE turn — swallowed by the gateway's fail-open, leaving all turns
+        un-routed/bannerless while the suite stayed green).
+
+    Walks this module's own dotted name upward and returns the first loaded
+    ancestor that carries the hub marker (``on_llm_request``). Falls back to
+    an import of the resolved plugin-root prefix. Returns None (never raises)
+    when nothing resolvable is loaded — callers degrade to pass-through.
+    """
+    parts = __name__.split(".")
+    for n in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:n])
+        mod = sys.modules.get(prefix)
+        if mod is not None and hasattr(mod, "on_llm_request"):
+            return mod
+    # Not yet in sys.modules under any prefix: try importing the plugin root
+    # (the package this module lives in minus its trailing subpackage path).
+    for n in range(len(parts) - 1, 0, -1):
+        prefix = ".".join(parts[:n])
+        try:
+            mod = importlib.import_module(prefix)
+        except Exception:  # noqa: BLE001 — unresolvable prefix, try next
+            continue
+        if hasattr(mod, "on_llm_request"):
+            return mod
+    return None
 
 
 
@@ -271,6 +302,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     """Rewrite the last user message to a substance frame built from Venice's
     rendered output. Return {'request': modified_request} or {} to pass through.
     """
+    if _hub() is None:  # hub unresolvable (no package context) — fail-open
+        return {}
     _hs_rule_injected = _hub()._hs_inject_pass(
         request, session_id=_hub()._session_id_from_context(**context))  # rider 22
     try:
@@ -780,6 +813,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
     reversal — no code-side filtering; substrate boundaries pass through).
     Loop guard retained."""
     try:
+        if _hub() is None:  # hub unresolvable (no package context) — pass through
+            return None
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("post_classify", True)):
             return None
         # R20-D3 (rider 20): the host plugin runner kills this callback at
