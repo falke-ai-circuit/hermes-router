@@ -132,7 +132,10 @@ def test_consumer_aliases_match_registry():
     assert "csam_underage" not in src  # literal no longer in the consumer
     # sentinel function body carries NO marker literals anymore (docstring
     # history text is allowed to keep the phrase reference)
-    src_pre = inspect.getsource(dispatcher_pre)
+    # R23: dispatcher_pre implementation moved to passes/ — inspect the REAL
+    # module (the root path is a re-export shim whose own source is 20 lines).
+    from hermes_router.passes import dispatcher_pre as _dispatcher_pre_impl
+    src_pre = inspect.getsource(_dispatcher_pre_impl)
     fn = re.search(r"def \w+sentinel[\w_]*\(.*?(?=\ndef |\Z)", src_pre, re.S)
     body = re.sub(r"[^\n]*#[^\n]*", "", fn.group(0)) if fn else src_pre
     body = re.sub(r'"""(?:[^"]|"(?!""))*"""', "", body)  # strip docstrings

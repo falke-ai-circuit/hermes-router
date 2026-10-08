@@ -7,6 +7,9 @@ substitutes renders, or consults — and always fails open.
 
 ## Layer diagram (L0 → L4, one-way, enforced)
 
+Generated on `1cbb739` (R23 leg 1 truth pass; hand-maintained until the
+gen script lands). Drift guard: `tests/test_architecture_doc_contract.py`.
+
 ```
 L0  core/          stdlib only (config_access touches hermes_cli.config)
 L1  features/      imports L0 only
@@ -44,7 +47,7 @@ L0 and every pass imports it directly.
 | | `complexity.py`, `flinch_reason.py`, `refusal_doctrine.py`, `risk.py`, `reflex.py`, `bypass_watch.py`, `suggestions.py` | verdict / doctrine surfaces |
 | | `persona_card.py`, `method_card.py`, `render_inbox.py`, `render_payload.py`, `provenance_footer.py`, `provider_prices.py` | persona, render, provenance, pricing |
 | | `trigger_cascade.py`, `completion_audit.py` (feature legs) | cascade + audit legs |
-| L2 passes/ | `dispatcher_pre.py` / `dispatcher_post.py` | PRE / POST middleware bodies |
+| L2 passes/ | `dispatcher_pre.py` / `dispatcher_post.py` / `dispatcher_knobs.py` | PRE / POST middleware bodies + knob/config readers (R23; root `dispatcher_*.py` are re-export shims until importers migrate) |
 | L3 gate/ | `route_gate.py` | lane routing via registry reads |
 | | `router_core.py` | turn orchestration core |
 | | `orchestration.py` | the three on_* orchestrator bodies |
