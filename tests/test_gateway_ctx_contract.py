@@ -95,17 +95,14 @@ def gateway_rooted():
                 sys.modules.pop(name, None)
 
 
-def _quiesce(hub):
-    """Disable routing so the probe is deterministic and side-effect-free."""
-    orch = hub.gate.orchestration
-    hub_mod = orch._hub()
-    assert hub_mod is not None
-    hub_mod._dispatcher_knobs._enabled = lambda: False
-    return orch
+def _orch(hub=None):
+    """The gateway-rooted orchestration module (importlib, not attr access —
+    the hub's __getattr__ exports lifted names, not subpackages)."""
+    return importlib.import_module(_ROOT + ".gate.orchestration")
 
 
 def test_hub_resolves_under_gateway_root(gateway_rooted):
-    orch = gateway_rooted.gate.orchestration
+    orch = _orch(gateway_rooted)
     hub_mod = orch._hub()
     assert hub_mod is not None
     assert hasattr(hub_mod, "on_llm_request")
@@ -120,7 +117,10 @@ def test_hub_resolves_under_legacy_test_root():
 
 
 def test_on_llm_request_gateway_ctx_no_keyerror(gateway_rooted, monkeypatch):
-    orch = _quiesce(gateway_rooted)
+    orch = _orch(gateway_rooted)
+    hub_mod = orch._hub()
+    assert hub_mod is not None
+    hub_mod._dispatcher_knobs._enabled = lambda: False
     request_body = {"model": "z-ai/glm-5.3-flash",
                     "messages": [{"role": "user", "content": "hello"}]}
     result = orch.on_llm_request(**_gateway_ctx(request_body))
@@ -128,7 +128,10 @@ def test_on_llm_request_gateway_ctx_no_keyerror(gateway_rooted, monkeypatch):
 
 
 def test_on_transform_llm_output_gateway_ctx_no_keyerror(gateway_rooted):
-    orch = _quiesce(gateway_rooted)
+    orch = _orch(gateway_rooted)
+    hub_mod = orch._hub()
+    assert hub_mod is not None
+    hub_mod._dispatcher_knobs._enabled = lambda: False
     result = orch.on_transform_llm_output(**_hook_ctx("ordinary benign body"))
     assert result is None or isinstance(result, str)
 
@@ -138,7 +141,7 @@ def test_no_hermes_router_key_required(gateway_rooted):
     plain root absent from sys.modules entirely."""
     saved = sys.modules.pop("hermes_router", None)
     try:
-        orch = gateway_rooted.gate.orchestration
+        orch = _orch(gateway_rooted)
         assert "hermes_router" not in sys.modules
         hub_mod = orch._hub()
         assert hub_mod is not None
