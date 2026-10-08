@@ -36,7 +36,24 @@ def test_a_no_load_config_outside_config_access():
         src = open(path, encoding="utf-8").read()
         if "from hermes_cli.config import load_config" in src:
             hits.append(_rel(path))
-    assert sorted(hits) == ["api/config_writer.py", "core/config_access.py"]
+    # R23 leg 2: api/config_writer.py routes through core/config_access.py
+    # accessors — config_access is the ONLY hermes_cli consumer left (GATE-D).
+    assert sorted(hits) == ["core/config_access.py"]
+
+
+def test_a2_no_hermes_cli_imports_outside_core_config_access():
+    """R23 leg 2 portability gate: no module outside core/config_access.py
+    may import hermes_cli in ANY form (import x / from x import y / dotted)."""
+    hits = []
+    pat = re.compile(r"^\s*(?:from|import)\s+hermes_cli(?:\.|\s|$)", re.M)
+    for path in _py_files():
+        rel = _rel(path)
+        if rel == "core/config_access.py":
+            continue
+        src = open(path, encoding="utf-8").read()
+        if pat.search(src):
+            hits.append(rel)
+    assert not hits, "hermes_cli imports outside core/config_access.py: %s" % hits
 
 
 def test_b_no_max_tokens_literals_outside_budgets():

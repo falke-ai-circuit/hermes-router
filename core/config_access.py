@@ -38,6 +38,55 @@ _SECTION_KEYS = ("hermes_router",)
 _cache: Dict[str, Any] = {"mtime": None, "path": None, "section": None}
 
 
+def config_path() -> str:
+    """Path of the ACTIVE profile config.yaml. Resolves via hermes_cli.config
+    (profile-scoped, R23 leg 2: the ONLY sanctioned hermes_cli touchpoint for
+    the writer surface — GATE-D). Falls back to the co-located profile yaml,
+    then hermes_constants/HERMES_HOME. Never raises."""
+    try:
+        from hermes_cli.config import CONFIG_PATH  # preferred: resolved path
+
+        return str(CONFIG_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from hermes_cli import config as hc
+
+        for attr in ("config_path", "_config_path", "get_config_path"):
+            val = getattr(hc, attr, None)
+            if callable(val):
+                return str(val())
+            if isinstance(val, (str, os.PathLike)):
+                return str(val)
+    except Exception:  # noqa: BLE001
+        pass
+    co = _coLocatedPath()
+    if co:
+        return co
+    try:
+        import hermes_constants
+
+        return os.path.join(str(hermes_constants.get_hermes_home()), "config.yaml")
+    except Exception:  # noqa: BLE001
+        return os.path.join(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"),
+                            "config.yaml")
+
+
+def load_full_config() -> Optional[Dict[str, Any]]:
+    """Whole-config read via hermes_cli.config.load_config (R23 leg 2 — the
+    writer surface's single sanctioned seam). Returns None ONLY when
+    hermes_cli.config is unavailable (ImportError) — any resolution error
+    propagates to the caller, matching the pre-move try/except shape.
+    Returns the dict when load_config() yields a dict, else None (caller
+    falls back to reading the resolved path directly)."""
+    try:
+        from hermes_cli.config import load_config
+    except ImportError:
+        return None
+    cfg = load_config()
+    return cfg if isinstance(cfg, dict) else None
+
+
 def _coLocatedPath() -> Optional[str]:
     """config.yaml co-located with this plugin instance, or None. Never raises."""
     try:

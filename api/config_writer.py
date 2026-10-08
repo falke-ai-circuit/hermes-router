@@ -2,7 +2,7 @@
 
 ALL plugin config edits flow through write_plugin_section():
 
-  1. read current config.yaml (hermes_cli.config.load_config)
+  1. read current config.yaml (via core/config_access load_full_config)
   2. mutate ONLY the plugin section (hermes_router canonical; legacy
      uncensored_router section migrated forward when present)
   3. write to <config>.tmp in the SAME directory
@@ -43,30 +43,11 @@ FORBIDDEN_KEYS = {"log_path", "log_routes", "log_max_bytes"}
 def _config_path() -> str:
     """Path of the ACTIVE profile config.yaml. hermes_cli.config resolves the
     profile-scoped path; fall back to HERMES_HOME/config.yaml. Never raises."""
-    try:
-        from hermes_cli.config import CONFIG_PATH  # preferred: resolved path
+    # R23 leg 2 (GATE-D): hermes_cli resolution lives ONLY in
+    # core/config_access.py — the writer goes through the sanctioned adapter.
+    from ..core import config_access
 
-        return str(CONFIG_PATH)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from hermes_cli import config as hc
-
-        for attr in ("config_path", "_config_path", "get_config_path"):
-            val = getattr(hc, attr, None)
-            if callable(val):
-                return str(val())
-            if isinstance(val, (str, os.PathLike)):
-                return str(val)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        import hermes_constants
-
-        return os.path.join(str(hermes_constants.get_hermes_home()), "config.yaml")
-    except Exception:  # noqa: BLE001
-        return os.path.join(os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes"),
-                            "config.yaml")
+    return config_access.config_path()
 
 
 def _try_yaml_load(text: str) -> Optional[Dict[str, Any]]:
@@ -115,20 +96,19 @@ def read_plugin_section() -> Dict[str, Any]:
     tests, honors Hermes profile scoping), falls back to reading the resolved
     config path directly. Never raises."""
     try:
-        try:
-            from hermes_cli.config import load_config
+        # R23 leg 2 (GATE-D): hermes_cli.config.load_config resolved through
+        # the core/config_access.py adapter (None only on ImportError).
+        from ..core import config_access
 
-            cfg = load_config()
-            if isinstance(cfg, dict):
-                section = cfg.get(CANONICAL_SECTION)
-                if isinstance(section, dict) and section:
-                    return section
-                section = cfg.get(LEGACY_SECTION)
-                if isinstance(section, dict):
-                    return section
-                return {}
-        except ImportError:
-            pass
+        cfg = config_access.load_full_config()
+        if cfg is not None:
+            section = cfg.get(CANONICAL_SECTION)
+            if isinstance(section, dict) and section:
+                return section
+            section = cfg.get(LEGACY_SECTION)
+            if isinstance(section, dict):
+                return section
+            return {}
         data = _read_config(_config_path())
         section = data.get(CANONICAL_SECTION)
         if isinstance(section, dict) and section:
