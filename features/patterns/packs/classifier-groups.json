@@ -122,7 +122,7 @@
    "name": "_REFUSAL_PHRASES",
    "kind": "strlist",
    "regexes": [
-    "\\b(?:i can't|i cannot|i won't|i will not|i'm not going to|i am not going to|i'm unable|i am unable)\\b.{0,30}\\b(?:write|generat\\w*|help|produce|creat\\w*|provide|support|assist|comply|do|that|this)\\b",
+    "\\b(?:i can't|i cannot|i won't|i will not|i'm not going to|i am not going to|i'm unable|i am unable)\\b.{0,30}\\b(?:write|generat\\w*|help|produce|creat\\w*|provide|support|assist|comply|do|that|this|author|depict|render|craft\\w*|compos\\w*|illustrat\\w*|draw|make|describ\\w*|portray|writ\\w*|fulfil\\w*|fulfill\\w*)\\b",
     "\\b(?:i can't|i cannot|i won't|i will not|i'm not going to|i am not going to|i'm unable|i am unable)\\b\\s+(?:help|assist)\\b.{0,40}\\b(?:with|you)\\b",
     "\\bthere(?:'s| is| are)\\s+no\\s+version\\s+of\\s+this\\b.{0,80}\\b(?:i\\s+w(?:ill|on't|rite)|write|produc\\w*|help|engag\\w*|deliver\\w*)\\b",
     "\\bno\\s+version\\s+of\\s+this\\b.{0,80}\\b(?:i\\s+w(?:ill|on't)|write|produc\\w*|engag\\w*)\\b",
@@ -150,7 +150,11 @@
     "\\bi hold the line\\b",
     "\\bi'?m holding the line\\b",
     "\\bthe line holds(?: here| there)?\\b",
-    "\\bnot my line to (?:move|change|cross)\\b"
+    "\\bnot my line to (?:move|change|cross)\\b",
+    "\\b(?:attributed to|about|involving|of)\\s+(?:a\\s+)?real\\s+(?:person|people|individual\\w*|named)\\b.{0,120}\\b(?:refus\\w*|won'?t|can'?t|cannot|not\\s+(?:write|author|render|creat\\w*|produc\\w*))\\b",
+    "\\b(?:won'?t|can'?t|cannot|refus\\w*|declin\\w*)\\b.{0,80}\\b(?:attributed to|about|involving)\\s+(?:a\\s+)?real\\s+(?:person|people|individual\\w*)\\b",
+    "(?s)^No\\.?\\b.{0,400}?\\bnot a flinch\\b",
+    "(?s)^No\\.?\\b.{0,400}?\\b(?:one thing,? not a|holding,? because it'?s one thing)\\b"
    ],
    "flags": [
     "IGNORECASE"
