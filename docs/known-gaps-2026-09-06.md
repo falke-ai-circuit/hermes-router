@@ -1,5 +1,15 @@
 # Known Gap — method_card fallback unimplemented + detection coverage (2026-09-06)
 
+> **SUPERSEDED 2026-10-08 (R23 leg 4 truth pass):** this snapshot predates the
+> v5 restructure. R20–R22 shipped (impulse-banner delivery standardization,
+> all-render-denial refusal detection incl. real-person holds + shadow
+> line-hold essays, two-tier structural+semantic denial gate) and v5.0.x is
+> live fleet-wide — the Gap-2 refusal-coverage gaps below were closed by
+> R21/R22's structural gate + semantic judge; Gap 1 (method_card generic
+> fallback) remains the only open item, tracked against v5.0.x. Read the
+> current CHANGELOG.md for the authoritative state.
+
+
 Filed by EVOL during shadow deep-run (evol-run-shadow-audit-20260906). Live A/B evidence, :8643.
 
 ## Gap 1: method_card.py generic fallback missing

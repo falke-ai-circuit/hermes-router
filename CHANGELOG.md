@@ -1,3 +1,39 @@
+## 5.0.1 — 2026-10-08 (R20–R22 + R23 — v5 architecture debt close-out: passes/ layer, portability gate, size debt, docs truth pass)
+
+R20–R22 shipped on the v5.0.x line without CHANGELOG entries; recorded here
+together with the R23 debt close-out (architect audit session
+20261006_190848_ad8206a2; her S-4 "slots stale" finding REFUTED — all 11
+slots verified v5.0.1 + R22 present, runtime-proven; no slot re-sync).
+
+- R20 (9a824a5): decision-lane delivered text standardized on the
+  `impulse (decision)` banner shape across pre/post/on-demand edges.
+- R21 (6c56209): refusal detection catches ALL render denials — real-person
+  holds + shadow line-hold essays.
+- R22 (1cbb739): two-tier denial detection — structural gate (free,
+  high-recall) + typed semantic judge (fail-open to Tier 1).
+- R23 leg 1 (f98f823): `passes/` layer — dispatcher_pre/post/knobs
+  implementations moved verbatim to passes/ (L2); root paths are
+  ModuleType-subclass re-export shims (reads AND writes delegate) until
+  importers migrate; architecture.md truthed (L2 row + generated stamp);
+  new drift guard tests/test_architecture_doc_contract.py; test_p2 source
+  probe re-pointed at the real passes module.
+- R23 leg 2 (d7d83c6): portability gate — api/config_writer.py routes
+  hermes_cli through two new accessors in core/config_access.py
+  (config_path, load_full_config); GATE-D now holds (config_access is the
+  only hermes_cli consumer); grep guard test_a2 added to the P4 battery.
+- R23 leg 3: size debt — hub __init__.py 354 -> 118 LOC (registration +
+  legacy-alias wiring lifted verbatim to gate/registration.py; hub keeps
+  delegating stubs, patch surface unchanged); decision.py 3822 -> 3581
+  (self-contained banner/advisory render family moved verbatim to
+  render_payload.py with re-exports; import-order safe both directions).
+- R23 leg 4 (this entry): docs truth pass — known-gaps-2026-09-06.md
+  superseded header (R20-R22 shipped, v5.0.x live; Gap 2 closed by R21/R22,
+  Gap 1 remains tracked), /opt/data/tmp/router_restructure_proposal.md
+  marked SUPERSEDED-IMPLEMENTED.
+
+Out of scope (explicitly deferred): isolate() migration ratchet, mkdocstrings
+API ref, slot re-sync. Suite at close: see the R23 leg-3/4 commit gate count.
+
 ## 4.23.0 — 2026-10-06 (FIX-FIRST rider 22 — higher-self rule delivery-boundary seam: stamped delivery + once-per-context dedupe)
 
 Defect: the higher-self integration rule was appended as a bare system
