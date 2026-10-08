@@ -398,7 +398,8 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             text = _strip_platform_metadata(text)
             if not text:
                 continue
-            if _dec.PROVENANCE_TAG in text:
+            if (_dec.PROVENANCE_TAG in text
+                    or _dec.DELIVERED_MARK in text):
                 continue  # our own advisory echo — never re-scan
             # R13-1 (rider 13): exfiltration-style prompt-injection clause —
             # flag BEFORE the gate ladder, excise the clause from the fork
@@ -1002,9 +1003,9 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # within the cap and cut after it; only fall back to the raw
         # cap when no boundary exists.
         # F6 (rider 6): '1 verdict' — singular grammar when n == 1.
-        parts = ["%s · router · impulse (decision) | %d verdict%s "
+        parts = ["· router · impulse (decision) | %d verdict%s "
                  "| tok %d/%d | $%.6f | provider=%s | initiator=agent"
-                 % (_dec.PROVENANCE_TAG, n,
+                 % (n,
                     "" if n == 1 else "s", ti, to, total, prov
                     or "(unknown)")]
         # R8-1 (rider 8): reconciliation contract on the midturn variant —

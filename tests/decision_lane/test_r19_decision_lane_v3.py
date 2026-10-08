@@ -321,7 +321,8 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
                                 LOGGED.append((e, dict(f))))
     assert _wait_parked()
     parked = debug_banner.consume_parked_banner(SID)
-    assert decision.PROVENANCE_TAG in parked
+    assert decision.PROVENANCE_TAG not in parked  # R20
+    assert decision.DELIVERED_MARK in parked
     # R19.15 / v1.1: the impulse frame renders the human-readable LABEL
     assert "redis pulls" in parked
     # §7 banner: one provenance line, decision lane, initiator=user

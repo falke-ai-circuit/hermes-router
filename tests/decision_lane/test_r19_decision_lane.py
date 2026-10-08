@@ -161,7 +161,7 @@ def test_async_advisory_parked_banner(_reset, monkeypatch, _frame_db):
     while time.time() < deadline and not debug_banner._ANCHOR_BANNERS.get(SID):
         time.sleep(0.02)
     banner = debug_banner.consume_parked_banner(SID)
-    assert decision.PROVENANCE_TAG in banner
+    assert decision.PROVENANCE_TAG not in banner  # R20: advisory drops the prefix
     assert "apply_precedent" in banner
     assert "1@" in banner                 # precedent id + timestamp ONLY
     assert "buffer sizing" not in banner  # snippet text never re-emitted
@@ -185,7 +185,7 @@ def test_single_banner_latest_wins(_reset, monkeypatch, _frame_db):
                 break
             time.sleep(0.02)
     out = debug_banner.consume_parked_banner(SID)
-    assert out.count("[decision-lane advisory]") == 1  # one banner per delivery
+    assert out.count("[decision-lane advisory]") == 0  # one banner per delivery, no provenance prefix (R20)
     assert debug_banner.consume_parked_banner(SID) == ""
 
 
@@ -376,7 +376,7 @@ def test_provenance_filter_excludes_own_advisories(_reset, monkeypatch, tmp_path
     conn.execute("INSERT INTO messages VALUES (?,?,?)",
                  ("plain precedent about buffers", time.time() - 50, SID))
     conn.execute("INSERT INTO messages VALUES (?,?,?)",
-                 (decision.PROVENANCE_TAG + " apply_precedent conf 0.9",
+                 (decision.DELIVERED_MARK + " apply_precedent conf 0.9",
                   time.time() - 40, SID))
     conn.execute(
         "INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages")

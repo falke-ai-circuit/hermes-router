@@ -291,7 +291,7 @@ def test_post_enabled_writes_record_and_parks_advisory(_reset, monkeypatch):
     while time.time() < deadline and not debug_banner._ANCHOR_BANNERS.get(SID):
         time.sleep(0.02)
     banner = debug_banner.consume_parked_banner(SID)
-    assert decision.PROVENANCE_TAG in banner  # parked at next delivery boundary
+    assert decision.PROVENANCE_TAG not in banner  # R20: delivered advisory drops the prefix
 
 
 def test_post_records_even_without_frame(_reset, monkeypatch):

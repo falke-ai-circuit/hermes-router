@@ -93,8 +93,7 @@ def test_close_turn_single_verdict_banner_shape():
                                  [{"choice": "opt-2"}])
     # R19.22: the turn-close reflex segment is the rollup
     # (D3-DELIVERY rider 2: provenance tag prefixed, byte-exact)
-    assert banner.startswith("[decision-lane advisory] · router · "
-                             "impulse (decision) |")
+    assert banner.startswith("· router · impulse (decision) |")
     assert "1 verdict |" in banner  # F6 (rider 6): singular grammar
     assert "initiator=agent" in banner
     assert "Top verdicts: opt-2" in banner

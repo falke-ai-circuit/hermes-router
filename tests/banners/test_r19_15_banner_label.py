@@ -79,4 +79,4 @@ def test_midturn_advisory_carries_label():
         {"choice": "opt-2", "confidence": 0.7, "alternatives": ["opt-1"]},
         _env(), {"model": "typesafe/jev-router"})
     assert "Rewrite the parser pulls" in adv
-    assert D.PROVENANCE_TAG in adv
+    assert D.PROVENANCE_TAG not in adv  # R20: advisory body carries no provenance prefix

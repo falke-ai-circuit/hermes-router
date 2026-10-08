@@ -179,15 +179,16 @@ def test_park_round_trip_benign_edge(r4_reset, monkeypatch):
                                           session_id=SID, model="m",
                                           platform="api_server")
     assert out1 and "t1 plain answer" in out1
-    assert TAG in out1
+    assert TAG not in out1  # R20
+    assert 'impulse (decision)' in out1
     # round-trip: the DELIVERED text is captured on the parked path
     caps = [c for c in _captured(r4_reset) if c.get("stage") == "BENIGN_BANNER"]
-    assert caps and TAG in caps[-1]["render"], caps
+    assert caps and "impulse (decision)" in caps[-1]["render"], caps
     assert [f for e, f in LOGGED
             if f.get("event_detail") == "banner_render_captured"
             and f.get("edge") == "benign"]
     rows = _persisted(r4_reset)
-    assert rows and rows[0][0] == "assistant" and TAG in rows[0][1]
+    assert rows and rows[0][0] == "assistant" and "impulse (decision)" in rows[0][1]
 
 
 def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
@@ -206,10 +207,11 @@ def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
                                          session_id=SID, model="m",
                                          platform="api_server")
     assert out, "parked verdict must deliver even on an empty body"
-    assert TAG in out
+    assert TAG not in out  # R20
+    assert 'impulse (decision)' in out
     caps = [c for c in _captured(r4_reset)
             if c.get("stage") == "EMPTY_BODY_BANNER"]
-    assert caps and TAG in caps[-1]["render"]
+    assert caps and "impulse (decision)" in caps[-1]["render"]
     assert [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"
             and f.get("edge") == "empty_body"]

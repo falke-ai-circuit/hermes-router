@@ -43,7 +43,7 @@ def test_label_choice_still_renders():
     """Label hits map — a real option label still renders."""
     verdict = {"choice": "Approach 1", "confidence": 0.9, "alternatives": []}
     out = D.render_advisory(verdict, _env2())
-    assert "Approach 1" in out and D.PROVENANCE_TAG in out
+    assert "Approach 1" in out and D.PROVENANCE_TAG not in out  # R20
 
 
 def test_id_choice_still_renders():
@@ -71,7 +71,7 @@ def test_empty_options_envelope_unclamped():
                "alternatives": []}
     out = D.render_advisory(verdict, {"fork_class": "deploy", "options": []})
     assert out == ""
-    assert D.PROVENANCE_TAG not in out  # tag never rides an empty frame
+    assert D.PROVENANCE_TAG not in out and D.DELIVERED_MARK not in out  # never rides an empty frame
 
 
 # --- 2: POV vantage lines ----------------------------------------------------------

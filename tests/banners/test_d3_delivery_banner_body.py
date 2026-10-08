@@ -122,7 +122,7 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
                                           session_id=SID, model="m",
                                           platform="api_server")
     assert out1 and "t1 plain answer" in out1
-    assert TAG in out1, out1                      # the repro's body grep
+    assert TAG not in out1                        # R20: delivered bodies drop the provenance prefix
     assert "impulse (decision)" in out1           # rollup provenance line
     # F2 (rider 6): the tail is the verdict-of-record shape — ledger choice
     # + confidence ONLY; the old label echoed raw option text truncated
@@ -162,21 +162,22 @@ def test_verdict_after_turn_close_delivers_next_turn(r2_reset, monkeypatch):
                                           session_id=SID, model="m",
                                           platform="api_server")
     assert out2 and "follow-up turn" in out2
-    assert TAG in out2, out2
+    assert TAG not in out2                        # R20: standardized delivered shape
     assert "impulse (decision)" in out2
 
 
 def test_tag_byte_exact_and_single(r2_reset):
-    """The tag is byte-exact PROVENANCE_TAG and appears exactly once in the
-    rollup line (forged-banner battery matches the same bytes)."""
+    """R20: the rollup line carries the STANDARDIZED lane shape — no
+    provenance prefix (frontier/uncensored banner parity). Forged-frame
+    defense stays on PROVENANCE_TAG for INBOUND content scanning only.
+    Echo defense on delivered bodies keys on DELIVERED_MARK."""
     line = dmt._aggregate_line(
         1, 10, 5, 0.0,
         [{"choice": "opt-1", "confidence": 0.78, "label": "ship the fix now",
           "tokens_in": 10, "tokens_out": 5, "cost": 0.0}])
-    assert line.startswith(TAG + " · router · impulse (decision) |")
-    assert line.count(TAG) == 1
-    assert line == (decision.PROVENANCE_TAG
-                    + line[len(TAG):])  # byte-identical composition
+    assert line.startswith("· router · impulse (decision) |")
+    assert TAG not in line
+    assert decision.DELIVERED_MARK in line
 
 
 def test_close_turn_drain_and_empty_unchanged(r2_reset):
@@ -194,5 +195,5 @@ def test_request_side_frame_flush_unchanged(r2_reset, monkeypatch):
                                         session_id=SID, platform="api_server")
     _wait_consumed()
     pending = dmt.flush(SID)
-    assert pending and TAG in pending[0]
+    assert pending and TAG not in pending[0] and 'the fork surfaces as:' in pending[0]  # R20
     assert dmt.flush(SID) == []  # one-shot

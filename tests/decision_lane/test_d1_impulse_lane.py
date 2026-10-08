@@ -86,7 +86,7 @@ def test_impulse_frame_verbatim_shape():
     env = _build_env()
     verdict = {"choice": "opt-1", "confidence": 0.75, "alternatives": ["opt-2"]}
     frame = decision.render_advisory(verdict, env)
-    assert frame.startswith("[decision-lane advisory]"), frame  # byte-exact tag
+    assert not frame.startswith("[decision-lane advisory]") and frame.startswith("the fork surfaces as:"), frame  # R20
     assert "the fork surfaces as:" in frame
     assert " pulls " in frame
     top = max(env["weighting"]["weights_list"])
@@ -110,8 +110,8 @@ def test_impulse_frame_provenance_byte_exact():
     verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
     frame = decision.render_impulse_frame(verdict, env)
     tag = decision.PROVENANCE_TAG
-    assert decision.PROVENANCE_TAG == "[decision-lane advisory]"
-    assert frame.startswith(tag + " the fork surfaces as:"), frame
+    assert decision.PROVENANCE_TAG == "[decision-lane advisory]"  # inbound-scan anchor stays
+    assert frame.startswith("the fork surfaces as:"), frame  # R20: delivered drops prefix
 
 
 def test_impulse_frame_single_message_shape():
@@ -119,7 +119,7 @@ def test_impulse_frame_single_message_shape():
     verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
     frame = decision.render_impulse_frame(verdict, env)
     assert "\n" not in frame, frame  # ONE line
-    assert frame.count("[decision-lane advisory]") == 1
+    assert frame.count("[decision-lane advisory]") == 0  # R20
 
 
 def test_impulse_frame_no_permission_language():
@@ -234,7 +234,7 @@ def test_d2_slot_evidence_only_and_provenance_retained():
         env = _env_with_persona(persona)
         verdict = {"choice": "opt-1", "confidence": 0.9, "alternatives": []}
         frame = decision.render_impulse_frame(verdict, env)
-        assert frame.startswith("[decision-lane advisory]"), frame
+        assert frame.startswith("the fork surfaces as:"), frame  # R20
         assert not decision._EMOTION_WORD_RE.search(frame), frame
         assert frame.endswith(decision.IMPULSE_TAIL), frame
         assert "\n" not in frame and "the fork surfaces as:" in frame
@@ -253,8 +253,7 @@ def test_d2_no_persona_keeps_canned_register_byte_shape():
     env = _build_env()
     env.pop("agent_frame", None)
     frame = decision.render_impulse_frame(verdict, env)
-    assert frame.startswith(
-        decision.PROVENANCE_TAG + " the fork surfaces as:"), frame
+    assert frame.startswith("the fork surfaces as:"), frame  # R20: no provenance prefix in delivered shape
     env_fb = _env_with_persona(decision._IMPERSONAL_FRAME_FALLBACK)
     assert decision.render_impulse_frame(verdict, env_fb) == frame
     assert decision._impulse_persona_slot(env_fb) == ""
@@ -268,8 +267,7 @@ def test_d2_slot_filters_emotion_vocabulary_fail_open():
     assert decision._impulse_persona_slot(env) == ""
     frame = decision.render_impulse_frame(verdict, env)
     assert not decision._EMOTION_WORD_RE.search(frame), frame
-    assert frame.startswith(
-        decision.PROVENANCE_TAG + " the fork surfaces as:"), frame
+    assert frame.startswith("the fork surfaces as:"), frame  # R20
 
 
 def test_d2_slot_bounded_single_line():

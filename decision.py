@@ -110,6 +110,11 @@ DEFAULTS: Dict[str, Any] = {
 # Provenance tag: stamped on every delivered advisory envelope AND excluded
 # from build_frame retrieval (echo-loop guard, frontier #3).
 PROVENANCE_TAG = "[decision-lane advisory]"
+# R20: delivered text drops the legacy provenance prefix — delivered banners
+# standardize on the same '· router · impulse (decision)' rollup shape as the
+# frontier/uncensored lanes. DELIVERED_MARK powers the echo filter for new
+# persisted bodies; PROVENANCE_TAG stays ONLY on in-context envelopes.
+DELIVERED_MARK = "· router · impulse (decision)"
 
 REASON_BREAKER_OPEN = "breaker_open"
 REASON_CAP_EXHAUSTED = "cap_exhausted"
@@ -412,8 +417,11 @@ def _fts_precedents(db_path: str, task_text: str, cfg: Dict[str, Any],
             if len(out) >= 8 or used >= total_cap:
                 break
             body = str(content or "")
-            if PROVENANCE_TAG in body:
+            if (PROVENANCE_TAG in body
+                    or DELIVERED_MARK in body):
                 continue  # advisory-provenance filter: never retrieve our own advisories
+                # (R20: delivered bodies are standardized '· router · impulse
+                # (decision)' rollups — DELIVERED_MARK; legacy rows keep TAG)
             snippet = clean_snippet(body, snippet_cap)
             if not snippet:
                 continue
@@ -760,9 +768,9 @@ def render_envelope(verdict: Dict[str, Any], frame: Dict[str, Any]) -> str:
             "%s@%s" % (c, ids.get(c, "?")) for c in verdict.get("precedents", [])
         ) or "(none)"
         return (
-            "%s non-binding precedent advisory: decision=%s confidence=%.2f "
+            "non-binding precedent advisory: decision=%s confidence=%.2f "
             "precedents=%s — low confidence means escalate to frontier consult."
-            % (PROVENANCE_TAG, verdict.get("decision"),
+            % (verdict.get("decision"),
                float(verdict.get("confidence") or 0.0), cites)
         )
     except Exception:  # noqa: BLE001
@@ -3177,12 +3185,12 @@ def render_impulse_frame(verdict: Dict[str, Any],
         # fallback frame / filtered out) keeps the canned register bytes.
         slot = _impulse_persona_slot(envelope)
         if slot:
-            text = ("%s the fork surfaces as: %s | band=%s: %s — %s — %s"
-                    % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
+            text = ("the fork surfaces as: %s | band=%s: %s — %s — %s"
+                    % (" | ".join(parts), band, band_line,
                        slot, IMPULSE_TAIL))
         else:
-            text = ("%s the fork surfaces as: %s | band=%s: %s — %s"
-                    % (PROVENANCE_TAG, " | ".join(parts), band, band_line,
+            text = ("the fork surfaces as: %s | band=%s: %s — %s"
+                    % (" | ".join(parts), band, band_line,
                        IMPULSE_TAIL))
         # single-message shape: ONE line, whitespace-collapsed
         return re.sub(r"\s+", " ", text).strip()

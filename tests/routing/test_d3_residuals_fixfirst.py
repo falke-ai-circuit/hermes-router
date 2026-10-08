@@ -145,7 +145,8 @@ def test_midrun_sweep_wipe_still_delivers_next_turn(rr_reset, monkeypatch):
                                          session_id=SID, model="m",
                                          platform="api_server")
     assert out and "follow-up body" in out
-    assert TAG in out, out
+    assert TAG not in out, out  # R20
+    assert 'impulse (decision)' in out
     assert "impulse (decision)" in out
     crec = [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"]
