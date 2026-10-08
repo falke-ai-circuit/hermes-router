@@ -79,20 +79,34 @@ def _hook_ctx(response_text):
     )
 
 
+def _purge_ns():
+    """Drop every hermes_plugins* module from sys.modules.
+
+    Earlier tests (test_loader_path.py, test_rider19_fixes.py) load the
+    plugin under the gateway root and LEAVE partial/stale entries behind —
+    a stale root whose subpackages were never imported under that root makes
+    the loader below reuse poisoned state. Purging before AND after makes
+    every test here order-independent (pollution-proof both directions).
+    """
+    for name in list(sys.modules):
+        if name == _NS_PARENT or name.startswith(_NS_PARENT + "."):
+            sys.modules.pop(name, None)
+
+
 @pytest.fixture()
 def gateway_rooted():
-    """Load the plugin under the gateway root; clean sys.modules after.
+    """Load the plugin under the gateway root on CLEAN namespace state;
+    purge again on teardown so later tests start clean too.
 
     Mirrors the live loader: everything (parent ns pkg, plugin root, child
     modules) STAYS in sys.modules during the test, exactly as the gateway
-    leaves it; only removed on teardown.
+    leaves it.
     """
+    _purge_ns()
     try:
         yield _load_gateway_rooted()
     finally:
-        for name in list(sys.modules):
-            if name.startswith(_NS_PARENT):
-                sys.modules.pop(name, None)
+        _purge_ns()
 
 
 def _orch(hub=None):
