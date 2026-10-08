@@ -96,6 +96,10 @@ SCHEMA: Tuple[Key, ...] = (
     _k("risk", dict, {}),
     _k("frontier", dict, {}),
     _k("uncensored_router", dict, {}, nullable=True),
+    # --- R22 two-tier detection (features/detection/semantic_judge) ---
+    _k("detection", dict, {}),
+    _k("detection.enabled", bool, True),
+    _k("detection.model", str, "auto"),
     # --- budgets (proposal §2.4 — config overlay for core/budgets.py) ---
     _k("budgets", dict, {}),
     _k("budgets.consult.max_tokens", int, 512),

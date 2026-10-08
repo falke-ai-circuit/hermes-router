@@ -981,6 +981,27 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # downstream pipeline at the "matches" point via matches=[semantic_*].
             semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
         if not matches:
+            # R22 (spec r22_two_tier_detection_spec.md): two-tier denial
+            # detection — Tier 1 structural gate (free, high-recall) then
+            # Tier 2 semantic judge on candidates only ('auto' model
+            # resolution, 8s timeout, fail-open to Tier 1). Route reuses the
+            # EXISTING model_flinch render path below by seeding matches —
+            # no new lane. Sentinel/provenance guards run BEFORE detection
+            # (inside post_detection_scan).
+            try:
+                from ..features.detection import semantic_judge as _r22sj
+
+                _r22_ask = context.get("user_message") if context else None
+                if not (isinstance(_r22_ask, str) and _r22_ask.strip()):
+                    _r22_ask = _hub().state.get_last_seen(session_id) or ""
+                if _r22sj.post_detection_scan(
+                        session_id, response_text, user_ask=str(_r22_ask or ""),
+                        model=model, context=context,
+                        log_route=_hub()._log_route):
+                    matches = [_r22sj.DETECTION_PATTERN_GROUP]
+            except Exception:  # noqa: BLE001 — detection never breaks delivery
+                _hub().logger.debug("r22 detection scan error", exc_info=True)
+        if not matches:
             # v3.6.1 completion-audit arm — unified audit_gate (Goran
             # 2026-09-08 ruling + 09-10 battery): the ONLY automatic frontier
             # touchpoint at completion. Previously nested under stage-2's

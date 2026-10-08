@@ -47,8 +47,27 @@ def _package_py_files():
 
 def test_accessor_has_no_legacy_section_string():
     with open(ACCESSOR, "r", encoding="utf-8") as fh:
-        src = fh.read()
-    assert LEGACY not in src, "config_access.py must not reference the legacy section"
+        lines = fh.read().splitlines()
+    # R22 recorded deviation (spec r22_two_tier_detection_spec.md): the
+    # detection block is nested in BOTH section names, so the accessor now
+    # owns ONE legacy read path (legacy_router_section/legacy_sub_block) —
+    # consolidation, not a fallback resurrection. Every legacy mention must
+    # live inside that reader block (def legacy_router_section .. def
+    # agent_model); _merge_legacy stays banned (test below).
+    start = end = None
+    for i, line in enumerate(lines):
+        if line.startswith("def legacy_router_section"):
+            start = i
+        if start is not None and line.startswith("def agent_model"):
+            end = i
+            break
+    assert start is not None and end is not None, \
+        "R22 legacy reader block missing from the accessor"
+    offenders = [str(i + 1) for i, line in enumerate(lines)
+                 if LEGACY in line and not (start <= i < end)]
+    assert not offenders, (
+        "config_access.py legacy mention outside the R22 legacy reader "
+        "(lines %s)" % ", ".join(offenders))
 
 
 def test_accessor_has_no_merge_fallback():

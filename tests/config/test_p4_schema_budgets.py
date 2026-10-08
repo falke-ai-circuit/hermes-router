@@ -81,6 +81,10 @@ def test_d_no_legacy_section_reads_outside_writer():
         rel = _rel(path)
         if rel.startswith("api/"):
             continue  # writer migration surface (documented deviation)
+        if rel == "core/config_access.py":
+            continue  # R22: legacy read path owned by the SINGLE accessor
+                      # (spec r22: detection block nested in BOTH section
+                      # names; consolidation, not a new rogue reader)
         for i, line in enumerate(open(path, encoding="utf-8"), 1):
             if pat.search(line):
                 hits.append("%s:%d" % (rel, i))

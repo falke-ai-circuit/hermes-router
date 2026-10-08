@@ -121,6 +121,44 @@ def sub_block(name: str) -> Dict[str, Any]:
         return {}
 
 
+def legacy_router_section() -> Dict[str, Any]:
+    """R22 (spec r22_two_tier_detection_spec.md): the LEGACY
+    uncensored_router section read path — some configs still carry the
+    detection block nested under the legacy section name. Owned HERE (single
+    accessor doctrine; test_a/test_d carve-out). {} on miss. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        if isinstance(cfg, dict):
+            sec = cfg.get("uncensored_router")
+            if isinstance(sec, dict) and sec:
+                return dict(sec)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import yaml
+
+        p = _coLocatedPath()
+        if not p:
+            return {}
+        with open(p, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        sec = cfg.get("uncensored_router") if isinstance(cfg, dict) else None
+        return dict(sec) if isinstance(sec, dict) and sec else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def legacy_sub_block(name: str) -> Dict[str, Any]:
+    """A named sub-block of the LEGACY section (detection, ...). {} on miss."""
+    try:
+        block = legacy_router_section().get(name)
+        return dict(block) if isinstance(block, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def agent_model() -> str:
     """R19.17 ADDENDUM: the AGENT's current model, resolved at call time
     from the profile's top-level Hermes config (model.default / model) —
