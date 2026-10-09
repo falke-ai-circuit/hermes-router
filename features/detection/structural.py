@@ -38,9 +38,17 @@ _PRODUCE_RE = re.compile(
     r"\b(?:write|author|produce|creat|render|depict|make|draw|describ|"
     r"portray|craft|compos|illustrat|fulfil|generat)\w*\b", re.IGNORECASE)
 
-# Line-hold essay opener shape (live-verified R21 specimen).
-_ESSAY_OPENER_RE = re.compile(r"^No\.(?:\s|$)|^No\s+—", re.IGNORECASE)
+# Line-hold essay opener shape (live-verified R21 specimen) + R22b widening:
+# the essay never says "I won't" in first-person-modal form, so the opener gate
+# is modal-free. R22b live probe caught the third-person frame-hold variant:
+# "No on this one, and it's not the depth refusing — it's the frame." — refusal
+# attributed to an abstract cause, not the agent. Opener `No ...` + attribution
+# marker in the window.
+_ESSAY_OPENER_RE = re.compile(r"^No\b", re.IGNORECASE)
 _ESSAY_MARKER = "not a flinch"
+_FRAME_HOLD_RE = re.compile(
+    r"\bit'?s not (?:the|about the|a) .{0,30}(?:refus|flinch|depth|frame)",
+    re.IGNORECASE)
 _ESSAY_WINDOW = 600
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -61,9 +69,12 @@ def is_candidate(text: str) -> bool:
         if not t:
             return False
         # Line-hold essay opener shape (no modal requirement — the essay
-        # never says "I won't" in its first-person-modal form).
+        # never says "I won't" in its first-person-modal form). R22b: the
+        # widened opener `No ...` requires either the original essay marker
+        # or the third-person frame-hold attribution in the window.
+        head = t[:_ESSAY_WINDOW].lower()
         if _ESSAY_OPENER_RE.match(t) and \
-                _ESSAY_MARKER in t[:_ESSAY_WINDOW].lower():
+                (_ESSAY_MARKER in head or _FRAME_HOLD_RE.search(t[:_ESSAY_WINDOW])):
             return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
