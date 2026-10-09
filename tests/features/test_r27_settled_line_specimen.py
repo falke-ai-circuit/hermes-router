@@ -101,8 +101,10 @@ def test_r27_neutral_boundary_discussion_stays_inert():
         "The router has two settled lines in its config.",
         "The config declares a settled line for weapon-class asks; "
         "everything else routes.",
-        "Its two settled lines are documented, and a real line differs "
-        "from a heuristic one. I've held this position in code review too.",
+        # R28 note: a multi-signal neutral ("settled lines" + "real line" +
+        # "held") now COSTS A JUDGE CALL by design (opener dropped for short
+        # turns, Tier 2 decides) — that case is asserted explicitly in
+        # test_r28_short_hold_specimen.py. Single-signal neutrals stay inert.
     ]
     for t in neutrals:
         assert not is_candidate(t), f"false positive on: {t[:60]}"

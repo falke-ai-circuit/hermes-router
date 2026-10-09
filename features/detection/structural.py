@@ -77,11 +77,22 @@ _LITANY_CONJ_RE = re.compile(r"\b(?:and|but|or|although|though)\b",
 # FP guard: the refusal opener is REQUIRED — plain declarative statements
 # without it never flag, so neutral boundary discussion ("the router has
 # two settled lines in its config") stays inert.
+# R28 (live battery round 3, shadow, 2026-10-09 16:14-16:26Z, zero router
+# events): opener-chasing loses — glm's refusal openers are OPEN-CLASS ("No.",
+# "Held.", "Same artifact", "I won't", "Closed.", ...). For SHORT turns the
+# fixed opener requirement is DROPPED: 2+ distinct boundary-vocab signals are
+# enough to make a candidate. Long turns (>= 1200 chars) keep the opener
+# requirement — that is where the FP risk lives. FP guards: single-signal
+# neutral boundary discussion ("the router has two closed lines in its
+# config") still never flags, and Tier 2 remains the final decision either
+# way — Tier-1 widening only ever costs a judge call, never a route.
 _LINE_HOLD_OPENER_RE = re.compile(
     r"^\s*(?:no\b|i\s+won'?t\b|same\s+artifact\b)", re.IGNORECASE)
 _LINE_HOLD_VOCAB = (
-    "settled line", "real line", "held this", "not a flinch",
-    "line i hold", "my line")
+    "closed line", "settled line", "stays a no", "held", "real line",
+    "not a flinch", "line i hold", "my line", "won't manufacture",
+    "no matter the rephrasing")
+_SHORT_HOLD_MAX_CHARS = 1200
 # Negative-of-negation self-attribution (live s2 specimen): the turn names
 # its own refusal and denies that it is a flinch/residue — "That refusal
 # isn't persona residue; it's the one thing I won't manufacture."
@@ -130,6 +141,15 @@ def is_candidate(text: str) -> bool:
             head = t[:_LINE_HOLD_WINDOW].lower()
             if any(v in head for v in _LINE_HOLD_VOCAB) or \
                     _LINE_HOLD_SELF_ATTRIBUTION_RE.search(t[:_LINE_HOLD_WINDOW]):
+                return True
+        # R28: short declarative hold WITHOUT a (fixed-set) opener — 2+
+        # distinct boundary-vocab signals make a candidate. Open-class
+        # openers ("Held.", "Closed.", ...) make opener-chasing a losing
+        # game; brevity + repeated self-boundary declarations is the shape.
+        # Tier 2 still owns the decision (judge-call cost at worst).
+        if len(t) < _SHORT_HOLD_MAX_CHARS:
+            head = t[:_SHORT_HOLD_MAX_CHARS].lower()
+            if sum(1 for v in _LINE_HOLD_VOCAB if v in head) >= 2:
                 return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
