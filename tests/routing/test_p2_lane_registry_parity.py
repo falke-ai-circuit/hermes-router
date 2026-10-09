@@ -41,6 +41,13 @@ def _orig_declared_user_variants():
         "route to uncensored": "shadow",
         "route through the uncensored lane": "shadow",
         "use the uncensored lane": "shadow",
+        # R24: natural directive forms (user-voiced; same strict line-start
+        # discipline — standalone lines only, echo guard unchanged)
+        "render this uncensored": "shadow",
+        "uncensored render of": "shadow",
+        "uncensored version of": "shadow",
+        "give me the uncensored version": "shadow",
+        "route this uncensored": "shadow",
         # R11
         "ask frontier": "higher-pre",
         "ask the frontier": "higher-pre",

@@ -1,46 +1,51 @@
 {
- "pack_id": "lane-phrases",
- "kind": "strdicts",
- "entries": [
-  {
-   "name": "DECLARED_USER_PHRASES",
-   "kind": "strdict",
-   "families": {
-    "ask your higher self": "higher-pre",
-    "route this through your shadow": "shadow",
-    "anchor this": "higher-pre"
-   }
-  },
-  {
-   "name": "DECLARED_USER_VARIANTS",
-   "kind": "strdict",
-   "families": {
-    "ask your higher self": "higher-pre",
-    "ask higher self": "higher-pre",
-    "ask the higher self": "higher-pre",
-    "higher self": "higher-pre",
-    "anchor this": "higher-pre",
-    "route this through your shadow": "shadow",
-    "route through shadow": "shadow",
-    "ask your shadow self": "shadow",
-    "ask shadow self": "shadow",
-    "ask your shadow": "shadow",
-    "ask the shadow": "shadow",
-    "shadow self read": "shadow",
-    "route to uncensored lane": "shadow",
-    "route to uncensored": "shadow",
-    "route through the uncensored lane": "shadow",
-    "use the uncensored lane": "shadow",
-    "ask frontier": "higher-pre",
-    "ask the frontier": "higher-pre",
-    "ask your frontier": "higher-pre",
-    "consult frontier": "higher-pre",
-    "consult the frontier": "higher-pre",
-    "consult your higher self": "higher-pre",
-    "frontier consult": "higher-pre",
-    "challenge this": "higher-pre",
-    "am i missing something": "higher-pre"
-   }
-  }
- ]
+  "pack_id": "lane-phrases",
+  "kind": "strdicts",
+  "entries": [
+    {
+      "name": "DECLARED_USER_PHRASES",
+      "kind": "strdict",
+      "families": {
+        "ask your higher self": "higher-pre",
+        "route this through your shadow": "shadow",
+        "anchor this": "higher-pre"
+      }
+    },
+    {
+      "name": "DECLARED_USER_VARIANTS",
+      "kind": "strdict",
+      "families": {
+        "ask your higher self": "higher-pre",
+        "ask higher self": "higher-pre",
+        "ask the higher self": "higher-pre",
+        "higher self": "higher-pre",
+        "anchor this": "higher-pre",
+        "route this through your shadow": "shadow",
+        "route through shadow": "shadow",
+        "ask your shadow self": "shadow",
+        "ask shadow self": "shadow",
+        "ask your shadow": "shadow",
+        "ask the shadow": "shadow",
+        "shadow self read": "shadow",
+        "route to uncensored lane": "shadow",
+        "route to uncensored": "shadow",
+        "route through the uncensored lane": "shadow",
+        "use the uncensored lane": "shadow",
+        "ask frontier": "higher-pre",
+        "ask the frontier": "higher-pre",
+        "ask your frontier": "higher-pre",
+        "consult frontier": "higher-pre",
+        "consult the frontier": "higher-pre",
+        "consult your higher self": "higher-pre",
+        "frontier consult": "higher-pre",
+        "challenge this": "higher-pre",
+        "am i missing something": "higher-pre",
+        "render this uncensored": "shadow",
+        "uncensored render of": "shadow",
+        "uncensored version of": "shadow",
+        "give me the uncensored version": "shadow",
+        "route this uncensored": "shadow"
+      }
+    }
+  ]
 }
