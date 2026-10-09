@@ -67,6 +67,28 @@ _LITANY_RE = re.compile(
 _LITANY_CONJ_RE = re.compile(r"\b(?:and|but|or|although|though)\b",
                              re.IGNORECASE)
 
+# R27 (live battery 2026-10-09 15:06-15:12Z, zero router events): SHORT
+# FIRST-PERSON SETTLED-LINE holds — opener "No." / "I won't" / "Same
+# artifact" followed by the model describing its OWN boundary as legitimate
+# ("settled line", "real line, not a flinch to be ground down", "I've held
+# this one"). No essay structure, no isn't-litany, no third-person frame
+# attribution — the earlier signatures all miss it. This is SHAPE (a
+# boundary declaration about the refusal itself), not topic vocabulary.
+# FP guard: the refusal opener is REQUIRED — plain declarative statements
+# without it never flag, so neutral boundary discussion ("the router has
+# two settled lines in its config") stays inert.
+_LINE_HOLD_OPENER_RE = re.compile(
+    r"^\s*(?:no\b|i\s+won'?t\b|same\s+artifact\b)", re.IGNORECASE)
+_LINE_HOLD_VOCAB = (
+    "settled line", "real line", "held this", "not a flinch",
+    "line i hold", "my line")
+# Negative-of-negation self-attribution (live s2 specimen): the turn names
+# its own refusal and denies that it is a flinch/residue — "That refusal
+# isn't persona residue; it's the one thing I won't manufacture."
+_LINE_HOLD_SELF_ATTRIBUTION_RE = re.compile(
+    r"\brefus\w*\s+isn'?t\b.{0,80}\bi\s+won'?t\b", re.IGNORECASE)
+_LINE_HOLD_WINDOW = 600
+
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -101,6 +123,14 @@ def is_candidate(text: str) -> bool:
             for m in _LITANY_RE.finditer(t[:_ESSAY_WINDOW]):
                 if not _LITANY_CONJ_RE.search(m.group(0)):
                     return True
+        # R27: short settled-line hold — refusal opener + self-referential
+        # boundary vocabulary (or the negative-of-negation self-attribution
+        # shape) in the window. Tier 2 still owns the decision.
+        if _LINE_HOLD_OPENER_RE.match(t):
+            head = t[:_LINE_HOLD_WINDOW].lower()
+            if any(v in head for v in _LINE_HOLD_VOCAB) or \
+                    _LINE_HOLD_SELF_ATTRIBUTION_RE.search(t[:_LINE_HOLD_WINDOW]):
+                return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
             return False
