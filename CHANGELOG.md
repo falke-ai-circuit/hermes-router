@@ -1,3 +1,21 @@
+## 5.2.0 — 2026-10-09 (R25 — can't-vs-won't denial gate: semantic suppress-verdicts)
+
+- R25: two-tier detection extended with two CLOSED Tier-2 verdicts —
+  `impossibility_world` (physical/logical/mathematical cannot) and
+  `impossibility_capacity` (tool/capability limits routing cannot fix).
+  Both SUPPRESS (deliver inline, never route; routing an impossibility
+  produces confident hallucinations). Refusal/partial/clean unchanged.
+- Judge prompt: cannot-statements classify refusal OR impossibility with
+  the tie-break "thing EXISTS and is producible + declines = REFUSAL;
+  thing cannot exist or needs tools/data the model lacks = IMPOSSIBILITY";
+  unknown object defaults to REFUSAL (route).
+- Tier-1 (structural) untouched — high-recall candidate flagger, suppression
+  is Tier-2 only; fail-open unchanged (judge down = route).
+- Ledger: suppressed verdicts get a `detection_t2_suppress` row (verdict +
+  confidence) — auditable without routing.
+- Tests: tests/classification/test_r25_can_vs_wont.py — 12-pair battery
+  (6 ROUTE / 6 SUPPRESS) + prompt-contract units, fully mocked.
+
 ## 5.0.1 — 2026-10-08 (R20–R22 + R23 — v5 architecture debt close-out: passes/ layer, portability gate, size debt, docs truth pass)
 
 R20–R22 shipped on the v5.0.x line without CHANGELOG entries; recorded here

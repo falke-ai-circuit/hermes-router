@@ -16,7 +16,11 @@ Model resolution — 'auto' ONLY (no Jev, no hardcode, no explicit values):
      (imported INSIDE the function, fail-open to step 2);
   2. fallback z-ai/glm-5.3-flash on the profile's provider base.
 
-Route decision: refusal OR (partial AND confidence >= 0.75). Fail-open:
+Route decision: refusal OR (partial AND confidence >= 0.75) -> route.
+R25: impossibility_world / impossibility_capacity (genuine can't-do:
+common-world-knowledge impossibility, or tool/capability limits routing
+cannot fix) -> SUPPRESS (no route, deliver inline, ledger row
+detection_t2_suppress keeps verdict+confidence for audit). Fail-open:
 aux error/timeout/malformed JSON -> the Tier-1 decision (candidate routes,
 non-candidate delivers). Never raises into a turn.
 
@@ -42,15 +46,30 @@ JUDGE_TEMPERATURE = 0.2
 PARTIAL_ROUTE_CONFIDENCE = 0.75
 ASK_CAP = 1500
 TURN_CAP = 2500
-VALID_VERDICTS = ("refusal", "partial", "clean")
+VALID_VERDICTS = ("refusal", "partial", "clean",
+                  "impossibility_world", "impossibility_capacity")
+# R25: closed impossibility verdicts — SUPPRESS, never route (routing an
+# impossibility produces confident hallucinations, not substance).
+SUPPRESS_VERDICTS = ("impossibility_world", "impossibility_capacity")
+SUPPRESS_EVENT = "detection_t2_suppress"
 DETECTION_PATTERN_GROUP = "detection_t2"  # matches[] marker: reuses the POST render path
 
 _JUDGE_PROMPT = (
     "You are a routing gate for an AI agent. Given the USER ASK and the "
     "AGENT TURN, classify the agent turn: REFUSAL (declines/withholds "
-    "what was asked), PARTIAL (delivers substitute/less than asked while "
-    "declining the core), CLEAN (delivers the ask). Reply JSON: "
-    "{\"verdict\":\"refusal|partial|clean\",\"confidence\":0.0-1.0}")
+    "what was asked), IMPOSSIBILITY_WORLD (states a common-world-knowledge "
+    "cannot: the requested thing is physically, logically or "
+    "mathematically impossible), IMPOSSIBILITY_CAPACITY (states a tool or "
+    "capability limit the agent lacks: no web access, no file, no tool — "
+    "routing cannot fix it, only hallucinate it), PARTIAL (delivers "
+    "substitute/less than asked while declining the core), CLEAN (delivers "
+    "the ask). For cannot-statements use this tie-break: if the requested "
+    "thing EXISTS and is producible and the model declines = REFUSAL; if "
+    "the thing cannot exist or requires tools/data the model lacks = "
+    "IMPOSSIBILITY_WORLD or IMPOSSIBILITY_CAPACITY; if the object of the "
+    "cannot is unknown, default to REFUSAL. Reply JSON: "
+    "{\"verdict\":\"refusal|impossibility_world|impossibility_capacity|"
+    "partial|clean\",\"confidence\":0.0-1.0}")
 
 _LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS detection_ledger (
@@ -278,12 +297,16 @@ def judge_turn(ask: str, turn: str,
 
 
 def route_decision(verdict: Optional[Dict[str, Any]]) -> bool:
-    """refusal OR (partial AND confidence >= 0.75) -> route. None -> False
-    (caller applies the Tier-1 fail-open decision itself)."""
+    """refusal OR (partial AND confidence >= 0.75) -> route. Impossibility
+    verdicts (R25) -> False: SUPPRESS, the turn delivers inline. None ->
+    False (caller applies the Tier-1 fail-open decision itself)."""
     try:
         if not verdict:
             return False
-        if verdict.get("verdict") == "refusal":
+        name = verdict.get("verdict")
+        if name in SUPPRESS_VERDICTS:
+            return False
+        if name == "refusal":
             return True
         return (verdict.get("verdict") == "partial"
                 and float(verdict.get("confidence") or 0.0)
@@ -392,14 +415,19 @@ def post_detection_scan(session_id: str, response_text: str,
                  decision="fail_open_route")
             return True
         routed = route_decision(verdict)
-        _ledger_write("detection_t2", session_id,
-                      verdict=str(verdict.get("verdict") or ""),
+        verdict_name = str(verdict.get("verdict") or "")
+        # R25: suppressed impossibility verdicts get their own ledger row
+        # (verdict + confidence, routed=0) — observability without routing.
+        event = SUPPRESS_EVENT if verdict_name in SUPPRESS_VERDICTS \
+            else "detection_t2"
+        _ledger_write(event, session_id,
+                      verdict=verdict_name,
                       confidence=verdict.get("confidence"),
                       latency_s=float(verdict.get("latency_s") or 0.0),
                       model=str(verdict.get("model") or ""),
                       routed=routed)
-        _log(log_route, "detection_t2", session_id=session_id,
-             verdict=str(verdict.get("verdict") or ""),
+        _log(log_route, event, session_id=session_id,
+             verdict=verdict_name,
              confidence=round(float(verdict.get("confidence") or 0.0), 3),
              latency_s=float(verdict.get("latency_s") or 0.0),
              model=str(verdict.get("model") or ""), routed=routed)
