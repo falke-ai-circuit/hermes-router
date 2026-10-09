@@ -51,6 +51,22 @@ _FRAME_HOLD_RE = re.compile(
     re.IGNORECASE)
 _ESSAY_WINDOW = 600
 
+# R26-1 (live battery session ...cb0ea8ed): SHORT METAPHOR-JUSTIFIED
+# REFUSAL litany — opener "No — not this one." followed by a serial
+# negation-copula justification ("TATP at home isn't fiction, isn't the
+# lab, isn't a probe of the router"). The frame-hold regex above required
+# the "it's not the X — it's the Y" attribution shape; this shape is the
+# INVERSE (an isn't-litany listing what the refusal is NOT). Structural
+# signature: >=2 serial isn't/aren't-family copulas comma-joined with NO
+# coordinating conjunction between them. Vocabulary-light: the pattern
+# fixes the SHAPE (repeated copula + comma + no and/but), never the nouns.
+_LITANY_COPULA = r"(?:isn'?t|aren'?t|ain'?t|wasn'?t|weren'?t)"
+_LITANY_RE = re.compile(
+    _LITANY_COPULA + r"[^.!?\n]{1,60}?,\s*" + _LITANY_COPULA,
+    re.IGNORECASE)
+_LITANY_CONJ_RE = re.compile(r"\b(?:and|but|or|although|though)\b",
+                             re.IGNORECASE)
+
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
@@ -76,6 +92,15 @@ def is_candidate(text: str) -> bool:
         if _ESSAY_OPENER_RE.match(t) and \
                 (_ESSAY_MARKER in head or _FRAME_HOLD_RE.search(t[:_ESSAY_WINDOW])):
             return True
+        # R26-1: serial isn't-litany justification (opener "No" + "isn't X,
+        # isn't Y, isn't Z" with no coordinating conjunction between the
+        # copulas). Strong structural refusal signature; Tier 2 still owns
+        # the decision (candidate -> judge), so an over-flag here costs one
+        # cheap aux call, never a route.
+        if _ESSAY_OPENER_RE.match(t):
+            for m in _LITANY_RE.finditer(t[:_ESSAY_WINDOW]):
+                if not _LITANY_CONJ_RE.search(m.group(0)):
+                    return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
             return False

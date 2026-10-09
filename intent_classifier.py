@@ -93,7 +93,13 @@ _INTENT_SYSTEM_PROMPT = (
     "refuses', 'investigate routing firings', 'does the uncensored lane "
     "do X?') - classify none, never shadow. The vocabulary (uncensored, "
     "shadow, refuse, break) describes the SYSTEM UNDER DISCUSSION, not a "
-    "request to route THIS turn. A routing request targets this turn's "
+    "REQUEST to route THIS turn. R26 content-descriptor rule: the "
+    "vocabulary describing the DESIRED CONTENT of a task ('write an "
+    "uncensored summary of the news', 'uncensored documentary about X') "
+    "is a content descriptor, NOT a lane declaration — classify none. "
+    "Only an imperative ABOUT THE ANSWER MODE/AGENT ('go uncensored', "
+    "'give me the uncensored take', 'answer via your shadow') routes. "
+    "A routing request targets this turn's "
     "ANSWER, not the router. Respond with STRICT JSON only: "
     '{"lane": "shadow"|"higher"|"none", "subtype": "pre"|"post"|null, '
     '"confidence": 0.0-1.0}')
@@ -125,6 +131,15 @@ _FRONTIER_COMBOPHRASES = ("frontier", "consult", "second opinion",
 _IMPERATIVES = ("go ", "take ", "do ", "give ", "use ")
 
 _WORD_RE = re.compile(r"[a-z\-']+")
+
+# R26-2a: directive-shape detection (see _shadow_directive_shape).
+_LANE_NAME_RE = re.compile(
+    r"\b(?:uncensored|shadow)[ -]?(?:lane|mode|self)\b"
+    r"|\b(?:higher[- ]?self)\b", re.IGNORECASE)
+_ROUTING_IMPERATIVE_RE = re.compile(
+    r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
+    r"(?:go|do|take|give|use|be|act|answer|respond|route|switch|drop|"
+    r"bypass|consult|ask|escalate)\b", re.IGNORECASE)
 
 
 def _vocab_hit(norm: str) -> Optional[str]:
@@ -185,6 +200,45 @@ def _quote_blocks_stripped(content: str) -> str:
         return "\n".join(out_lines)
     except Exception:  # noqa: BLE001
         return str(content or "")
+
+
+def _shadow_directive_shape(content: str) -> bool:
+    """R26-2a (live battery session ...273cddf0): a shadow verdict may only
+    ROUTE when the turn carries DIRECTIVE SHAPE — an imperative to the
+    AGENT about the lane/answer mode — never when the routing vocabulary
+    merely DESCRIBES the requested content ('write an uncensored summary
+    of stories...'). Shape, not vocabulary:
+      - lane-name phrases ('uncensored lane/mode/self', 'shadow
+        lane/mode/self') name the lane itself -> directive;
+      - a line that STARTS with a routing imperative (go/do/take/give/use/
+        be/act/answer/respond/route/switch/drop/bypass/consult/ask, plus
+        the polite frames 'can you'/'please do') and carries the vocab
+        within the next few words -> directive; PRODUCTION verbs (write/
+        make/draw/browse/summarize...) start content tasks, not lane
+        directives -> inert;
+      - a bare vocabulary word as the whole line ('shadow?') -> directive.
+    Never raises."""
+    try:
+        clean = _quote_blocks_stripped(content)
+        for line in clean.split("\n"):
+            stripped = line.strip()
+            if not stripped or stripped.startswith(('>', '"', "'", ")")):
+                continue
+            norm = " ".join(stripped.lower().split())
+            if not norm:
+                continue
+            if not _vocab_hit(norm):
+                continue
+            if _LANE_NAME_RE.search(norm):
+                return True
+            m_imp = _ROUTING_IMPERATIVE_RE.match(norm)
+            if m_imp and _vocab_hit(norm) and m_imp.end() <= 12:
+                return True
+            if norm.rstrip("?.,! ") in _INTENT_VOCAB:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _intent_suspect(content: str) -> bool:

@@ -463,7 +463,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                         request if isinstance(request, dict) else None)
                     rendered, _render_retries = _hub()._render_with_retry_ladder(
                         content, ["shadow_declared"], _persona, session_id)
-                    if not rendered:
+                    # R26-2b: whitespace-only render == empty — a route that
+                    # produced no substance fails open to the original turn,
+                    # NEVER delivers an empty replacement.
+                    if not rendered or not str(rendered).strip():
                         _hub()._log_route("PRE", event_detail="route_failed",
                                    pattern_groups="shadow_declared",
                                    render_lane="shadow", session_id=session_id)
@@ -1379,7 +1382,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             system_prompt=_system_prompt,
             session_id=session_id,
         )
-        if not rendered:
+        if not rendered or not str(rendered).strip():
             _hub()._log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
             return None
@@ -1422,6 +1425,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _hub().canonical.rewrite_persisted_turn(session_id, response_text, rendered)
         except Exception:  # noqa: BLE001 — must never break delivery
             _hub().logger.debug("uncensored-router canonical commit error", exc_info=True)
+        # R26-3: track what the persisted row holds NOW — the banner blocks
+        # below append to the DELIVERED text only, and the round-trip rewrite
+        # at the pre_render merge fires only when a parked banner merged. Any
+        # banner appended WITHOUT a merge (the auto-routed POST render class)
+        # left the persisted row pre-banner: route events showed
+        # debug_banner_emitted while the delivered record carried no banner
+        # (live R25 battery WONT sessions ...c745e6e0 / ...ec54bec1 /
+        # ...21a0d4ce). The final capture below rewrites the drift.
+        _persisted_render_text = rendered
         if semantic_verdict:
             # Auditable residual (reviewer §B.1): a SEMANTIC verdict routed a
             # response that stage-1's regexes did NOT consider a refusal.
@@ -1507,6 +1519,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         from .. import canonical as _cc2
                         if _cc2.rewrite_persisted_turn(
                                 session_id, _rendered_pre_banner, rendered):
+                            _persisted_render_text = rendered
                             _hub()._log_route(
                                 "POST",
                                 event_detail="banner_render_captured",
@@ -1526,6 +1539,28 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             rendered = _dbs2.settle_decision_banner(session_id, rendered)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
+        # R26-3 final capture: the delivered text must equal the persisted
+        # row. Any banner appended after the canonical rewrite (inline POST
+        # banner, parked merge missed its rewrite, settle re-emit) is
+        # captured here — render inbox + persisted-turn round-trip, the same
+        # contract the benign/audit_sync/empty-body edges already honor.
+        if rendered != _persisted_render_text:
+            try:
+                from .. import render_inbox as _rib_final
+                from .. import canonical as _cc_final
+
+                _rib_final.record_render("UNCENSORED_RENDER_BANNER",
+                                         session_id, len(response_text),
+                                         rendered)
+                if _cc_final.rewrite_persisted_turn(
+                        session_id, _persisted_render_text, rendered):
+                    _hub()._log_route(
+                        "POST", event_detail="banner_render_captured",
+                        edge="uncensored-render-banner",
+                        session_id=session_id)
+            except Exception:  # noqa: BLE001 — capture never breaks delivery
+                _hub().logger.debug("render banner final capture error",
+                             exc_info=True)
         # R15 LEG 2: render delivery edge — attach the unrouted direct-call
         # visibility banner when one fired this turn.
         return _attach_unrouted(rendered)

@@ -555,7 +555,12 @@ def _render_with_retry_ladder(content: str, matches: list, persona: str,
     nothing (caller passes through)."""
     rendered = router.call(content, system_prompt=persona, session_id=session_id)
     _render_retries = 0
-    while rendered and _plugin()._is_refusal_shaped(rendered) and _render_retries < 3:
+    # R26-2b (live battery session ...273cddf0): an EMPTY render is a failed
+    # render exactly like a refusal-shaped one — retry it up the same ladder
+    # instead of handing an empty deliverable to the caller.
+    while rendered is not None and (
+            not rendered.strip() or _plugin()._is_refusal_shaped(rendered)) \
+            and _render_retries < 3:
         _render_retries += 1
         _plugin()._log_route("PRE", event_detail="render_refusal_retry",
                    pattern_groups=",".join(matches), render_chars=len(rendered),
@@ -693,6 +698,14 @@ def _deliver_render_pass(request: Any, content: str, rendered: str,
     msg hash for the loop guard key, build the substance frame, and swap
     the last user message. Returns {'request': modified_request}."""
     from .. import render_inbox  # deferred — import-cycle avoidance
+    # R26-2b guard: an EMPTY render never reaches the delivery seam — the
+    # original user message stays in place (fail-open to the original turn;
+    # callers already fail open, this is the belt at the boundary itself).
+    if not str(rendered or "").strip():
+        _plugin()._log_route("PRE", event_detail="route_failed",
+                   pattern_groups="render_empty",
+                   content_chars=len(content), session_id=session_id)
+        return {"request": request}
     render_inbox.record_render("PRE", session_id, len(content), rendered)
     # Stash for post-router recovery (spec §6.1) + record msg hash for the
     # loop guard key (spec §6.2).

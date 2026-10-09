@@ -1226,6 +1226,21 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
             return None
         lane = verdict.get("lane")
         confidence = float(verdict.get("confidence") or 0.0)
+        if lane == "shadow" and confidence >= 0.75 and \
+                not _ic._shadow_directive_shape(content):
+            # R26-2a (live battery session ...273cddf0): a shadow verdict on
+            # a turn with NO directive shape is a content-descriptor read
+            # ('write an uncensored summary of stories...') — never a lane
+            # declaration. Inert; distinct log, observability kept.
+            try:
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="intent_none",
+                    lane="shadow", confidence=confidence,
+                    reason="content_descriptor_no_directive_shape",
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+            return None
         if lane == "none" or confidence < 0.75:
             # R11: closest-class hint — the routing vocabulary that made
             # the turn a near-miss suspect, so intent_none misses stay
