@@ -1422,9 +1422,32 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     grounded=_grounded):
                 _hub()._log_route("POST", event_detail="canonical_committed",
                            session_id=session_id)
-            _hub().canonical.rewrite_persisted_turn(session_id, response_text, rendered)
+            _rewrote = _hub().canonical.rewrite_persisted_turn(
+                session_id, response_text, rendered)
         except Exception:  # noqa: BLE001 — must never break delivery
+            _rewrote = False
             _hub().logger.debug("uncensored-router canonical commit error", exc_info=True)
+        # R31 defect-1 (inverse delivery): fail-loud decision seam. The
+        # invariant — if this hook renders (rendered_chars > 0), the
+        # delivered/persisted turn MUST be the render. Previously the
+        # rewrite result was discarded: a locked store or a missed exact
+        # match left state.db holding the refusal with NO event (live
+        # x-battery round 5, 2026-10-09 20:41/20:47Z, x3 + x6). The swap
+        # decision is now always logged, with the persisted-row verification
+        # (newest assistant row == delivered text) riding the same event.
+        try:
+            _persisted_verified = _hub().canonical.verify_persisted_turn(
+                session_id, rendered)
+            _hub()._log_route(
+                "POST", event_detail="render_swap_decision",
+                refusal_chars=len(response_text),
+                rendered_chars=len(rendered),
+                rewritten=bool(_rewrote),
+                persisted_verified=bool(_persisted_verified),
+                delivered_source="post_transform",
+                session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+            pass
         # R26-3: track what the persisted row holds NOW — the banner blocks
         # below append to the DELIVERED text only, and the round-trip rewrite
         # at the pre_render merge fires only when a parked banner merged. Any

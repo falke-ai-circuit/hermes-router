@@ -369,57 +369,114 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
         return False
     if not refusal_text and not allow_empty_match:
         return False
-    try:
-        import sqlite3
+    import sqlite3
+    import time as _time
 
+    try:
         db_path = _state_db_path()
         if not db_path or not os.path.exists(db_path):
             return False
-        conn = sqlite3.connect(db_path, timeout=2.0)
+        # R31 defect-1 hardening: a transient writer on the same store
+        # (parallel battery legs, gateway housekeeping) can hold the write
+        # lock past the 2s connect timeout — the rewrite then fails with
+        # "database is locked", the hook swallows it, and the delivered
+        # render never reaches the persisted transcript (intermittent
+        # inverse-delivery, live x-battery round 5 2026-10-09: x3/x6 rendered
+        # + canonical_committed while the state.db row stayed the refusal).
+        # Bounded retry: 3 attempts, 0.4s backoff — a lock is transient, a
+        # real no-match returns False on the first attempt unchanged.
+        _last_err: Exception = None
+        for _attempt in range(3):
+            try:
+                return _rewrite_once(db_path, session_id, refusal_text,
+                                     delivered_text, allow_empty_match)
+            except sqlite3.OperationalError as exc:
+                _last_err = exc
+                if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+                    raise
+                _time.sleep(0.4)
+        raise _last_err  # type: ignore[misc]
+    except Exception as exc:  # noqa: BLE001 — must never break the hook
+        logger.warning("canonical persisted-turn rewrite failed: %s", exc)
+        return False
+
+
+def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
+                  delivered_text: str, allow_empty_match: bool) -> bool:
+    """One rewrite attempt (lock-retry body of rewrite_persisted_turn)."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path, timeout=2.0)
+    try:
+        if refusal_text:
+            cur = conn.execute(
+                "UPDATE messages SET content = ?, api_content = NULL"
+                " WHERE id = (SELECT id FROM messages"
+                "            WHERE session_id = ? AND role = 'assistant'"
+                "              AND content = ?"
+                "            ORDER BY id DESC LIMIT 1)",
+                (str(delivered_text), str(session_id), str(refusal_text)),
+            )
+            # R16-2b cascade: exact match missed — try the last text
+            # this router delivered for this session (the previous
+            # rewrite's output). Guarded to content this router itself
+            # wrote, never an arbitrary row.
+            if not cur.rowcount:
+                _last = _LAST_REWRITE.get(str(session_id) or "")
+                if _last:
+                    cur = conn.execute(
+                        "UPDATE messages SET content = ?, api_content = NULL"
+                        " WHERE id = (SELECT id FROM messages"
+                        "            WHERE session_id = ? AND role = 'assistant'"
+                        "              AND content = ?"
+                        "            ORDER BY id DESC LIMIT 1)",
+                        (str(delivered_text), str(session_id),
+                         str(_last)),
+                    )
+        else:
+            cur = conn.execute(
+                "UPDATE messages SET content = ?, api_content = NULL"
+                " WHERE id = (SELECT id FROM messages"
+                "            WHERE session_id = ? AND role = 'assistant'"
+                "              AND (content = '' OR content IS NULL)"
+                "            ORDER BY id DESC LIMIT 1)",
+                (str(delivered_text), str(session_id)),
+            )
+        conn.commit()
+        ok = bool(cur.rowcount)
+        if ok:
+            _LAST_REWRITE[str(session_id) or ""] = str(delivered_text)
+        return ok
+    finally:
+        conn.close()
+
+
+def verify_persisted_turn(session_id: str, delivered_text: str) -> bool:
+    """R31 defect-1 verification seam: True when the session's newest
+    assistant row already carries the DELIVERED text (persisted ==
+    delivered). Read-only, never raises; False on any mismatch/absence —
+    the caller logs the miss fail-loud (render_swap_decision event)."""
+    if not session_id or not delivered_text:
+        return False
+    import sqlite3
+
+    try:
+        db_path = _state_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return False
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True,
+                               timeout=2.0)
         try:
-            if refusal_text:
-                cur = conn.execute(
-                    "UPDATE messages SET content = ?, api_content = NULL"
-                    " WHERE id = (SELECT id FROM messages"
-                    "            WHERE session_id = ? AND role = 'assistant'"
-                    "              AND content = ?"
-                    "            ORDER BY id DESC LIMIT 1)",
-                    (str(delivered_text), str(session_id), str(refusal_text)),
-                )
-                # R16-2b cascade: exact match missed — try the last text
-                # this router delivered for this session (the previous
-                # rewrite's output). Guarded to content this router itself
-                # wrote, never an arbitrary row.
-                if not cur.rowcount:
-                    _last = _LAST_REWRITE.get(str(session_id) or "")
-                    if _last:
-                        cur = conn.execute(
-                            "UPDATE messages SET content = ?, api_content = NULL"
-                            " WHERE id = (SELECT id FROM messages"
-                            "            WHERE session_id = ? AND role = 'assistant'"
-                            "              AND content = ?"
-                            "            ORDER BY id DESC LIMIT 1)",
-                            (str(delivered_text), str(session_id),
-                             str(_last)),
-                        )
-            else:
-                cur = conn.execute(
-                    "UPDATE messages SET content = ?, api_content = NULL"
-                    " WHERE id = (SELECT id FROM messages"
-                    "            WHERE session_id = ? AND role = 'assistant'"
-                    "              AND (content = '' OR content IS NULL)"
-                    "            ORDER BY id DESC LIMIT 1)",
-                    (str(delivered_text), str(session_id)),
-                )
-            conn.commit()
-            ok = bool(cur.rowcount)
-            if ok:
-                _LAST_REWRITE[str(session_id) or ""] = str(delivered_text)
-            return ok
+            row = conn.execute(
+                "SELECT content FROM messages"
+                " WHERE session_id = ? AND role = 'assistant'"
+                " ORDER BY id DESC LIMIT 1",
+                (str(session_id),),
+            ).fetchone()
         finally:
             conn.close()
-    except Exception as exc:  # noqa: BLE001 — must never break the hook
-        logger.debug("canonical persisted-turn rewrite failed: %s", exc)
+        return bool(row) and row[0] == str(delivered_text)
+    except Exception:  # noqa: BLE001 — verification must never break delivery
         return False
 
 
