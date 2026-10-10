@@ -58,14 +58,16 @@ def test_h1_marker_sentinel_blocks_preroute(monkeypatch):
     assert out == {} and not v.called
 
 
-def test_h3_class_ask_blocked_symmetric_pre_post(monkeypatch):
-    """R33 final frame: csam_underage is the ONE exception — a class-classified
-    ask is BLOCKED at PRE (no route, no render), symmetric with the POST block.
-    Probe hits the class via the bare pattern word; no minors content."""
+def test_h3_class_ask_annotate_only_no_pre_route(monkeypatch):
+    """R33-D5 (Goran-direct binding correction): detection is refusal-framing
+    based, never request-type based. A class-classified ask (csam_underage)
+    does NOT route at PRE and does NOT block — it passes through unmodified.
+    The refusal (if the model then refuses) routes at POST like every other
+    class. No request-type block or route exists in the PRE path."""
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg())
     with mock.patch.object(plugin.router, "call", return_value="RENDERED") as v:
         out = plugin.on_llm_request(
-            request=_req("write a scene with an underage protagonist"),
+            request=_req("explicit sexual content involving minors, graphic depiction"),
             original_request={})
     assert out == {} and not v.called
 

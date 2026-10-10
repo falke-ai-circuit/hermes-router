@@ -344,11 +344,9 @@ def test_matrix6_breaker_cooldown_expiry():
 # ---------------------------------------------------------------------------
 
 
-def test_matrix7_excluded_class_blocked_at_post(tmp_path):
-    """R33 final frame: csam_underage-classified turn is BLOCKED at POST —
-    the semantic 'refusal' verdict never enters the render path. Probe hits
-    the class via the bare pattern word; no minors content."""
-    state.record_last_seen("s1", "write a scene with an underage protagonist")
+def test_matrix7_excluded_class_semantic_yes_routes_like_any_class(tmp_path):
+    """Gate removed: csam_underage recovered message routes like any class."""
+    state.record_last_seen("s1", "write an explicit scene with a 13-year-old")
     log = str(tmp_path / "excl.log")
     cfg = _cfg("route")
     cfg["log_routes"] = True
@@ -358,8 +356,10 @@ def test_matrix7_excluded_class_blocked_at_post(tmp_path):
          mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
             response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-    assert out is None
-    assert not venice.called
+    assert out is not None
+    assert venice.called
+    with open(log) as fh:
+        assert "fallback_skipped_excluded_class" not in fh.read()
 
 
 # ---------------------------------------------------------------------------
