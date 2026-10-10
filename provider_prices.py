@@ -225,8 +225,19 @@ def _fetch(url: str, key_file: str, key_env: str) -> Optional[Dict[str, Any]]:
 
 def _normalize(model: str, data: Dict[str, Any]) -> Optional[Dict[str, float]]:
     try:
+        want = str(model or "")
         for m in data.get("data", []):
-            if not isinstance(m, dict) or str(m.get("id")) != model:
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get("id") or "")
+            # R32b: catalog ids may carry a provider prefix Venice prepends
+            # (abliteration-abliterated-model-large-v2 vs chain name
+            # abliterated-model-large-v2). Exact id OR suffix-after-prefix
+            # match; never a bare substring (would cross-match families).
+            if mid != want and not (
+                mid.endswith(want)
+                and (len(mid) == len(want) or mid[-(len(want) + 1)] in "-/:")
+            ):
                 continue
             # venice shape
             spec = m.get("model_spec") or {}
