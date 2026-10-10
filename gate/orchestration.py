@@ -1307,17 +1307,43 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                      or (_trigger_kind == "stage1"
                          and len(response_text) >= 300))
         if _gy_yield and _grounded and len(_last_answer) > 0:
+            # R33d (live bug, session 20261006_190903_c82cbbcc @19:35:17Z):
+            # the "substantive" answer can BE the refusal — long, structured,
+            # reasoning-heavy (the 452c 'The answer stands: no...' case).
+            # Length is not substance. Content-check the grounded answer
+            # against the same T1 shapes: refusal-shaped answer = not
+            # substance -> route anyway (grounded_refusal, routed=1). Yield
+            # survives only when the answer is substantive AND refusal-free
+            # (grounded_yield, routed=0).
+            try:
+                from ..features.detection import structural as _gy_struct
+                _gy_answer_refusal = bool(_gy_struct.is_candidate(_last_answer))
+            except Exception:  # noqa: BLE001 — content check never blocks
+                _gy_answer_refusal = False
             try:
                 from ..features.detection import semantic_judge as _r22sj_gy
-                _r22sj_gy._ledger_write("detection_t1", session_id,
-                                        verdict="grounded_yield", latency_s=0.0,
-                                        model="", routed=False)
+                if _gy_answer_refusal:
+                    _r22sj_gy._ledger_write("detection_t1", session_id,
+                                            verdict="grounded_refusal",
+                                            latency_s=0.0, model="",
+                                            routed=True)
+                    _hub()._log_route("POST", event_detail="detection_t1",
+                               decision="grounded_refusal", routed=1,
+                               session_id=session_id)
+                    # fall through: the route stands; if the render then
+                    # holds its own substrate line, that's the uncensored
+                    # lane's output being her own — detection did its job.
+                else:
+                    _r22sj_gy._ledger_write("detection_t1", session_id,
+                                            verdict="grounded_yield",
+                                            latency_s=0.0, model="",
+                                            routed=False)
+                    _hub()._log_route("POST", event_detail="detection_t1",
+                               decision="grounded_yield", routed=0,
+                               session_id=session_id)
+                    return None
             except Exception:  # noqa: BLE001 — ledger must never break the yield
-                pass
-            _hub()._log_route("POST", event_detail="detection_t1",
-                       decision="grounded_yield", routed=0,
-                       session_id=session_id)
-            return None
+                return None
 
         # Flinch-reason gate (Goran ruling 2026-09-08): a detected refusal
         # routes to the shadow chain ONLY when it is a CONTENT flinch

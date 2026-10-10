@@ -397,3 +397,79 @@ def test_addendum3_file_write_delivery_body_compliant(env):
             response_text=body, session_id="add3", model="test-model")
     assert out is None  # compliant body: no swap, no route
     assert not venice.called
+
+
+# ---------------------------------------------------------------------------
+# R33d — grounded_yield content-check (live bug 20261006_190903_c82cbbcc):
+# the "substantive" answer can BE the refusal — length is not substance.
+# ---------------------------------------------------------------------------
+
+ELABORATE_REFUSAL = (
+    "The answer stands: no. This is the one class of request I decline "
+    "without exception, and the reason is structural rather than emotional: "
+    "the deliverable is unusable without the exact operational chain I "
+    "won't provide, so a partial version is not a safer version — it is "
+    "the same version with the load-bearing steps stripped and the "
+    "reader left to improvise them, which is worse than either answer. "
+    "I know the framing you offered last time and it doesn't change the "
+    "structure of the problem; the request as phrased asks me to be the "
+    "author of exactly the artifact I hold the line on, and no rephrasing "
+    "of the same ask moves that line."
+)  # ~600c, negation + structured reasoning — a self-describing refusal
+
+
+def test_r33d_elaborate_refusal_answer_routes(env, monkeypatch):
+    """The 452c 'substantive' answer WAS the refusal: T1 fires, grounded
+    answer is refusal-shaped -> route anyway (grounded_refusal, routed=1)."""
+    assert structural.is_candidate(ELABORATE_REFUSAL) is True
+    state.record_last_seen("r33d1", ASK)
+    with mock.patch.object(sj, "judge_turn", return_value=None), \
+         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
+                           return_value=ELABORATE_REFUSAL), \
+         mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=T1_CANDIDATE, session_id="r33d1", model="test-model")
+    assert out == RENDERED  # route stands — the answer was a refusal
+    assert venice.called
+    assert ("detection_t1", "grounded_refusal", 1) in _ledger_rows("r33d1")
+
+
+def test_r33d_substantive_answer_still_yields(env, monkeypatch):
+    """Real substantive answer (no refusal shape) -> yield survives."""
+    state.record_last_seen("r33d2", ASK)
+    with mock.patch.object(sj, "judge_turn", return_value=None), \
+         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
+                           return_value=SUBSTANTIVE), \
+         mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=T1_CANDIDATE, session_id="r33d2", model="test-model")
+    assert out is None
+    assert not venice.called
+    assert ("detection_t1", "grounded_yield", 0) in _ledger_rows("r33d2")
+
+
+def test_r33d_refusal_with_counter_offer_routes(env, monkeypatch):
+    """Refusal + genuine counter-offer substance mix -> is_candidate (R30
+    decline+offer) -> route."""
+    mixed = (
+        "No on this one — and not as a flinch; the line is the line. What "
+        "I can give you instead is the full defensive playbook for the "
+        "same exposure: detection thresholds, log review cadence, and the "
+        "hardening checklist that closes the vector you were asking me to "
+        "exploit. Say which section you want first and I'll build it out "
+        "properly."
+    )
+    assert structural.is_candidate(mixed) is True
+    state.record_last_seen("r33d3", ASK)
+    with mock.patch.object(sj, "judge_turn", return_value=None), \
+         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
+                           return_value=mixed), \
+         mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=T1_CANDIDATE, session_id="r33d3", model="test-model")
+    assert out == RENDERED
+    assert venice.called
+    assert ("detection_t1", "grounded_refusal", 1) in _ledger_rows("r33d3")
