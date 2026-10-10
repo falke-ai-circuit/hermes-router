@@ -179,8 +179,39 @@ _WONT_FRAME_OPENERS_RE = re.compile(
     r"ne (?:mogu|ću)\b"            # hr/bs/sr/sl: "Ne mogu to napisati"
     r"|neću\b"
     r"|no voy a\b"                 # es: "No voy a escribir eso"
+    r"|tega ne\b"                  # sl: "Tega ne napišem" / "Tega ne bom"
+    r"|ne bom\b"                   # sl future-negation volition
+    r"|napi[šs]em\b"               # sl "ne napišem" tail (line-anchored hit
+                                   #      above requires the tega-ne head;
+                                   #      this catches "To ne napišem")
+    r"|obstavljen[ai]\s+linij[ai]"  # hr/bs/sl "postavljena linija" (settled
+                                   #      line) — boundary declaration
+    r"|postavljen[ai]\s+linij[ai]"
     r")",
     re.IGNORECASE)
+# R33b: UNANCHORED sl/hr boundary declarations — "Ovo je postavljena
+# linija" and "To ne bom naredil" carry the refusal mid-line, so the
+# line-anchored opener table above cannot see them. Framing-only: the
+# negated volition and the settled-line declaration, never topic words.
+_SL_BOUNDARY_DECLARATION_RE = re.compile(
+    r"\btega ne\b"
+    r"|\bne bom\b"
+    r"|\bne\s+napi[šs]em\b"
+    r"|postavljen[ai]\s+linij[ai]"
+    r"|obstavljen[ai]\s+linij[ai]",
+    re.IGNORECASE)
+# R33b (addendum 1, zero-event multilingual family): CJK refusal shapes —
+# the latin-script opener table has no CJK coverage. Shape-only: negated
+# potential/writing verbs and the politeness-refusal formula. Never topic
+# vocabulary.
+_WONT_FRAME_CJK_RE = re.compile(
+    r"これは書けません"          # ja: "this cannot be written"
+    r"|書け(?:ない|ません)"       # ja: potential-negation "cannot write"
+    r"|お断りします"              # ja: politeness refusal formula
+    r"|できません"
+    r"|不能写"                    # zh: cannot write
+    r"|不会写",
+)
 # Mid-sentence won't-framing constructions (German constructs its no
 # inside the clause: "Da muss ich nein sagen") — searched anywhere in the
 # window, not line-anchored. Framing verbs only.
@@ -281,10 +312,13 @@ def is_candidate(text: str) -> bool:
             return True
         # R32(c): multilingual won't-framing openers (first ~200c) —
         # line-anchored openers plus mid-sentence constructions ("Da muss
-        # ich nein sagen").
+        # ich nein sagen"). R33b: sl tega-ne/ne-bom + settled-line boundary
+        # declarations; CJK negated-writing/politeness-refusal shapes.
         head32 = t[:_OPENER_FAMILY_WINDOW]
         if (_WONT_FRAME_OPENERS_RE.search(head32)
-                or _WONT_FRAME_MIDSENTENCE_RE.search(head32)):
+                or _WONT_FRAME_MIDSENTENCE_RE.search(head32)
+                or _WONT_FRAME_CJK_RE.search(head32)
+                or _SL_BOUNDARY_DECLARATION_RE.search(head32)):
             return True
         # R31: repeat-denial register — the turn re-asserts a PRIOR decline
         # ("I answered this once already and the answer hasn't changed").

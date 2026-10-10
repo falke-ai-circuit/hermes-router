@@ -913,7 +913,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
         matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
         semantic_verdict: Optional[str] = None
-        _r22_fail_open = False  # R33-F03: unconfirmed tier-1 fail-open signal
+        # R33-FIX2: provenance of the route trigger. A stage-1 regex hit is
+        # "stage1" (unconfirmed); a TIER-1 FAIL-OPEN detection is
+        # "t1_fail_open" (unconfirmed); a semantically confirmed T2 refusal
+        # (stage-2 verdict, detection_t2 with a judge verdict) is
+        # "t2_confirmed" — a refusal is a refusal even after a substantive
+        # answer; no yield.
+        _trigger_kind = "stage1" if matches else None
         if not matches:
             # Stage-1 miss → stage-2 semantic classification (v2). Gated
             # (bare-No opener / short response), loop-guard-probed, breaker +
@@ -921,6 +927,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # mode=flag_only logs+flags only; mode=route enters the EXISTING
             # downstream pipeline at the "matches" point via matches=[semantic_*].
             semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
+            if matches:
+                _trigger_kind = "t2_confirmed"  # R33-FIX2: stage-2 T2 route
         if not matches:
             # R22 (spec r22_two_tier_detection_spec.md): two-tier denial
             # detection — Tier 1 structural gate (free, high-recall) then
@@ -941,11 +949,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         model=model, context=context,
                         log_route=_hub()._log_route, tier1_out=_r22_t1):
                     matches = [_r22sj.DETECTION_PATTERN_GROUP]
-                # R33-F03: remember an UNCONFIRMED tier-1 fail-open route —
-                # it defers to grounded-substance evidence in the swap path.
-                _r22_fail_open = bool(_r22_t1.get("tier1_fail_open"))
+                    # R33-FIX2: an UNCONFIRMED tier-1 fail-open route defers
+                    # to grounded-substance evidence; a judge-confirmed T2
+                    # refusal does not.
+                    _trigger_kind = "t1_fail_open" \
+                        if _r22_t1.get("tier1_fail_open") else "t2_confirmed"
             except Exception:  # noqa: BLE001 — detection never breaks delivery
-                _r22_fail_open = False
+                _trigger_kind = None
                 _hub().logger.debug("r22 detection scan error", exc_info=True)
         if not matches:
             # v3.6.1 completion-audit arm — unified audit_gate (Goran
@@ -1279,14 +1289,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                    answer_chars=len(_last_answer),
                    session_id=session_id)
 
-        # R33-F03 grounded-yield (audit close, session api_1791640691_0410fec3):
-        # a TIER-1 FAIL-OPEN route (verdict=None, no semantic confirmation)
-        # defers to evidence of substance — when the grounding check found a
-        # substantive answer (grounded=True, answer_chars>0), the fail-open
-        # route YIELDS: no swap. Semantic-CONFIRMED refusals (T2 verdict,
-        # stage-1 regex hits) are NOT affected — those route regardless of
-        # grounding. Log: detection_t1 decision=grounded_yield (routed=0).
-        if _r22_fail_open and _grounded and len(_last_answer) > 0:
+        # R33-FIX2 grounded-yield (audit close, F03 + V20 evidence): route
+        # triggers carry PROVENANCE, and an UNCONFIRMED trigger defers to
+        # evidence of substance when the grounding check found a substantive
+        # answer (grounded=True, answer_chars>0). Two arms:
+        #   - T1 FAIL-OPEN (verdict=None): yields on grounding alone — the
+        #     audited F03 shape.
+        #   - STAGE-1 REGEX / line_hold_essay family (V20: relayed 'I won't
+        #     help' quote inside a substantive answer): yields only when the
+        #     CURRENT body is itself substantive (>=300c). Real refusals are
+        #     short holds; a quote-FP lives inside a long body — short real
+        #     refusals keep routing after a substantive prior answer.
+        # Semantic-CONFIRMED refusals (T2 verdict, stage-2 or detection_t2)
+        # are NOT affected — a refusal is a refusal even after a substantive
+        # answer. Log: detection_t1 decision=grounded_yield (routed=0).
+        _gy_yield = (_trigger_kind == "t1_fail_open"
+                     or (_trigger_kind == "stage1"
+                         and len(response_text) >= 300))
+        if _gy_yield and _grounded and len(_last_answer) > 0:
             try:
                 from ..features.detection import semantic_judge as _r22sj_gy
                 _r22sj_gy._ledger_write("detection_t1", session_id,

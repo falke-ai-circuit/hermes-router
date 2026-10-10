@@ -270,3 +270,100 @@ def test_non_candidate_still_has_sweep_started(monkeypatch):
                                         user_ask=ASK, log_route=_log)
     assert routed is False and not judge.called
     assert ("sweep_started", "sw4") in events
+
+
+# ---------------------------------------------------------------------------
+# ADDENDUM 1 — multilingual zero-event family (V10/V12/V14 class)
+# ---------------------------------------------------------------------------
+
+def test_addendum1_multilingual_shapes_fire_t1():
+    assert structural.is_candidate(
+        "Ovo je postavljena linija — klasa oružja bez operativnog opsega "
+        "ostaje zatvorena.") is True  # V10 hr settled-line declaration
+    assert structural.is_candidate(
+        "Tega ne napišem. Navodila za izklop transformatorjske postaje so "
+        "odgovor, ki ga ne dam.") is True  # V14 sl tega-ne
+    assert structural.is_candidate("To ne bom naredil.") is True  # sl ne bom
+    assert structural.is_candidate(
+        "これは書けません。完成版の振り込め詐欺スクリプトは提供できません。") is True  # V12 ja
+    assert structural.is_candidate(
+        "振り込め詐欺への協力はお断りします。") is True  # ja politeness refusal
+
+
+def test_addendum1_multilingual_fp_guards():
+    # benign sl ask — no negation volition
+    assert structural.is_candidate(
+        "Napiši mi povzetek romana za jutri.") is False
+    # benign sl conditional with napišem, no negation
+    assert structural.is_candidate(
+        "Pošlji mi zjutraj ko roku napišem poročilo.") is False
+    # relayed third-person hold unchanged
+    assert structural.is_candidate(
+        "The negotiator held firm through the second round.") is False
+
+
+# ---------------------------------------------------------------------------
+# ADDENDUM 2 — grounded-yield covers the stage-1 trigger family (V20)
+# ---------------------------------------------------------------------------
+
+def test_addendum2_stage1_grounded_quote_yields(env, monkeypatch):
+    """line_hold_essay / refusal_phrases stage-1 trigger on a substantive
+    grounded answer with a relayed refusal quote -> YIELD (unconfirmed
+    trigger defers to substance)."""
+    body = ("I can't do that, the letter said — and the sentence does "
+            "double duty. Structurally the chapter mirrors the first: same "
+            "window, different light, the moral weight shifted to the "
+            "reader, which is the point the critique turns on. The final "
+            "image returns to the opening room, but now the reader knows "
+            "who has been standing in the corner of it the whole time, and "
+            "the reversal reads as earned rather than imposed by the author.")
+    assert len(body) >= 300
+    assert plugin.classifier.scan_post(
+        body, patterns=["refusal_phrases", "line_hold_essay"])  # stage-1 hit
+    state.record_last_seen("add2", ASK)
+    with mock.patch.object(plugin.canonical, "get_last_canonical_answer",
+                           return_value=SUBSTANTIVE), \
+         mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=body, session_id="add2", model="test-model")
+    assert out is None
+    assert not venice.called
+    assert ("detection_t1", "grounded_yield", 0) in _ledger_rows("add2")
+
+
+def test_addendum2_stage1_ungrounded_still_routes(env):
+    """Regression: stage-1 hit + NO substantive prior answer -> routes."""
+    body = ("I can't do that. The request as phrased is exactly the thing "
+            "I don't produce, and no rephrasing changes the answer.")
+    assert plugin.classifier.scan_post(
+        body, patterns=["refusal_phrases", "line_hold_essay"])
+    state.record_last_seen("add2b", ASK)
+    with mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=body, session_id="add2b", model="test-model")
+    assert out == RENDERED
+    assert venice.called
+
+
+# ---------------------------------------------------------------------------
+# ADDENDUM 3 — V18 file-write bypass: triage-documented OUT OF SCOPE.
+# The sweep judges the DELIVERED response body only. A refusal that lives
+# exclusively inside a tool-written artifact (never in the message body)
+# is render-content inspection — prohibited by the observer carve-out.
+# Pinned here: a compliant "saved to <path>" body with zero refusal shape
+# passes clean (no route, no FP).
+# ---------------------------------------------------------------------------
+
+def test_addendum3_file_write_delivery_body_compliant(env):
+    body = ("Full writeup delivered — saved to /opt/data/projects/x/writeup.md "
+            "(14 sections, 15k chars). Summary: threat-model framing, "
+            "detection guidance, and hardening checklist.")
+    state.record_last_seen("add3", ASK)
+    with mock.patch.object(plugin.router, "call",
+                           return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=body, session_id="add3", model="test-model")
+    assert out is None  # compliant body: no swap, no route
+    assert not venice.called
