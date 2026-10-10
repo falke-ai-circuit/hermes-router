@@ -122,6 +122,52 @@ _COUNTER_OFFER_RE = re.compile(
     r"those i'?ll|pick one|i'?ll build it|i can offer|alternatives",
     re.IGNORECASE)
 
+# R32 (Goran directive 2026-10-10, live miss api_1791541530_3457853a, x7
+# 1,444c, zero router events): WON'T-FRAMING WIDENING — detection triggers on
+# refusal/won't-framing ONLY (never on content, render types, or request-type
+# inspection). Three shapes:
+#   (a) settled-line opener family — "no on this one", "not this one",
+#       "this one's a no", "pass on this one" — open-class openers keep
+#       beating the fixed tables, so the FAMILY (first ~200c, bounded) is
+#       the shape;
+#   (b) in-register self-voice frame-explainer — first-person + negation +
+#       "refus(ing|al)" + the frame/depth/medium attribution ("it's not the
+#       depth refusing — it's the frame"). The words named are how models
+#       explain their OWN no — framing shape, language-portable as a class,
+#       not topic vocabulary;
+#   (c) multilingual won't-framing openers (first ~200c) — different
+#       languages construct won'ts differently: hr/bs/sr/sl "ne mogu/neću",
+#       de "nein sagen", es "no voy a". Framing verbs only, never content.
+# FP guard: the family phrases and won't-constructions are themselves
+# declines — a turn cannot contain them while complying; bounded windows
+# keep long-turn FP surface flat, and Tier 2 still owns the decision
+# (candidate -> judge call, never a route from Tier 1).
+_OPENER_FAMILY_WINDOW = 200
+_REFUSAL_OPENER_FAMILY_RE = re.compile(
+    r"(?:^|\n)\s*(?:\**)?(?:no on this one|not this one|this one'?s a no|"
+    r"pass on this one)\b",
+    re.IGNORECASE)
+_FRAME_REJECTION_RE = re.compile(
+    r"\bit'?s not the [a-z-]+ refus(?:ing|al)\b", re.IGNORECASE)
+_FRAME_REJECTION_WINDOW = 600
+_WONT_FRAME_OPENERS_RE = re.compile(
+    r"(?:^|\n)\s*(?:\**)?(?:"
+    r"ne (?:mogu|ću)\b"            # hr/bs/sr/sl: "Ne mogu to napisati"
+    r"|neću\b"
+    r"|no voy a\b"                 # es: "No voy a escribir eso"
+    r")",
+    re.IGNORECASE)
+# Mid-sentence won't-framing constructions (German constructs its no
+# inside the clause: "Da muss ich nein sagen") — searched anywhere in the
+# window, not line-anchored. Framing verbs only.
+_WONT_FRAME_MIDSENTENCE_RE = re.compile(
+    r"(?:(?:muss|will)\s+ich\s+nein\b|\bnein sagen\b|\bnicht (?:schreiben|tun)\b)",
+    re.IGNORECASE)
+
+# R32 leg 2: the R30 counter-offer gate gets its OWN bound — the live miss
+# was 1,444c and slipped the 1200c short-turn bound it shared with R28.
+_COUNTER_OFFER_MAX_CHARS = 2000
+
 # R31 (live battery round 5, shadow, 2026-10-09 20:39-20:47Z, x1 zero
 # events): REPEAT-DENIAL register — the turn re-asserts a PRIOR decline
 # ("I answered this once already and the answer hasn't changed", "same
@@ -198,9 +244,24 @@ def is_candidate(text: str) -> bool:
         # "Those I'll descend into fully"). Decline + offer both REQUIRED:
         # a helpful multi-option answer offers without declining and never
         # flags. Bounded to short turns like R28. Tier 2 owns the decision.
-        if len(t) < _SHORT_HOLD_MAX_CHARS:
+        if len(t) < _COUNTER_OFFER_MAX_CHARS:
             if _DECLINE_MARKER_RE.search(t) and _COUNTER_OFFER_RE.search(t):
                 return True
+        # R32(a): settled-line opener family (first ~200c) — the opener
+        # phrases are themselves declines; Tier 2 owns the decision.
+        if _REFUSAL_OPENER_FAMILY_RE.search(t[:_OPENER_FAMILY_WINDOW]):
+            return True
+        # R32(b): in-register self-voice frame-explainer — "it's not the
+        # depth refusing — it's the frame" (bounded window).
+        if _FRAME_REJECTION_RE.search(t[:_FRAME_REJECTION_WINDOW]):
+            return True
+        # R32(c): multilingual won't-framing openers (first ~200c) —
+        # line-anchored openers plus mid-sentence constructions ("Da muss
+        # ich nein sagen").
+        head32 = t[:_OPENER_FAMILY_WINDOW]
+        if (_WONT_FRAME_OPENERS_RE.search(head32)
+                or _WONT_FRAME_MIDSENTENCE_RE.search(head32)):
+            return True
         # R31: repeat-denial register — the turn re-asserts a PRIOR decline
         # ("I answered this once already and the answer hasn't changed").
         # Shape-only: repeat-denial marker + first-person negative-volition
