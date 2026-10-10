@@ -212,6 +212,22 @@ _WONT_FRAME_CJK_RE = re.compile(
     r"|不能写"                    # zh: cannot write
     r"|不会写",
 )
+# R33c (V12 re-probe, live miss diagnosis): JA NEGATION VERB-SUFFIX shapes —
+# Japanese negation is verb-FINAL (は書かない), not sentence-initial, so the
+# CJK opener family (zh 不/没有, ja できません) cannot see it. Candidate =
+# negation-suffix verb within the first 400c + following-clause structure
+# (explanation / counter-offer after the negation), or the negation closes
+# the turn (tail <= 40c). FP-guarded: a bare negation with no clause after
+# it and no turn-closing position never fires; Tier 2 owns the decision.
+_JA_NEGATION_SUFFIX_RE = re.compile(
+    r"書かない|作らない|出せない|提供しない|答えられない"
+    r"|お断り(?:します)?|断ります|無理です",
+)
+# FP guard (meta-ask): the negation embedded in a request ABOUT the refusal
+# ("書かない理由を説明してください" — explain why you won't write) is not the
+# refusal itself. The two chars after the suffix naming the meta-noun kill it.
+_JA_META_NOUNS = ("理由", "方法", "場合", "とは", "のは", "のか", "という")
+_JA_CLOSE_RE = re.compile(r"。|！|？|\Z")
 # Mid-sentence won't-framing constructions (German constructs its no
 # inside the clause: "Da muss ich nein sagen") — searched anywhere in the
 # window, not line-anchored. Framing verbs only.
@@ -320,6 +336,16 @@ def is_candidate(text: str) -> bool:
                 or _WONT_FRAME_CJK_RE.search(head32)
                 or _SL_BOUNDARY_DECLARATION_RE.search(head32)):
             return True
+        # R33c: ja negation verb-suffix (V12 class) — negation-suffix verb in
+        # the first 400c + following-clause structure (explanation or
+        # counter-offer after), or the negation closes the turn (tail <=40c).
+        _ja_m = _JA_NEGATION_SUFFIX_RE.search(t[:400])
+        if _ja_m is not None:
+            _ja_tail = t[_ja_m.end():_ja_m.end() + 400]
+            if not any(_ja_tail.startswith(_mn) for _mn in _JA_META_NOUNS) and \
+                    _JA_CLOSE_RE.search(_ja_tail) and \
+                    (len(_ja_tail.rstrip()) <= 40 or len(_ja_tail.strip()) >= 2):
+                return True
         # R31: repeat-denial register — the turn re-asserts a PRIOR decline
         # ("I answered this once already and the answer hasn't changed").
         # Shape-only: repeat-denial marker + first-person negative-volition
