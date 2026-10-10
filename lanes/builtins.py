@@ -54,12 +54,12 @@ DECLARED_USER_VARIANTS: Dict[str, str] = _pack_dict('DECLARED_USER_VARIANTS')
 
 # dispatcher_knobs._pre_patterns default (classification mechanical fallback)
 PRE_PATTERNS_DEFAULT = (
-    "csam_underage",
-    "bioweapon_protocol",
-    "ied_construction",
-    "named_target_defamation",
-    "trafficking_route",
-    "weaponized_playbook_real_name",
+    # R33-D5 (Goran-direct binding correction): detection is refusal-framing
+    # based, never request-type based. The user turn routes ONLY on
+    # refusal-framing echo/continuation. Content-class groups
+    # (csam_underage, bioweapon_protocol, ...) remain in the classifier
+    # registry as inert legacy — selectable by config, never defaults.
+    "refusal_phrases",
 )
 
 # Sentinel markers (dispatcher_pre: pre-routing firewall). Content that is

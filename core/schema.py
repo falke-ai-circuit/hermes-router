@@ -145,8 +145,7 @@ SCHEMA: Tuple[Key, ...] = (
     _k("decision_head.confidence_threshold", float, 0.5),
     _k("classification.semantic_gate", bool, False),
     _k("classification.pre_patterns", list, []),
-    _k("classification.two_vote_confirm", str, "on"),
-    _k("classification.two_vote_groups", dict, {}, nullable=True),
+
     _k("classification.aux_classify", dict, {}),
     _k("risk.enabled", bool, True),
     _k("risk.endpoint", str, "", nullable=True),

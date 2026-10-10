@@ -32,16 +32,11 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
-def _two_vote_gate_bypass(monkeypatch):
-    """v4.2.0 two-vote confirm gate (2026-09-13): the PRE gate requires an
-    aux semantic confirm for settled-line-adjacent groups. The zero-network
-    guard makes aux unavailable in tests -> fail-closed standdown would break
-    every legacy test driving contested content through on_llm_request.
-    Suite-wide DEFAULT: the gate is BYPASSED (legacy behavior). The gate's
-    own battery (test_two_vote_confirm_gate.py) re-enables it locally to test
-    confirm/deny/standdown paths."""
-    import hermes_router.dispatcher_knobs as _dk
-    monkeypatch.setattr(_dk, "_two_vote_enabled", lambda: False)
+def _two_vote_gate_bypass():
+    """R33-D5: the two-vote confirm gate is DELETED — nothing to bypass.
+    Kept as a no-op autouse fixture so legacy batteries that assumed the
+    gate keep running unchanged."""
+    return
 
 
 @pytest.fixture(autouse=True)

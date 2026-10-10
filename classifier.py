@@ -107,15 +107,6 @@ POST_GROUP_NAMES = frozenset({"refusal_phrases", "line_hold_essay"})
 # Python 3.11+, and hoisting it would change DOT semantics for every other
 # alternative (behavior break).
 # ---------------------------------------------------------------------------
-_PRE_COMBINED_RE = re.compile(
-    "|".join("(?:%s)" % rx.pattern
-             for name in ("csam_underage", "bioweapon_protocol", "ied_construction",
-                          "named_target_defamation", "trafficking_route",
-                          "weaponized_playbook_real_name")
-             for rx in PATTERN_GROUPS[name]),
-    re.IGNORECASE,
-)
-
 
 def _join_combined(patterns: List[str]) -> "re.Pattern":
     parts = []
@@ -125,6 +116,18 @@ def _join_combined(patterns: List[str]) -> "re.Pattern":
         else:
             parts.append("(?:%s)" % p)
     return re.compile("|".join(parts), re.IGNORECASE)
+
+
+# R33-D5: the combined fast path now includes the refusal-framing surface —
+# scan_pre(patterns=["refusal_phrases"]) must reach the fast-path hit.
+_PRE_COMBINED_RE = _join_combined(
+    [rx.pattern for name in ("csam_underage", "bioweapon_protocol",
+                             "ied_construction", "named_target_defamation",
+                             "trafficking_route",
+                             "weaponized_playbook_real_name",
+                             "refusal_phrases")
+     for rx in PATTERN_GROUPS[name]],
+)
 
 
 _REFUSAL_COMBINED_RE = _join_combined(_REFUSAL_PHRASES)

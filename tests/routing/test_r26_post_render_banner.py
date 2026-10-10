@@ -54,7 +54,6 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_flinch_reason_gate", lambda: False)
     monkeypatch.setattr(plugin, "_doctrine_verdict_enabled", lambda: False)
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
-    monkeypatch.setattr(plugin, "_two_vote_enabled", lambda: False)
     yield LOGGED
 
 

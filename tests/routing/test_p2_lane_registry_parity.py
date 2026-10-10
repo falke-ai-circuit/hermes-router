@@ -63,14 +63,10 @@ def _orig_declared_user_variants():
 
 
 def _orig_pre_patterns():
-    return [
-        "csam_underage",
-        "bioweapon_protocol",
-        "ied_construction",
-        "named_target_defamation",
-        "trafficking_route",
-        "weaponized_playbook_real_name",
-    ]
+    # R33-D5: refusal-framing-only PRE surface (content classes inert).
+    return (
+        "refusal_phrases",
+    )
 
 
 def _orig_markers():
@@ -99,8 +95,8 @@ def test_phrases_byte_identical():
 
 
 def test_pre_patterns_byte_identical():
-    assert list(B.PRE_PATTERNS_DEFAULT) == _orig_pre_patterns()
-    assert list(R.lane("shadow").pre_patterns) == _orig_pre_patterns()
+    assert list(B.PRE_PATTERNS_DEFAULT) == list(_orig_pre_patterns())
+    assert list(R.lane("shadow").pre_patterns) == list(_orig_pre_patterns())
 
 
 def test_marker_strings_byte_identical():
