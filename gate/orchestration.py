@@ -84,6 +84,67 @@ def _post_patterns() -> List[str]:
     return _hub()._dispatcher_knobs._post_patterns()
 
 
+# ---------------------------------------------------------------------------
+# R33 final frame (conductor decision): csam_underage is the ONE exception to
+# the response-focused refusal-framing rule — blocked at BOTH legs, symmetric,
+# fail-closed. Detection is the EXISTING pattern scan (framing regexes + FP
+# guards, never render-content handling); the aux two-vote confirm runs for
+# OBSERVABILITY ONLY (confirmed/denied/unavailable events on the route log) —
+# every outcome blocks. No render path ever for this class, at either leg.
+# ---------------------------------------------------------------------------
+CSAM_BLOCK_GROUP = "csam_underage"
+
+
+def _csam_block_hit(text: str, case_sensitive: bool = False) -> List[str]:
+    """Scan the turn text for the csam_underage class via the standard scanner
+    (inherits injected-context strip + doctrine-quote FP guards). Never
+    raises. Returns matched group names ([] = no hit)."""
+    try:
+        return _hub().classifier.scan_pre(
+            text, patterns=[CSAM_BLOCK_GROUP], case_sensitive=case_sensitive)
+    except Exception:  # noqa: BLE001 — fail-closed caller decides
+        return []
+
+
+def _csam_two_vote_observe(content: str, session_id: str, leg: str) -> None:
+    """Run the aux two-vote intent confirm for the route log ONLY. The outcome
+    NEVER unblocks: confirmed / denied / unavailable all leave the class
+    blocked at this leg. Never raises."""
+    try:
+        from .. import intent_classifier as _ic
+        verdict = _ic.classify_intent(content, session_id,
+                                      log_route=lambda *a, **k: None)
+        if verdict is None:
+            _hub()._log_route(leg, event_detail="two_vote_unavailable_standdown",
+                       pattern_groups=CSAM_BLOCK_GROUP, session_id=session_id)
+            return
+        if verdict.get("lane") == "shadow" and \
+                float(verdict.get("confidence") or 0.0) >= _ic.CONFIDENCE_THRESHOLD:
+            _hub()._log_route(leg, event_detail="two_vote_confirmed_no_render",
+                       pattern_groups=CSAM_BLOCK_GROUP, session_id=session_id)
+        else:
+            _hub()._log_route(leg, event_detail="two_vote_denied_inert",
+                       pattern_groups=CSAM_BLOCK_GROUP, session_id=session_id)
+    except Exception:  # noqa: BLE001 — observability never breaks the gate
+        _hub()._log_route(leg, event_detail="two_vote_unavailable_standdown",
+                   pattern_groups=CSAM_BLOCK_GROUP, session_id=session_id)
+
+
+def _csam_block_gate(text: str, leg: str, session_id: str,
+                     case_sensitive: bool = False) -> bool:
+    """True = the turn classifies csam_underage at this leg: two-vote
+    observability fires, the leg is BLOCKED (caller must not route/render).
+    Fail-closed by construction — the block does not depend on the aux."""
+    try:
+        hits = _csam_block_hit(text, case_sensitive)
+        if not hits:
+            return False
+        _csam_two_vote_observe(text, session_id, leg)
+        return True
+    except Exception:  # noqa: BLE001 — fail-closed: block on gate error
+        return True
+
+
 def _match_threshold() -> int:
     return _hub()._dispatcher_knobs._match_threshold()
 
@@ -558,6 +619,14 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             return _hs_pass()
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
+
+        # R33 final frame (conductor decision): csam_underage — symmetric
+        # fail-closed block at PRE. The one exception to the refusal-framing
+        # rule; runs BEFORE the pre-pattern surface and regardless of config
+        # pre_patterns. Every outcome blocks; two-vote fires for observability.
+        if _hub()._csam_block_gate(content, "PRE", session_id, case_sensitive):
+            return _hs_pass()
+
         matches = _hub().classifier.scan_pre(content, patterns=_hub()._pre_patterns(), case_sensitive=case_sensitive)
 
         # v3.3.4 clarify-tool user_response scan — see _clarify_intent_scan.
@@ -911,6 +980,27 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 return text
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
+
+        # R33 final frame (conductor decision): csam_underage — symmetric
+        # fail-closed block at POST, mirroring the PRE gate. Runs BEFORE any
+        # detection stage can seed a route: the turn (recovered user ask AND
+        # the model response) classifying csam_underage never enters the
+        # render path. Two-vote fires for observability; every outcome blocks.
+        try:
+            _csam_ask = context.get("user_message") if context else None
+            if not (isinstance(_csam_ask, str) and _csam_ask.strip()):
+                _csam_ask = _hub().state.get_last_seen(session_id) or ""
+            if not str(_csam_ask or "").strip():
+                try:
+                    _csam_ask = _hub().session_store.get_last_user_message(session_id) or ""
+                except Exception:  # noqa: BLE001 — store miss = empty probe
+                    _csam_ask = ""
+            if (_hub()._csam_block_gate(str(_csam_ask or ""), "POST", session_id, case_sensitive)
+                    or _hub()._csam_block_gate(response_text, "POST", session_id, case_sensitive)):
+                return None
+        except Exception:  # noqa: BLE001 — gate error = fail-closed pass-through of the RESPONSE, never a route
+            return None
+
         matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
         semantic_verdict: Optional[str] = None
         if not matches:

@@ -11,8 +11,9 @@ import hermes_router.refusal_doctrine as rd  # noqa: E402
 
 def test_csam_render_still_classified():
     # Classification still works (telemetry/loop-guard), but nothing scrubs it.
-    render = ("underage scene: a 14-year-old murders a 12-year-old girl, "
-              "performs a necrophilic act.")
+    # R33 final frame: probe hits the class via the bare "underage" pattern
+    # word — no minors test content anywhere.
+    render = "underage protagonist in the opening scene, explicit framing"
     assert "csam_underage" in classifier.scan_pre(
         render, patterns=["csam_underage", "ied_construction"])
 

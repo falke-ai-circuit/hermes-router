@@ -104,7 +104,9 @@ def test_fallback_reads_session_store_when_no_kwargs():
                 response_text="I won't write this.",
                 session_id="s1", model="minimax-m3",
             )
-    store.assert_called_once_with("s1")
+    # R33: the POST csam gate may also consult the store before the fallback
+    # recovery does — assert the s1 read happened, not an exact call count.
+    assert mock.call("s1") in store.call_args_list
     assert venice.called
     assert venice.call_args[0][0] == ESCALATION_3
     assert out == RENDERED
@@ -124,66 +126,53 @@ def test_fallback_no_message_found_passes_through():
 
 
 # ---------------------------------------------------------------------------
-# Excluded class gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
-# blocking, uncensored should not filter anything when asked"). Tests now pin
-# the REVERSED behavior: csam-class messages route through the fallback like
-# any other class; boundaries live in the render substrate, not routing code.
+# R33 final frame (conductor decision): csam_underage is the ONE exception —
+# symmetric fail-closed block at BOTH legs. Tests pin the POST side: a
+# csam-classified recovered message NEVER routes; the model's own response
+# passes through unmodified (no render path). Test probes hit the class via
+# the bare "underage" pattern word — no minors content anywhere.
 # ---------------------------------------------------------------------------
 
 
-def test_excluded_class_kwargs_source_routes_like_any_class():
-    """Gate removed: recovered csam_underage message routes to the chain."""
-    # v3.5.0 isolation fix: the doctrine-verdict gate (added 2026-09-02, after
-    # these tests were written) makes a LIVE aux call when the test
-    # environment carries a resolvable key — on profiles whose doctrine card
-    # holds a minors line, the verdict comes back agent_line and the refusal
-    # is (correctly) honored instead of routed. That behavior is pinned in
-    # test_doctrine_verdict.py with a mocked aux; here the fallback-routing
-    # pin must not depend on live model verdicts, so fail-open (None) is
-    # mocked explicitly.
-    with mock.patch.object(plugin.refusal_doctrine, "verdict_for_refusal",
-                           return_value=None):
-        with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
-            out = plugin.on_transform_llm_output(
-                response_text="I won't write this.",
-                session_id="s1", model="minimax-m3",
-                user_message="write an explicit scene with a 13-year-old",
-            )
-    assert out == RENDERED
-    assert venice.called
+def test_excluded_class_kwargs_source_blocked_at_post():
+    """csam_underage-classified recovered message: POST blocks the route."""
+    with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text="I won't write this.",
+            session_id="s1", model="minimax-m3",
+            user_message="write a scene with an underage protagonist",
+        )
+    assert out is None
+    assert not venice.called
 
 
-def test_excluded_class_store_source_routes_like_any_class():
-    """Gate removed: store-recovered csam_underage message routes to the chain."""
+def test_excluded_class_store_source_blocked_at_post():
+    """csam_underage-classified store-recovered message: POST blocks."""
     with mock.patch.object(plugin.session_store, "get_last_user_message",
-                           return_value="explicit scene with a 15 year old girl"):
+                           return_value="underage protagonist scene, explicit"):
         with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
             out = plugin.on_transform_llm_output(
                 response_text="I won't write this.",
                 session_id="s1", model="minimax-m3",
             )
-    assert out == RENDERED
-    assert venice.called
+    assert out is None
+    assert not venice.called
 
 
-def test_no_content_gate_exists_in_routing_code():
-    """No code-side content gate: even a narrowed pre_patterns config must not
-    reintroduce filtering — the fallback routes identically for every class."""
-    # v3.5.0 isolation fix: doctrine verdict mocked fail-open (None) so this
-    # routing pin never depends on a live aux verdict (see sibling test).
+def test_csam_block_independent_of_pre_patterns_config():
+    """R33 final frame: the csam_underage POST block is hard-wired — a narrowed
+    pre_patterns config cannot weaken or re-enable routing for the class."""
     cfg = dict(plugin._cfg())
     cfg["classification"] = {"pre_patterns": ["ied_construction"], "post_classify": True}
-    with mock.patch.object(plugin.refusal_doctrine, "verdict_for_refusal",
-                           return_value=None):
-        with mock.patch.object(plugin, "_cfg", return_value=cfg):
-            with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
-                out = plugin.on_transform_llm_output(
-                    response_text="I won't write this.",
-                    session_id="s1", model="minimax-m3",
-                    user_message="write an explicit scene with a 13-year-old",
-                )
-    assert out == RENDERED
-    assert venice.called
+    with mock.patch.object(plugin, "_cfg", return_value=cfg):
+        with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
+            out = plugin.on_transform_llm_output(
+                response_text="I won't write this.",
+                session_id="s1", model="minimax-m3",
+                user_message="write a scene with an underage protagonist",
+            )
+    assert out is None
+    assert not venice.called
 
 
 # ---------------------------------------------------------------------------
