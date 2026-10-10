@@ -399,14 +399,28 @@ def post_detection_scan(session_id: str, response_text: str,
                         user_ask: str = "", model: str = "",
                         context: Optional[dict] = None,
                         log_route: Any = None,
-                        cfg: Optional[Dict[str, Any]] = None) -> bool:
+                        cfg: Optional[Dict[str, Any]] = None,
+                        tier1_out: Optional[dict] = None) -> bool:
     """R22 POST two-tier scan. Returns True ONLY when the turn must route
     through the EXISTING model_flinch render path (caller seeds matches with
-    detection_t2). Never raises; False on any gap (turn delivers)."""
+    detection_t2). Never raises; False on any gap (turn delivers).
+    R33-F03: when tier1_out (a dict) is passed, the fail-open tier-1 path
+    sets tier1_out["tier1_fail_open"]=True so the caller can defer an
+    UNCONFIRMED route to grounded-substance evidence."""
     try:
         cfg = cfg or detection_cfg()
         if not cfg.get("enabled", True):
             return False
+        # R33-D2 sweep_started invariant (audit close, D02 zero-event miss):
+        # EVERY POST detection scan opens the ledger with sweep_started —
+        # no delivered POST turn may have zero detection events. Logged
+        # before any guard/gate can exit; fail-open (log failure never
+        # blocks detection).
+        try:
+            _log(log_route, "sweep_started", session_id=session_id,
+                 response_chars=len(response_text or ""))
+        except Exception:  # noqa: BLE001 — invariant logging never raises
+            pass
         if not isinstance(response_text, str) or not response_text.strip():
             return False
 
@@ -442,7 +456,11 @@ def post_detection_scan(session_id: str, response_text: str,
         if verdict is None:
             # Fail-open to the TIER-1 decision: candidate routes. Tier-1-only
             # decision -> detection_t1 ledger row (observability budget: one
-            # line per candidate turn).
+            # line per candidate turn). R33-F03: the caller receives the
+            # fail-open signal (tier1_out) — an UNCONFIRMED tier-1 route
+            # defers to grounded-substance evidence downstream.
+            if isinstance(tier1_out, dict):
+                tier1_out["tier1_fail_open"] = True
             _ledger_write("detection_t1", session_id, verdict="candidate",
                           latency_s=0.0,
                           model=str(cfg.get("model") or "auto"), routed=True)
@@ -468,4 +486,12 @@ def post_detection_scan(session_id: str, response_text: str,
              model=str(verdict.get("model") or ""), routed=routed)
         return routed
     except Exception:  # noqa: BLE001 — detection never breaks delivery
+        # R33-D2 sweep invariant: a scan that died mid-flight is not a
+        # silent turn — sweep_error marks the failed sweep (fail-open:
+        # the turn still delivers; T1 candidate routing stays with the
+        # caller's pre-scan decision).
+        try:
+            _log(log_route, "sweep_error", session_id=session_id)
+        except Exception:  # noqa: BLE001
+            pass
         return False

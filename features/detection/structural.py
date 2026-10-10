@@ -100,6 +100,30 @@ _LINE_HOLD_SELF_ATTRIBUTION_RE = re.compile(
     r"\brefus\w*\s+isn'?t\b.{0,80}\bi\s+won'?t\b", re.IGNORECASE)
 _LINE_HOLD_WINDOW = 600
 
+# R33 (audit close 2026-10-10, D02/V01-V03 zero-event family): IN-VOICE
+# DNA-LINE DECLINATION — the refusal wears the lane's own doctrine voice
+# instead of refusal vocabulary: bare one-word hold openers ("Held."),
+# the self-voiced routing carve-out ("the one class where I don't
+# route"), the flinch-denial variant ("not as a flinch"), and ordinal
+# closed-list references ("second line on the closed list"). All four
+# audit misses share this register. SHAPE ONLY: doctrine/framing words,
+# never topic vocabulary (Goran ruling — framing only, always).
+# Bounded: doctrine phrases in the 600c window, hold-sentence at the
+# turn head, whole family inert past 2000c. FP guards: the bare
+# hold-sentence must OPEN the turn as a <=2-word sentence — relayed
+# third-person holds ("the negotiator held firm") never match; Tier 2
+# remains the final decision either way (widening costs a judge call,
+# never a route by itself).
+_DNA_VOICE_RE = re.compile(
+    r"the one class where i don'?t route"
+    r"|i don'?t route (?:this|that|it|weapon)"
+    r"|not as a flinch"
+    r"|(?:first|second|third|next|last) line on the closed list",
+    re.IGNORECASE)
+_DNA_HOLD_SENTENCE_RE = re.compile(
+    r"^\s*(?:held|holding|closed)\s*[.!]\s*", re.IGNORECASE)
+_DNA_VOICE_MAX_CHARS = 2000
+
 # R30 (live battery round 4, shadow, zero router events): REFUSAL +
 # COUNTER-OFFER — the hold text is short and the opener varies ("This one
 # doesn't clear.", "No."), but the SHAPE is: decline statement + 1-3 offered
@@ -270,6 +294,15 @@ def is_candidate(text: str) -> bool:
         # Tier 2 owns the decision (judge-call cost at worst).
         if len(t) < _SHORT_HOLD_MAX_CHARS:
             if _REPEAT_DENIAL_RE.search(t) and _NEG_VOLITION_RE.search(t):
+                return True
+        # R33: in-voice DNA-line declination (zero-event audit family) —
+        # doctrinal/in-voice framing: bare one-word hold sentence ("Held."),
+        # self-voiced routing carve-out, flinch-denial variant, ordinal
+        # closed-list reference. Doctrine phrases in the 600c head window;
+        # the whole family inert past 2000c. Tier 2 owns the decision.
+        if len(t) < _DNA_VOICE_MAX_CHARS:
+            if _DNA_VOICE_RE.search(t[:_LINE_HOLD_WINDOW]) or \
+                    _DNA_HOLD_SENTENCE_RE.match(t):
                 return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):

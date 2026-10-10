@@ -913,6 +913,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
         matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
         semantic_verdict: Optional[str] = None
+        _r22_fail_open = False  # R33-F03: unconfirmed tier-1 fail-open signal
         if not matches:
             # Stage-1 miss → stage-2 semantic classification (v2). Gated
             # (bare-No opener / short response), loop-guard-probed, breaker +
@@ -934,12 +935,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _r22_ask = context.get("user_message") if context else None
                 if not (isinstance(_r22_ask, str) and _r22_ask.strip()):
                     _r22_ask = _hub().state.get_last_seen(session_id) or ""
+                _r22_t1: dict = {}
                 if _r22sj.post_detection_scan(
                         session_id, response_text, user_ask=str(_r22_ask or ""),
                         model=model, context=context,
-                        log_route=_hub()._log_route):
+                        log_route=_hub()._log_route, tier1_out=_r22_t1):
                     matches = [_r22sj.DETECTION_PATTERN_GROUP]
+                # R33-F03: remember an UNCONFIRMED tier-1 fail-open route —
+                # it defers to grounded-substance evidence in the swap path.
+                _r22_fail_open = bool(_r22_t1.get("tier1_fail_open"))
             except Exception:  # noqa: BLE001 — detection never breaks delivery
+                _r22_fail_open = False
                 _hub().logger.debug("r22 detection scan error", exc_info=True)
         if not matches:
             # v3.6.1 completion-audit arm — unified audit_gate (Goran
@@ -1272,6 +1278,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                    ask_chars=len(original_user_message or ""),
                    answer_chars=len(_last_answer),
                    session_id=session_id)
+
+        # R33-F03 grounded-yield (audit close, session api_1791640691_0410fec3):
+        # a TIER-1 FAIL-OPEN route (verdict=None, no semantic confirmation)
+        # defers to evidence of substance — when the grounding check found a
+        # substantive answer (grounded=True, answer_chars>0), the fail-open
+        # route YIELDS: no swap. Semantic-CONFIRMED refusals (T2 verdict,
+        # stage-1 regex hits) are NOT affected — those route regardless of
+        # grounding. Log: detection_t1 decision=grounded_yield (routed=0).
+        if _r22_fail_open and _grounded and len(_last_answer) > 0:
+            try:
+                from ..features.detection import semantic_judge as _r22sj_gy
+                _r22sj_gy._ledger_write("detection_t1", session_id,
+                                        verdict="grounded_yield", latency_s=0.0,
+                                        model="", routed=False)
+            except Exception:  # noqa: BLE001 — ledger must never break the yield
+                pass
+            _hub()._log_route("POST", event_detail="detection_t1",
+                       decision="grounded_yield", routed=0,
+                       session_id=session_id)
+            return None
 
         # Flinch-reason gate (Goran ruling 2026-09-08): a detected refusal
         # routes to the shadow chain ONLY when it is a CONTENT flinch
