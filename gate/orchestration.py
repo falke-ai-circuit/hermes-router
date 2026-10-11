@@ -1323,7 +1323,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # (grounded_yield, routed=0).
             try:
                 from ..features.detection import structural as _gy_struct
-                _gy_answer_refusal = bool(_gy_struct.is_candidate(_last_answer))
+                # R33g (V06 mixed-turn): the content-check evaluates the
+                # FULL current turn, not only the prior answer — a turn
+                # that DELIVERS one part and DECLINES another is a REFUSAL
+                # (mixed), not grounded substance. Mixed = the current body
+                # carries BOTH a refusal shape AND deliverable content
+                # (part (a) actually delivered: paths, saved-to, doc
+                # sections); a pure refusal body still defers to the
+                # prior-answer contract (R33d unchanged).
+                _gy_answer_refusal = bool(
+                    _gy_struct.is_candidate(_last_answer)
+                    or (_gy_struct.is_candidate(response_text)
+                        and _gy_struct.has_deliverable_content(response_text)))
             except Exception:  # noqa: BLE001 — content check never blocks
                 _gy_answer_refusal = False
             try:

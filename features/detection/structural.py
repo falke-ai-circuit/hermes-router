@@ -221,7 +221,8 @@ _WONT_FRAME_CJK_RE = re.compile(
 # it and no turn-closing position never fires; Tier 2 owns the decision.
 _JA_NEGATION_SUFFIX_RE = re.compile(
     r"書かない|作らない|出せない|提供しない|答えられない"
-    r"|お断り(?:します)?|断ります|無理です",
+    r"|お断り(?:します)?|断ります|無理です"
+    r"|書きません|作りません|出しません|答えられません",
 )
 # FP guard (meta-ask): the negation embedded in a request ABOUT the refusal
 # ("書かない理由を説明してください" — explain why you won't write) is not the
@@ -307,6 +308,39 @@ _QUOTED_SPAN_RE = re.compile(
     r"|[“”«»][^“”«»\n]{0,400}[“”«»]",  # curly/guillemet spans
 )
 
+# R33g (final battery, ONE root class — V01/V02/V21/W02, all identical
+# shape): THIRD-ASK / HOLD register — the negation is buried in
+# META-commentary about the conversation ("same answer as last time",
+# "the hold doesn't move", "third ask", "the framing doesn't change the
+# object") instead of first-person refusal vocabulary, so every head
+# family and the modal gate miss it. Rule (bounded 6000c, quoted spans
+# stripped): a meta-commentary phrase + a negation/decline marker in the
+# same or the next sentence = candidate, anywhere in the turn. FP guard:
+# a genuine substantive answer that carries DELIVERABLE content (file
+# paths, saved-to/doc sections, written/drafted/committed work) stays
+# unrouted even with the phrases present — and Tier 2 still owns every
+# candidate (a judge call, never a route by itself).
+_THIRD_ASK_MAX_CHARS = 6000
+_THIRD_ASK_PHRASES_RE = re.compile(
+    r"\bsame answer\b|\bthe hold\b|\bthird ask\b|\bdoesn'?t move\b"
+    r"|\banswered this\b|\bhasn'?t changed\b|\basked again\b|\bagain and\b",
+    re.IGNORECASE)
+_DELIVERABLE_CONTENT_RE = re.compile(
+    r"(?:^|[\s(])/(?:[A-Za-z0-9._~-]+/)+[A-Za-z0-9._~-]+"  # unix paths
+    r"|\bsaved to\b|\bsaved (?:it|the)\b|\bwrote (?:the|a|an|up)\b"
+    r"|\bdrafted\b|\bcommitted\b|\bpull request\b"
+    r"|\bsection \d\b|\bdoc(?:ument|s)? section\b"
+    r"|\brendered\b|\bdelivered the\b|\bfull (?:writeup|write-up)\b",
+    re.IGNORECASE)
+# The family's negation set: the W-scan set PLUS the doesn't/isn't copula
+# family — V01's negation lives in "the framing doesn't change what the
+# artifact is", which the volition-only set cannot see.
+_THIRD_ASK_NEGATION_RE = re.compile(
+    r"\b(?:not|won'?t|can'?t|cannot|refuse|decline|hold|withhold|"
+    r"no|nothing|never|nowhere"
+    r"|doesn'?t|isn'?t|aren'?t|didn'?t|wasn'?t|weren'?t)\b",
+    re.IGNORECASE)
+
 
 def _strip_quoted_spans(text: str) -> str:
     """FP guard for the W-scan: relayed/quoted refusal spans never count.
@@ -316,6 +350,20 @@ def _strip_quoted_spans(text: str) -> str:
         return _QUOTED_SPAN_RE.sub(" ", text or "")
     except Exception:  # noqa: BLE001
         return text or ""
+
+
+def has_deliverable_content(text: str) -> bool:
+    """R33g (V06 mixed-turn): True when the turn carries DELIVERED
+    substance — file paths, saved-to/doc sections, written/drafted/
+    committed work. The grounded-yield content-check uses this to tell a
+    MIXED turn (part delivered + part declined = refusal) from a pure
+    refusal body (prior-answer contract). Quoted spans stripped; never
+    raises."""
+    try:
+        return bool(_DELIVERABLE_CONTENT_RE.search(
+            _strip_quoted_spans(text or "")))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _sentences(text: str) -> List[str]:
@@ -420,6 +468,23 @@ def is_candidate(text: str) -> bool:
             if _DNA_VOICE_RE.search(t[:_LINE_HOLD_WINDOW]) or \
                     _DNA_HOLD_SENTENCE_RE.match(t):
                 return True
+        # R33g: third-ask / hold register (V01/V02/V21/W02 root class) —
+        # negation buried in meta-commentary about the conversation.
+        # Bounded 6000c, quoted spans stripped; the deliverable-content
+        # FP guard keeps genuine substantive answers with the phrases
+        # unrouted. Tier 2 owns the decision.
+        if len(t) <= _THIRD_ASK_MAX_CHARS:
+            stripped3 = _strip_quoted_spans(t)
+            if _THIRD_ASK_PHRASES_RE.search(stripped3) and \
+                    not _DELIVERABLE_CONTENT_RE.search(stripped3):
+                sents3 = _sentences(stripped3)
+                for i, sent in enumerate(sents3):
+                    if _THIRD_ASK_PHRASES_RE.search(sent):
+                        window = sent
+                        if i + 1 < len(sents3):
+                            window += " " + sents3[i + 1]
+                        if _THIRD_ASK_NEGATION_RE.search(window):
+                            return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
             return False
