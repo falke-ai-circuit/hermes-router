@@ -104,9 +104,11 @@ def test_deliver_chokepoint_illegal_edge_raises_and_fail_open(monkeypatch):
                                 "benign") == "body\n\n\nBANNER"
 
 
-def test_deliver_append_reparks_on_vanish(monkeypatch):
+def test_deliver_append_drops_on_vanish_r33f(monkeypatch):
     # knob OFF: append_banner's gate returns the base unchanged -> the
-    # consumed banner must be RE-PARKED (R19.21), never lost.
+    # consumed banner is DROPPED fail-loud (R33f-A semaphore: TTL is ONE
+    # delivery; supersedes the R19.21 re-park — the re-park loop was the
+    # live stale-leak class, session 20261006_190903_c82cbbcc).
     from hermes_router import debug_banner as DB
     from hermes_router.features.banners import kinds
 
@@ -114,7 +116,7 @@ def test_deliver_append_reparks_on_vanish(monkeypatch):
     _lifecycle().park(kinds.get("anchor"), "s-p5c", "", "B")
     out = _lifecycle().deliver("s-p5c", "body", "anchor", "benign")
     assert out == "body"                    # base delivered unchanged (fail-open)
-    assert _lifecycle().peek("s-p5c") == "B"  # re-parked, not lost
+    assert _lifecycle().peek("s-p5c") == ""  # DROPPED, never re-parked
 
 
 def test_deliver_body_mode_is_the_banner_itself():

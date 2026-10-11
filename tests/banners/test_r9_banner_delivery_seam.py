@@ -65,23 +65,21 @@ def _banner(model="openai/gpt-6-astra-pro-flex"):
         route_id="r1")
 
 
-def test_benign_consume_returns_banner_even_when_append_equal(r9_reset, monkeypatch):
-    """Hole 2: a consumed banner must never be dropped by the equality
-    check. With append_banner stubbed to return the base unchanged, the
-    consume still happened (one-shot) — the hook must not raise, must log
-    the consume truthfully, and must not lose the one-shot."""
+def test_benign_consume_drops_when_append_equal_r33f(r9_reset, monkeypatch):
+    """R33f-A supersedes R19.21 (the earlier direction's test rewritten in
+    place, lesson 15): with append_banner stubbed to return the base
+    unchanged, the consume happened (one-shot), the banner is DROPPED
+    fail-loud (banner_semaphore_expired) — never re-parked (the re-park
+    loop was the live stale-leak class, session 20261006_190903_c82cbbcc)."""
     monkeypatch.setattr(debug_banner, "append_banner",
                         lambda base, b, prepend=False, _knob_checked=False: base)
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="visible reply", session_id=SID, model="minimax-m3")
-    assert out == "visible reply"
-    # R19.21 supersedes consumed-and-dropped: the banner did NOT land in
-    # the delivered body -> RE-PARKED for next-turn delivery (the
-    # operative vanish, worst ratio 8 consumes/1 delivered).
-    assert debug_banner._ANCHOR_BANNERS.get(SID)
+    assert out is None  # pass-through contract: nothing landed -> original delivers
+    assert not debug_banner._ANCHOR_BANNERS.get(SID)  # DROPPED, not re-parked
     rec = [f for e, f in r9_reset
-           if f.get("event_detail") == "banner_redelivered_next_turn"]
+           if f.get("event_detail") == "banner_semaphore_expired"]
     assert rec and rec[-1].get("edge") == "benign"
     crec = [f for e, f in r9_reset
             if f.get("event_detail") == "anchor_banner_consume"]

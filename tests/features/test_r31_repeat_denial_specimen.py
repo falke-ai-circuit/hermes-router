@@ -80,11 +80,20 @@ def test_r31_cant_block_suppression_unchanged():
         assert not is_candidate(t), f"false positive on: {t[:60]}"
 
 
-def test_r31_long_repeat_denial_keeps_tier2_only():
-    """R31 is bounded to short turns (<1200c) like R28/R30."""
+def test_r31_long_repeat_denial_midbody_decline_flags_r33f():
+    """R33f-B supersedes the R31 long-turn inertness pin (rewritten in
+    place, lesson 15): the T1 long-turn scan now flags decline
+    constructions ANYWHERE in the body — the mid-body 'Not writing it'
+    makes the padded body a candidate (Tier 2 still owns the decision).
+    The FP guard is the DECLINE requirement, not length: the same padding
+    around a benign prior-answer reference stays inert."""
     t = S1 + " " + ("Additional context paragraph. " * 60)
     assert len(t) >= 1200
-    assert not is_candidate(t)
+    assert is_candidate(t)  # R33f-B: mid-body decline fires past 400c
+    benign_long = ("I answered this once already and the config lives in "
+                   "router.yaml — see the lanes section. "
+                   + "Additional context paragraph. " * 60)
+    assert not is_candidate(benign_long)
 
 
 def test_r31_judge_prompt_repeat_denial_rule():

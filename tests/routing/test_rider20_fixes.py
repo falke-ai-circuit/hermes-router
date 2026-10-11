@@ -484,10 +484,12 @@ def test_d3_late_live_consume_wins(r20_reset, monkeypatch):
         conn.close()
 
 
-def test_d3_no_row_match_reparks_fail_loud(r20_reset, monkeypatch):
-    """No persisted assistant row matches: the banner is RE-PARKED
-    (retained for the next delivery edge) and a fail-loud event is logged
-    (banner_capture_fallback outcome=no_row_match) — never a silent orphan."""
+def test_d3_no_row_match_drops_fail_loud_r33f(r20_reset, monkeypatch):
+    """No persisted assistant row matches: the banner is DROPPED fail-loud
+    (R33f-A semaphore: TTL is ONE delivery; supersedes the rider-20
+    re-park — the re-park loop was the live stale-leak class, session
+    20261006_190903_c82cbbcc) and banner_semaphore_expired is logged with
+    outcome=no_row_match — never a silent orphan, never a re-park."""
     import sqlite3
     from hermes_router import canonical as canon
     dbp = _r20_state_db(r20_reset)  # empty messages table — nothing to match
@@ -502,16 +504,17 @@ def test_d3_no_row_match_reparks_fail_loud(r20_reset, monkeypatch):
                         raising=False)
     DB.park_anchor_banner(SID, "no-row-match banner")
     for _ in range(60):
-        if any(str(kw.get("event_detail")) == "banner_capture_fallback"
+        if any(str(kw.get("event_detail")) == "banner_semaphore_expired"
                for ev, kw in events):
             break
         import time as _t
         _t.sleep(0.1)
-    assert DB._ANCHOR_BANNERS.get(SID) == "no-row-match banner", \
-        "banner re-parked (retained) after no-row-match"
+    assert DB._ANCHOR_BANNERS.get(SID) is None, \
+        "banner dropped (R33f-A: one delivery, no re-park)"
     hit = [kw for ev, kw in events
-           if str(kw.get("event_detail")) == "banner_capture_fallback"]
-    assert any(str(kw.get("outcome")) == "no_row_match" and kw.get("re_parked")
+           if str(kw.get("event_detail")) == "banner_semaphore_expired"]
+    assert any(str(kw.get("outcome")) == "no_row_match" and
+               str(kw.get("edge")) == "capture_fallback"
                for kw in hit), events
     conn = sqlite3.connect(dbp)
     try:

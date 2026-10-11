@@ -257,6 +257,60 @@ _MAX_PARK_SEGMENTS = 4
 _ANCHOR_TASKS: Dict[str, list] = {}
 _ANCHOR_SEGS: Dict[str, list] = {}
 
+# --- R33f-A banner semaphore ------------------------------------------------
+# Park records scoped (session_id, event_seq) + TTL = ONE delivery, consumed
+# once at the POST attach (conductor brief; live evidence: a stale 19:35
+# frontier banner leaked to 4 later turns and double-appended on shadow
+# renders — session 20261006_190903_c82cbbcc). The record rides the slot:
+# park -> record(event_seq, parked_at); consume -> record dies with the slot;
+# a not-landed attach is DROPPED fail-loud (banner_semaphore_expired), never
+# re-parked into later turns. claim_banner_ownership lets an uncensored-render
+# turn (which appends its OWN fresh banner) release the slot BEFORE any anchor
+# consume. Wrong-session touches are structurally impossible: every map is
+# keyed by the exact session id and never read across keys.
+_PARK_RECORDS: Dict[str, Dict[str, Any]] = {}
+_PARK_RECORDS_MAX = 64
+BANNER_SEMAPHORE_EXPIRED_EVENT = "banner_semaphore_expired"
+BANNER_OWNERSHIP_CLAIMED_EVENT = "banner_ownership_claimed"
+
+
+def _next_park_event_seq() -> int:
+    """Monotonic event seq for the park record (§10.4-E correlation)."""
+    try:
+        from . import suggestions
+
+        return int(suggestions.next_event_seq())
+    except Exception:  # noqa: BLE001 — a record id must never break a park
+        return 0
+
+
+def _record_park(session_id: str, task_id: str = "") -> None:
+    """Register the one-delivery semaphore record for a LIVE park. Bounded
+    FIFO; never raises; no-op on an empty session id."""
+    try:
+        sid = str(session_id or "")
+        if not sid:
+            return
+        while len(_PARK_RECORDS) >= _PARK_RECORDS_MAX:
+            _PARK_RECORDS.pop(next(iter(_PARK_RECORDS)), None)
+        _PARK_RECORDS[sid] = {
+            "event_seq": _next_park_event_seq(),
+            "parked_at": time.time(),
+            "task_id": str(task_id or "")[:40],
+        }
+    except Exception:  # noqa: BLE001 — record failure never breaks the park
+        pass
+
+
+def park_record(session_id: str) -> Dict[str, Any]:
+    """The parked banner's semaphore record for this session ({}) when none.
+    Scoped (session_id, event_seq) per the R33f-A contract."""
+    try:
+        rec = _PARK_RECORDS.get(str(session_id or ""))
+        return dict(rec) if isinstance(rec, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
 
 def _lifecycle():
     """The BannerLifecycle singleton (banner ownership, P5)."""
@@ -269,24 +323,73 @@ def park_anchor_banner(session_id: str, banner_text: str,
                        task_id: str = "") -> None:
     """Delegate: BannerLifecycle.park for the registered "anchor" kind.
     Semantics (R9d per-task replace, R19.16 stack, identical re-park
-    dedupe, bounded map) are the kind's stack_policy data — unchanged."""
+    dedupe, bounded map) are the kind's stack_policy data — unchanged.
+    R33f-A: a LIVE park (the slot now carries this banner) registers the
+    one-delivery semaphore record scoped (session_id, event_seq); a no-op
+    park (empty text, once-policy loser, dedupe) leaves the PRIOR record
+    intact — the prior banner still owns the one delivery."""
     try:
         from .features.banners import kinds as _bk
 
         _lifecycle().park(_bk.get("anchor"), session_id, task_id, banner_text)
+        try:
+            sid = str(session_id or "")
+            seg = str(banner_text or "").strip()[:MAX_BANNER_CHARS]
+            live = _ANCHOR_BANNERS.get(sid, "")
+            if seg and (live == seg or seg in live):
+                _record_park(sid, task_id)
+        except Exception:  # noqa: BLE001 — record never breaks the park
+            pass
     except Exception:  # noqa: BLE001
         pass
 
 
 def consume_parked_banner(session_id: str) -> str:
-    """Delegate: BannerLifecycle.consume for the "anchor" kind."""
+    """Delegate: BannerLifecycle.consume for the "anchor" kind.
+    R33f-A consume-once: the semaphore record dies WITH the slot — one
+    delivery total. Wrong-session is a silent miss (never another
+    session's key)."""
     try:
         from .features.banners import kinds as _bk
 
+        try:
+            _PARK_RECORDS.pop(str(session_id or ""), None)
+        except Exception:  # noqa: BLE001
+            pass
         return _lifecycle().consume(_bk.get("anchor"), session_id, "",
                                     "claim_release")
     except Exception:  # noqa: BLE001
         return ""
+
+
+def claim_banner_ownership(session_id: str, edge: str = "") -> bool:
+    """R33f-A ownership claim: an uncensored-render turn appends its OWN
+    fresh banner, so it claims the parked semaphore BEFORE any anchor
+    consume — the parked slot is released WITHOUT attaching (a stale or
+    duplicate banner can never double-append onto the render's own
+    banner). Returns True when a parked banner was claimed (consumed and
+    dropped, by design, with a `banner_ownership_claimed` route event).
+    Never raises; wrong-session touches are silent misses."""
+    try:
+        sid = str(session_id or "")
+        had = bool(_ANCHOR_BANNERS.get(sid))
+        if had:
+            from .features.banners import kinds as _bk
+
+            _lifecycle().consume(_bk.get("anchor"), sid, "", "claim_release")
+        _PARK_RECORDS.pop(sid, None)
+        if had:
+            try:
+                from .core import telemetry as _tlm
+
+                _tlm.log_route("POST",
+                               event_detail=BANNER_OWNERSHIP_CLAIMED_EVENT,
+                               edge=str(edge or "")[:40], session_id=sid)
+            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                pass
+        return had
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def banner_capture_fallback_wait() -> float:

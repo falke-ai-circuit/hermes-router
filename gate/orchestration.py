@@ -664,11 +664,16 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
         _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
         _out = _merged if isinstance(_merged, str) and _merged else str(response_text or "")
         if _parked.strip() not in _out:
-            # R19.19 P0 contract: a consumed banner that did not land is
-            # re-parked — never consumed-and-lost. Passthrough (no claim).
+            # R33f-A (supersedes the R19.19 P0 re-park contract): TTL is ONE
+            # delivery — a consumed banner whose attach did not land is
+            # DROPPED fail-loud, never re-parked into later turns (the
+            # re-park loop was the live stale-leak class, session
+            # 20261006_190903_c82cbbcc). Passthrough (no claim).
             try:
-                _dbd.park_anchor_banner(session_id, _parked)
-            except Exception:  # noqa: BLE001
+                _hub()._log_route("POST",
+                                  event_detail="banner_semaphore_expired",
+                                  edge=edge, session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
             return None
         try:
@@ -1088,18 +1093,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             else:
                                 # R10-5 (rider 10, A2 analyst): a consume that
                                 # SUCCEEDED while the persisted rewrite missed
-                                # is a silent parked-loss — the banner lived
-                                # only in the hook return. Fail loud; RE-PARK
-                                # only when the persisted row EXISTS but no
-                                # longer matches (exact-content guard
-                                # defeated) — a row that was never persisted
-                                # would loop forever. Row-presence
-                                # discriminator: persisted_turn_row_exists.
+                                # is a silent parked-loss — fail loud. R33f-A
+                                # (supersedes the R10-5 re-park): TTL is ONE
+                                # delivery — the banner is DROPPED, never
+                                # re-parked into later turns (the re-park
+                                # loop was the live stale-leak class,
+                                # session 20261006_190903_c82cbbcc).
                                 try:
-                                    if _cb2.persisted_turn_row_exists(
-                                            session_id, response_text):
-                                        _dbp.park_anchor_banner(
-                                            session_id, _parked)
                                     _hub()._log_route(
                                         "POST",
                                         event_detail="parked_capture_failed",
@@ -1108,6 +1108,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                         row_present=bool(
                                             _cb2.persisted_turn_row_exists(
                                                 session_id, response_text)),
+                                        semaphore_expired=True,
+                                        session_id=session_id)
+                                    _hub()._log_route(
+                                        "POST",
+                                        event_detail="banner_semaphore_expired",
+                                        edge="benign",
                                         session_id=session_id)
                                 except Exception:  # noqa: BLE001
                                     pass
@@ -1116,19 +1122,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                          exc_info=True)
                             try:
                                 # R10-5: capture THREW — same fail-loud
-                                # contract; re-park only when the persisted
-                                # row exists (never-persisted rows would
-                                # loop forever).
-                                from .. import canonical as _cb3
-
-                                if _cb3.persisted_turn_row_exists(
-                                        session_id, response_text):
-                                    _dbp.park_anchor_banner(session_id,
-                                                            _parked)
+                                # contract. R33f-A (supersedes the R10-5
+                                # re-park): TTL is ONE delivery — the banner
+                                # is DROPPED, never re-parked into later
+                                # turns (the stale-leak class R33f-A closes).
                                 _hub()._log_route("POST",
                                            event_detail="parked_capture_failed",
                                            edge="benign",
                                            reason="capture_exception",
+                                           semaphore_expired=True,
+                                           session_id=session_id)
+                                _hub()._log_route("POST",
+                                           event_detail="banner_semaphore_expired",
+                                           edge="benign",
                                            session_id=session_id)
                             except Exception:  # noqa: BLE001
                                 pass
@@ -1526,40 +1532,52 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             from ..core import telemetry as _tlm_r
             from ..features.banners import lifecycle as _bll_r
             _rendered_pre_banner = rendered
+            # R33f-A: an uncensored-render turn appends its OWN fresh banner
+            # — it claims banner ownership BEFORE any anchor consume, so a
+            # stale parked banner (19:35 class) can never double-append onto
+            # the render body. The claimed banner is consumed and dropped
+            # (banner_ownership_claimed event), never re-delivered.
             try:
-                _merged_r = _bll_r.LIFECYCLE.deliver(
-                    session_id, rendered, "anchor", "pre_render",
-                    log_edge="uncensored-render", log_consume=False)
-            except _bll_r.IllegalDeliveryEdge as _ide_r:
-                # chokepoint fail-open: the rendered body is still
-                # delivered (I2 intact); telemetry row instead of a
-                # silent miss.
-                _tlm_r.log_route("POST", event_detail="banner_deliver_fail",
-                                 kind_id=_ide_r.kind_id, edge=_ide_r.edge,
-                                 session_id=session_id)
-            else:
-                if isinstance(_merged_r, str) and _merged_r and \
-                        _merged_r != str(rendered or ""):
-                    rendered = _merged_r
-                    # FIX-FIRST rider 4 (item 1, parked-loss): the render
-                    # seam's own rewrite (canonical line above) ran BEFORE
-                    # this consume, so the persisted row held the
-                    # pre-banner text while the DELIVERED text carries the
-                    # banner — the same split-brain the benign edge had.
-                    # Round-trip rewrite: persisted == delivered.
-                    try:
-                        from .. import canonical as _cc2
-                        if _cc2.rewrite_persisted_turn(
-                                session_id, _rendered_pre_banner, rendered):
-                            _persisted_render_text = rendered
-                            _hub()._log_route(
-                                "POST",
-                                event_detail="banner_render_captured",
-                                edge="uncensored-render",
-                                session_id=session_id)
-                    except Exception:  # noqa: BLE001 — capture never breaks delivery
-                        _hub().logger.debug("render banner capture error",
-                                     exc_info=True)
+                if _dbp2.BANNER_HEAD in str(rendered or ""):
+                    _dbp2.claim_banner_ownership(session_id,
+                                                 edge="uncensored-render")
+            except Exception:  # noqa: BLE001 — claim never breaks delivery
+                pass
+            if _dbp2.BANNER_HEAD not in str(rendered or ""):
+                try:
+                    _merged_r = _bll_r.LIFECYCLE.deliver(
+                        session_id, rendered, "anchor", "pre_render",
+                        log_edge="uncensored-render", log_consume=False)
+                except _bll_r.IllegalDeliveryEdge as _ide_r:
+                    # chokepoint fail-open: the rendered body is still
+                    # delivered (I2 intact); telemetry row instead of a
+                    # silent miss.
+                    _tlm_r.log_route("POST", event_detail="banner_deliver_fail",
+                                     kind_id=_ide_r.kind_id, edge=_ide_r.edge,
+                                     session_id=session_id)
+                else:
+                    if isinstance(_merged_r, str) and _merged_r and \
+                            _merged_r != str(rendered or ""):
+                        rendered = _merged_r
+                        # FIX-FIRST rider 4 (item 1, parked-loss): the render
+                        # seam's own rewrite (canonical line above) ran BEFORE
+                        # this consume, so the persisted row held the
+                        # pre-banner text while the DELIVERED text carries the
+                        # banner — the same split-brain the benign edge had.
+                        # Round-trip rewrite: persisted == delivered.
+                        try:
+                            from .. import canonical as _cc2
+                            if _cc2.rewrite_persisted_turn(
+                                    session_id, _rendered_pre_banner, rendered):
+                                _persisted_render_text = rendered
+                                _hub()._log_route(
+                                    "POST",
+                                    event_detail="banner_render_captured",
+                                    edge="uncensored-render",
+                                    session_id=session_id)
+                        except Exception:  # noqa: BLE001 — capture never breaks delivery
+                            _hub().logger.debug("render banner capture error",
+                                         exc_info=True)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         # R19.11 FIX 1: final-delivery gate — a decision banner consumed at

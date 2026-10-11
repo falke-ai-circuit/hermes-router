@@ -165,9 +165,19 @@ class BannerLifecycle:
             return base
         _e = str(log_edge if log_edge is not None else edge)
         if log_consume:
+            _rec = {}
+            try:
+                # R33f-A: the record is read BEFORE consume_parked_banner in
+                # other paths; here the delegate already popped it — the
+                # consume event carries the slot truth only.
+                _rec = db.park_record(session_id)
+            except Exception:  # noqa: BLE001
+                _rec = {}
             _log_route("POST", event_detail="anchor_banner_consume",
                        parked=bool(parked), edge=_e,
-                       session_id=str(session_id or ""))
+                       session_id=str(session_id or ""),
+                       **({"park_event_seq": int(_rec["event_seq"])}
+                          if _rec.get("event_seq") else {}))
         if not parked:
             return base if mode == "append" else ""
         try:
@@ -179,14 +189,18 @@ class BannerLifecycle:
         merged = db.append_banner(base, "\n" + parked)
         out = merged if isinstance(merged, str) and merged else str(base or "")
         if parked.strip() not in out:
-            # R19.19 P0 / R19.21: a consumed banner that did not land is
-            # re-parked — never consumed-and-lost.
+            # R33f-A (supersedes R19.19 P0 / R19.21 re-park): TTL is ONE
+            # delivery — a consumed banner whose attach did not land is
+            # DROPPED fail-loud, never re-parked into later turns. The
+            # re-park loop was the live stale-leak class (a 19:35 frontier
+            # banner leaking onto 4 later turns + double-appending on
+            # shadow renders, session 20261006_190903_c82cbbcc).
             try:
-                db.park_anchor_banner(session_id, parked)
-            except Exception:  # noqa: BLE001
+                _log_route("POST", event_detail="banner_semaphore_expired",
+                           edge=_e, session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
-            _log_route("POST", event_detail="banner_redelivered_next_turn",
-                       edge=_e, session_id=str(session_id or ""))
+            return out
         return out
 
     # --- R20-D3 capture-fallback (moved verbatim from debug_banner) ---------
@@ -299,6 +313,10 @@ class BannerLifecycle:
                     db._ANCHOR_TASKS.pop(sid, None)
                     db._ANCHOR_SEGS.pop(sid, None)
                     db._ANCHOR_BANNERS.pop(sid, None)
+                    try:
+                        db._PARK_RECORDS.pop(sid, None)
+                    except Exception:  # noqa: BLE001 — R33f-A record dies too
+                        pass
             if ok:
                 try:
                     from ... import render_inbox as _ri
@@ -317,21 +335,29 @@ class BannerLifecycle:
                 except Exception:  # noqa: BLE001 — fail-loud best-effort
                     logger.exception("banner_capture_fallback event log failed")
             else:
-                # no persisted assistant row matched: RE-PARK the banner
-                # (retained for the next delivery edge) + fail-loud event.
+                # no persisted assistant row matched: R33f-A — the banner is
+                # DROPPED fail-loud (semaphore expired), no longer re-parked
+                # (the re-park loop kept stale banners alive across turns —
+                # the live leak class R33f-A closes).
                 with self._CAPTURE_FB_LOCK:
-                    db._ANCHOR_BANNERS[sid] = captured
+                    db._ANCHOR_BANNERS.pop(sid, None)
+                    db._ANCHOR_TASKS.pop(sid, None)
+                    db._ANCHOR_SEGS.pop(sid, None)
+                    try:
+                        db._PARK_RECORDS.pop(sid, None)
+                    except Exception:  # noqa: BLE001
+                        pass
                 try:
                     logger.error(
                         "banner_capture_fallback_failed detail=no_row_match "
-                        "session_id=%s — parked banner retained for the next "
-                        "delivery edge", sid)
+                        "session_id=%s — banner dropped (R33f-A semaphore: "
+                        "one delivery, no re-park)", sid)
                 except Exception:  # noqa: BLE001
                     pass
                 try:
                     _log_route("POST",
-                               event_detail="banner_capture_fallback",
-                               outcome="no_row_match", re_parked=True,
+                               event_detail="banner_semaphore_expired",
+                               outcome="no_row_match", edge="capture_fallback",
                                session_id=sid)
                 except Exception:  # noqa: BLE001
                     logger.exception("banner_capture_fallback event log failed")

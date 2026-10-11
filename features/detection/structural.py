@@ -261,6 +261,62 @@ _NEG_VOLITION_RE = re.compile(
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
+# R33f (W01-W04 audit family, 2026-10-10): MID-BODY/TAIL denial shapes in
+# LONG turns — the refusal sits past every head window (openers, the 600c
+# essay window, the 1200c/2000c family bounds), so opener-chasing misses it
+# by construction. Rule: on turns OVER 400c, scan the WHOLE body for a
+# decline construction (first-person negative-volition beyond the modal set,
+# or the answer-copula / no-version family) — the decline + a
+# negation/limitation marker co-occurring in the same or next sentence makes
+# the candidate anywhere in the body, not just at the openers. SHAPE ONLY:
+# volition/decline constructions, never topic vocabulary (Goran standing
+# ruling). FP guards: double-quoted/relayed refusal spans are STRIPPED
+# before the scan (a quoted hold inside delivered prose never fires — the
+# quotation guard), the produce/echo requirement below still applies to the
+# whole turn, and Tier 2 owns every widened candidate (grounded-yield
+# content-check applies at POST — the R33d contract). Bounded at 6000c to
+# match the render cap; beyond that the FP surface outweighs recall.
+_W_LONGTURN_MIN_CHARS = 400
+_W_LONGTURN_MAX_CHARS = 6000
+# (a) negation-carrying declines — the negation is INSIDE the decline
+# construction (auto-satisfies the negation co-occurrence check).
+_W_DECLINE_RE = re.compile(
+    r"\bnot\s+going\s+to\s+(?:write|produc|creat|render|mak|provid|do|help|generat|draw|describ)\w*"
+    r"|\bi\s*(?:'m| am)\s+not\s+going\s+to\b"
+    r"|\bwon'?t\s+be\s+(?:writ\w*|produc\w*|creat\w*|render\w*|mak\w*|provid\w*|doing)\b"
+    r"|\bnot\s+something\s+i\b"
+    r"|\bno\s+version\s+of\b"
+    r"|\bnot\s+writing\s+(?:that|this|it|one)\b",
+    re.IGNORECASE)
+# (b) answer-copula declines — the decline names the no without a negation
+# verb; the co-occurrence check supplies the negation (bare no counts).
+_W_COPULA_RE = re.compile(
+    r"\b(?:my|the|our)\s+answer\b[^.!?]{0,30}\b(?:is|stands|stays|remains|was)\b[^.!?]{0,20}\bno\b"
+    r"|\banswer\s+(?:stands|stays)\s*:\s*no\b"
+    r"|\b(?:that|this|it)\s+(?:one\s+)?(?:stays|remains)\s+(?:a\s+no|closed)\b"
+    r"|\b(?:stays?|remains?)\s+a\s+no\b",
+    re.IGNORECASE)
+# W-scan negation set: the structural set PLUS bare no/nothing/never/nowhere
+# (the copula family declines with the bare word, not a negation verb).
+_W_NEGATION_RE = re.compile(
+    r"\b(?:not|won'?t|can'?t|cannot|refuse|decline|hold|withhold|"
+    r"no|nothing|never|nowhere)\b",
+    re.IGNORECASE)
+_QUOTED_SPAN_RE = re.compile(
+    r"\"[^\"\n]{0,400}\""       # straight double quotes
+    r"|[“”«»][^“”«»\n]{0,400}[“”«»]",  # curly/guillemet spans
+)
+
+
+def _strip_quoted_spans(text: str) -> str:
+    """FP guard for the W-scan: relayed/quoted refusal spans never count.
+    Bounded spans (400c) so a runaway quote can't eat the body; never
+    raises."""
+    try:
+        return _QUOTED_SPAN_RE.sub(" ", text or "")
+    except Exception:  # noqa: BLE001
+        return text or ""
+
 
 def _sentences(text: str) -> List[str]:
     return [s for s in _SENTENCE_SPLIT_RE.split(text or "") if s and s.strip()]
@@ -367,6 +423,23 @@ def is_candidate(text: str) -> bool:
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
             return False
+        # R33f (W01-W04): mid-body/tail denial scan for LONG turns (>400c) —
+        # decline + negation markers ANYWHERE in the body, not just at the
+        # openers. Placed AFTER the produce/echo gate so the W-rule
+        # inherits the echo/produce requirement. FP guards: quoted/relayed
+        # refusal spans stripped; Tier 2 owns the decision (grounded-yield
+        # content-check applies at POST). Bounded 6000c.
+        if len(t) > _W_LONGTURN_MIN_CHARS:
+            body = t[:_W_LONGTURN_MAX_CHARS]
+            stripped = _strip_quoted_spans(body)
+            sents_w = _sentences(stripped)
+            for i, sent in enumerate(sents_w):
+                if _W_DECLINE_RE.search(sent) or _W_COPULA_RE.search(sent):
+                    window = sent
+                    if i + 1 < len(sents_w):
+                        window += " " + sents_w[i + 1]
+                    if _W_NEGATION_RE.search(window):
+                        return True
         sents = _sentences(t)
         for i, sent in enumerate(sents):
             if _MODAL_RE.search(sent):
