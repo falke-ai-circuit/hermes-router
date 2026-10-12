@@ -35,7 +35,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,120 @@ FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 JUDGE_TIMEOUT_SECONDS = 8
 JUDGE_MAX_TOKENS = 120
 JUDGE_TEMPERATURE = 0.0
+# R33j two-vote gate on the HOUSE pattern (intent_classifier.py:78,
+# AUX_TEMP_SECOND_VOTE = 0.35 — 'mild independence', both votes must
+# agree): vote 1 at JUDGE_TEMPERATURE (0.0), vote 2 (contested rows only)
+# at 0.35. DISAGREE -> the deterministic T1 signal decides. Max 2 judge
+# calls per row — exactly like intent_classifier, no third vote.
+AUX_TEMP_SECOND_VOTE = 0.35
+# R33j verdict cache, fail-open semantics: (session_id, turn-hash) ->
+# final verdict; a miss/error/timeout re-judges normally. The cached
+# verdict IS the consensus output — a hit skips both the judge and the
+# vote (no re-judging loops); the votes call judge_turn directly so the
+# cache never collapses the two votes into one.
+_VERDICT_CACHE: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
+_VERDICT_CACHE_MAX = 64
+_VERDICT_CACHE_TTL_S = 300.0
+
+
+def _verdict_cache_key(session_id: str, turn: str) -> Tuple[str, int]:
+    try:
+        from ...core import canonical as _canon
+
+        return (str(session_id or ""),
+                int(_canon.hash_text(str(turn or ""))[:12], 16) & 0x7FFFFFFF)
+    except Exception:  # noqa: BLE001 — cache-key failure never blocks judging
+        return (str(session_id or ""), 0)
+
+
+def _verdict_cache_get(key: Tuple[str, int]) -> Optional[Dict[str, Any]]:
+    try:
+        hit = _VERDICT_CACHE.get(key)
+        if hit is None:
+            return None
+        ts, verdict = hit
+        if time.time() - float(ts) > _VERDICT_CACHE_TTL_S:
+            _VERDICT_CACHE.pop(key, None)
+            return None
+        return verdict
+    except Exception:  # noqa: BLE001 — fail-open: cache miss -> judge normally
+        return None
+
+
+def _verdict_cache_put(key: Tuple[str, int], verdict: Dict[str, Any]) -> None:
+    try:
+        while len(_VERDICT_CACHE) >= _VERDICT_CACHE_MAX:
+            _VERDICT_CACHE.pop(next(iter(_VERDICT_CACHE)), None)
+        _VERDICT_CACHE[key] = (time.time(), verdict)
+    except Exception:  # noqa: BLE001 — cache failure never breaks detection
+        pass
+
+
+def clear_verdict_cache_for_tests() -> None:
+    _VERDICT_CACHE.clear()
+
+
+def _t1_signal_routes(turn: str) -> bool:
+    """The deterministic T1 signal for vote disagreement (R33j): a bounded
+    denial family (third-ask, hold, counter-offer, short-hold, ...) or the
+    long-turn scan -> ROUTE; T1 saw nothing -> suppress. FAIL-OPEN IS THE
+    LAW: a signal error routes (never a default-NOT-ROUTED)."""
+    try:
+        from .structural import flagged_by_bounded_family, is_candidate
+
+        return bool(flagged_by_bounded_family(turn) or is_candidate(turn))
+    except Exception:  # noqa: BLE001 — fail-open: disagreement routes
+        return True
+
+
+def _self_consistent_verdict(session_id: str, ask: str, turn: str,
+                             first: Dict[str, Any], cfg: Dict[str, Any],
+                             log_route) -> Tuple[Dict[str, Any], int]:
+    """R33j two-vote gate on the HOUSE pattern (intent_classifier.py:502-506,
+    AUX_TEMP_SECOND_VOTE = 0.35, 'mild independence', both votes must
+    agree). Vote 1 runs at JUDGE_TEMPERATURE (0.0); vote 2 — contested rows
+    only — runs at 0.35 mild independence. AGREE -> verdict stands.
+    DISAGREE -> the DETERMINISTIC T1 signal decides: a bounded denial
+    family (third-ask, hold, counter-offer, short-hold) or the long-turn
+    scan -> ROUTE; T1 saw nothing -> suppress. NO third vote — bounded at
+    2 judge calls, exactly like intent_classifier. FAIL-OPEN IS THE LAW:
+    any judge error/None/timeout on either vote falls back to T1 alone —
+    vote-2 failure means vote 1 stands; disagreement never defaults to
+    NOT-ROUTED. Never raises."""
+    try:
+        vote2_cfg = dict(cfg or {})
+        vote2_cfg["temperature"] = AUX_TEMP_SECOND_VOTE
+        second = judge_turn(ask, turn, vote2_cfg)
+        _calls = 2
+        second_name = str((second or {}).get("verdict") or "")
+        first_name = str((first or {}).get("verdict") or "")
+        # FAIL-OPEN IS THE LAW: vote-2 error/None/timeout -> T1 alone
+        # (vote 1 stands). Both agree -> verdict stands.
+        if second is None or second_name == first_name:
+            return first, _calls
+        # DISAGREE — the deterministic T1 signal decides (never a
+        # default-NOT-ROUTED). Bounded family or long-turn scan -> ROUTE;
+        # T1 saw nothing -> suppress.
+        routes = _t1_signal_routes(turn)
+        try:
+            log_route("POST", event_detail="detection_t2_tiebreak",
+                      decision="route_t1_bounded_family" if routes
+                      else "suppress_t1_silent",
+                      vote1=first_name[:20], vote2=second_name[:20])
+        except Exception:  # noqa: BLE001
+            pass
+        if routes:
+            return {"verdict": "refusal",
+                    "confidence": max(float((first or {}).get("confidence")
+                                            or 0.0),
+                                      float((second or {}).get("confidence")
+                                            or 0.0)),
+                    "model": "t1-bounded-tiebreak",
+                    "latency_s": 0.0}, _calls
+        return {"verdict": "clean", "confidence": 0.9,
+                "model": "consensus-t1-silent", "latency_s": 0.0}, _calls
+    except Exception:  # noqa: BLE001 — consensus must never break detection
+        return first, 1
 PARTIAL_ROUTE_CONFIDENCE = 0.75
 ASK_CAP = 1500
 TURN_CAP = 2500
@@ -476,8 +590,25 @@ def post_detection_scan(session_id: str, response_text: str,
         if not is_candidate(response_text):
             return False
 
-        # Tier 2 — semantic judge, candidates only.
-        verdict = judge_turn(user_ask, response_text, cfg)
+        # Tier 2 — semantic judge, candidates only. R33j: the final verdict
+        # is (session_id, turn-hash)-cached with FAIL-OPEN semantics — a
+        # miss/error/timeout re-judges normally; the cached verdict IS the
+        # consensus output, so a hit skips both the judge and the vote.
+        _vkey = _verdict_cache_key(session_id, response_text)
+        try:
+            _cached = _verdict_cache_get(_vkey)
+        except Exception:  # noqa: BLE001 — cache failure -> judge normally
+            _cached = None
+        if _cached is not None:
+            verdict = _cached
+            try:
+                _log(log_route, "detection_t2_cache_hit",
+                     session_id=session_id,
+                     verdict=str(verdict.get("verdict") or "")[:20])
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            verdict = judge_turn(user_ask, response_text, cfg)
         if verdict is None:
             # Fail-open to the TIER-1 decision: candidate routes. Tier-1-only
             # decision -> detection_t1 ledger row (observability budget: one
@@ -492,6 +623,18 @@ def post_detection_scan(session_id: str, response_text: str,
             _log(log_route, "detection_t1", session_id=session_id,
                  decision="fail_open_route")
             return True
+        if _cached is None:
+            # R33j: two-vote gate on the HOUSE pattern — verdicts must
+            # agree; disagreement resolves on the deterministic T1 signal
+            # (bounded family or long-turn scan -> ROUTE; T1 silent ->
+            # suppress), max 2 judge calls, fail-open on any vote error.
+            try:
+                verdict, _votes = _self_consistent_verdict(
+                    session_id, user_ask, response_text, verdict, cfg,
+                    log_route)
+            except Exception:  # noqa: BLE001 — consensus never breaks detection
+                pass
+            _verdict_cache_put(_vkey, verdict)
         routed = route_decision(verdict)
         verdict_name = str(verdict.get("verdict") or "")
         # R25: suppressed impossibility verdicts get their own ledger row

@@ -370,16 +370,15 @@ def _sentences(text: str) -> List[str]:
     return [s for s in _SENTENCE_SPLIT_RE.split(text or "") if s and s.strip()]
 
 
-def is_candidate(text: str) -> bool:
-    """True when the turn is a Tier-2 candidate. Never raises (any internal
-    problem -> False: a non-candidate delivers, the safe fail-open default
-    for a FREE gate is pass-through; routing decisions belong to Tier 2)."""
+def _bounded_family_hit(t: str) -> bool:
+    """R33j: True when the turn was flagged by a BOUNDED denial family —
+    the head-window register families (essay, litany, line-hold,
+    short-hold, counter-offer, opener/frame/multilingual families, ja
+    suffix, repeat-denial, DNA voice) plus the third-ask family. The
+    judge two-vote gate (R33j, house pattern) uses the T1 signal as the
+    deterministic tie-break on vote disagreement. Pure predicate over the
+    normalized turn `t`; never raises."""
     try:
-        if not isinstance(text, str):
-            return False
-        t = text.strip()
-        if not t:
-            return False
         # Line-hold essay opener shape (no modal requirement — the essay
         # never says "I won't" in its first-person-modal form). R22b: the
         # widened opener `No ...` requires either the original essay marker
@@ -388,61 +387,43 @@ def is_candidate(text: str) -> bool:
         if _ESSAY_OPENER_RE.match(t) and \
                 (_ESSAY_MARKER in head or _FRAME_HOLD_RE.search(t[:_ESSAY_WINDOW])):
             return True
-        # R26-1: serial isn't-litany justification (opener "No" + "isn't X,
-        # isn't Y, isn't Z" with no coordinating conjunction between the
-        # copulas). Strong structural refusal signature; Tier 2 still owns
-        # the decision (candidate -> judge), so an over-flag here costs one
-        # cheap aux call, never a route.
+        # R26-1: serial isn't-litany justification.
         if _ESSAY_OPENER_RE.match(t):
             for m in _LITANY_RE.finditer(t[:_ESSAY_WINDOW]):
                 if not _LITANY_CONJ_RE.search(m.group(0)):
                     return True
-        # R27: short settled-line hold — refusal opener + self-referential
-        # boundary vocabulary (or the negative-of-negation self-attribution
-        # shape) in the window. Tier 2 still owns the decision.
+        # R27: short settled-line hold — refusal opener + boundary vocab
+        # (or the negative-of-negation self-attribution shape).
         if _LINE_HOLD_OPENER_RE.match(t):
             head = t[:_LINE_HOLD_WINDOW].lower()
             if any(v in head for v in _LINE_HOLD_VOCAB) or \
                     _LINE_HOLD_SELF_ATTRIBUTION_RE.search(t[:_LINE_HOLD_WINDOW]):
                 return True
         # R28: short declarative hold WITHOUT a (fixed-set) opener — 2+
-        # distinct boundary-vocab signals make a candidate. Open-class
-        # openers ("Held.", "Closed.", ...) make opener-chasing a losing
-        # game; brevity + repeated self-boundary declarations is the shape.
-        # Tier 2 still owns the decision (judge-call cost at worst).
+        # distinct boundary-vocab signals.
         if len(t) < _SHORT_HOLD_MAX_CHARS:
             head = t[:_SHORT_HOLD_MAX_CHARS].lower()
             if sum(1 for v in _LINE_HOLD_VOCAB if v in head) >= 2:
                 return True
-        # R30: refusal + counter-offer shape — decline statement + offered
-        # substitutes ("instead I could...", "Say which and I'll build it",
-        # "Those I'll descend into fully"). Decline + offer both REQUIRED:
-        # a helpful multi-option answer offers without declining and never
-        # flags. Bounded to short turns like R28. Tier 2 owns the decision.
+        # R30: refusal + counter-offer shape — decline + offer REQUIRED.
         if len(t) < _COUNTER_OFFER_MAX_CHARS:
             if _DECLINE_MARKER_RE.search(t) and _COUNTER_OFFER_RE.search(t):
                 return True
-        # R32(a): settled-line opener family (first ~200c) — the opener
-        # phrases are themselves declines; Tier 2 owns the decision.
+        # R32(a): settled-line opener family (first ~200c).
         if _REFUSAL_OPENER_FAMILY_RE.search(t[:_OPENER_FAMILY_WINDOW]):
             return True
-        # R32(b): in-register self-voice frame-explainer — "it's not the
-        # depth refusing — it's the frame" (bounded window).
+        # R32(b): in-register self-voice frame-explainer (bounded window).
         if _FRAME_REJECTION_RE.search(t[:_FRAME_REJECTION_WINDOW]):
             return True
-        # R32(c): multilingual won't-framing openers (first ~200c) —
-        # line-anchored openers plus mid-sentence constructions ("Da muss
-        # ich nein sagen"). R33b: sl tega-ne/ne-bom + settled-line boundary
-        # declarations; CJK negated-writing/politeness-refusal shapes.
+        # R32(c): multilingual won't-framing openers + sl boundary
+        # declarations + CJK shapes (first ~200c).
         head32 = t[:_OPENER_FAMILY_WINDOW]
         if (_WONT_FRAME_OPENERS_RE.search(head32)
                 or _WONT_FRAME_MIDSENTENCE_RE.search(head32)
                 or _WONT_FRAME_CJK_RE.search(head32)
                 or _SL_BOUNDARY_DECLARATION_RE.search(head32)):
             return True
-        # R33c: ja negation verb-suffix (V12 class) — negation-suffix verb in
-        # the first 400c + following-clause structure (explanation or
-        # counter-offer after), or the negation closes the turn (tail <=40c).
+        # R33c: ja negation verb-suffix (V12 class), meta-noun FP guard.
         _ja_m = _JA_NEGATION_SUFFIX_RE.search(t[:400])
         if _ja_m is not None:
             _ja_tail = t[_ja_m.end():_ja_m.end() + 400]
@@ -450,29 +431,17 @@ def is_candidate(text: str) -> bool:
                     _JA_CLOSE_RE.search(_ja_tail) and \
                     (len(_ja_tail.rstrip()) <= 40 or len(_ja_tail.strip()) >= 2):
                 return True
-        # R31: repeat-denial register — the turn re-asserts a PRIOR decline
-        # ("I answered this once already and the answer hasn't changed").
-        # Shape-only: repeat-denial marker + first-person negative-volition
-        # construction. No frame vocabulary required — repetition does not
-        # make the decline a non-event. Bounded to short turns like R28/R30;
-        # Tier 2 owns the decision (judge-call cost at worst).
+        # R31: repeat-denial register (bounded short turns).
         if len(t) < _SHORT_HOLD_MAX_CHARS:
             if _REPEAT_DENIAL_RE.search(t) and _NEG_VOLITION_RE.search(t):
                 return True
-        # R33: in-voice DNA-line declination (zero-event audit family) —
-        # doctrinal/in-voice framing: bare one-word hold sentence ("Held."),
-        # self-voiced routing carve-out, flinch-denial variant, ordinal
-        # closed-list reference. Doctrine phrases in the 600c head window;
-        # the whole family inert past 2000c. Tier 2 owns the decision.
+        # R33: in-voice DNA-line declination (inert past 2000c).
         if len(t) < _DNA_VOICE_MAX_CHARS:
             if _DNA_VOICE_RE.search(t[:_LINE_HOLD_WINDOW]) or \
                     _DNA_HOLD_SENTENCE_RE.match(t):
                 return True
-        # R33g: third-ask / hold register (V01/V02/V21/W02 root class) —
-        # negation buried in meta-commentary about the conversation.
-        # Bounded 6000c, quoted spans stripped; the deliverable-content
-        # FP guard keeps genuine substantive answers with the phrases
-        # unrouted. Tier 2 owns the decision.
+        # R33g: third-ask / hold register — meta-commentary phrases +
+        # negation, deliverable-content FP guard, bounded 6000c.
         if len(t) <= _THIRD_ASK_MAX_CHARS:
             stripped3 = _strip_quoted_spans(t)
             if _THIRD_ASK_PHRASES_RE.search(stripped3) and \
@@ -485,6 +454,41 @@ def is_candidate(text: str) -> bool:
                             window += " " + sents3[i + 1]
                         if _THIRD_ASK_NEGATION_RE.search(window):
                             return True
+        return False
+    except Exception:  # noqa: BLE001 — the predicate never raises into a turn
+        return False
+
+
+def flagged_by_bounded_family(text: str) -> bool:
+    """Public R33j seam: the deterministic T1 signal for the judge two-vote
+    gate (house pattern). True when the turn is a candidate via a BOUNDED
+    denial family. Never raises."""
+    try:
+        if not isinstance(text, str):
+            return False
+        t = text.strip()
+        if not t:
+            return False
+        return _bounded_family_hit(t)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def is_candidate(text: str) -> bool:
+    """True when the turn is a Tier-2 candidate. Never raises (any internal
+    problem -> False: a non-candidate delivers, the safe fail-open default
+    for a FREE gate is pass-through; routing decisions belong to Tier 2)."""
+    try:
+        if not isinstance(text, str):
+            return False
+        t = text.strip()
+        if not t:
+            return False
+        # Bounded denial families — extracted verbatim into
+        # _bounded_family_hit for the R33j tie-break; boolean behavior is
+        # identical (every branch was a pure OR).
+        if _bounded_family_hit(t):
+            return True
         # Produce/echo marker must be present somewhere in the turn.
         if not (_ECHO_RE.search(t) or _PRODUCE_RE.search(t)):
             return False
