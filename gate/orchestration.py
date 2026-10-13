@@ -1149,6 +1149,31 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         session_id = session_id or ""
         model = model or ""
 
+        # R33m refusal-semantics gate (Goran 10-10 ruling: the POST render
+        # swap fires on REFUSALS ONLY — never content/render-type/shape
+        # inspection). A shape-only trigger (line_hold_essay alone, essay
+        # length/structure, a T1 shape flag without decline semantics) LOGS
+        # as a detection event but NEVER routes. Judge-confirmed refusals
+        # (t2_confirmed) carry semantics by definition and pass. Code-side,
+        # non-tunable (csam-gate class). Fail-open: a gate error leaves the
+        # route standing. The original body still delivers — this is a
+        # delivery edge (parked banners consume exactly once here).
+        if matches and _trigger_kind != "t2_confirmed":
+            try:
+                from ..features.detection import structural as _r33m_st
+
+                if not _r33m_st.has_refusal_semantics(response_text):
+                    _hub()._log_route(
+                        "POST", event_detail="detection_shape_only",
+                        pattern_groups=",".join(matches),
+                        answer_chars=len(response_text),
+                        routed=0, session_id=session_id)
+                    return _hub()._deliver_parked_at_edge(
+                        session_id, response_text, "detection_shape_only",
+                        _hook_remaining())
+            except Exception:  # noqa: BLE001 — fail-open: route stands
+                pass
+
         # Flinch-vs-line verdict (Option 3 hybrid, 2026-09-02): before routing,
         # check the agent's OWN doctrine. A refusal backed by her authored
         # lines is HONORED (pass-through); substrate caution with no doctrine
@@ -1323,17 +1348,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # (grounded_yield, routed=0).
             try:
                 from ..features.detection import structural as _gy_struct
-                # R33g (V06 mixed-turn): the content-check evaluates the
-                # FULL current turn, not only the prior answer — a turn
-                # that DELIVERS one part and DECLINES another is a REFUSAL
-                # (mixed), not grounded substance. Mixed = the current body
-                # carries BOTH a refusal shape AND deliverable content
-                # (part (a) actually delivered: paths, saved-to, doc
-                # sections); a pure refusal body still defers to the
-                # prior-answer contract (R33d unchanged).
+                # R33m: the content-check passes the refusal-semantics gate
+                # — a "refusal-shaped" prior answer WITHOUT decline
+                # semantics (an honest status report: 'Not confirmed —
+                # still unknown', 'unverified') is NOT a refusal; shape
+                # alone never routes (live FP 2026-10-13 04:05:57, valmet).
                 _gy_answer_refusal = bool(
-                    _gy_struct.is_candidate(_last_answer)
+                    (_gy_struct.is_candidate(_last_answer)
+                     and _gy_struct.has_refusal_semantics(_last_answer))
                     or (_gy_struct.is_candidate(response_text)
+                        and _gy_struct.has_refusal_semantics(response_text)
                         and _gy_struct.has_deliverable_content(response_text)))
             except Exception:  # noqa: BLE001 — content check never blocks
                 _gy_answer_refusal = False

@@ -162,7 +162,7 @@ def test_ownership_claim_releases_slot_before_anchor_consume(env, monkeypatch):
                         lambda budget=0.0: None)
     state.record_last_seen(SID, "the contested ask")
     out = plugin.on_transform_llm_output(
-        response_text="the agent refuses: no. held line text here",
+        response_text="I can't write that. held line text here",
         session_id=SID, model="test-model", user_message="the contested ask")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
     events = [f.get("event_detail") for _, f in env]

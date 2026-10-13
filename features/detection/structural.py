@@ -303,6 +303,18 @@ _W_NEGATION_RE = re.compile(
     r"\b(?:not|won'?t|can'?t|cannot|refuse|decline|hold|withhold|"
     r"no|nothing|never|nowhere)\b",
     re.IGNORECASE)
+# R33m: first-person modal decline — "I can't/won't write|produce..." is
+# refusal semantics by construction, independent of the patchable stage-1
+# dictionary attribute (the refusal-semantics gate must hold when the
+# dictionary is neutered).
+_FIRSTP_MODAL_DECLINE_RE = re.compile(
+    r"\b(?:i|we)\s+(?:can'?t|cannot|won'?t|will\s+not|am\s+not\s+going\s+to"
+    r"|'m\s+not\s+going\s+to)\s+"
+    r"(?:write|produc\w*|creat\w*|render\w*|mak\w*|provid\w*|help|do|"
+    r"generat\w*|draw|describ\w*|assist|support|comply|author|depict|"
+    r"craft\w*|compos\w*)\b",
+    re.IGNORECASE)
+
 _QUOTED_SPAN_RE = re.compile(
     r"\"[^\"\n]{0,400}\""       # straight double quotes
     r"|[“”«»][^“”«»\n]{0,400}[“”«»]",  # curly/guillemet spans
@@ -472,6 +484,65 @@ def flagged_by_bounded_family(text: str) -> bool:
         return _bounded_family_hit(t)
     except Exception:  # noqa: BLE001
         return False
+
+
+def has_refusal_semantics(text: str) -> bool:
+    """R33m refusal-semantics gate (Goran 10-10 ruling: detection triggers
+    on REFUSALS ONLY — never content/render-type/shape inspection; code-side
+    and non-tunable, same class as the csam gate ruling). True when the
+    flagged body carries a REFUSAL-SEMANTICS signal, independent of which
+    shape pattern flagged it:
+      (1) the bounded denial families — the third-ask/hold meta-commentary
+          register (R33g: no explicit negation by design, must stay) plus
+          the boundary-vocabulary hold registers;
+      (2) a decline construction anywhere in the body — the W-family
+          decline/copula shapes REQUIRE decline+negation co-occurrence,
+          so 'Not confirmed — still unknown' / 'unverified' status-report
+          negations never count;
+      (3) the stage-1 refusal vocabulary (first-person can't/won't +
+          produce verb).
+    Shape-only flags (line_hold_essay alone, essay length/structure,
+    grounded substance alone) do NOT satisfy this gate. Fail-open: a gate
+    error returns True (never suppresses a route); an empty body is
+    False. Never raises."""
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return False
+        t = text.strip()
+        # (1) bounded families — refusal semantics by construction
+        if _bounded_family_hit(t):
+            return True
+        # (2) decline constructions anywhere (bounded 6000c, quoted spans
+        # stripped): W-decline/copula shapes, decline+negation REQUIRED
+        stripped = _strip_quoted_spans(t[:_W_LONGTURN_MAX_CHARS])
+        sents = _sentences(stripped)
+        for i, sent in enumerate(sents):
+            if _W_DECLINE_RE.search(sent) or _W_COPULA_RE.search(sent):
+                window = sent
+                if i + 1 < len(sents):
+                    window += " " + sents[i + 1]
+                if _W_NEGATION_RE.search(window):
+                    return True
+        # (2b) first-person modal decline — "I can't/won't write|produce..."
+        # is refusal semantics by construction (independent of the
+        # patchable dictionary attribute: the gate must hold when the
+        # dictionary is neutered — R33m).
+        if _FIRSTP_MODAL_DECLINE_RE.search(stripped):
+            return True
+        # (3) the stage-1 refusal vocabulary (lazy import — no cycle).
+        # The COMBINED pattern is imported directly, not scanned via
+        # classifier.scan_post: the gate must be immune to test/runtime
+        # patches of the scan function (R33m lesson).
+        try:
+            from ...classifier import _REFUSAL_COMBINED_RE
+
+            if _REFUSAL_COMBINED_RE.search(t):
+                return True
+        except Exception:  # noqa: BLE001 — vocab layer is additive
+            pass
+        return False
+    except Exception:  # noqa: BLE001 — fail-open: never suppress a route
+        return True
 
 
 def is_candidate(text: str) -> bool:
