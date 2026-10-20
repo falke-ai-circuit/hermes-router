@@ -1041,8 +1041,21 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # the orientation envelope is ADVISORY context, never the answer.
         try:
             if kind == "orientation" and _exec_turn:
-                envelope["instruction"] = ADVISORY_ONLY_INSTRUCTION
+                # R34-8d BOUNDED: on an EXECUTION turn the envelope is
+                # supporting material — it must never carry a 3.7-4.9K-char
+                # advisory into a dispatch turn (live anchor_chars=4866).
+                # Advisory content = first 600 chars + the directive;
+                # consult-only / non-execution orientation keep the full text.
+                _cap = 600
+                _instr = ADVISORY_ONLY_INSTRUCTION
+                # total advisory budget (answer + directive) <= 700 chars
+                _room = max(0, 700 - len(_instr) - 2)
+                _cap = min(_cap, _room)
+                envelope["answer"] = str(content or "")[:_cap]
+                envelope["instruction"] = _instr
                 envelope["advisory_only"] = True
+                envelope["advisory_truncated"] = bool(
+                    len(str(content or "")) > _cap)
         except Exception:  # noqa: BLE001 — framing never breaks the consult
             pass
         # R9-9 (rider 9): consult-envelope provenance stamps — model + cost

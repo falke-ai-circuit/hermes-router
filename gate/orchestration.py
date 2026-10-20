@@ -772,6 +772,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # audit consult, revision pass, decision/anchor pre-consume waits)
         # is budgeted under the runner timeout so a slow consult can never
         # orphan the hook. 5s margin covers consume/capture/append work.
+        # R34-8c: envelope-echo observability (log-only, never rewrites).
+        # A delivered body that restates the router's own envelope is a
+        # shipped defect, not content: report it, deliver it untouched.
+        try:
+            from .. import echo_guard as _eg
+
+            _eg.observe(response_text, session_id,
+                        log_route=_hub()._log_route)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            pass
         _hook_t0 = _hub().time.monotonic()
 
         def _hook_remaining() -> float:

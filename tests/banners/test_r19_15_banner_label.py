@@ -23,13 +23,17 @@ def test_label_rendered_when_available():
     assert "opt-1 pulls" not in adv  # not bare opt-N when label exists
 
 
-def test_fallback_to_raw_id_when_label_missing():
+def test_blank_label_option_is_dropped_not_id_fallback():
+    """R34-8a supersedes the raw-id fallback: an option with no label text is
+    DROPPED from the frame (a bare `opt-N` is undecodable to the reader), and
+    when nothing labelled remains there is no advisory at all."""
     env = {"options": [{"id": "opt-1"}, {"id": "opt-2", "label": "  "}],
            "weighting": {"weights": {"opt-1": 0.5, "opt-2": 0.5},
                          "band": "noise", "evidence": [], "basis": "test"}}
     adv = D.render_advisory({"choice": "opt-2", "confidence": 0.8,
                              "alternatives": []}, env)
-    assert "opt-2 pulls" in adv  # blank label -> raw id fallback
+    assert adv == ""
+    assert "opt-2 pulls" not in adv
 
 
 def test_fallback_when_choice_not_in_options():

@@ -1,3 +1,25 @@
+## 5.4.4 — 2026-10-20 (R34 item 8 — lane health)
+
+- R34-8a: EMPTY-LABEL INVARIANT at the render choke point — an option with a
+  blank label is dropped (never emitted as its bare id); no labelled options
+  left -> no advisory at all. No alternatives -> the `why_not` section is
+  omitted entirely (the placeholder sentence that reached a delivered body is
+  gone).
+- R34-8b: per-profile `decision.frame` register — `impulse` (default, byte-
+  identical) and `execution` (a <=400-char FORK NOTE: fork, recorded choice,
+  ONE continue-the-task instruction; no menu, no why_not, no invitation).
+- R34-8c: `envelope_echo_delivered` observability — log-only, fail-open,
+  never rewrites a delivered body; detects advisory-header echo and the two
+  placeholder strings by pattern family.
+- R34-8d: the PRE anchor envelope is BOUNDED on execution turns (answer +
+  directive <=700 chars, advisory_only=True); consult-only and non-execution
+  orientation keeps the full envelope.
+- R34-8e: lane-health battery — fires / non-empty advisory / never replaces
+  the work product / observable ledger row, for both lanes.
+- R34-8f: `scripts/lane_ab.py` two-arm harness (read-only config) reporting
+  delivered chars, turns, tokens, wall time and git artifacts with a single
+  PASS/FAIL comparison line.
+
 ## 5.4.3 — 2026-10-20 (R34 audit fix bundle)
 
 - R34-1: dead retry arm — `maybe_execute_anchored` scheduled the R16-4

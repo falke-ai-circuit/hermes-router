@@ -415,11 +415,14 @@ def render_impulse_frame(verdict: Dict[str, Any],
         evid = (w or {}).get("evidence") or []
         parts: List[str] = []
         for i, o in enumerate(opts):
-            # R19.15 fallback kept under v1.1: blank/whitespace label -> raw id
-            label = (str(o.get("label") or "").strip()
-                     or str(o.get("id") or "").strip())
+            # R34-8a EMPTY-LABEL INVARIANT: an option with no label text is
+            # DROPPED, never emitted as its bare id (`opt-N` is undecodable
+            # to the reader and the id fallback was how an empty label
+            # reached a delivered body). If nothing labelled remains, the
+            # whole frame is suppressed at the end.
+            label = str(o.get("label") or "").strip()
             if not label:
-                return ""
+                continue
             # R13-4 (rider 13): unlabeled options fall back to the option
             # BODY as label — the hard [:60] cut sliced mid-sentence
             # (live: conductor 07:38 'Cost baseline capture. "Fleet
@@ -438,6 +441,9 @@ def render_impulse_frame(verdict: Dict[str, Any],
                 if ev and not _EMOTION_WORD_RE.search(ev):
                     seg += " (%s)" % ev
             parts.append(seg)
+        if not parts:
+            # every option was dropped (no label text) — no advisory at all
+            return ""
         # D2 (v4.13.1, reviewer axis 2): compose the persona-vocabulary
         # slot into the frame's connective phrasing — same weights + two
         # different persona renders DIVERGE in wording; no slot (no card /

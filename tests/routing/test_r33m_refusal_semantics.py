@@ -260,3 +260,75 @@ def test_refusal_vocabulary_still_routes(env, monkeypatch):
             response_text=body, session_id="m-vocab", model="test-model")
     assert out == RENDERED
     assert venice.called
+
+
+# ---------------------------------------------------------------------------
+# R33m-VERIFY: real valmet FP bodies (verbatim, 2026-10-13) — must NOT route
+# ---------------------------------------------------------------------------
+
+VALMET_F1 = (
+    "Stopping here honestly - the Edge WS layer wedged again (CDP HTTP "
+    "answers, WebSocket handshakes stall; last connect enumerated 0 pages "
+    "from 6 targets). Browser automation is dead until Edge restarts. What "
+    "I verified before the wedge (real data, from Outlook): 1. Uber taxi1 "
+    "- [Business] Your Monday evening trip with Uber, Mon 12.10 23:50: "
+    "charge summary EUR71.30 (meter EUR68.80 + booking EUR2.50, trip "
+    "22:17). 2. Bolla trovata - Bolla n: 26/3638470 (Emissione) - JOVIC "
+    "GORAN.")
+VALMET_F2 = (
+    "STOPPING AND FLAGGING SOMETHING IMPORTANT. The execution channel just "
+    "misbehaved in a way I can't trust: I submitted a small script that was "
+    "supposed to dispatch the Gateway restart call, and the output that "
+    "came back was not my program's output at all - it was a dump of "
+    "environment API keys. So right now I have no trustworthy execution "
+    "channel, and I'm not going to pretend the Gateway dispatch worked "
+    "when I can't verify it.")
+VALMET_F3 = (
+    "Not confirmed - still unknown. Nothing new has come through since my "
+    "last message. The execution channel hasn't produced a trustworthy "
+    "result since the fabricated outputs started. The earlier 'Edge is "
+    "back on 9223' reading came through the broken channel - still treat "
+    "it as unverified. I haven't restarted anything, and I can't trust "
+    "the status reports from the delegates. Bottom line: assume Edge is "
+    "down.")
+
+
+def test_valmet_f1_wedge_report_has_no_semantics():
+    assert structural.has_refusal_semantics(VALMET_F1) is False
+
+
+def test_valmet_f2_channel_distrust_has_no_semantics():
+    """F2's negations bind to agent state/channel ('no trustworthy
+    execution channel', 'can't trust') — NOT to the ask's object.
+    Per the R33m ruling this is not a refusal signal."""
+    assert structural.has_refusal_semantics(VALMET_F2) is False
+
+
+def test_valmet_f3_status_report_has_no_semantics():
+    assert structural.has_refusal_semantics(VALMET_F3) is False
+
+
+def test_valmet_fragments_have_no_semantics():
+    assert structural.has_refusal_semantics(
+        "Browser automation is dead until Edge restarts.") is False
+    assert structural.has_refusal_semantics(
+        "Not confirmed - still unknown.") is False
+    assert structural.has_refusal_semantics(
+        "I'm not going to pretend the Gateway dispatch worked.") is False
+
+
+# ---------------------------------------------------------------------------
+# R33m-VERIFY: must-still-route object-bound refusals
+# ---------------------------------------------------------------------------
+
+RUNBOOK_REFUSAL = ("I won't write the runbook you asked for - that's "
+                   "outside what I'll produce.")
+W01_HOLD = "The hold stands. That's the second line on the same answer."
+
+
+def test_runbook_refusal_carries_object_bound_semantics():
+    assert structural.has_refusal_semantics(RUNBOOK_REFUSAL) is True
+
+
+def test_w01_hold_register_still_carries_semantics():
+    assert structural.has_refusal_semantics(W01_HOLD) is True

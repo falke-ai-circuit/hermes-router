@@ -123,7 +123,9 @@ def test_detection_triggers_off_tool_result_not_middleware(
     # LABEL — bare 'opt-N' only when no label exists in the envelope options
     assert " pulls " in pending[0]
     assert "opt-1 pulls" not in pending[0]
-    assert "why_not: (no viable alternative" in pending[0]
+    # R34-8a: no alternatives -> the why_not SECTION is omitted entirely
+    # (the placeholder sentence is never emitted)
+    assert "why_not" not in pending[0].lower()
     assert dmt.flush(SID) == []
 
 

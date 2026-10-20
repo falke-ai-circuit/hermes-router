@@ -485,11 +485,11 @@ def test_d3_late_live_consume_wins(r20_reset, monkeypatch):
 
 
 def test_d3_no_row_match_drops_fail_loud_r33f(r20_reset, monkeypatch):
-    """No persisted assistant row matches: the banner is DROPPED fail-loud
-    (R33f-A semaphore: TTL is ONE delivery; supersedes the rider-20
-    re-park — the re-park loop was the live stale-leak class, session
-    20261006_190903_c82cbbcc) and banner_semaphore_expired is logged with
-    outcome=no_row_match — never a silent orphan, never a re-park."""
+    """No persisted assistant row matches: R34-2 supersedes the R33f-A drop
+    arm — the banner is DEFERRED under the same semaphore record (same
+    event_seq, one delivery) and the next legal delivery edge attaches it,
+    with banner_capture_fallback_deferred logged (outcome=no_row_match).
+    The stale-leak class stays closed by the single record + bounded TTL."""
     import sqlite3
     from hermes_router import canonical as canon
     dbp = _r20_state_db(r20_reset)  # empty messages table — nothing to match
@@ -504,15 +504,15 @@ def test_d3_no_row_match_drops_fail_loud_r33f(r20_reset, monkeypatch):
                         raising=False)
     DB.park_anchor_banner(SID, "no-row-match banner")
     for _ in range(60):
-        if any(str(kw.get("event_detail")) == "banner_semaphore_expired"
+        if any(str(kw.get("event_detail")) == "banner_capture_fallback_deferred"
                for ev, kw in events):
             break
         import time as _t
         _t.sleep(0.1)
-    assert DB._ANCHOR_BANNERS.get(SID) is None, \
-        "banner dropped (R33f-A: one delivery, no re-park)"
+    assert DB._ANCHOR_BANNERS.get(SID) == "no-row-match banner", \
+        "banner DEFERRED (one delivery, next edge attaches)"
     hit = [kw for ev, kw in events
-           if str(kw.get("event_detail")) == "banner_semaphore_expired"]
+           if str(kw.get("event_detail")) == "banner_capture_fallback_deferred"]
     assert any(str(kw.get("outcome")) == "no_row_match" and
                str(kw.get("edge")) == "capture_fallback"
                for kw in hit), events

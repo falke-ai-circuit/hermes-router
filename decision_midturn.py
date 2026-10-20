@@ -106,6 +106,32 @@ SWEEP_MAX_BYTES = 60 * 1024
 ADVISORY_HEADER = ("[ROUTER ADVISORY — decision lane; banner at turn close; "
                    "may ignore]")
 
+# R34-8b: per-profile FRAME REGISTER for the midturn note.
+#   impulse   (default) — today's behavior, byte-identical.
+#   execution           — a FORK NOTE only: <=400 chars, states the fork, the
+#                         recorded choice, and ONE instruction to continue the
+#                         in-progress task. No menu, no why_not, no invitation
+#                         to choose (the note must never be answered instead
+#                         of the work).
+FRAME_KEY = "frame"
+VALID_FRAMES = ("impulse", "execution")
+FORK_NOTE_HEAD = "[ROUTER FORK NOTE — decision lane; advisory, not a reply]"
+FORK_NOTE_MAX_CHARS = 400
+FORK_NOTE_DIRECTIVE = (
+    "Continue your in-progress task now — do not answer with this note and "
+    "do not restate it.")
+
+
+def _frame_register(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """The frame register for this profile ('impulse' | 'execution').
+    Unknown/absent -> 'impulse' (today's behavior). Never raises."""
+    try:
+        src = cfg if isinstance(cfg, dict) else _cfg()
+        raw = str((src or {}).get(FRAME_KEY) or "").strip().lower()
+        return raw if raw in VALID_FRAMES else "impulse"
+    except Exception:  # noqa: BLE001
+        return "impulse"
+
 # Reason codes
 REASON_SHADOW = "shadow"
 REASON_COOLDOWN = "midturn_cooldown"
@@ -793,6 +819,30 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
 # LEG 2 — advisory envelope (mode 'on' only)
 # -----------------------------------------------------------------------
 
+def _render_execution_fork_note(verdict: Dict[str, Any],
+                                envelope: Dict[str, Any]) -> str:
+    """R34-8b 'execution' register: the fork note ONLY. <=400 chars: the
+    fork, the recorded choice, and ONE continue-the-task instruction. No
+    option menu, no why_not, no invitation to choose. Never raises."""
+    try:
+        choice = str((verdict or {}).get("choice") or "")
+        try:
+            label = str(_dec.choice_label(verdict, envelope) or "").strip()
+        except Exception:  # noqa: BLE001
+            label = ""
+        shown = label or choice
+        fork = str((envelope or {}).get("fork_class") or "").strip()
+        head = ("%s fork=%s; recorded choice: %s (%s). %s"
+                % (FORK_NOTE_HEAD, fork or "unspecified", shown or "none",
+                   "%.2f" % float((verdict or {}).get("confidence") or 0.0),
+                   FORK_NOTE_DIRECTIVE))
+        if len(head) > FORK_NOTE_MAX_CHARS:
+            head = head[:FORK_NOTE_MAX_CHARS - 1].rstrip() + "…"
+        return head
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _render_midturn_advisory(verdict: Dict[str, Any],
                              envelope: Dict[str, Any],
                              meta: Dict[str, Any],
@@ -803,9 +853,17 @@ def _render_midturn_advisory(verdict: Dict[str, Any],
     verdict-of-record segment read back from the ledger row — zero
     divergence from the recorded choice/confidence."""
     try:
-        alts = [str(a) for a in (verdict.get("alternatives") or [])]
-        why_not = ("why_not: %s" % ", ".join(alts)) if alts else \
-            "why_not: (no viable alternative in the closed option set)"
+        # R34-8b: the 'execution' register replaces the advisory envelope with
+        # a bounded fork note (no menu, no why_not).
+        if _frame_register() == "execution":
+            return _render_execution_fork_note(verdict, envelope)
+        alts = [str(a) for a in (verdict.get("alternatives") or [])
+                if str(a or "").strip()]
+        # R34-8a: NEVER emit the why_not header with a placeholder body. No
+        # alternatives -> the whole section is omitted (the placeholder
+        # sentence was the shape that reached a delivered body as literal
+        # '(The option text for "why_not" was omitted by the author...)').
+        why_not = ("why_not: %s" % ", ".join(alts)) if alts else ""
         vor = ""
         try:
             vor = _dec.render_verdict_record(rid)
