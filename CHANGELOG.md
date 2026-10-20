@@ -1,3 +1,45 @@
+## 5.4.6 — 2026-10-20 (R34-12 — the advisory envelope may not eat an execution turn)
+
+- R34-12-7 (`envelope_echo_delivered`): the echo detector now reports EVERY
+  matched family as its OWN event — `advisory_header`, `option_text_placeholder`,
+  `omission_placeholder`, `povs_array`, `synthesis_key`, `brief_bullets`,
+  `pov_triplet` (practitioner/outsider/skeptic), `router_tail_no_work` (a
+  `· router ·` tail with no work evidence). The event carries `pattern=` and
+  `reason=` (same family) + `session_id`. Pinned against the LITERAL captured
+  body from session api_1792536611_5dbebc6b (fetched from the lcm DB into
+  `tests/fixtures/`, not retyped).
+- R34-12-8 (`anchor_advisory_capped`): the bounded advisory cap is applied at
+  the ANCHOR INJECTION SEAM (gate/orchestration), not only inside
+  anchor_exec's execution-directive branch. At L1 the answer injected into
+  model context is capped to `anchor_exec.ADVISORY_CONTENT_MAX` (600) with
+  `anchor_advisory_capped from=<n> to=600`; `anchor_route_fired
+  anchor_chars=` therefore can never report 4033 again at L1.
+- R34-12-9 (`advisory_consumed_turn`): WORK INVARIANT. If a PRE advisory was
+  injected, the user message is a dispatch/task instruction, and the turn
+  closes with ZERO tool activity, `advisory_consumed_turn no_tools=true
+  session_id=...` is logged (log-only, fail-open). This is the observable
+  that would have caught the echo turn immediately.
+- R34-12-1 (`frame_resolved` / `frame_unresolved`): `decision.frame` now
+  crosses from the canonical reader (core.config_access) as a SINGLE-KEY
+  overlay — the historical `from . import config_access` in decision._cfg
+  never resolved, so the lane could not see the frame at all while tests
+  passed against a hand-built cfg. `midturn_verdict`, `midturn_suppressed`
+  and `midturn_banner_emitted` now carry `frame_resolved=impulse|execution`
+  (+`frame_source=`), or `frame_unresolved=<reason>` when it cannot resolve.
+- R34-12-2: in execution frame at L1 the delivered rollup is the ONE-LINER
+  ONLY — no `Top verdicts:` tail, no option labels.
+- R34-12-3: the INJECTED decision string in execution frame is the <=400-char
+  fork note + the continue-your-task directive; no menu, no other option, no
+  `opt-N`.
+- R34-12-4: config-resolution test goes through `config_access.router_section()`
+  (mocked) and asserts `_frame_register() == "execution"`.
+- R34-12-5 (`midturn_suppressed reason=off_task_fork`): a verdict whose
+  options are about the agent's own skills/DNA/tooling while the session's
+  last user instruction is code work is suppressed, never offered
+  (log-only, fail-open).
+
+Version 5.4.5 -> 5.4.6 (plugin.yaml + the R10 version pin).
+
 ## 5.4.5 — 2026-10-20 (R34 items 9 & 10 — PRE consults + the lease blackout)
 
 - R34-9a: consult payload SANITIZED before every anchored call — text-bearing

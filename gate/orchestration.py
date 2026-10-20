@@ -759,6 +759,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         )
     except Exception:  # noqa: BLE001 — lease hygiene never breaks delivery
         pass
+    # R34-12 item 9: WORK INVARIANT at turn close. A PRE advisory injected
+    # into a dispatch/task instruction that then closed with ZERO tool
+    # activity produced no work — emit `advisory_consumed_turn
+    # no_tools=true`. Log-only, fail-open, single close per turn.
+    try:
+        from .. import advisory_consumption as _acclose
+
+        _acclose.close_turn(session_id, log_route=_hub()._log_route)
+    except Exception:  # noqa: BLE001 — observability never breaks delivery
+        pass
     """Detect agent refusals and replace with Venice-rendered content.
     Return a non-empty string to REPLACE the response; None to pass through.
     First plugin to return non-empty wins (turn_finalizer.py:557-561).
@@ -1842,6 +1852,33 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
         msgs = modified.get("messages")
         if isinstance(msgs, list):
             from .. import frames as _frames
+            # R34-12 item 8: HARD CAP at the ANCHOR INJECTION SEAM.
+            # The 8d cap lived only inside anchor_exec.maybe_execute_anchored
+            # and only when its execution-directive detector fired — the live
+            # dispatch brief did not match that detector, so a 4033-char
+            # envelope rode into the turn (anchor_chars=4033 at L1) and the
+            # turn answered with it. At L1 the advisory is supporting
+            # material: cap the injected answer HERE, regardless of how the
+            # turn was classified, so an oversized advisory is impossible.
+            try:
+                from .. import anchor_exec as _axcap
+                from .. import debug_banner as _dbcap
+
+                if _dbcap.debug_banner_level() >= 1:
+                    _raw_answer = envelope.get("answer")
+                    _raw_n = len(str(_raw_answer or ""))
+                    _cap = int(getattr(_axcap, "ADVISORY_CONTENT_MAX", 600) or 600)
+                    if _raw_n > _cap:
+                        envelope["answer"] = str(_raw_answer or "")[:_cap]
+                        envelope["advisory_truncated"] = True
+                        envelope["advisory_only"] = True
+                        _hub()._log_route(
+                            "PRE", event_detail="anchor_advisory_capped",
+                            reason="l1_bounded_advisory",
+                            session_id=session_id,
+                            **{"from": _raw_n, "to": _cap})
+            except Exception:  # noqa: BLE001 — framing never breaks the consult
+                _hub().logger.debug("anchor advisory cap error", exc_info=True)
             _kind = str(envelope.get("kind") or "")
             # R9-9 (rider 9): the envelope's provenance stamps (model + cost,
             # written by anchor_exec) ride INTO the delivered advisory — the
@@ -1858,6 +1895,20 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     envelope.get("limitations"), envelope.get("answer"),
                     model=_st_model, cost=_st_cost)
             msgs.append({"role": "assistant", "content": advisory})
+            # R34-12 item 9: the advisory IS in this turn's model context.
+            # Mark it so the turn-close seam can report an advisory that
+            # consumed a dispatch turn with zero tool calls.
+            try:
+                from .. import advisory_consumption as _ac
+                _last_user = ""
+                for _m in reversed(msgs):
+                    if isinstance(_m, dict) and _m.get("role") == "user":
+                        _last_user = str(_m.get("content") or "")
+                        break
+                _ac.note_advisory_injected(session_id, _last_user,
+                                           chars=len(str(advisory or "")))
+            except Exception:  # noqa: BLE001 — observability only
+                pass
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
             # after the advisory envelope, explicitly instruct the main model to
             # PROCEED with the task. Higher-self produced the data; the main model
@@ -1980,6 +2031,15 @@ def on_transform_terminal_output(*, command: str = "", output: Any = None,
 
         seam_probe_fire("transform_terminal_output")
     except Exception:  # noqa: BLE001 — probe never breaks the seam
+        pass
+    # R34-12 item 9: a tool actually ran in this turn — the work invariant's
+    # counter (advisory_consumption.close_turn reads it at turn end).
+    try:
+        from .. import advisory_consumption as _actool
+
+        _actool.note_tool_activity(
+            str(context.get("session_id") or task_id or ""))
+    except Exception:  # noqa: BLE001 — observability never breaks the seam
         pass
     """R19.2 ADDENDUM 4 — SEAM 1: transform_terminal_output platform hook.
     Core fires this after EVERY terminal tool result, mid-run (live-verified

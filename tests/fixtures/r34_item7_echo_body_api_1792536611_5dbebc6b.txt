@@ -1,0 +1,23 @@
+1. End state: three observability facts proven from a live log, not inference — frame_resolved=impulse|execution (or frame_unresolved reason=...) on midturn_verdict, midturn_suppressed, and every banner/rollup emission; then frame=execution at L1 delivers a body that is the refactor report plus a one-line banner, with no "Top verdicts:" and no option label anywhere; and a replay of session api_1792536233_33a8523a leaves no new skill dir and empty session_turn_leases.
+
+2. Order of operations is the whole dispute: instrument first (log lines + a test that goes through config_access with router_section() mocked to return frame: execution, asserting _frame_register()=="execution"), read the live gateway log, and only then touch the renderer. Any fix written before frame_resolved prints is a guess wearing a commit message.
+
+3. Two seams, not one. The banner tail (decision_midturn.py ~L1126) is the visible half; the injected string is the half that actually changed your behavior. Assert the string handed to the agent at the injection point — ≤400-char fork note plus continue-your-task directive, zero option labels — not the renderer's return value. A renderer-only fix passes tests and still hijacks the turn.
+
+4. Chase the menu's provenance separately from the frame. CREATE A CLASS-LEVEL UMBRELLA / ADD SUPPORT FILE / UPDATE EXISTING UMBRELLA are skill-curation shapes; something generated or leaked that option set onto a refactor. Frame gating alone will suppress it in one path and leave the generator live. Also check whether the verdict landed at turn_boundary after the work was already done — that timing is what let a note become "the new task."
+
+5. Alias resolution is the likely silent failure but the log decides, not me: if _cfg() reads the block under one key and config_access.sub_block_alias("reflex","decision") resolves another, the default to impulse happens with no error. Say frame_unresolved reason=... explicitly rather than defaulting quietly. Do not declare frame dead; my external None only proved router_section() returns {} outside the gateway process, which proves nothing.
+
+6. Leave the anchor lane alone — it is proven good (items 9, 10: anchor_route_fired, banner emitted, anchor_chars=173, no failures, leases empty). Regression risk there is pure downside.
+
+7. Item 5 is truncated in the ask ("a decis"). Read it as side-effect discipline — the lane must not trigger mutating actions like skill creation on a non-skill task — and label that as inference in the report, don't smuggle it in as spec.
+
+8. Failure signs to watch: frame_resolved=impulse in the log while config says execution; "Top verdicts:" surviving in any delivered body; a skill_manage call following a midturn_verdict; a green suite with no live replay; a seam test asserting on a mock. Also do not let confidence 0.51 keep acting as a mandate — relevance/confidence floor, low-confidence verdicts advisory only.
+
+practitioner: the log line and the config_access-mocked test cost an hour and settle the argument — do those before any patch, then replay the exact task live.
+outsider: someone who asked for three retry loops merged and got a skill-creation report reads that as broken regardless of what the routing says; the reply must match the ask.
+skeptic: frame may be a symptom — even at execution frame, why did a skills menu get generated for a refactor, and why did 0.51 confidence clear the bar to act?
+
+Synthesis: make the resolved register observable from real log output, kill the menu at both the banner tail and the injection seam, find why skill-shaped options reached a refactor turn at all, then prove the fix by replaying the same task and reading the delivered body.
+
+{"brief_bullets": 8, "povs": [{"stance": "practitioner", "note": "Log line and config_access-mocked test first; they are cheap and decisive, then a live replay of the same task."}, {"stance": "outsider", "note": "A refactor answered with a skill-creation report is broken to anyone outside the routing machinery; the reply must match the ask."}, {"stance": "skeptic", "note": "Frame is likely a symptom: why did a skills menu reach a refactor turn, and why did 0.51 confidence authorize action?"}], "synthesis": "Instrument frame resolution from live logs, fix the menu at both the banner tail and the injection seam, find the menu's generator, prove with a replay."}

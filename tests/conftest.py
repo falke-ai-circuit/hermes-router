@@ -239,6 +239,15 @@ def _isolate_router_config(monkeypatch, request):
         return {"debug_banner": 0}
 
     monkeypatch.setattr(_dbg, "_banner_section", _empty_section, raising=True)
+    # R34-12: `decision.frame` crosses from the canonical reader as a
+    # single-key overlay. Pin it EMPTY in isolation so the live profile
+    # config (decision.frame: execution) does not leak into unit tests.
+    try:
+        from hermes_router import decision_midturn as _dmt
+
+        monkeypatch.setattr(_dmt, "_frame_overlay", lambda: "", raising=True)
+    except Exception:  # noqa: BLE001 — isolation must never break collection
+        pass
     monkeypatch.setattr(_dbg, "_LAST_GOOD_SECTION", {}, raising=False)
     monkeypatch.setattr(_rc, "_complexity_cfg", lambda: {}, raising=True)
     monkeypatch.setattr(_pf, "higher_self_rule_enabled", lambda: False, raising=True)

@@ -202,6 +202,12 @@ def _cfg() -> Dict[str, Any]:
     (reflex wins when present; decision is the fallback) — no config
     migration required of existing profiles. Never raises."""
     try:
+        # NOTE (R34-12): this relative import does not resolve (the canonical
+        # reader lives at hermes_router/core/config_access.py), so _cfg()
+        # falls back to DEFAULTS. Left byte-identical ON PURPOSE: flipping
+        # the whole decision block live is a semantics change outside this
+        # brief. The FRAME key is resolved separately through the canonical
+        # reader in decision_midturn._cfg (single-key overlay).
         from . import config_access
 
         block = config_access.sub_block_alias("reflex", "decision")
@@ -320,6 +326,41 @@ def session_context_before(cutoff_ts: float, cap_chars: int,
                 break
         return "\n---\n".join(parts)[:int(cap_chars)]
     except Exception:  # noqa: BLE001 — fail-open to delta-only
+        return ""
+
+
+def session_last_user(session_id: str = "", cap_chars: int = 1500,
+                      db_path: str = "") -> str:
+    """R34-12 (R34-11 item 5): the most recent USER instruction in the
+    session — the ask a verdict's options must be about. Read-only URI on
+    the profile state.db, sqlite_master-guarded, timeout-bounded, fail-open
+    to ''. Never raises."""
+    sid = str(session_id or "")
+    if not sid or cap_chars <= 0:
+        return ""
+    try:
+        import sqlite3
+
+        path = db_path or _db_path()
+        if not path:
+            return ""
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True,
+                               timeout=2.0)
+        try:
+            have = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                " AND name = 'messages'").fetchall()
+            if not have:
+                return ""
+            row = conn.execute(
+                "SELECT content FROM messages"
+                " WHERE session_id = ? AND role = 'user'"
+                "   AND content IS NOT NULL AND trim(content) <> ''"
+                " ORDER BY timestamp DESC LIMIT 1", (sid,)).fetchone()
+        finally:
+            conn.close()
+        return str((row or [""])[0] or "").strip()[:int(cap_chars)]
+    except Exception:  # noqa: BLE001 — fail-open
         return ""
 
 

@@ -46,7 +46,7 @@ import json
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import decision as _dec
 
@@ -122,13 +122,64 @@ FORK_NOTE_DIRECTIVE = (
     "do not restate it.")
 
 
+def _frame_resolution(cfg: Optional[Dict[str, Any]] = None
+                      ) -> Tuple[str, bool, str, str]:
+    """R34-11 item 1: the RESOLVED frame register + how it resolved.
+
+    Returns (register, resolved, reason, source):
+      register  'impulse' | 'execution'
+      resolved  False when the decision block itself could not be read or the
+                configured value is not a valid register — callers log
+                `frame_unresolved reason=...` instead of silently defaulting
+      reason    unresolved reason ('' when resolved)
+      source    'config' | 'default' (key absent) | 'explicit_cfg' (caller)
+
+    Resolution goes through the canonical reader
+    (config_access.sub_block_alias("reflex","decision")) via _frame_overlay,
+    and the register reported is the one the lane actually renders with
+    (dmt._cfg(), which consumes the same overlay). Never raises.
+    """
+    try:
+        if isinstance(cfg, dict):
+            raw = str((cfg or {}).get(FRAME_KEY) or "").strip().lower()
+            if not raw:
+                return "impulse", True, "", "default"
+            if raw in VALID_FRAMES:
+                return raw, True, "", "explicit_cfg"
+            return "impulse", False, "unknown_frame_value", raw
+        # The REGISTER the lane actually renders with: dmt._cfg() — the
+        # merged decision block (config + DEFAULTS). Report the raw config
+        # block alongside it so a reader that fails to consume the config is
+        # visible (`frame_unresolved reason=reader_mismatch`) instead of
+        # silently rendering the default.
+        effective = str(_cfg().get(FRAME_KEY) or "").strip().lower()
+        register = effective if effective in VALID_FRAMES else "impulse"
+        invalid = bool(effective) and effective not in VALID_FRAMES
+        try:
+            raw_val = _frame_overlay()
+        except Exception as _exc:  # noqa: BLE001
+            return register, False, "config_access_error", type(_exc).__name__
+        if raw_val is None and not _frame_block_readable():
+            return register, False, "no_decision_block", ""
+        raw = str(raw_val or "").strip().lower()
+        if invalid:
+            return register, False, "unknown_frame_value", raw
+        if not raw:
+            return register, True, "", "default"
+        if raw != register:
+            # config says one register, the lane renders another: the reader
+            # did not consume the config block. Never silent.
+            return register, False, "reader_mismatch", raw
+        return register, True, "", "config"
+    except Exception:  # noqa: BLE001
+        return "impulse", False, "frame_resolution_error", ""
+
+
 def _frame_register(cfg: Optional[Dict[str, Any]] = None) -> str:
     """The frame register for this profile ('impulse' | 'execution').
     Unknown/absent -> 'impulse' (today's behavior). Never raises."""
     try:
-        src = cfg if isinstance(cfg, dict) else _cfg()
-        raw = str((src or {}).get(FRAME_KEY) or "").strip().lower()
-        return raw if raw in VALID_FRAMES else "impulse"
+        return _frame_resolution(cfg)[0]
     except Exception:  # noqa: BLE001
         return "impulse"
 
@@ -191,8 +242,50 @@ def _mode(cfg: Dict[str, Any]) -> str:
         return "off"
 
 
+def _frame_overlay() -> Optional[str]:
+    """The `decision.frame` value from the CANONICAL config reader
+    (core.config_access.sub_block_alias("reflex","decision")), or None when
+    the block carries no frame key / cannot be read.
+
+    Single-key overlay: the historical decision._cfg() reader never resolved
+    the canonical module, so production could not see `decision.frame` at all
+    while the tests passed against a hand-built cfg. Only this key crosses
+    from the canonical reader — nothing else in the decision block changes.
+    Never raises."""
+    try:
+        from .core import config_access as _ca
+
+        block = _ca.sub_block_alias("reflex", "decision")
+        if isinstance(block, dict) and block.get(FRAME_KEY) is not None:
+            return str(block.get(FRAME_KEY) or "")
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _frame_block_readable() -> bool:
+    """True when the canonical reader returns a non-empty decision block
+    (the frame key may still be absent). Never raises."""
+    try:
+        from .core import config_access as _ca
+
+        block = _ca.sub_block_alias("reflex", "decision")
+        return isinstance(block, dict) and bool(block)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _cfg() -> Dict[str, Any]:
-    """Decision cfg with the midturn default forced in. Never raises."""
+    """Decision cfg with the midturn default forced in. Never raises.
+
+    R34-11 item 1 / R34-12: `decision.frame` resolves through the CANONICAL
+    reader (core.config_access) as a SINGLE-KEY overlay. The historical
+    `from . import config_access` inside decision._cfg() never resolved, so
+    the frame key could never reach the lane and every execution-frame test
+    passed against a hand-built cfg that production never had. Only the
+    frame key is taken from the canonical reader — the rest of the decision
+    block keeps its historical resolution (no semantics widening).
+    """
     try:
         cfg = dict(_dec._cfg())
     except Exception:  # noqa: BLE001
@@ -202,6 +295,12 @@ def _cfg() -> Dict[str, Any]:
         except Exception:  # noqa: BLE001
             cfg = {}
     cfg.setdefault(MIDTURN_MODE_KEY, "off")
+    try:
+        raw = _frame_overlay()
+        if raw is not None:
+            cfg[FRAME_KEY] = raw
+    except Exception:  # noqa: BLE001 — frame overlay never breaks the lane
+        pass
     return cfg
 
 
@@ -523,6 +622,34 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
         logger.debug("decision_midturn.sweep_turn_start error", exc_info=True)
 
 
+# R34-11 item 5 vocabulary — options about the agent's OWN machinery.
+_AGENT_SCOPE_RE = re.compile(
+    r"(skill|umbrella|support file|skill_manage|\bdna\b|persona|soul\.md|"
+    r"identity\.md|tooling|memory (entry|tool)|router plugin)", re.I)
+# The user's ask is CODE WORK when it names code-work objects/verbs.
+_CODE_WORK_RE = re.compile(
+    r"(refactor|implement|fix|bug|function|helper|commit|pytest|unit test|"
+    r"repo|code|script|deploy|build|module|class|def |endpoint|api)", re.I)
+
+
+def _is_off_task_fork(session_id: str, opts: List[str]) -> bool:
+    """True when the fork's OPTIONS are about the agent's own skills/DNA/
+    tooling while the session's last user instruction is code work. Log-only
+    guard: empty ask or any doubt -> False (fail-open). Never raises."""
+    try:
+        joined = " ".join(str(o) for o in (opts or []))
+        if not joined.strip() or not _AGENT_SCOPE_RE.search(joined):
+            return False
+        ask = _dec.session_last_user(session_id)
+        if not ask:
+            return False
+        if _AGENT_SCOPE_RE.search(ask):
+            return False          # the user actually asked about agent scope
+        return bool(_CODE_WORK_RE.search(ask))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _handle_hit(session_id: str, tool_name: str, text: str,
                 opts: List[str], cfg: Dict[str, Any], mode: str,
                 seam: str = SEAM_TERMINAL) -> None:
@@ -546,6 +673,18 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             over_cap = int(st.get("count") or 0) >= RUN_CAP
 
         fork_cls = _dec.fork_class(text, opts)
+        # R34-11 item 5 (side-effect discipline): a verdict whose OPTIONS are
+        # about the agent's own skills/DNA/tooling while the user's task is
+        # CODE WORK is an off-task fork — it invites scope the user did not
+        # ask for. Suppress it (log-only, fail-open); never offer the menu.
+        try:
+            if _is_off_task_fork(session_id, opts):
+                _log(session_id, "midturn_suppressed", reason="off_task_fork",
+                     sig=sig, mode=mode, tool=tool_name, fork_class=fork_cls,
+                     seam=seam)
+                return
+        except Exception:  # noqa: BLE001 — suppression check never blocks
+            pass
         if mode == "shadow" or over_cap:
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
@@ -802,9 +941,29 @@ def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
         pass
 
 
+# Events that carry the resolved frame register (R34-11 item 1). Every
+# verdict/suppression/banner row says WHICH register the lane ran under, and
+# an unreadable frame is explicit (`frame_unresolved reason=...`) rather than
+# a silent default.
+_FRAME_EVENTS = ("midturn_verdict", "midturn_suppressed",
+                 "midturn_banner_emitted", "off_task_fork")
+
+
 def _log(session_id: str, event: str, **fields: Any) -> None:
     try:
         from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
+        if event in _FRAME_EVENTS:
+            try:
+                _reg, _ok, _reason, _src = _frame_resolution()
+                if _ok:
+                    fields.setdefault("frame_resolved", _reg)
+                    if _src:
+                        fields.setdefault("frame_source", _src)
+                else:
+                    fields.setdefault("frame_unresolved", _reason)
+                    fields.setdefault("frame_default", _reg)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
         _lr(event, lane="decision", trigger=TRIGGER,
             session_id=str(session_id or ""), **fields)
     except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never breaks the lane (rider 19 item 1)
@@ -956,7 +1115,18 @@ def close_turn(session_id: str) -> str:
         # cost + top labels; the single-verdict render_decision_banner is
         # superseded at turn close (its per-call format remains at park
         # time upstream).
-        return _aggregate_line(n, ti, to, total, consumed)
+        banner = _aggregate_line(n, ti, to, total, consumed)
+        # R34-11 item 1: the banner/rollup emission carries the resolved
+        # register too — the live probe can read frame_resolved on the SAME
+        # turn that delivered a banner.
+        try:
+            if banner:
+                _log(session_id, "midturn_banner_emitted", verdicts=n,
+                     chars=len(banner),
+                     register=_frame_register())
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return banner
     except Exception:  # noqa: BLE001 — banner must never break delivery
         logger.debug("decision_midturn.close_turn error", exc_info=True)
         return ""
@@ -1119,7 +1289,19 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
             _lbl = _cap_at_boundary(str(c.get("choice_label") or "").strip(), 90)
             shown.append(_lbl or _ch)
             confs.append("%.2f" % float(c.get("confidence") or 0.0))
-        if shown:
+        # R34-11 item 2: in the EXECUTION register at L1 the delivered body is
+        # the ONE-LINER ONLY — no `Top verdicts:` tail, no option labels. A
+        # menu of options is an invitation to answer the menu instead of the
+        # task (live: a skills menu hijacked a refactor turn).
+        _show_tail = True
+        try:
+            if _frame_register() == "execution":
+                from . import debug_banner as _dbl
+                if _dbl.debug_banner_level() <= 1:
+                    _show_tail = False
+        except Exception:  # noqa: BLE001 — renderer never breaks the rollup
+            _show_tail = True
+        if shown and _show_tail:
             tail = " / ".join(
                 "%s (~%s)" % (s, cf)
                 for s, cf in zip(shown, confs))

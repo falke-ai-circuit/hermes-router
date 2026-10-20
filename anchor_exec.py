@@ -969,6 +969,11 @@ ADVISORY_ONLY_INSTRUCTION = (
     "directive, so proceed with the task and deliver the work product.")
 
 
+# R34-12 item 8: ONE cap value shared by the two advisory seams (8d's
+# in-exec anchor envelope + the ANCHOR INJECTION seam in gate/orchestration).
+ADVISORY_CONTENT_MAX = 600
+
+
 def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
     """True when the LAST user message opens with an execution imperative
     (or a directive clause naming one). Structural, first 300 chars only;
@@ -1348,7 +1353,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 # advisory into a dispatch turn (live anchor_chars=4866).
                 # Advisory content = first 600 chars + the directive;
                 # consult-only / non-execution orientation keep the full text.
-                _cap = 600
+                _cap = ADVISORY_CONTENT_MAX
                 _instr = ADVISORY_ONLY_INSTRUCTION
                 # total advisory budget (answer + directive) <= 700 chars
                 _room = max(0, 700 - len(_instr) - 2)
