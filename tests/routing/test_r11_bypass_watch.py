@@ -41,6 +41,11 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(config_access, "router_section", lambda: {})
     monkeypatch.setattr(plugin._dispatcher_pre, "_dispatch_pass",
                         lambda c, s, m: False)
+    # R34-4: this battery tests DETECTION, not provider ownership. Neutralize
+    # the profile-isolation allow-list so the mandatory host set is exercised
+    # verbatim; the allow-list itself is covered by
+    # tests/routing/test_r34_item4_expected_provider_hosts.py.
+    monkeypatch.setattr(bypass_watch, "_expected_hosts", lambda: set())
     yield
 
 

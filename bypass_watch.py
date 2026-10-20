@@ -45,6 +45,96 @@ PROVIDER_HOSTS = (
     "openrouter.ai",
 )
 
+# R34-4: hosts this PROFILE legitimately talks to. The main model is served
+# by a custom provider (live: custom:nousinf) and the router's own lanes hit
+# provider endpoints on every routed turn; scanning tool surfaces for those
+# hosts produced 84+ false "direct provider call detected, unrouted" banners
+# fleet-wide (orchestrator 43, operative 17, conductor 9, shadow 11,
+# analyst 4). EXPECTED hosts are silent; detection stays intact for
+# genuinely foreign provider hosts. Never blocks anything.
+_EXPECTED_HOST_CACHE: Dict[str, Any] = {"at": 0.0, "hosts": set()}
+_EXPECTED_TTL_S = 300.0
+
+
+def _host_of(url: str) -> str:
+    """Hostname of a URL ('' when unparseable / not a URL). Never raises."""
+    try:
+        from urllib.parse import urlparse
+
+        raw = str(url or "").strip()
+        if not raw:
+            return ""
+        if "://" not in raw:
+            raw = "https://" + raw
+        return str(urlparse(raw).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _expected_hosts() -> Set[str]:
+    """Hosts that are NORMAL OPERATION for this profile: the configured
+    main-model provider base_url(s) and the router's own lane endpoints
+    (anchor primary/judge). Cached briefly. Never raises."""
+    try:
+        now = time.time()
+        if (_EXPECTED_HOST_CACHE.get("hosts")
+                and now - float(_EXPECTED_HOST_CACHE.get("at") or 0.0)
+                < _EXPECTED_TTL_S):
+            return set(_EXPECTED_HOST_CACHE["hosts"])
+        hosts: Set[str] = set()
+        # 1. the router's own lane endpoints
+        try:
+            from . import anchor_chain
+
+            chain = anchor_chain.load_anchor_chain()
+            for ep in (getattr(chain, "primary", None),
+                       getattr(chain, "judge", None)):
+                h = _host_of(str(getattr(ep, "base_url", "") or ""))
+                if h:
+                    hosts.add(h)
+        except Exception:  # noqa: BLE001
+            pass
+        # 2. the profile's configured main-model provider(s)
+        try:
+            from . import config_access
+
+            for _name, block in (config_access.providers_custom() or {}).items():
+                if not isinstance(block, dict):
+                    continue
+                h = _host_of(str(block.get("base_url") or ""))
+                if h:
+                    hosts.add(h)
+        except Exception:  # noqa: BLE001
+            pass
+        _EXPECTED_HOST_CACHE["hosts"] = set(hosts)
+        _EXPECTED_HOST_CACHE["at"] = now
+        return hosts
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _foreign_hosts(hosts: List[str]) -> List[str]:
+    """Captured hosts MINUS this profile's expected provider/lane hosts.
+    An expected parent (e.g. nousresearch.com) also covers subdomains.
+    Never raises."""
+    try:
+        expected = _expected_hosts()
+        if not expected:
+            return list(hosts)
+        out = []
+        for h in hosts:
+            hh = str(h or "").lower()
+            if hh in expected:
+                continue
+            if any(hh.endswith("." + e) or e.endswith("." + hh)
+                   for e in expected if e):
+                continue
+            out.append(h)
+        return out
+    except Exception:  # noqa: BLE001
+        return list(hosts)
+
+
 _EVENT_DETAIL = "provider_direct_call_unrouted"
 # R15 LEG 2 (Goran 09-21): one-line visibility banner appended to the
 # DELIVERED turn when the audit fires. Enforcement stays Goran's call —
@@ -228,6 +318,14 @@ def audit_turn(session_id: str, log_route: Any) -> str:
             start = float(r.get("start") or 0.0) if not start else start
         if not hosts:
             return ""
+        # R34-4: the profile's own main-model provider and the router's lane
+        # endpoints are expected traffic, not a bypass. Filtering happens
+        # BEFORE the route check so an expected host never even reaches the
+        # audit decision; foreign hosts keep the original behavior.
+        _foreign = _foreign_hosts(hosts)
+        if not _foreign:
+            return ""
+        hosts = _foreign
         if _routed_this_turn(session_id, start):
             return ""
         banner = UNROUTED_BANNER
