@@ -406,6 +406,9 @@ def test_close_turn_resets_run_counter(_env, monkeypatch):
 # LEG 3: aggregate banner at turn close
 # ------------------------------------------------------------------
 
+_OPT1_LABEL = "alphaalpha"   # label the test envelope assigns to opt-1
+
+
 def _feed_verdicts(monkeypatch, cfg, choices):
     for n, ch in enumerate(choices):
         _calls(monkeypatch, body={"choice": ch, "confidence": 0.9,
@@ -426,9 +429,11 @@ def test_close_turn_single_verdict_format(_env, monkeypatch):
     # R19.22: unified rollup — counts + real cost + top label
     # (D3-DELIVERY rider 2: provenance tag prefixed, byte-exact)
     assert banner.startswith("· router · impulse (decision) |")
-    # F6 (rider 6): singular grammar; F2 (rider 6): choice+conf tail
+    # F6 (rider 6): singular grammar. R34-3 supersedes the F2 all-ids tail:
+    # the banner renders the CHOSEN OPTION'S LABEL (persisted on the ledger
+    # row) and keeps the confidence — opt-N is only the fallback.
     assert "1 verdict |" in banner
-    assert "Top verdicts: opt-1 (~0.90)" in banner
+    assert "Top verdicts: %s (~0.90)" % _OPT1_LABEL in banner
     assert "initiator=agent" in banner
     assert "tok 10/5" in banner
     assert dmt.close_turn(SID) == ""  # drained

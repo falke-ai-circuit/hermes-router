@@ -124,11 +124,11 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
     assert out1 and "t1 plain answer" in out1
     assert TAG not in out1                        # R20: delivered bodies drop the provenance prefix
     assert "impulse (decision)" in out1           # rollup provenance line
-    # F2 (rider 6): the tail is the verdict-of-record shape — ledger choice
-    # + confidence ONLY; the old label echoed raw option text truncated
-    # mid-word.
-    assert "Top verdicts: opt-1 (~0.78)" in out1
-    assert "ship the fix now" not in out1
+    # R34-3 supersedes the F2 all-ids tail: the tail renders the CHOSEN
+    # OPTION'S LABEL (truncated at a clause boundary) + confidence, not the
+    # bare option id the reader cannot decode.
+    assert "Top verdicts: ship the fix now (~0.78)" in out1
+    assert "Top verdicts: opt-1" not in out1
     crec = [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"]
     assert len(crec) == 1 and crec[0].get("parked") is True \
