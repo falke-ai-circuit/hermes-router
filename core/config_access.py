@@ -345,6 +345,24 @@ def _type_name(value: Any) -> str:
         return "?"
 
 
+# R34-6: the nested anchor_chain keys that make up the LIVE shape. When any
+# of them is present the block is on the nested schema and the legacy flat
+# leaves are simply not part of it.
+_ANCHOR_CHAIN_NESTED_KEYS = ("primary", "models", "pricing", "judge",
+                             "daily_cap_usd")
+
+
+def _nested_anchor_chain(section: Dict[str, Any]) -> bool:
+    """True when the anchor_chain block uses the nested shape. Never raises."""
+    try:
+        block = section.get("anchor_chain")
+        if not isinstance(block, dict):
+            return False
+        return any(k in block for k in _ANCHOR_CHAIN_NESTED_KEYS)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def validate_config() -> int:
     """LOAD-TIME VALIDATION pass (proposal §2.3 best-practice adjustment):
     validate the whole resolved section once at plugin load — one telemetry
@@ -359,8 +377,15 @@ def validate_config() -> int:
         section = router_section()
         if not isinstance(section, dict):
             return 0
+        _nested_anchor = _nested_anchor_chain(section)
         for k in schema.SCHEMA:
             try:
+                # R34-6: a legacy flat leaf superseded by the live nested
+                # block is NOT a violation — the profile simply uses the
+                # nested shape. Real drift inside the nested keys still warns.
+                if (getattr(k, "legacy_of", "") == "anchor_chain"
+                        and _nested_anchor):
+                    continue
                 value = _walk(section, k.path)
                 if value is _MISSING:
                     # A wholly-absent parent block is a profile that simply

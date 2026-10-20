@@ -21,11 +21,18 @@ class Key:
     default: Any
     nullable: bool
     control_writable: bool     # cross-checked against config_writer CANONICAL_SECTION rules
+    # R34-6: a LEGACY flat leaf that the live nested block supersedes. Load
+    # validation skips it when the nested shape is present, so a profile on
+    # the nested schema stops emitting bogus config_key_missing rows while
+    # real drift in the nested keys still warns.
+    legacy_of: str = ""        # parent block path ("anchor_chain") or ""
 
 
-def _k(path, type_, default, nullable=False, control_writable=True):  # noqa: ANN001
+def _k(path, type_, default, nullable=False, control_writable=True,
+       legacy_of=""):  # noqa: ANN001
     return Key(path=path, type=type_, default=default,
-               nullable=nullable, control_writable=control_writable)
+               nullable=nullable, control_writable=control_writable,
+               legacy_of=legacy_of)
 
 
 # Top-level scalars — defaults EXACTLY equal the literals the readers use.
@@ -129,13 +136,30 @@ SCHEMA: Tuple[Key, ...] = (
     _k("decision.api_key_env", str, "", nullable=True),
     _k("decision.pre", dict, {}),
     _k("decision.post", dict, {}),
-    _k("anchor_chain.reasoning_effort", str, "", nullable=True),
-    _k("anchor_chain.summary_header", str, "", nullable=True),
-    _k("anchor_chain.threshold", float, 0.0, nullable=True),
-    _k("anchor_chain.enabled", bool, True),
-    _k("anchor_chain.model", str, "", nullable=True),
-    _k("anchor_chain.endpoint", str, "", nullable=True),
-    _k("anchor_chain.api_key_env", str, "", nullable=True),
+    # R34-6: the LIVE nested anchor_chain shape (primary/models/pricing/
+    # judge/daily_cap_usd) demonstrably works (sonnet-5.5 consults with
+    # correct cost rows) but the validator only knew the legacy flat leaves,
+    # so every load emitted ~73-78 bogus config_key_missing rows per profile.
+    _k("anchor_chain.primary", dict, {}),
+    _k("anchor_chain.models", dict, {}),
+    _k("anchor_chain.pricing", dict, {}),
+    _k("anchor_chain.judge", dict, {}),
+    _k("anchor_chain.daily_cap_usd", float, 0.0),
+    # Legacy flat leaves (pre-nested profiles). Kept readable via get() but
+    # SKIPPED by load validation when the nested block is present.
+    _k("anchor_chain.reasoning_effort", str, "", nullable=True,
+       legacy_of="anchor_chain"),
+    _k("anchor_chain.summary_header", str, "", nullable=True,
+       legacy_of="anchor_chain"),
+    _k("anchor_chain.threshold", float, 0.0, nullable=True,
+       legacy_of="anchor_chain"),
+    _k("anchor_chain.enabled", bool, True, legacy_of="anchor_chain"),
+    _k("anchor_chain.model", str, "", nullable=True,
+       legacy_of="anchor_chain"),
+    _k("anchor_chain.endpoint", str, "", nullable=True,
+       legacy_of="anchor_chain"),
+    _k("anchor_chain.api_key_env", str, "", nullable=True,
+       legacy_of="anchor_chain"),
     _k("anchor_chain.on_demand", bool, False),
     _k("anchor_chain.caps", dict, {}),
     _k("decision_head.mode", str, "", nullable=True),
