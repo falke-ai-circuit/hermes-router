@@ -85,9 +85,17 @@ def test_none_consult_schedules_retry_with_endpoint_and_logs_no_exception(
 
 def test_retry_arm_names_resolve_in_source():
     """Belt-and-braces guard against the same name drift returning: the
-    scheduling call inside maybe_execute_anchored must not reference `ep`."""
-    import inspect
+    scheduling call inside maybe_execute_anchored must not reference `ep`.
 
-    src = inspect.getsource(anchor_exec.maybe_execute_anchored)
-    assert "_retry_anchored_async(" in src
-    assert "api_kwargs, ep" not in src
+    Reads the MODULE FILE, not inspect.getsource() of the live object — the
+    suite stub-patches anchor_exec.maybe_execute_anchored in other tests, and
+    getsource() then returns the stub's body."""
+    src = open(anchor_exec.__file__, "r", encoding="utf-8").read()
+    start = src.index("def maybe_execute_anchored(")
+    try:
+        end = src.index("\ndef ", start + 10)
+    except ValueError:
+        end = len(src)
+    body = src[start:end]
+    assert "_retry_anchored_async(session_id, rec, api_kwargs, endpoint," in body
+    assert "api_kwargs, ep" not in body
