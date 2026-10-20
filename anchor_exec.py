@@ -648,6 +648,46 @@ def _retry_anchored_async(session_id: str, rec: Dict[str, Any],
                          base_timeout=base_timeout)
 
 
+# R34-7 (Sentron): a PRE orientation/risk consult must NEVER replace an
+# execution turn. Live specimen: risk_consult_fire risk_class=r3 ->
+# anchor_route_fired lane=complexity mode=consult -> the delivered answer
+# BECAME the orientation envelope and zero work was done. When the turn
+# carries an explicit execution directive the envelope is supporting
+# material, explicitly framed as such.
+_EXEC_DIRECTIVE_RE = re.compile(
+    r"^\s*(?:please\s+|now\s+|then\s+|go\s+ahead\s+and\s+)?"
+    r"(implement|fix|build|commit|land|add|write|create|run|execute|apply|"
+    r"patch|refactor|deploy|update|make|produce|generate|install|migrate|"
+    r"ship|finish|complete)\b",
+    re.IGNORECASE)
+
+ADVISORY_ONLY_INSTRUCTION = (
+    "ADVISORY ONLY — this envelope is supporting context, not the answer. "
+    "Do not answer with this orientation: the turn carries an execution "
+    "directive, so proceed with the task and deliver the work product.")
+
+
+def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
+    """True when the LAST user message opens with an execution imperative
+    (or a directive clause naming one). Structural, first 300 chars only;
+    never raises."""
+    try:
+        msgs = (api_kwargs or {}).get("messages")
+        if not isinstance(msgs, list):
+            return False
+        text = ""
+        for m in reversed(msgs):
+            if isinstance(m, dict) and m.get("role") == "user":
+                text = str(m.get("content") or "")
+                break
+        head = text.strip()[:300]
+        if not head:
+            return False
+        return bool(_EXEC_DIRECTIVE_RE.match(head))
+    except Exception:  # noqa: BLE001 — detection never breaks the consult
+        return False
+
+
 def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                            ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """The llm_execution middleware entry point for the complexity lane.
@@ -672,6 +712,10 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         if not rec:
             return None
         endpoint: anchor_chain.AnchorEndpoint = rec["endpoint"]
+        # R34-7: read the execution-directive signal from the ORIGINAL ask —
+        # the orientation branch below rewrites the last user message with
+        # the orientation frame, so the imperative is gone by envelope time.
+        _exec_turn = _execution_directive(api_kwargs)
         chain = anchor_chain.load_anchor_chain()
 
         est_in, est_out = estimate_tokens_from_payload(api_kwargs)
@@ -814,7 +858,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             except Exception:  # noqa: BLE001 — orientation frame is best-effort
                 pass
         content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
-        if content is None:
+        if content is None or not str(content).strip():
             # R16-4 (rider 16): anchored consult timed out / failed. The old
             # path just returned None — the flash call passed through and the
             # agent saw only the staged/verdict-pending state FOREVER (live:
@@ -831,6 +875,40 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             # window, otherwise the next edge; never a silent orphan).
             _retry_anchored_async(session_id, rec, api_kwargs, endpoint,
                                   base_timeout=300)
+            # R34-5: an empty/None consult is INVISIBLE and still bills (the
+            # provider call is charged, the user sees no degradation —
+            # anchor_route_failed reason=empty_response, 50 lifetime events).
+            # Route it through the SAME visible failure path as a dropped
+            # consult: (a) an observable ledger row with outcome=failed, so a
+            # zero-content consult is NEVER counted as completed; (b) a
+            # parked failure banner the next delivery edge reports.
+            try:
+                from . import debug_banner as _dbf
+
+                _fb_model = str(getattr(endpoint, "model", "") or "?")[:80]
+                _fb = ("%s higher-self (frontier) | consult failed | "
+                       "empty response | %s %s" % (
+                           _dbf.BANNER_HEAD, _fb_model, _dbf.BANNER_TAIL))
+                _dbf.park_anchor_banner(
+                    str(session_id or ""), _fb,
+                    task_id=str(rec.get("task_id") or ""))
+            except Exception:  # noqa: BLE001 — visibility never breaks the lane
+                pass
+            try:
+                from . import decision as _dec
+
+                _dec.ledger_write({
+                    "session_id": str(session_id or ""),
+                    "task_id": str(rec.get("task_id") or ""),
+                    "trigger": "frontier_consult",
+                    "fork_class": "frontier_consult",
+                    "model": str(getattr(endpoint, "model", "") or ""),
+                    "choice": "",
+                    "outcome": "failed",
+                    "fail_open_reason": "empty_response",
+                })
+            except Exception:  # noqa: BLE001 — ledger never breaks the lane
+                pass
             return None
         # R19.13 B+ 5b/5e: parse the adversarial block from the PRE verdict
         # (nullable, fail-open) and write the p_failure ledger row for
@@ -959,6 +1037,14 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             kind, endpoint.model, decision_like, content,
             limitations="single-shot anchored call; no tool access",
         )
+        # R34-7: an execution-shaped turn must still get its work product —
+        # the orientation envelope is ADVISORY context, never the answer.
+        try:
+            if kind == "orientation" and _exec_turn:
+                envelope["instruction"] = ADVISORY_ONLY_INSTRUCTION
+                envelope["advisory_only"] = True
+        except Exception:  # noqa: BLE001 — framing never breaks the consult
+            pass
         # R9-9 (rider 9): consult-envelope provenance stamps — model + cost
         # ride the envelope so the tool-stream delivery is self-contained
         # discrimination (route_id already stamped by the builder).
