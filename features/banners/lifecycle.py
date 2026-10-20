@@ -37,6 +37,13 @@ def _log_route(event: str, **fields: Any) -> None:
     _tlm.log_route(event, **fields)
 
 
+# R34-2: a banner deferred after the preferred-edge no_row_match keeps its
+# slot until the next legal delivery edge attaches it. This TTL bounds that
+# deferral so a park with no consumer can never outlive its turn by more
+# than one budget cycle.
+_DEFER_TTL_S = 600.0
+
+
 class IllegalDeliveryEdge(Exception):
     """A banner kind was delivered/consumed on an edge it does not allow."""
 
@@ -157,6 +164,28 @@ class BannerLifecycle:
         if edge not in kind.delivery_edges:
             raise IllegalDeliveryEdge(kind_id, edge)
         db = _db()
+        # R34-2: a DEFERRED slot (preferred-edge no_row_match) is eligible
+        # for exactly ONE attach at the next legal delivery edge — but only
+        # inside the deferral TTL. Past it, the slot is dropped fail-loud.
+        _deferred_at = 0.0
+        try:
+            _rec_pre = db.park_record(session_id) or {}
+            _deferred_at = float(_rec_pre.get("deferred_at") or 0.0)
+        except Exception:  # noqa: BLE001 — record read never breaks delivery
+            _deferred_at = 0.0
+        if _deferred_at and (_time_wall() - _deferred_at) > _DEFER_TTL_S:
+            try:
+                db.consume_parked_banner(session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _log_route("POST", event_detail="banner_semaphore_expired",
+                           edge=str(log_edge if log_edge is not None else edge),
+                           outcome="deferred_expired",
+                           session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001
+                pass
+            return (text if isinstance(text, str) else "") if mode == "append" else ""
         # consume through the debug_banner delegate — the historical patch
         # surface (tests patch debug_banner.consume_parked_banner).
         parked = db.consume_parked_banner(session_id)
@@ -179,7 +208,7 @@ class BannerLifecycle:
                        **({"park_event_seq": int(_rec["event_seq"])}
                           if _rec.get("event_seq") else {}))
         if not parked:
-            return base if mode == "append" else ""
+            return (text if isinstance(text, str) else "") if mode == "append" else ""
         try:
             db.note_consumed_decision(session_id, parked)
         except Exception:  # noqa: BLE001
@@ -335,30 +364,42 @@ class BannerLifecycle:
                 except Exception:  # noqa: BLE001 — fail-loud best-effort
                     logger.exception("banner_capture_fallback event log failed")
             else:
-                # no persisted assistant row matched: R33f-A — the banner is
-                # DROPPED fail-loud (semaphore expired), no longer re-parked
-                # (the re-park loop kept stale banners alive across turns —
-                # the live leak class R33f-A closes).
+                # R34-2: no_row_match on the PREFERRED edge (rewrite of the
+                # newest persisted assistant row) must NOT destroy the
+                # banner. Live: every uncensored-render banner died here —
+                # `debug_banner_emitted lane=uncensored-render` fired while
+                # zero delivered bodies carried the banner (R33f-A dropped
+                # it as banner_semaphore_expired/no_row_match).
+                # The banner stays PARKED under the SAME semaphore record
+                # (same event_seq => still exactly ONE delivery) and the next
+                # legal delivery edge attaches it to the delivered body.
+                # Staleness stays bounded: the deferred slot is expired in
+                # deliver() after _DEFER_TTL_S.
                 with self._CAPTURE_FB_LOCK:
-                    db._ANCHOR_BANNERS.pop(sid, None)
-                    db._ANCHOR_TASKS.pop(sid, None)
-                    db._ANCHOR_SEGS.pop(sid, None)
+                    rec = {}
                     try:
-                        db._PARK_RECORDS.pop(sid, None)
+                        rec = dict(db.park_record(sid) or {})
+                    except Exception:  # noqa: BLE001
+                        rec = {}
+                    rec["deferred_at"] = _time_wall()
+                    try:
+                        db._PARK_RECORDS[sid] = rec
                     except Exception:  # noqa: BLE001
                         pass
                 try:
-                    logger.error(
-                        "banner_capture_fallback_failed detail=no_row_match "
-                        "session_id=%s — banner dropped (R33f-A semaphore: "
-                        "one delivery, no re-park)", sid)
+                    logger.warning(
+                        "banner_capture_fallback_deferred detail=no_row_match "
+                        "session_id=%s — banner stays parked (one delivery, "
+                        "next delivery edge attaches)", sid)
                 except Exception:  # noqa: BLE001
                     pass
                 try:
                     _log_route("POST",
-                               event_detail="banner_semaphore_expired",
+                               event_detail="banner_capture_fallback_deferred",
                                outcome="no_row_match", edge="capture_fallback",
-                               session_id=sid)
+                               session_id=sid,
+                               **({"park_event_seq": int(rec["event_seq"])}
+                                  if rec.get("event_seq") else {}))
                 except Exception:  # noqa: BLE001
                     logger.exception("banner_capture_fallback event log failed")
         except Exception:  # noqa: BLE001 — the fallback must never break anything
@@ -388,6 +429,12 @@ def _time_sleep(s: float) -> None:
     import time
 
     time.sleep(s)
+
+
+def _time_wall() -> float:
+    import time
+
+    return time.time()
 
 
 LIFECYCLE = BannerLifecycle()

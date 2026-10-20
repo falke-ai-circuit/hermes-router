@@ -121,20 +121,25 @@ def test_not_landed_attach_dropped_fail_loud(env):
     assert "· router ·" not in (out2 or "next turn")
 
 
-def test_capture_fallback_no_row_match_drops(env, monkeypatch, tmp_path):
-    """Rider 20 fallback rewritten: no-row-match -> dropped fail-loud
-    (banner_semaphore_expired), no re-park into later turns."""
-    import time as _t
+def test_capture_fallback_no_row_match_defers_one_delivery(env, monkeypatch,
+                                                          tmp_path):
+    """R34-2 (rewrites the R33f-A drop arm): a no-row-match on the PREFERRED
+    edge DEFERS the banner under the SAME semaphore record instead of
+    dropping it — the next legal delivery edge attaches it exactly once.
+    The stale-leak class stays closed by the single record (same event_seq)
+    and the deferral TTL, not by destroying the banner."""
     monkeypatch.setattr(debug_banner._LIFECYCLE, "banner_capture_fallback_wait",
-                        lambda: 1.0)
+                        lambda: 0.05)
     debug_banner.park_anchor_banner(SID, _banner())
+    seq = debug_banner.park_record(SID).get("event_seq")
     with mock.patch.object(debug_banner._LIFECYCLE,
                            "_newest_persisted_assistant_row", return_value=""):
         debug_banner._LIFECYCLE._capture_fallback_watch(SID, _banner())
-        _t.sleep(0.1)
-    assert not debug_banner._ANCHOR_BANNERS.get(SID)   # dropped, not re-parked
+    assert debug_banner._ANCHOR_BANNERS.get(SID)       # deferred, not dropped
+    assert debug_banner.park_record(SID).get("event_seq") == seq
     events = [f.get("event_detail") for _, f in env]
-    assert "banner_semaphore_expired" in events
+    assert "banner_capture_fallback_deferred" in events
+    assert "banner_semaphore_expired" not in events
 
 
 # ---------------------------------------------------------------------------
