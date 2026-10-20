@@ -829,7 +829,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             # banner machinery the moment it lands (earliest delivery edge
             # consumes it — same-turn when it lands inside the POST wait
             # window, otherwise the next edge; never a silent orphan).
-            _retry_anchored_async(session_id, rec, api_kwargs, ep,
+            _retry_anchored_async(session_id, rec, api_kwargs, endpoint,
                                   base_timeout=300)
             return None
         # R19.13 B+ 5b/5e: parse the adversarial block from the PRE verdict
