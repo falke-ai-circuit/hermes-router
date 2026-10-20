@@ -746,7 +746,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
     # R34-10a: this seam is the turn-end edge (final body, including an empty
     # final response). The session's turn lease MUST not outlive it — a hung
     # turn held + renewed its row for ~30 min and silently blocked every new
-    # dispatch. Fail-open; release is idempotent.
+    # dispatch. A turn that dies before this seam is bounded by 10b's stale
+    # preemption. Fail-open; release is idempotent.
     try:
         from .. import session_lease as _sl
 

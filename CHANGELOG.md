@@ -14,10 +14,12 @@
   `anchor_chain.failover` walk (default EMPTY = today's behavior) ->
   `anchor_consult_failover model_from=... model_to=...`. When nothing lands,
   R34-5's visible terminal failure is unchanged.
-- R34-10a: `session_lease.release()` wired at the turn-end seam — success,
-  exception, abort and an empty final response all free the session's
-  `session_turn_leases` row (idempotent, fail-open), and the renewal
-  heartbeat has nothing left to keep alive; `turn_lease_released` logged.
+- R34-10a: `session_lease.release()` wired at the turn-end seam — success
+  and an empty final response free the session's `session_turn_leases` row
+  (idempotent, fail-open), and the renewal heartbeat has nothing left to
+  keep alive; `turn_lease_released` logged. A turn that dies before the seam
+  (exception/abort) is bounded by 10b: the stale row is preempted at the
+  next turn start, never left to block the session.
 - R34-10b: `session_lease.preempt_if_stale()` at turn start — a held lease
   whose session has written no message for 2x the renewal interval logs
   `turn_lease_stale holder=... idle_s=...` and is deleted so the new turn

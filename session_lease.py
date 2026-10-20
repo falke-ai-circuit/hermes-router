@@ -14,10 +14,11 @@ every profile `state.db`):
 
 Two guarantees, both fail-open (a lease bug must never block an agent):
 
-  10a  release(session_id) on turn end — success, exception, abort, or an
-       empty final response — removes the row. Callers wire it in a finally
-       (or the turn-end seam); the renewal heartbeat cannot keep a row alive
-       once it is gone.
+  10a  release(session_id) at the turn-end seam — success and an empty
+       final response are observed there; a turn that dies before the seam
+       (exception/abort) leaves a row, which 10b cost-bounds to 2x the
+       renewal interval and then preempts. The renewal heartbeat cannot
+       keep a row alive once it is gone.
 
   10b  preempt_if_stale(session_id) on turn start — when a lease is held but
        no message has been persisted for 2x the renewal interval, log
