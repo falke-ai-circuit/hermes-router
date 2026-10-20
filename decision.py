@@ -2705,7 +2705,9 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   seam TEXT NOT NULL DEFAULT '',
   sense_check TEXT,
   p_failure REAL,
-  frame_context_chars_used INTEGER
+  frame_context_chars_used INTEGER,
+  choice_label TEXT NOT NULL DEFAULT '',
+  label_source TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -2771,6 +2773,18 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
                 conn.execute("ALTER TABLE decision_ledger"
                              " ADD COLUMN frame_context_chars_used INTEGER")
                 conn.commit()
+            # R34-3: the chosen option's label text + its provenance
+            # (model/envelope/heuristic). ADDITIVE — old rows keep '' and
+            # remain parseable; opt-N rendering stays the fallback.
+            for _ncol in ("choice_label", "label_source"):
+                if _ncol not in cols:
+                    try:
+                        conn.execute("ALTER TABLE decision_ledger"
+                                     " ADD COLUMN %s TEXT NOT NULL DEFAULT ''"
+                                     % _ncol)
+                        conn.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
         except Exception:  # noqa: BLE001 — migration best-effort
             pass
         return conn
@@ -2833,7 +2847,8 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 "verdict_json", "envelope_hash", "follow_verdict",
                 "delta_source", "fork_signature", "midturn_mode",
                 "envelope_ids", "tool_name", "seam", "sense_check",
-                "p_failure", "frame_context_chars_used")
+                "p_failure", "frame_context_chars_used",
+                "choice_label", "label_source")
         vals = []
         for c in cols:
             v = row.get(c)
@@ -2953,6 +2968,7 @@ def ledger_row_by_id(rid: Any, db_path: str = "") -> Dict[str, Any]:
 # render_payload.py; re-exported here so decision.* call sites and the
 # public surface are unchanged.
 from .render_payload import (_impulse_persona_slot, choice_label,  # noqa: F401
+                              choice_label_with_source,
                              render_advisory, render_decision_banner,
                              render_impulse_frame, render_verdict_record)
 
@@ -3280,9 +3296,21 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         # excerpt (first 500 chars of the scanned content) so downstream
         # invalid-fork filters can check choice-in-source without
         # re-reading sessions. Top-level verdict keys preserved.
+        # R34-3: persist the CHOSEN option's label text + provenance source
+        # on the row. Banner text is rendered later (turn-close rollup) from
+        # this column, so the delivered banner can show the label instead of
+        # `opt-N` even though the envelope is long gone. Additive: rows
+        # written before this column existed keep '' and fall back to opt-N.
+        _lbl, _lsrc = "", ""
+        try:
+            _lbl, _lsrc = choice_label_with_source(verdict, envelope)
+        except Exception:  # noqa: BLE001 — label is cosmetic
+            _lbl, _lsrc = "", ""
         rid = ledger_write(dict(base_row, choice=str(verdict["choice"]),
                                 confidence=round(float(verdict["confidence"]),
                                                  4),
+                                choice_label=_lbl,
+                                label_source=_lsrc,
                                 verdict_json=verdict_row_json(verdict,
                                                               content)))
         # F4 rider contract (rider 7 P0): the banner claims tok/$ — the

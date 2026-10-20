@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("hermes.plugins.router.render_payload")
 
@@ -253,12 +253,47 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
         return ""
 
 
+def choice_label_with_source(verdict: Dict[str, Any],
+                             envelope: Dict[str, Any]) -> Tuple[str, str]:
+    """R34-3: the chosen option's LABEL plus where it came from —
+    ("", "") when no label can be sourced.
+
+    Sources, in precedence order:
+      "model"     — the verdict itself carried a label (backends may supply
+                    one; the strict verdict schema drops unknown keys today,
+                    so this arm is future-proofing, not live behavior);
+      "envelope"  — the lane-built closed option set's label for that id;
+      "heuristic" — the option's body text when no label exists.
+    Never raises. Ledger persistence uses this so a delivered banner can
+    render the label long after the envelope is gone."""
+    try:
+        choice = str((verdict or {}).get("choice") or "").strip()
+        if not choice:
+            return "", ""
+        ml = str((verdict or {}).get("label") or "").strip()
+        if ml:
+            return ml[:120], "model"
+        for opt in envelope.get("options") or []:
+            if isinstance(opt, dict) and str(opt.get("id") or "") == choice:
+                label = str(opt.get("label") or "").strip()
+                if label:
+                    return label[:120], "envelope"
+                body = str(opt.get("body") or "").strip()
+                if body:
+                    return body[:120], "heuristic"
+                break
+        return "", ""
+    except Exception:  # noqa: BLE001 — label is cosmetic, never fatal
+        return "", ""
+
+
 def choice_label(verdict: Dict[str, Any], envelope: Dict[str, Any]) -> str:
     """R19.15 MICRO-FIX: human-readable choice for banner/advisory text —
     the option LABEL from the envelope (id+label since v4.11.4), truncated
     to 60 chars; falls back to the raw option id when no label exists.
     Fail-open: never raises, returns the raw id on any miss. Ledger rows
-    stay canonical (ids) — this is display-only."""
+    stay canonical (ids) — this is display-only.
+    R34-3: delegates to choice_label_with_source."""
     try:
         choice = str(verdict.get("choice") or "")
         for opt in envelope.get("options") or []:

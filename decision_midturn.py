@@ -607,14 +607,24 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _log(session_id, "midturn_invalid_fork", sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
             return
+        # R34-3: resolve the chosen option's label + provenance BEFORE the
+        # row is written so the ledger carries it (banner text at turn close
+        # renders from the row, not from a per-turn in-memory envelope).
+        _lbl, _lsrc = "", ""
+        try:
+            _lbl, _lsrc = _dec.choice_label_with_source(verdict, envelope)
+        except Exception:  # noqa: BLE001 — label is cosmetic
+            _lbl, _lsrc = "", ""
         rid = _dec.ledger_write(dict(
             base, choice=str(verdict["choice"]),
             frame_context_chars_used=(_fcu or None),
             confidence=round(float(verdict["confidence"]), 4),
+            choice_label=_lbl, label_source=_lsrc,
             verdict_json=json.dumps(verdict, default=str)))
         _dec._record_success()
         try:
-            meta["choice_label"] = _dec.choice_label(verdict, envelope)[:60]
+            meta["choice_label"] = str(_lbl or _dec.choice_label(verdict, envelope))[:60]
+            meta["label_source"] = _lsrc
         except Exception:  # noqa: BLE001 — label is cosmetic
             meta["choice_label"] = ""
         # F4 (rider 6) + rider 7 P0 (fail-loud): the rollup banner claims
@@ -828,6 +838,10 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
         except Exception:  # noqa: BLE001
             cost = 0.0
         rec = {"choice": str(verdict.get("choice") or ""),
+               # R34-3: the delivered rollup renders this label (truncated);
+               # an empty label keeps the opt-N fallback for old/quiet rows.
+               "choice_label": str(meta.get("choice_label") or "")[:90],
+               "label_source": str(meta.get("label_source") or ""),
                "tokens_in": ti if isinstance(ti, int) else 0,
                "tokens_out": to if isinstance(to, int) else 0,
                "cost": float(cost or 0.0), "model": model,
@@ -1034,10 +1048,19 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # verdict's choice + confidence ONLY. No prompt/option-text echo
         # (the old label field grabbed raw option text and truncated it
         # mid-word); no free text outside the recorded choice id.
-        shown = [str(c.get("choice") or "") for c in top
-                 if c.get("choice")]
-        confs = ["%.2f" % float(c.get("confidence") or 0.0) for c in top
-                 if c.get("choice")]
+        # R34-3: render the CHOSEN OPTION'S LABEL (persisted on the ledger
+        # row), truncated at a clause boundary — `opt-N` alone is meaningless
+        # to the reader. The id remains the fallback for rows with no label
+        # (pre-migration rows, stand-downs, label-less envelopes).
+        shown = []
+        confs = []
+        for c in top:
+            _ch = str(c.get("choice") or "")
+            if not _ch:
+                continue
+            _lbl = _cap_at_boundary(str(c.get("choice_label") or "").strip(), 90)
+            shown.append(_lbl or _ch)
+            confs.append("%.2f" % float(c.get("confidence") or 0.0))
         if shown:
             tail = " / ".join(
                 "%s (~%s)" % (s, cf)
