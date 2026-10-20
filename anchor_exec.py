@@ -221,6 +221,285 @@ def usage_tokens_from_response(data: Dict[str, Any]) -> Tuple[Optional[int], Opt
 
 
 # ---------------------------------------------------------------------------
+# R34-9: consult payload hygiene (the PRE anchor lane was dying on a MUTATED
+# COPY of the live conversation: tool turns retained, assistant turns with
+# tool_calls but no tool_result, empty user messages) + empty-response
+# recovery (minimal retry, then the configured failover walk).
+# ---------------------------------------------------------------------------
+
+DEFAULT_MAX_HISTORY_TURNS = 12
+_CONSULT_ROLES = ("system", "user", "assistant")
+_NEUTRAL_CONSULT_FRAME = (
+    "You are a senior specialist consultant answering one bounded technical "
+    "question. Answer the user's request directly and completely. "
+    "No tools are available; do not request any.")
+
+
+def _anchor_chain_block() -> Dict[str, Any]:
+    """Raw anchor_chain config block. {} on any failure. Never raises."""
+    try:
+        from . import config_access
+
+        block = config_access.sub_block("anchor_chain")
+        return block if isinstance(block, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def anchor_max_history_turns() -> int:
+    """anchor_chain.max_history_turns (default 12). Never raises."""
+    try:
+        v = int(_anchor_chain_block().get("max_history_turns",
+                                          DEFAULT_MAX_HISTORY_TURNS))
+        return v if v > 0 else DEFAULT_MAX_HISTORY_TURNS
+    except Exception:  # noqa: BLE001
+        return DEFAULT_MAX_HISTORY_TURNS
+
+
+def _flatten_text(content: Any) -> str:
+    """Message content (str or OpenAI parts list) -> plain text. Never raises."""
+    try:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") in (None, "text", "input_text") \
+                            and part.get("text") is not None:
+                        out.append(str(part.get("text")))
+                elif isinstance(part, str):
+                    out.append(part)
+            return "\n".join(out)
+        if content is None:
+            return ""
+        return str(content)
+    except Exception:  # noqa: BLE001
+        return str(content or "")
+
+
+def sanitize_consult_payload(api_kwargs: Dict[str, Any],
+                             max_turns: Optional[int] = None
+                             ) -> Dict[str, Any]:
+    """R34-9a: make the consult payload acceptable to a strict provider.
+
+    Rules:
+      * keep only text-bearing turns (system/user/assistant);
+      * drop `tool`/`function` role messages (a tool result without its
+        assistant tool_calls — or vice versa — is the HTTP 400
+        `tool_use ids were found without tool_result block` shape);
+      * drop assistant turns whose content is empty after removing
+        tool_calls (nothing text-bearing is left);
+      * drop empty/whitespace content turns (`user messages must have
+        non-empty content`);
+      * collapse consecutive same-role turns (strict alternation);
+      * guarantee the final turn is a non-empty user message;
+      * cap history to the last N stored turns (default 12).
+    Never raises: on any doubt the input payload is returned unchanged
+    (fail-open, never worse than today).
+    """
+    try:
+        payload = dict(api_kwargs or {})
+        msgs = payload.get("messages")
+        if not isinstance(msgs, list):
+            return payload
+        try:
+            cap = int(max_turns) if max_turns else anchor_max_history_turns()
+        except Exception:  # noqa: BLE001
+            cap = DEFAULT_MAX_HISTORY_TURNS
+        system_msgs: list = []
+        convo: list = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "")
+            if role not in _CONSULT_ROLES:
+                continue  # tool / function / unknown -> not text-bearing
+            text = _flatten_text(m.get("content")).strip()
+            if not text:
+                continue  # empty assistant (tool_calls only) / empty user
+            if role == "system":
+                system_msgs.append({"role": "system", "content": text})
+            else:
+                # tool_calls / tool ids never ride a text-only consult
+                convo.append({"role": role, "content": text})
+        collapsed: list = []
+        for m in convo:
+            if collapsed and collapsed[-1]["role"] == m["role"]:
+                collapsed[-1]["content"] += "\n\n" + m["content"]
+            else:
+                collapsed.append(dict(m))
+        if cap > 0 and len(collapsed) > cap:
+            collapsed = collapsed[-cap:]
+        last_user = ""
+        for m in reversed(collapsed):
+            if m["role"] == "user":
+                last_user = m["content"]
+                break
+        if not last_user:
+            return payload  # no real ask to preserve — leave it to the caller
+        if not collapsed or collapsed[-1]["role"] != "user":
+            collapsed.append({"role": "user", "content": last_user})
+        # one frame only (the neutral consultant system message)
+        payload["messages"] = (system_msgs[-1:] if system_msgs else []) + collapsed
+        return payload
+    except Exception:  # noqa: BLE001 — sanitization must never break the lane
+        return api_kwargs
+
+
+def _minimal_consult_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """R34-9b stage (i): system frame + the last real user instruction ONLY."""
+    try:
+        msgs = [m for m in (payload.get("messages") or [])
+                if isinstance(m, dict)]
+        sys_txt = _NEUTRAL_CONSULT_FRAME
+        for m in reversed(msgs):
+            if m.get("role") == "system":
+                sys_txt = str(m.get("content") or sys_txt)
+                break
+        last_user = ""
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                last_user = str(m.get("content") or "").strip()
+                break
+        if not last_user:
+            return {}
+        out = {k: v for k, v in payload.items()
+               if k not in ("messages", "tools", "tool_choice",
+                            "parallel_tool_calls", "reasoning_effort")}
+        out["messages"] = [{"role": "system", "content": sys_txt},
+                           {"role": "user", "content": last_user}]
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _simple_anchored_call(ep: anchor_chain.AnchorEndpoint,
+                          payload: Dict[str, Any], timeout: float
+                          ) -> Tuple[str, Dict[str, Any]]:
+    """One clean single-shot call against `ep`. (\"\", {}) on any failure.
+
+    Used ONLY by the R34-9b recovery arms (minimal retry / failover): the
+    main path keeps its diagnostics + reasoning-conflict handling untouched.
+    Never raises.
+    """
+    try:
+        import httpx
+        from openai import OpenAI
+
+        api_key = _resolve_key(ep)
+        if not api_key:
+            return "", {}
+        out_payload = dict(payload or {})
+        out_payload.pop("reasoning_effort", None)
+        out_payload["model"] = ep.model
+        client = OpenAI(base_url=ep.base_url, api_key=api_key,
+                        timeout=float(timeout), max_retries=0)
+        try:
+            client._client.timeout = httpx.Timeout(float(timeout), connect=10.0)
+        except Exception:  # noqa: BLE001 — fake clients in tests
+            pass
+        try:
+            resp = client.chat.completions.create(**out_payload)
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raw = resp.model_dump() if hasattr(resp, "model_dump") else {}
+        content = ""
+        choices = raw.get("choices") or []
+        if choices:
+            content = ((choices[0] or {}).get("message") or {}).get("content") or ""
+        return str(content or ""), raw
+    except Exception:  # noqa: BLE001 — recovery is fail-open
+        return "", {}
+
+
+def _failover_endpoints(primary: anchor_chain.AnchorEndpoint
+                        ) -> list:
+    """R34-9b stage (ii): anchor_chain.failover (optional list, default []).
+
+    Entries may be `scheme://model` URIs, plain model ids (same provider as
+    the primary), or dicts {model, scheme?, base_url?, api_key_env?}. The
+    primary model itself is skipped. Never raises.
+    """
+    out: list = []
+    try:
+        entries = _anchor_chain_block().get("failover")
+        if not isinstance(entries, list):
+            return out
+        for e in entries:
+            ep = None
+            if isinstance(e, str):
+                s = e.strip()
+                if not s:
+                    continue
+                if "://" in s:
+                    ep = anchor_chain.parse_anchor_uri(s, "primary")
+                else:
+                    ep = anchor_chain.AnchorEndpoint(
+                        scheme=primary.scheme, model=s,
+                        base_url=primary.base_url,
+                        api_key_env=primary.api_key_env, role="primary")
+            elif isinstance(e, dict):
+                model = str(e.get("model") or "").strip()
+                uri = str(e.get("uri") or e.get("endpoint") or "").strip()
+                if uri:
+                    ep = anchor_chain.parse_anchor_uri(uri, "primary")
+                if ep is None and model:
+                    ep = anchor_chain.AnchorEndpoint(
+                        scheme=str(e.get("scheme") or primary.scheme),
+                        model=model,
+                        base_url=str(e.get("base_url") or primary.base_url),
+                        api_key_env=str(e.get("api_key_env")
+                                        or primary.api_key_env),
+                        role="primary")
+            if ep is not None and ep.model and ep.model != primary.model:
+                out.append(ep)
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def _recover_empty_consult(payload: Dict[str, Any],
+                           endpoint: anchor_chain.AnchorEndpoint,
+                           timeout: float
+                           ) -> Tuple[str, Dict[str, Any],
+                                      anchor_chain.AnchorEndpoint]:
+    """R34-9b: two-stage recovery from a 200-with-empty-content response.
+
+    (i)  ONE retry with the minimal sanitized payload
+         -> `anchor_consult_minimal_retry`
+    (ii) then the configured failover walk
+         -> `anchor_consult_failover model_from=... model_to=...`
+    Both logged; fail-open. Returns ("", {}, endpoint) when nothing lands
+    (the caller then keeps today's visible terminal failure).
+    """
+    minimal = _minimal_consult_payload(payload)
+    if minimal:
+        try:
+            logger.info("anchor_consult_minimal_retry model=%s n_msgs=%d",
+                        endpoint.model, len(minimal.get("messages") or []))
+        except Exception:  # noqa: BLE001
+            pass
+        content, raw = _simple_anchored_call(endpoint, minimal, timeout)
+        if content.strip():
+            return content, raw, endpoint
+    for ep in _failover_endpoints(endpoint):
+        try:
+            logger.info("anchor_consult_failover model_from=%s model_to=%s",
+                        endpoint.model, ep.model)
+        except Exception:  # noqa: BLE001
+            pass
+        content, raw = _simple_anchored_call(
+            ep, sanitize_consult_payload(payload), timeout)
+        if content.strip():
+            return content, raw, ep
+    return "", {}, endpoint
+
+
+# ---------------------------------------------------------------------------
 # The anchored provider call (per-call client; nothing persists)
 # ---------------------------------------------------------------------------
 
@@ -320,6 +599,15 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         except Exception:  # noqa: BLE001 — strip is best-effort, never fatal
             pass
 
+        # R34-9a: the consult payload is a MUTATED COPY of the live
+        # conversation — sanitize it to text-only, alternation-correct,
+        # ask-terminated history before ANY provider sees it. Fail-open: on
+        # any doubt the payload is unchanged (today's behavior).
+        try:
+            payload = sanitize_consult_payload(payload)
+        except Exception:  # noqa: BLE001 — hygiene never breaks the call
+            pass
+
         client = OpenAI(base_url=endpoint.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
         # deep-consult fix (f6): timeout must actually CANCEL the provider
@@ -387,7 +675,21 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                 _diag = "diag_unavailable"
             logger.error("anchor_route_failed reason=empty_response model=%s %s",
                          endpoint.model, _diag)
-            return None, None, None, None
+            # R34-9b: empty content from a 200 is not the end of the lane.
+            # Stage (i) one minimal-payload retry, stage (ii) the optional
+            # failover walk. Both logged; fail-open (R34-5 still owns the
+            # visible terminal failure when nothing lands).
+            try:
+                _rc, _rraw, _rep = _recover_empty_consult(
+                    payload, endpoint, timeout)
+            except Exception:  # noqa: BLE001 — recovery never breaks the lane
+                _rc, _rraw, _rep = "", {}, endpoint
+            if str(_rc or "").strip():
+                raw = _rraw
+                content = _rc
+                endpoint = _rep
+            else:
+                return None, None, None, None
 
         pricing = anchor_chain.load_anchor_chain().pricing
         cost = usage_cost_from_response(raw, pricing, endpoint.model)

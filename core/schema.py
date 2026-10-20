@@ -145,6 +145,9 @@ SCHEMA: Tuple[Key, ...] = (
     _k("anchor_chain.pricing", dict, {}),
     _k("anchor_chain.judge", dict, {}),
     _k("anchor_chain.daily_cap_usd", float, 0.0),
+    # R34-9: consult payload hygiene + empty-response recovery knobs.
+    _k("anchor_chain.max_history_turns", int, 12),
+    _k("anchor_chain.failover", list, [], nullable=True),
     # Legacy flat leaves (pre-nested profiles). Kept readable via get() but
     # SKIPPED by load validation when the nested block is present.
     _k("anchor_chain.reasoning_effort", str, "", nullable=True,

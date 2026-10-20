@@ -1,3 +1,30 @@
+## 5.4.5 — 2026-10-20 (R34 items 9 & 10 — PRE consults + the lease blackout)
+
+- R34-9a: consult payload SANITIZED before every anchored call — text-bearing
+  turns only, `tool`/`function` messages dropped, empty assistant turns
+  (tool_calls with no text) dropped, empty/whitespace content dropped,
+  consecutive same-role turns collapsed, final turn guaranteed to be a
+  non-empty user message, history capped to `anchor_chain.max_history_turns`
+  (default 12). Root cause of the live `empty_response` (n_msgs=26) was a
+  mutated copy of the conversation, not the model: an assistant tool_calls
+  entry without its tool_result is a hard HTTP 400 upstream.
+- R34-9b: empty-content recovery, two stages, both logged, fail-open:
+  (i) one retry with the minimal sanitized payload (system frame + last real
+  user instruction) -> `anchor_consult_minimal_retry`; (ii) the optional
+  `anchor_chain.failover` walk (default EMPTY = today's behavior) ->
+  `anchor_consult_failover model_from=... model_to=...`. When nothing lands,
+  R34-5's visible terminal failure is unchanged.
+- R34-10a: `session_lease.release()` wired at the turn-end seam — success,
+  exception, abort and an empty final response all free the session's
+  `session_turn_leases` row (idempotent, fail-open), and the renewal
+  heartbeat has nothing left to keep alive; `turn_lease_released` logged.
+- R34-10b: `session_lease.preempt_if_stale()` at turn start — a held lease
+  whose session has written no message for 2x the renewal interval logs
+  `turn_lease_stale holder=... idle_s=...` and is deleted so the new turn
+  proceeds (fail-open, never blocks).
+
+Version 5.4.4 -> 5.4.5 (plugin.yaml + the R10 version pin).
+
 ## 5.4.4 — 2026-10-20 (R34 item 8 — lane health)
 
 - R34-8a: EMPTY-LABEL INVARIANT at the render choke point — an option with a

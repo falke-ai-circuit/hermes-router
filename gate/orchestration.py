@@ -743,6 +743,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         seam_probe_fire("transform_llm_output")
     except Exception:  # noqa: BLE001 — probe never breaks the seam
         pass
+    # R34-10a: this seam is the turn-end edge (final body, including an empty
+    # final response). The session's turn lease MUST not outlive it — a hung
+    # turn held + renewed its row for ~30 min and silently blocked every new
+    # dispatch. Fail-open; release is idempotent.
+    try:
+        from .. import session_lease as _sl
+
+        _sl.release(
+            session_id,
+            outcome="success" if str(response_text or "").strip() else "empty_final",
+            log=lambda _e, **kw: _hub()._log_route(
+                "POST", event_detail=_e, session_id=str(session_id or ""), **kw),
+        )
+    except Exception:  # noqa: BLE001 — lease hygiene never breaks delivery
+        pass
     """Detect agent refusals and replace with Venice-rendered content.
     Return a non-empty string to REPLACE the response; None to pass through.
     First plugin to return non-empty wins (turn_finalizer.py:557-561).
@@ -1694,6 +1709,18 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
     """
     try:
         session_id = str(context.get("session_id") or "")
+        # R34-10b: a lease whose session has written nothing for 2x the
+        # renewal interval is a dead holder — log turn_lease_stale and
+        # preempt it so this turn proceeds (fail-open: never blocks).
+        try:
+            from .. import session_lease as _sl
+
+            _sl.preempt_if_stale(
+                session_id,
+                log=lambda _e, **kw: _hub()._log_route(
+                    "PRE", event_detail=_e, session_id=session_id, **kw))
+        except Exception:  # noqa: BLE001 — lease hygiene never blocks a turn
+            pass
         # R19.2 midturn decision hook (ADDENDUM 4, two-seam wiring): SEAM 2
         # turn-start sweep (previous-turn tool results + user ingress,
         # seam=turn_boundary) then SEAM 1's pending-advisory flush rides
