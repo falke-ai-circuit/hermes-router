@@ -1,3 +1,25 @@
+## 5.4.3 — 2026-10-20 (R34 audit fix bundle)
+
+- R34-1: dead retry arm — `maybe_execute_anchored` scheduled the R16-4
+  recovery worker with `ep` (undefined there; the local is `endpoint`), so
+  every None consult raised NameError and was dropped silently.
+- R34-3: the chosen option's label + `label_source` (model/envelope/
+  heuristic) are persisted on decision_ledger (additive columns) and the
+  rollup renders the label; `opt-N` is the fallback.
+- R34-2: a capture-fallback `no_row_match` on the preferred edge now DEFERS
+  the parked banner (same event_seq, one delivery, bounded TTL) instead of
+  dropping it.
+- R34-4: the profile's own provider base_url(s) and the router's lane
+  endpoints are expected hosts — no more false "unrouted" banners; foreign
+  hosts still flag, nothing blocks.
+- R34-5: an empty/None consult writes an outcome=failed ledger row and parks
+  a visible failure banner — never counted as completed.
+- R34-6: the anchor_chain validator knows the nested shape; legacy flat
+  leaves stop emitting bogus `config_key_missing` rows, nested drift still
+  warns.
+- R34-7: an orientation/risk consult on an execution-shaped turn is framed
+  ADVISORY ONLY — the delivered answer must be the work product.
+
 ## 5.2.0 — 2026-10-09 (R25 — can't-vs-won't denial gate: semantic suppress-verdicts)
 
 - R25: two-tier detection extended with two CLOSED Tier-2 verdicts —
