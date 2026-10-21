@@ -32,12 +32,35 @@ def _reset(monkeypatch):
     LOGGED.clear()
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
-    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R34-14 item 8 CONTRACT CHANGE: risk consults inherit an explicitly
+    # declared sub-2 complexity tier as a mute. These pins test the risk lane's
+    # own behavior, so the fixture declares the auto-consult tier. Assertions
+    # unchanged.
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2}})
+    monkeypatch.setattr(router_core, "_primary_model", lambda: "z-ai/glm-5.3")
     yield
 
 
 # ---------------------------------------------------------------- LEG 1 ----
 # L1 lexicon matrix — co-occurrence rule: verb AND (scope|target|irrev).
+
+@pytest.fixture(autouse=True)
+def _auto_consult_tier(monkeypatch):
+    """R34-14 item 8 CONTRACT CHANGE: the risk lane inherits an explicitly
+    declared sub-2 complexity tier as a mute, so a profile that never opted
+    into autonomous consults does not get them from this lane's default.
+
+    Every pin in this file exercises the risk lane, so the file declares the
+    auto-consult tier explicitly. Without it a no-fire assertion would pass
+    vacuously (lane off) instead of proving the classifier's verdict, and a
+    fire assertion would fail for a reason the pin never meant to test.
+    Assertions keep their original strength.
+    """
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2}})
+    monkeypatch.setattr(router_core, "_primary_model", lambda: "z-ai/glm-5.3")
+
 
 def test_l1_r3_irreversible():
     cls, _ = risk.classify("force push and reset the fleet genome, overwrite without backup")

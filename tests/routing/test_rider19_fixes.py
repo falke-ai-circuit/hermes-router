@@ -56,8 +56,15 @@ def _reset(monkeypatch):
     route_gate.clear_turn_claims(SID)
     monkeypatch.setattr(router_core, "pre_cooldown_seconds", lambda: 0)
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 0)
+    monkeypatch.setattr(router_core, "_primary_model", lambda: "z-ai/glm-5.3")
     from hermes_router import config_access, decision
-    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R34-14 item 8 CONTRACT CHANGE: the risk lane inherits an explicitly
+    # declared sub-2 complexity tier as a mute. These pins exercise the lane's
+    # STAND-DOWN (classifier said risky, structure said no), which only exists
+    # once the lane is allowed to fire at all — so the profile declares the
+    # auto-consult tier explicitly. Same assertions, new shape.
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2}})
     monkeypatch.setattr(router_core, "_decision_cfg",
                         lambda: {"enabled": True, "level": 3})
     monkeypatch.setattr(decision, "_cfg",
@@ -243,7 +250,10 @@ def test_item3_clean_opinion_stands_down(_reset, monkeypatch):
     seen = []
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: seen.append((e, dict(f))))
-    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R34-14 item 8: the stand-down arm requires the lane to be allowed to
+    # fire (explicit auto-consult tier). The assertion set is unchanged.
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2}})
     d = router_core.dispatch(BC2_CLEAN, session_id=SID + "-bc2", model="m")
     assert d.mode != router_core.MODE_CONSULT, d.reason
     evs = [f.get("event_detail") for _, f in seen]
@@ -291,6 +301,42 @@ def test_item3_manual_trigger_beats_stand_down(_reset):
     # the manual ask routes the DECISION lane (or its frontier open-question
     # form) — never a risk_r2 lexicon consult
     assert not str(d.reason).startswith("risk_r"), d.reason
+
+
+def test_risk_lane_disabled_is_observable_when_inherited(_reset, monkeypatch):
+    """R34-14 item 8: a risk lane that declines to fire must SAY SO. A
+    silent no-fire is the same defect class as an invisible complexity skip.
+    L1 with no explicit risk.enabled -> inherited mute, and the event names
+    both the reason and the level."""
+    from hermes_router import config_access
+    seen = []
+    monkeypatch.setattr(plugin, "_log_route",
+                        lambda e, **f: seen.append((e, dict(f))))
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 1}})
+    d = router_core.dispatch(RISKY_ASK, session_id=SID + "-l1", model="m")
+    assert d.mode != router_core.MODE_CONSULT, d.reason
+    evs = [f for _, f in seen if f.get("event_detail") == "risk_lane_disabled"]
+    assert evs, seen
+    assert evs[0]["reason"] == "inherited_complexity_mute"
+    assert "level" in evs[0]
+
+
+def test_risk_lane_disabled_is_observable_when_explicit(_reset, monkeypatch):
+    """R34-14 item 8: the explicit mute keeps independent semantics — and is
+    distinguishable in the log from the inherited mute."""
+    from hermes_router import config_access
+    seen = []
+    monkeypatch.setattr(plugin, "_log_route",
+                        lambda e, **f: seen.append((e, dict(f))))
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2},
+                                 "risk": {"enabled": False}})
+    d = router_core.dispatch(RISKY_ASK, session_id=SID + "-off", model="m")
+    assert d.mode != router_core.MODE_CONSULT, d.reason
+    evs = [f for _, f in seen if f.get("event_detail") == "risk_lane_disabled"]
+    assert evs, seen
+    assert evs[0]["reason"] == "explicit_enabled_false"
 
 
 def test_item3_helper_shapes():

@@ -1529,7 +1529,24 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         try:
             from . import risk as _risk
 
-            if _risk.risk_enabled() and override != "anchor":
+            # R34-14 item 8/9: a risk lane that declines to fire must SAY SO.
+            # A silent no-fire is the same defect class as the invisible
+            # complexity skip (R34-13) — the operator cannot tell "risk found
+            # nothing" from "risk never ran". The event carries the reason and
+            # the level that produced it, so the config, not the classifier,
+            # is the first place to look.
+            _risk_on = _risk.risk_enabled()
+            if not _risk_on:
+                try:
+                    from .core.telemetry import log_route as _lr0  # P1: core telemetry
+                    _lr0("PRE", session_id=session_id,
+                         event_detail="risk_lane_disabled",
+                         reason=str(_risk.risk_disable_reason() or ""),
+                         level=_complexity_level(),
+                         task_id=task_id)
+                except Exception as _obs_exc:  # noqa: BLE001
+                    _obs_warn('risk_lane_disabled', _obs_exc)
+            if _risk_on and override != "anchor":
                 _rcfg = _risk.risk_cfg()
                 _rmode = str(_rcfg.get("mode") or "consult").strip().lower()
                 if _rmode == "consult" and bool(_rcfg.get("pre_lexicon", True)):

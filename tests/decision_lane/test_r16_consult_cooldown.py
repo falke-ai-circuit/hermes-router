@@ -33,7 +33,12 @@ def _reset(monkeypatch):
     LOGGED.clear()
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
-    monkeypatch.setattr(config_access, "router_section", lambda: {})
+    # R34-14 item 8 CONTRACT CHANGE: an explicitly declared sub-2 complexity
+    # tier mutes the risk lane. The cooldown pins exercise suppression-THEN-
+    # fire, which requires the lane to fire; the fixture declares level 2 so
+    # the suppression is provable rather than vacuous.
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"level": 2}})
     # R21 FABLE-PIN: consults fire only with a config frontier entry — give
     # every cooldown test a concrete primary so consult-fire pins still drive.
     monkeypatch.setattr(router_core, "_primary_model",

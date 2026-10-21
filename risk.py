@@ -110,6 +110,40 @@ def risk_cfg() -> Dict[str, Any]:
         return dict(_RISK_DEFAULTS)
 
 
+def risk_disable_reason() -> str:
+    """Why the risk lane is off, for the `risk_lane_disabled` event.
+
+    Mirrors risk_enabled() EXACTLY, in the same order, so the event never
+    contradicts the decision it explains:
+      1. risk_cfg().enabled is False            -> "explicit_enabled_false"
+      2. sub_block("risk").enabled explicit     -> "" when true
+      3. absent                                 -> inherited complexity tier
+    Never raises.
+    """
+    try:
+        if risk_cfg().get("enabled") is False:
+            return "explicit_enabled_false"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import config_access
+
+        raw = config_access.sub_block("risk")
+        if isinstance(raw, dict) and raw.get("enabled") is not None:
+            return "" if bool(raw.get("enabled")) else "explicit_enabled_false"
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        from . import config_access
+
+        block = config_access.sub_block("complexity") or {}
+        if "level" not in block:
+            return ""
+        return "" if int(block.get("level") or 0) >= 2 else "inherited_complexity_mute"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def risk_enabled() -> bool:
     """Master switch for the risk lane. Never raises.
 
@@ -121,32 +155,33 @@ def risk_enabled() -> bool:
     clear_simple + risk_consult_fire risk_class=r2 on the same turn) was that
     disagreement, not a classifier problem.
 
-    Semantics now: an EXPLICIT `risk.enabled` always wins. With no explicit
-    key the lane INHERITS the complexity mute — auto risk consults require
-    the same auto-consult tier the complexity lane needs (`level >= 2`).
-    L1 means "only when I ask", and an automatic risk consult is not asking.
-
-    Independent mute still exists (`risk.enabled: false` alone) — but silence
-    by omission must mean silence: a profile that never opted into autonomous
-    consults does not get them from a different lane's default.
+    Contract (order matters, do not reorder):
+      1. risk_cfg().enabled is False -> OFF. This is the accessor seam: a
+         real `risk: {enabled: false}` in config, and every caller/test that
+         patches risk_cfg, must be respected.
+      2. an EXPLICIT `risk.enabled: true` -> ON regardless of complexity tier.
+      3. no explicit key -> INHERIT the complexity mute: an explicitly
+         declared auto-consult tier below 2 means "only when I ask", and an
+         automatic risk consult is not asking. Zero-config (no `level` key at
+         all) keeps the legacy default ON.
     """
+    try:
+        if risk_cfg().get("enabled") is False:
+            return False
+    except Exception:  # noqa: BLE001 — config errors never break routing
+        pass
     try:
         from . import config_access
 
         raw = config_access.sub_block("risk")
         if isinstance(raw, dict) and raw.get("enabled") is not None:
             return bool(raw.get("enabled"))
-    except Exception:  # noqa: BLE001 — config errors never break routing
+    except Exception:  # noqa: BLE001
         pass
     try:
         from . import config_access
 
         block = config_access.sub_block("complexity") or {}
-        # Legacy zero-config default stays ON (spec). The mute applies only
-        # when the profile EXPLICITLY declares an auto-consult tier below 2:
-        # saying `complexity.level: 1` is saying "only when I ask", and an
-        # automatic risk consult is not asking (live: level 1 + risk r2 on the
-        # same turn, api_1792543869_964dbe2a).
         if "level" not in block:
             return True
         level = int(block.get("level") or 0)
