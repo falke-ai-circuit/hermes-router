@@ -577,6 +577,18 @@ def post_detection_scan(session_id: str, response_text: str,
             _log(log_route, "sweep_started", session_id=session_id,
                  response_chars=len(response_text or ""),
                  turn_no=_sw_turn, duplicate_sweep="true" if _sw_dup else "false")
+            # R34-18 residual 2: the SAME evidence proves delivery for the
+            # banner semaphore. Recorded here so a drop decision can cite the
+            # body that landed instead of inferring "undelivered" from the
+            # turn counter (live: banner dropped as turn_closed_undelivered on
+            # a turn whose 2208-char body the user actually read).
+            try:
+                from ... import advisory_consumption as _ac_land
+
+                _ac_land.note_body_landed(session_id,
+                                          len(response_text or ""))
+            except Exception:  # noqa: BLE001 — evidence only
+                pass
         except Exception:  # noqa: BLE001 — invariant logging never raises
             pass
         if not isinstance(response_text, str) or not response_text.strip():

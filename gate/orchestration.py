@@ -796,7 +796,8 @@ def _banner_turn_snapshot(session_id: str):
 
 def _resolve_midturn_capture_failure(session_id: str, parked_text: str,
                                      park_turn: int, cur_turn: int,
-                                     reason: str) -> str:
+                                     reason: str, body_chars: int = 0,
+                                     row_present: bool = False) -> str:
     """R34-15 item 1: a parked banner SURVIVES a mid-turn capture failure.
 
     Same turn (park_turn == cur_turn != 0): the banner is re-parked under a
@@ -832,9 +833,16 @@ def _resolve_midturn_capture_failure(session_id: str, parked_text: str,
             _dbp.consume_parked_banner(session_id)
         except Exception:  # noqa: BLE001
             pass
+        # R34-18 residual 2: the drop row names the evidence it was decided on
+        # (body_chars / row_present) and may not say "undelivered" while a body
+        # actually landed — the truthful reason then is that the ask moved on.
+        _body = int(body_chars or 0)
         _hub()._log_route("POST", event_detail="banner_park_dropped",
-                          reason="turn_closed_undelivered", cause=reason,
-                          turn_no=ct, session_id=session_id)
+                          reason=("ask_superseded" if _body > 0
+                                  else "turn_closed_undelivered"),
+                          cause=reason, turn_no=ct, body_chars=_body,
+                          row_present=bool(row_present),
+                          session_id=session_id)
         return "dropped"
     except Exception:  # noqa: BLE001 — telemetry never breaks delivery
         return ""
@@ -1282,7 +1290,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                     # (same turn); only a closed turn drops.
                                     _resolve_midturn_capture_failure(
                                         session_id, _parked, _park_turn,
-                                        _cur_turn, "mid_turn_no_match")
+                                        _cur_turn, "mid_turn_no_match",
+                                        body_chars=len(str(response_text or "")),
+                                        row_present=True)
                                 except Exception:  # noqa: BLE001
                                     pass
                         except Exception:  # noqa: BLE001 — capture never breaks delivery
@@ -1303,7 +1313,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                            session_id=session_id)
                                 _resolve_midturn_capture_failure(
                                     session_id, _parked, _park_turn,
-                                    _cur_turn, "mid_turn_capture_exception")
+                                    _cur_turn, "mid_turn_capture_exception",
+                                    body_chars=len(str(response_text or "")),
+                                    row_present=False)
                             except Exception:  # noqa: BLE001
                                 pass
                     return _final_b

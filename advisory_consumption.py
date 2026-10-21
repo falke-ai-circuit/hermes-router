@@ -124,6 +124,18 @@ _TURN_NO: Dict[str, int] = {}
 _SWEEPS: Dict[str, int] = {}
 _ORPHANS: Dict[str, int] = {}
 
+# R34-18 residual 2 — DELIVERY TRUTH. A banner may only be dropped as
+# "turn closed undelivered" on evidence that nothing was delivered. The turn
+# counter alone is bookkeeping: the live specimen (session
+# 20261021_074100_e9a8eb) had a banner parked PRE 07:41:17 and a body of 2208
+# chars delivered POST 07:41:48 in the SAME turn, yet the semaphore compared
+# park_turn < current_turn and dropped it as undelivered, so a billed
+# $0.0136 consult carried no mark. Whatever proves a body landed is the same
+# evidence `sweep_started response_chars` reports — recorded here at that
+# sweep, plus the delivering edge's own text length as the primary signal.
+_BODY_LANDED: Dict[str, Dict[str, Any]] = {}
+_BODY_LANDED_MAX = 256
+
 
 def _sig(user_text: Any) -> str:
     """Stable identity of a turn's ask (content hash of the head). Never raises."""
@@ -182,6 +194,78 @@ def turn_no(session_id: str) -> int:
         return 0
 
 
+def open_signal(session_id: str) -> str:
+    """Identity (content hash) of the ask the current turn belongs to.
+
+    Two passes over the SAME user message keep this value, so it is the
+    discriminator a delivery decision needs: a parked banner whose ask still
+    matches is the same turn no matter what the turn counter did. Never
+    raises; "" when unknown.
+    """
+    try:
+        return str(_OPEN_SIG.get(_key(session_id)) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def note_body_landed(session_id: str, chars: int = 0) -> Dict[str, Any]:
+    """Record that a body of `chars` characters ACTUALLY landed for this turn.
+
+    Called from the POST detection sweep with the same `response_chars` that
+    `sweep_started` reports, and read by the banner semaphore before it may
+    declare a turn undelivered (R34-18 residual 2). A zero-length body is not
+    a landing and never overwrites a real one. Never raises; {} when ignored.
+    """
+    try:
+        sid = _key(session_id)
+        n = int(chars or 0)
+        if not sid or n <= 0:
+            return {}
+        while len(_BODY_LANDED) >= _BODY_LANDED_MAX:
+            _BODY_LANDED.pop(next(iter(_BODY_LANDED)), None)
+        rec = {
+            "turn_no": int(_TURN_NO.get(sid) or 0),
+            "chars": n,
+            "ts": time.time(),
+            "ask_sig": str(_OPEN_SIG.get(sid) or ""),
+        }
+        _BODY_LANDED[sid] = rec
+        return dict(rec)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def body_landed(session_id: str) -> Dict[str, Any]:
+    """The last recorded body landing for this session ({} when none)."""
+    try:
+        rec = _BODY_LANDED.get(_key(session_id))
+        return dict(rec) if isinstance(rec, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def delivery_truth(session_id: str, chars_hint: int = 0) -> Dict[str, Any]:
+    """Evidence a banner-drop decision must rest on (R34-18 residual 2).
+
+    `body_chars` is the larger of the body this delivery edge is handing over
+    (`chars_hint`) and the last landing the sweep observed; `ask_sig` is the
+    identity of the ask the session's current turn belongs to. A caller may
+    NOT infer "undelivered" from the turn counter while this says a body
+    landed. Never raises.
+    """
+    try:
+        rec = body_landed(session_id)
+        return {
+            "body_chars": max(int(chars_hint or 0), int(rec.get("chars") or 0)),
+            "body_turn_no": int(rec.get("turn_no") or 0),
+            "body_sig": str(rec.get("ask_sig") or ""),
+            "ask_sig": open_signal(session_id),
+        }
+    except Exception:  # noqa: BLE001
+        return {"body_chars": int(chars_hint or 0), "body_turn_no": 0,
+                "body_sig": "", "ask_sig": ""}
+
+
 def note_sweep(session_id: str) -> "tuple[int, bool]":
     """R34-14 item 2: account a POST detection sweep. Returns (turn_no, dup).
 
@@ -212,6 +296,9 @@ def clear_turn_ledger(session_id: str = "") -> None:
         for k in list(_SWEEPS):
             if not sid or k.startswith(sid + "#"):
                 _SWEEPS.pop(k, None)
+        for k in list(_BODY_LANDED):
+            if not sid or k == sid:
+                _BODY_LANDED.pop(k, None)
     except Exception:  # noqa: BLE001
         pass
 

@@ -25,6 +25,7 @@ every caller. Fail-open on any error.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import List, Optional
@@ -160,27 +161,108 @@ _POV_LABEL_RE = re.compile(r"(?im)^[ \t>*\-]*(?:practitioner|outsider|skeptic)\s
 _HEADER_MARKERS = ("[router advisory", "router advisory \u2014 decision lane",
                    "[router fork note")
 
+# R34-18 residual 1 — the shape the live echo ACTUALLY takes: a fenced JSON
+# block whose top level is the agent's own report object with the advisory
+# keys appended as siblings, e.g.
+#
+#     ```json
+#     {"report": "...", "files": [...], "pytest": "5 passed",
+#      "povs": [{"lens": "algorithms", "stance": "...", "argument": "..."}]}
+#     ```
+#
+# The pre-R34-18 tail regex only matched an object that STARTED with an
+# advisory key, so `chars_removed=0` while `families=povs_array` fired and the
+# whole block shipped to the user. Detection unwidened (R34-17 constraint):
+# only the STRIP learns the new shape.
+_FENCED_BLOCK_RE = re.compile(r"```[ \t]*[A-Za-z0-9_+.-]*[ \t]*\r?\n(.*?)```",
+                              re.S)
+# Top-level keys that only the router's advisory envelope produces. A block
+# carrying any of them is an echoed envelope, however legitimate its sibling
+# keys (report/download/files/pytest) look.
+_ADVISORY_JSON_KEYS = ("povs", "synthesis", "advisory", "verdict_of_record",
+                       "families", "brief_bullets")
+# Last-resort scrub tokens (only used when a family fired and nothing else
+# was removable): the same keys plus the POV object fields and stance labels.
+_SCRUB_TOKENS = ('"povs"', '"synthesis"', '"brief_bullets"',
+                 '"verdict_of_record"', '"advisory"', '"families"',
+                 '"lens"', '"stance"', '"argument"',
+                 "practitioner:", "outsider:", "skeptic:")
+
+
+def _advisory_json_object(block: str):
+    """Parsed dict for a fenced block that is an advisory envelope, else None.
+
+    Never raises. A block that is not JSON, or is JSON without an
+    advisory-only top-level key, is left to the caller untouched.
+    """
+    try:
+        obj = json.loads(str(block or "").strip())
+    except Exception:  # noqa: BLE001 — not JSON: not ours to cut
+        return None
+    if not isinstance(obj, dict):
+        return None
+    keys = {str(k).lower() for k in obj.keys()}
+    return obj if keys.intersection(_ADVISORY_JSON_KEYS) else None
+
+
+def _report_value(obj) -> str:
+    """The human-readable report carried INSIDE an advisory JSON object."""
+    for k in ("report", "summary", "answer", "message"):
+        v = obj.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
 
 def strip_advisory_echo(text: str) -> "tuple[str, int]":
     """Remove the echoed advisory block/tail from a body, keeping the agent's
     own deliverable report. Returns (body, chars_removed). Never raises.
 
     Deliberately conservative: it cuts a TAIL (JSON tail / POV section /
-    synthesis / router banner) and drops standalone header blocks and POV
-    label lines. It never re-orders or rewrites the remaining prose."""
+    synthesis / router banner), drops standalone header blocks and POV label
+    lines, AND (R34-18) removes a fenced JSON block whose parsed object carries
+    any advisory-only top-level key. It never re-orders or rewrites the
+    remaining prose.
+
+    Mixed blocks (the live shape): a fenced object that carries the agent's
+    own `report`/`files`/`pytest` keys AND advisory keys (`povs`,
+    `synthesis`, `advisory`, `verdict_of_record`, `families`,
+    `brief_bullets`) is dropped WHOLE when human-readable prose already stands
+    above the fence; when the report exists only inside the JSON, its `report`
+    value is rendered as plain text in the block's place. No dangling fence is
+    ever left behind. `chars_removed` is non-zero whenever an advisory family
+    was detected (the guard asserts that relationship)."""
     try:
         raw = str(text or "")
         if not raw.strip():
             return "", 0
+        # --- residual 1: fenced advisory JSON blocks (mixed-key shape) -----
+        body_text = raw
+        for m in reversed(list(_FENCED_BLOCK_RE.finditer(raw))):
+            obj = _advisory_json_object(m.group(1))
+            if obj is None:
+                continue
+            head = body_text[:m.start()]
+            tail = body_text[m.end():]
+            # Human-readable prose already standing OUTSIDE the block? Keep it
+            # and drop the fence whole. Only when the report lives inside the
+            # JSON does its `report` value take the block's place.
+            prose = re.sub(r"```.*?```", "", head, flags=re.S).strip()
+            prose_below = re.sub(r"```.*?```", "", tail, flags=re.S).strip()
+            repl = ""
+            if len(prose) < MIN_REPORT_CHARS and len(prose_below) < MIN_REPORT_CHARS:
+                repl = _report_value(obj)
+            body_text = head + (("\n\n" + repl) if repl else "") + tail
+        # --- the pre-existing tail cuts -----------------------------------
         cuts = []
         for rx in (_JSON_TAIL_RE, _POV_SECTION_RE, _SYNTH_RE):
-            m = rx.search(raw)
+            m = rx.search(body_text)
             if m:
                 cuts.append(m.start())
         # router banner tail: the last line that opens with the tail marker
-        for m in re.finditer(r"(?m)^[ \t]*\u00b7 router \u00b7.*$", raw):
+        for m in re.finditer(r"(?m)^[ \t]*\u00b7 router \u00b7.*$", body_text):
             cuts.append(m.start())
-        body = raw[:min(cuts)] if cuts else raw
+        body = body_text[:min(cuts)] if cuts else body_text
         # drop standalone POV label lines and advisory header blocks
         keep = []
         skipping_header = False
@@ -197,7 +279,23 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
                 continue
             keep.append(line)
         out = "\n".join(keep)
+        # Never leave a DANGLING fence: when an advisory block was cut the
+        # remaining fence markers must pair up. Balanced fences (a genuine
+        # code sample in the report) are left exactly as written.
+        _fence_idx = [i for i, ln in enumerate(out.splitlines())
+                      if ln.strip().startswith("```")]
+        if len(_fence_idx) % 2 == 1:
+            lines = out.splitlines()
+            del lines[_fence_idx[-1]]
+            out = "\n".join(lines)
         out = re.sub(r"\n{3,}", "\n\n", out).strip()
+        # --- the invariant: a detected family must yield a real removal ---
+        if len(out) >= len(raw):
+            scrubbed = [ln for ln in out.splitlines()
+                        if not any(tok in ln.lower() for tok in _SCRUB_TOKENS)]
+            cand = "\n".join(scrubbed).strip()
+            if len(cand) < len(raw):
+                out = cand
         return out, max(0, len(raw) - len(out))
     except Exception:  # noqa: BLE001
         return "", 0
@@ -301,7 +399,13 @@ def enforce_execution_echo(text: str, session_id: str = "",
         }
         if bool(work.get("has_work")):
             stripped, removed = strip_advisory_echo(text)
-            if len(stripped.strip()) >= MIN_REPORT_CHARS:
+            # R34-18 residual 1: `advisory_echo_stripped` may only fire when
+            # the strip REMOVED something. The live defect was a family
+            # detected (`families=povs_array`) while the strip returned the
+            # body untouched (`chars_removed=0`) — the event then claimed a
+            # strip that never happened and the echo shipped. Non-zero removal
+            # is a precondition, not a statistic.
+            if len(stripped.strip()) >= MIN_REPORT_CHARS and removed > 0:
                 _route(log_route, EVENT_STRIPPED, action="strip_keep_work",
                        chars_removed=removed, **base)
                 return EchoResult("strip_keep_work", stripped, families,

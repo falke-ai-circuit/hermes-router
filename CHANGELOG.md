@@ -1,3 +1,54 @@
+## 5.4.9 — 2026-10-21 (R34-18 — the strip actually strips, and the banner tells delivery truth)
+
+- R34-18-1 (STRIP NO-OP, session 20261021_074100_e9a8eb): R34-17's core fix held
+  (a real work turn kept its report and no hand-back was delivered), but the
+  event read `advisory_echo_stripped action=strip_keep_work chars_removed=0`
+  while `families=povs_array` — the strip matched NOTHING and the delivered
+  body still ended with the full advisory JSON, fence and all. The live echo
+  shape is a FENCED JSON block whose top level is the agent's own report
+  object (`report`, `files`, `pytest`) with the advisory keys appended as
+  siblings. `strip_advisory_echo` now parses fenced blocks and removes any
+  block that carries an advisory-only top-level key (`povs`, `synthesis`,
+  `advisory`, `verdict_of_record`, `families`, `brief_bullets`) — legitimate
+  sibling keys do not save it. Mixed block with human-readable prose above the
+  fence: keep the prose, drop the fence entire. Report only inside the JSON:
+  render its `report` value as plain text in the block's place. No dangling
+  fence is ever left (balanced fences in a genuine code sample are untouched).
+  Detection families are UNWIDENED; only the strip learned the shape.
+- R34-18-1b (EVENT TRUTH): `advisory_echo_stripped` may only fire when the
+  strip removed something — non-zero `chars_removed` is now a precondition, and
+  a body it cannot reduce takes the truthful `advisory_echo_withheld
+  reason=strip_failed` path instead of claiming a strip.
+- R34-18-2 (BANNER DROPPED ON A DELIVERED TURN, same session): the semaphore
+  saw `anchor_banner_parked` 07:41:17 and `banner_park_dropped
+  reason=turn_closed_undelivered turn_no=6 edge=benign` 07:41:48 — on a turn
+  whose 2208-char body the user read, so a consult billed $0.0136 carried no
+  visible mark. Delivery truth no longer comes from the turn counter (which
+  drifts when a duplicate pass over the SAME ask re-opens the ledger). It
+  comes from the body landing — the same `response_chars` that `sweep_started`
+  reports, recorded via `advisory_consumption.note_body_landed`, plus the
+  delivering edge's own text — together with the park's ASK IDENTITY
+  (`ask_sig` stamped on the park record). Same ask + a landed body = the turn
+  is still delivering: the banner is attached (`banner_render_captured`,
+  `banner_park_retained reason=same_ask_body_landed`). Drop only when nothing
+  landed or the ask moved on, and every drop row now carries `body_chars` and
+  `row_present`; `reason=turn_closed_undelivered` is only sayable with
+  `body_chars=0` (with a body in hand the truthful reason is
+  `ask_superseded`). R33f-A's stale-leak ban and R34-15's retention semantics
+  are unchanged: a turn-N banner still never reaches turn N+1, and the same
+  turn still retains through a mid-turn capture miss.
+- Pins (tests/lanes/test_r34_18_strip_shape_and_delivery_truth.py): the live
+  body verbatim (fenced multi-key JSON, report first, `povs` last) loses fence
+  + `povs`/`lens`/`stance`/`argument` and keeps the report and pytest line;
+  report-only-inside-JSON renders plain; the strip never fires with zero
+  removed; balanced code fences in a clean report are left alone; parse-time
+  ordering strip -> sweep(response_chars>0) -> benign delivery attaches the
+  banner and yields `banner_render_captured` with no
+  `turn_closed_undelivered`; `turn_closed_undelivered` never appears with a
+  non-zero delivered char count. R34-15's later-turn pin was re-pointed from
+  the old label to `ask_superseded` (same drop, truthful reason).
+- Suite: __SUITE__
+
 ## 5.4.8 — 2026-10-21 (R34-17 — the echo guard stops lying about the filesystem)
 
 - R34-17-1 (LIVE FALSE POSITIVE, session 20261021_070153_f41a2f): the

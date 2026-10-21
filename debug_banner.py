@@ -305,17 +305,26 @@ def _record_park(session_id: str, task_id: str = "") -> None:
         # it is the retention discriminator — same turn -> the banner survives
         # a mid-turn capture failure, later turn -> it is dropped undelivered.
         _turn = 0
+        # R34-18 residual 2: the park also carries the IDENTITY of the ask it
+        # belongs to. The turn counter drifts (a duplicate transform pass over
+        # the same message increments it), so `park_turn < current_turn` alone
+        # cannot prove a turn closed; the ask signature can. Same signature at
+        # delivery time = the same turn, still delivering.
+        _ask_sig = ""
         try:
             from . import advisory_consumption as _ac
 
             _turn = int(_ac.turn_no(sid) or 0)
+            _ask_sig = str(_ac.open_signal(sid) or "")
         except Exception:  # noqa: BLE001 — a stamp must never break a park
             _turn = 0
+            _ask_sig = ""
         _PARK_RECORDS[sid] = {
             "event_seq": _next_park_event_seq(),
             "parked_at": time.time(),
             "task_id": str(task_id or "")[:40],
             "turn_no": _turn,
+            "ask_sig": _ask_sig[:40],
         }
     except Exception:  # noqa: BLE001 — record failure never breaks the park
         pass

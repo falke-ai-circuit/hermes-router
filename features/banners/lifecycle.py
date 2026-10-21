@@ -197,17 +197,61 @@ class BannerLifecycle:
         try:
             from ... import advisory_consumption as _act
 
-            _pt = int((db.park_record(session_id) or {}).get("turn_no") or 0)
+            _rec_guard = db.park_record(session_id) or {}
+            _pt = int(_rec_guard.get("turn_no") or 0)
             _ct = int(_act.turn_no(session_id) or 0)
             if _pt and _ct and _pt < _ct and \
                     db._ANCHOR_BANNERS.get(str(session_id or "")):
-                db.consume_parked_banner(session_id)
-                _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
-                           reason="turn_closed_undelivered", turn_no=_ct,
-                           edge=_e_guard,
-                           session_id=str(session_id or ""))
-                return (text if isinstance(text, str) else "") \
-                    if mode == "append" else ""
+                # R34-18 residual 2 — DELIVERY TRUTH, not bookkeeping. The
+                # live specimen (session 20261021_074100_e9a8eb) parked at
+                # 07:41:17 and delivered 2208 chars at 07:41:48 in the SAME
+                # turn; the counter said park_turn < current_turn (a duplicate
+                # transform pass increments it) and this guard declared
+                # `turn_closed_undelivered`, dropping a banner the user's body
+                # should have carried. A drop now needs BOTH:
+                #   * no body landed (`body_chars == 0`, the same evidence
+                #     `sweep_started response_chars` reports, plus this edge's
+                #     own text), AND/OR
+                #   * the ask moved on (park signature != current signature).
+                # Same ask + a body landing = the turn is still delivering:
+                # fall through and attach the banner.
+                _truth = _act.delivery_truth(
+                    session_id,
+                    chars_hint=(len(str(text or "").strip())
+                                if mode == "append" else 0))
+                _body_chars = int(_truth.get("body_chars") or 0)
+                _park_sig = str(_rec_guard.get("ask_sig") or "")
+                _cur_sig = str(_truth.get("ask_sig") or "")
+                _same_ask = bool(_park_sig) and _park_sig == _cur_sig
+                _row_present = False
+                try:
+                    _row_present = bool(
+                        self._newest_persisted_assistant_row(session_id))
+                except Exception:  # noqa: BLE001 — evidence only
+                    _row_present = False
+                if _same_ask and _body_chars > 0:
+                    # The turn the banner belongs to IS delivering right now.
+                    # Retain under the same semaphore record (still exactly
+                    # one delivery) and let the chokepoint below attach it.
+                    _log_route("POST", event_detail=db.BANNER_PARK_RETAINED_EVENT,
+                               reason="same_ask_body_landed", turn_no=_ct,
+                               park_turn_no=_pt, body_chars=_body_chars,
+                               row_present=_row_present, edge=_e_guard,
+                               session_id=str(session_id or ""))
+                else:
+                    db.consume_parked_banner(session_id)
+                    # A drop reason may not outrun its evidence: "undelivered"
+                    # is only sayable when nothing landed. With a body in hand
+                    # the truthful reason is that the ask moved on.
+                    _reason = ("ask_superseded" if _body_chars > 0
+                               else "turn_closed_undelivered")
+                    _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
+                               reason=_reason, turn_no=_ct, park_turn_no=_pt,
+                               body_chars=_body_chars,
+                               row_present=_row_present, edge=_e_guard,
+                               session_id=str(session_id or ""))
+                    return (text if isinstance(text, str) else "") \
+                        if mode == "append" else ""
         except Exception:  # noqa: BLE001 — the guard never breaks delivery
             pass
         # consume through the debug_banner delegate — the historical patch

@@ -11,8 +11,10 @@ its banner.
 Contract pinned here:
   1. Same turn (park turn_no == live turn_no) -> RETAIN, banner_park_retained.
      The last banner-eligible pass of the turn delivers it exactly once.
-  2. Later turn -> DROP, banner_park_dropped reason=turn_closed_undelivered.
-     R33f-A's stale-leak ban is preserved: turn N never reaches turn N+1.
+  2. Later turn -> DROP, banner_park_dropped. R33f-A's stale-leak ban is
+     preserved: turn N never reaches turn N+1. R34-18 made the REASON truthful:
+     with a body in hand the reason is `ask_superseded`; `turn_closed_undelivered`
+     is only sayable when nothing landed (body_chars=0).
 """
 import sys
 from unittest import mock
@@ -129,6 +131,10 @@ def test_banner_failing_at_turn_close_never_enters_the_next_turn(env):
     assert "banner_park_dropped" in ev
     reasons = [f.get("reason") for _, f in env
                if f.get("event_detail") == "banner_park_dropped"]
-    assert "turn_closed_undelivered" in reasons
+    # R34-18: a body IS landing here ("next turn body"), so the truthful
+    # reason is that the ask moved on — `turn_closed_undelivered` may never be
+    # emitted alongside a non-zero delivered char count.
+    assert "ask_superseded" in reasons
+    assert "turn_closed_undelivered" not in reasons
     assert "· router ·" not in (out or "")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
