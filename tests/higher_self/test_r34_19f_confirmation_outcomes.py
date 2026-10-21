@@ -139,3 +139,29 @@ def test_unpaired_turn_gets_no_confirmation(monkeypatch):
     state.clear_pre_advisory(_SID[0])
     ca.audit_gate(_SID[0], RESP, ask_override=ASK)   # may be None or text
     assert _conf_kinds(seen) == [], seen["events"]
+
+
+def test_the_confirmation_never_quotes_the_audits_instruction_to_the_agent():
+    """R34-19M: the note carries an operator line addressed to the AGENT
+    ("SEAM INSTRUCTION: … now PROCEED"). When that line reached the delivered
+    confirmation a user read it as the audit flagging their work. Machinery is
+    never a finding."""
+    from hermes_router.completion_audit import _confirmed_gist
+    note = ("[higher-self note] model=anthropic/claude-sonnet-5.5\n"
+            "This is an internal message from your higher self — the self-reflection.\n"
+            "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver the "
+            "user's answer, applying whatever the message flagged. Do not restate "
+            "the audit, do not ask permission to continue.\n"
+            "- The rollback path was never exercised before the deploy.\n")
+    got = _confirmed_gist(note)
+    assert "PROCEED" not in got, got
+    assert "SEAM INSTRUCTION" not in got, got
+    assert "rollback path" in got.lower(), got
+
+
+def test_a_note_that_is_only_machinery_flags_without_a_quote():
+    from hermes_router.completion_audit import _note_outcome
+    note = ("This is an internal message from your higher self.\n"
+            "SEAM INSTRUCTION: the audit is complete - now PROCEED.\n")
+    kind, gist = _note_outcome(note)
+    assert kind == "flagged" and gist == "", (kind, gist)

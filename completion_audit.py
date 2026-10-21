@@ -236,7 +236,19 @@ def _confirmed_gist(note: str, cap: int = 160) -> str:
             # "This is an internal message from your higher self — …"
             if re.match(r"(?i)^(confirmed\b|pre[- ]warning[- ](?:held|missed)\b"
                         r"|this is an internal\b|your higher self\b|higher[- ]self\b"
-                        r"|note\b|verdict\b|sense[_-]?check\b|povs?\b)", t):
+                        r"|note\b|verdict\b|sense[_-]?check\b|povs?\b"
+                        r"|seam instruction\b|treat it as an anchor\b"
+                        r"|read it, adjust\b|deliver, and do not\b)", t):
+                continue
+            # R34-19M: the note carries the operator line that tells the AGENT
+            # what to do next ("SEAM INSTRUCTION: the audit is complete - now
+            # PROCEED. Deliver the user's answer…"). It is machinery, not a
+            # finding, but it does not sit at line start once the note is one
+            # paragraph — live: a user read the audit's own instruction to the
+            # agent as the audit's flag against her work. Reject the line
+            # wherever the operator phrasing appears.
+            if re.search(r"(?i)(now PROCEED|do not restate|do not ask permission"
+                         r"|do not output any marked text)", t):
                 continue
             if t.startswith("{") or t.startswith("[") or t.startswith("```") \
                     or t.startswith("===") or t.startswith("*"):
