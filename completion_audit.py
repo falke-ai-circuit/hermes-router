@@ -650,6 +650,43 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # R34-19 PRE->POST pairing: a PRE advisory for this turn makes the
         # POST its CONFIRMATION — it fires even with audit_mode off.
         _pair = _pre_pairing(session_id)
+        # R34-19k: resolve the CLAIM before any floor. A turn whose higher self
+        # already spoke is owed a confirmation however terse the report is, so
+        # claim-derived pairing must be visible to the length check below (it
+        # landed after it first, and a 21-char report still lost its pair).
+        try:
+            from . import route_gate as _rg
+            _claim = _rg.claim_state(session_id)
+            if _claim is not None and not _pair:
+                # R34-19k: the CLAIM is pairing evidence in its own right.
+                # On a host where the PRE advisory text never made it into the
+                # store (live: recovery, where every PRE consult was billed,
+                # bannered, and still left no record), the gate stood down with
+                # `turn_claimed` and the agent was warned at the start of the
+                # turn and never told how it went — the highest-value pairing
+                # (the user asked her higher self directly) failing silently.
+                # A higher-pre claim for THIS turn proves the higher self
+                # spoke; the advisory TEXT is a convenience, not the proof.
+                if str(_claim.get("lane") or "") == "higher-pre":
+                    _pair = {
+                        "text": "",
+                        "trigger": str(_claim.get("source") or "declared_user"),
+                        "ask_sig": "",
+                        "claim_derived": True,
+                    }
+                    _log("higher_self_pair_derived_from_claim",
+                         claim_lane="higher-pre",
+                         claim_source=str(_claim.get("source") or ""),
+                         session_id=session_id)
+                else:
+                    _log("audit_gate_skip", reason="turn_claimed",
+                         claim_lane=str(_claim.get("lane") or ""),
+                         claim_source=str(_claim.get("source") or ""),
+                         session_id=session_id)
+                    return None
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
+
         if not audit_enabled() and not _pair:
             _log("audit_gate_skip", reason="mode_off_no_pair",
                  session_id=session_id)
@@ -669,17 +706,6 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # gate's claim registry holds ANY claim for this session/turn,
         # the audit stands down — that claim owns the turn's one routing
         # outcome. Fail-open: registry unavailable -> legacy behavior.
-        try:
-            from . import route_gate as _rg
-            _claim = _rg.claim_state(session_id)
-            if _claim is not None and not _pair:
-                _log("audit_gate_skip", reason="turn_claimed",
-                     claim_lane=str(_claim.get("lane") or ""),
-                     claim_source=str(_claim.get("source") or ""),
-                     session_id=session_id)
-                return None
-        except Exception:  # noqa: BLE001 — fail-open
-            pass
         # v3.8.5 (Goran 09-10): a turn whose response IS an uncensored render
         # must not be audited — the frontier lane would audit the uncensored
         # lane's output, which is a category error (complementary lanes: U
@@ -721,7 +747,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             return None
         # R34-19: bind the pairing to THIS ask — a PRE recorded for another
         # turn in the same session is not this turn's PRE.
-        _pair = _pre_pairing(session_id, ask)
+        # R34-19k: this second, ask-bound read must not ERASE claim-derived
+        # pairing (the host with no stored advisory is exactly the host this
+        # read returns None on). Keep whichever evidence exists.
+        _pair = _pre_pairing(session_id, ask) or _pair
         # R16-2 (rider 16, D1a): the benign BRIEF frame now covers the ANCHOR
         # leg — the completion-audit consult was the last ungated frontier
         # arm: a benign setup/briefing ask ('brief me on the tradeoffs of X

@@ -1371,6 +1371,24 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                     pass
             except Exception:  # noqa: BLE001 — pairing never breaks the consult
                 pass
+        else:
+            # R34-19k: a PRE that produced text but wrote NO pair record is
+            # indistinguishable, downstream, from a PRE that never happened —
+            # and the POST then stands down with `turn_claimed`, so the agent
+            # is warned at the start of the turn and never told how it went.
+            # R34-19b doctrine: no non-firing path returns in silence.
+            try:
+                from .core.telemetry import log_route as _lrx
+
+                _lrx("PRE", event_detail="higher_self_pair_skipped",
+                     reason="not_orientation",
+                     rec_reason=str(rec.get("reason") or ""),
+                     rec_mode=str(rec.get("mode") or ""),
+                     sess_orientation=bool(rec.get("orientation")),
+                     chars=len(str(content or "")),
+                     session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         decision_like = router_core.RouteDecision(
             task_id=rec.get("task_id") or "", lane=router_core.LANE_COMPLEXITY,
             mode=rec.get("mode") or router_core.MODE_CONSULT,

@@ -196,3 +196,37 @@ def test_post_pair_mode_defaults_to_worthwhile(monkeypatch):
     monkeypatch.setattr(router_core, "_complexity_cfg",
                         lambda: {"post_pair_mode": "garbage"})
     assert ca.post_pair_mode() == "worthwhile"
+
+
+# --------------------------------------------------------------------------
+# R34-19k: the CLAIM is pairing evidence when the stored text is missing
+# --------------------------------------------------------------------------
+
+def test_a_higher_pre_claim_confirms_even_without_a_stored_advisory(
+        monkeypatch):
+    """Live: recovery's PRE consult billed and bannered but never landed a
+    record, so the gate stood down with `turn_claimed` and the on-demand ask —
+    the one case where the user explicitly asked her higher self — got a
+    warning and no confirmation."""
+    sid = _sid()
+    ran = []
+    events = _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
+    import hermes_router.route_gate as rg
+    monkeypatch.setattr(rg, "claim_state", lambda *a, **k: {
+        "lane": "higher-pre", "source": "declared_user"}, raising=False)
+    ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
+    assert ran, "a higher-pre claim must pair the turn's confirmation"
+    assert any(k.get("claim_lane") == "higher-pre" for e, k in events
+               if e == "higher_self_pair_derived_from_claim"), events
+
+
+def test_a_non_pre_claim_still_stands_the_gate_down(monkeypatch):
+    sid = _sid()
+    ran = []
+    events = _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
+    import hermes_router.route_gate as rg
+    monkeypatch.setattr(rg, "claim_state", lambda *a, **k: {
+        "lane": "uncensored", "source": "detection"}, raising=False)
+    ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
+    assert ran == [], "a render claim must still own the turn"
+    assert any(k.get("reason") == "turn_claimed" for e, k in events), events
