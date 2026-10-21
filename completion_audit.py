@@ -1227,9 +1227,33 @@ def _log_pair(stage: str, paired: bool, pre_trigger: str = "",
         pass
 
 
+def _payload_body(parts: list, total_cap: int = 0) -> str:
+    """Join the audit payload, bounded by total_cap when one is given.
+
+    R34-19e: a long turn produced a 13,121-char payload that could not finish
+    inside the hook's ~24s budget, so the paired confirmation died as
+    anchored_call_failed (live reviewer sweep). The verdict needs the ask, the
+    work shape and the PRE read — not the whole draft verbatim. Trimming keeps
+    the head (ask, work) and the tail (final response, PRE read, instructions),
+    which is where the judgement actually lives.
+    """
+    body = "\n\n".join(str(x) for x in parts)
+    try:
+        cap = int(total_cap or 0)
+        if cap and len(body) > cap:
+            head = int(cap * 0.35)
+            tail = int(cap * 0.65)
+            body = (body[:head] + "\n\n[...payload trimmed to fit the hook "
+                    "budget...]\n\n" + body[-tail:])
+    except Exception:  # noqa: BLE001 — trimming never breaks the payload
+        pass
+    return body
+
+
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
                    pre_brief: str = "",
-                   pre_trigger: str = "") -> List[Dict[str, str]]:
+                   pre_trigger: str = "",
+                   total_cap: int = 0) -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
@@ -1284,7 +1308,7 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
                      "missing, what is genuinely good, what could be better. "
                      "Speak honestly and directly to her. No tools.\n\n"
                      + _persona_tailoring())},
-        {"role": "user", "content": "\n\n".join(parts)},
+        {"role": "user", "content": _payload_body(parts, total_cap)},
     ]
 
 
@@ -1578,9 +1602,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             logger.info("completion_audit_skipped reason=no_primary_endpoint")
             return None
         max_chars = audit_max_chars()
+        # R34-19e: budget-aware total cap — under ~40s the frontier call cannot
+        # chew a 13k payload and still emit a verdict.
+        _total_cap = 12000 if socket_timeout >= 40 else 5500
         msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text,
                               max_chars, pre_brief=pre_brief,
-                              pre_trigger=pre_trigger)
+                              pre_trigger=pre_trigger, total_cap=_total_cap)
         # reasoning_effort=max (Goran 09-10: maximum capacity on frontier)
         # burns 10k+ reasoning chars — the old 2500 cap starved consults
         # into empty_response BEFORE any verdict was emitted (battery-proven
