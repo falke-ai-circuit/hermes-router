@@ -488,6 +488,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation because the agent reported it in 264 chars.
         if not isinstance(response_text, str) or (
                 not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
+            _log("audit_gate_skip", reason="response_too_short_unpaired",
+                 chars=len(str(response_text or "")), pair=bool(_pair),
+                 session_id=session_id)
             return None
         # Leg 7 (single claim point, blueprint invariant #1): when the
         # gate's claim registry holds ANY claim for this session/turn,

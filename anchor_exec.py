@@ -1352,14 +1352,20 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 from . import state as _st
 
                 _pre_trigger = str(rec.get("reason") or "orientation")
-                _st.mark_pre_advisory(session_id, _pre_trigger, str(content),
-                                      cap=orientation_ask_cap(),
-                                      ask=str(locals().get("_orig") or ""))
+                _rec_pair = _st.mark_pre_advisory(
+                    session_id, _pre_trigger, str(content),
+                    cap=orientation_ask_cap(),
+                    ask=str(locals().get("_orig") or ""))
                 try:
                     from .core.telemetry import log_route as _lrx
 
+                    # Report what the STORE did, not what we hoped it did: a
+                    # hardcoded paired=True here claimed a pairing that the
+                    # POST gate then could not find, which is how the missing
+                    # confirmation looked like a POST-side bug.
                     _lrx("PRE", event_detail="higher_self_pair", stage="pre",
-                         paired=True, trigger=_pre_trigger,
+                         paired=bool(_rec_pair), trigger=_pre_trigger,
+                         stored_chars=len(str(_rec_pair.get("text") or "")) if _rec_pair else 0,
                          session_id=str(session_id or ""))
                 except Exception:  # noqa: BLE001 — telemetry only
                     pass
