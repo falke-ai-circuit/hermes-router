@@ -56,6 +56,10 @@ from .frames import HS_COMPLETION_AUDIT_MARKER as _HS_AUDIT_MARKER  # R8h single
 HOOK_SYNC_CAP = 25.0
 
 logger = logging.getLogger(__name__)
+try:  # R34-19k: which COPY is live? deploy ambiguity cost hours.
+    logger.info("completion_audit_loaded_from %s", __file__)
+except Exception:  # noqa: BLE001
+    pass
 
 _MIN_RESPONSE_CHARS = 500
 # trailing "\n" preserved: _NOTE_MARKER is concatenated with _NOTE_PREFIX at
