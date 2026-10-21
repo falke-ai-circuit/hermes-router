@@ -1145,6 +1145,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # consult, revision pass, banner; returns revised text or None.
             try:
                 from .. import completion_audit as _ca
+                # TEMP PROBE (remove before final): is the arm reached at all?
+                _hub()._log_route("POST", event_detail="audit_arm_entered",
+                                  session_id=session_id,
+                                  chars=len(str(response_text or "")),
+                                  budget=round(_hook_remaining(), 1))
                 _out_audit = _ca.audit_gate(
                     session_id, response_text, model=model, context=context,
                     hook_budget=_hook_remaining())
