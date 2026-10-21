@@ -305,7 +305,13 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     mode = audit_mode()
     if not paired and mode == "off":
         return False, "mode_off"
-    if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
+    # R34-19: the floor stops a one-liner buying a consult, but a PAIRED turn
+    # already paid for its PRE — its confirmation is owed even when the report
+    # is terse (live: 2 files + 5 tests reported in 264 chars lost its POST).
+    if not paired and (not isinstance(response_text, str)
+                       or len(response_text.strip()) < _MIN_RESPONSE_CHARS):
+        return False, "response_too_short"
+    if paired and not isinstance(response_text, str):
         return False, "response_too_short"
     # Goran 09-10 option C: CLOSURE is an independent trigger — a closure-shaped
     # ask/response audits even when the ask text itself isn't complex-shaped
@@ -468,7 +474,13 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         _pair = _pre_pairing(session_id)
         if not audit_enabled() and not _pair:
             return None
-        if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
+        # R34-19: the length floor exists to stop a one-line reply from buying
+        # a frontier consult. A PAIRED turn already paid for its PRE, so the
+        # confirmation is owed regardless of how terse the report is — a short
+        # report over real work (2 files, 5 tests) was silently losing its
+        # confirmation because the agent reported it in 264 chars.
+        if not isinstance(response_text, str) or (
+                not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
             return None
         # Leg 7 (single claim point, blueprint invariant #1): when the
         # gate's claim registry holds ANY claim for this session/turn,

@@ -233,3 +233,36 @@ def test_pre_frame_reads_as_self_check_and_keeps_anti_echo(monkeypatch):
     assert "her own higher self" in text
     assert "Do NOT solve the task" in text
     assert "never restate this frame in your reply" in text
+
+
+def test_paired_post_fires_even_when_the_report_is_terse(monkeypatch):
+    """Live regression, 2026-10-21: a turn that really did the work — two files
+    written, 5 tests passing — reported it in 264 characters, and the 500-char
+    length floor killed the POST before the pairing was ever consulted. A
+    paired turn already paid for its PRE, so the confirmation is owed however
+    briefly she reports it."""
+    seen = _patch_post(monkeypatch)
+    monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+    monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    terse = "Files written: dedupe.py, test_dedupe.py.\npytest: 5 passed in 0.03s"
+    assert len(terse) < ca._MIN_RESPONSE_CHARS, "pin must stay below the floor"
+    state.mark_pre_advisory(SID, "orientation", "PRE BRIEF: watch the key arg",
+                            ask=SHORT_ASK)
+
+    out = ca.audit_gate(SID, terse, ask_override=SHORT_ASK)
+    assert seen["calls"] == 1, "the paired POST must fire on a terse report"
+    assert out is not None
+    assert seen["kwargs"].get("pre_brief") == "PRE BRIEF: watch the key arg"
+    pairs = [kw for ev, kw in seen["events"] if ev == "higher_self_pair"]
+    assert any(kw.get("stage") == "post" and kw.get("paired") is True
+               for kw in pairs), pairs
+
+
+def test_unpaired_terse_report_still_respects_the_length_floor(monkeypatch):
+    """The floor still protects the unpaired case: no PRE, no consult."""
+    seen = _patch_post(monkeypatch)
+    monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+    monkeypatch.setattr(ca, "audit_mode", lambda: "always")
+    terse = "done"
+    assert ca.audit_gate(SID, terse, ask_override=SHORT_ASK) is None
+    assert seen["calls"] == 0
