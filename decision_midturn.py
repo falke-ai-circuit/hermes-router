@@ -944,8 +944,13 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
                 [{"id": f"opt-{i + 1}", "label": l} for i, l in enumerate(_labels)],
                 default=str)[:8000]
             row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
-            row["diagnosticity_json"] = json.dumps(
-                _ds.diagnosticity(_sigs), default=str)[:600]
+            _diag = _ds.diagnosticity(_sigs)
+            row["diagnosticity_json"] = json.dumps(_diag, default=str)[:600]
+            # Abstention is a RESULT: it must not read like "resolver never
+            # ran". `outcome` stays the lane's lifecycle state (pending) —
+            # only the measurement label is settled here.
+            if not bool(_diag.get("separable")):
+                row["outcome_label"] = "uncodable"
             row["regime"] = _ds.REGIME_MIDTURN
             row["resolver_rule"] = _ds.RESOLVER_RULE_VERSION
     except Exception:  # noqa: BLE001 — capture never breaks the lane

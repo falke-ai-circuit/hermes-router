@@ -3318,8 +3318,16 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                 [{"id": o.get("id", ""), "label": o.get("label", "")}
                  for o in _opts if isinstance(o, dict)], default=str)[:8000]
             base_row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
-            base_row["diagnosticity_json"] = json.dumps(
-                _ds.diagnosticity(_sigs), default=str)[:600]
+            _diag = _ds.diagnosticity(_sigs)
+            base_row["diagnosticity_json"] = json.dumps(_diag, default=str)[:600]
+            # An abstention is a RESULT, not an absence. A blank label made
+            # "the resolver refused to guess" indistinguishable from "the
+            # resolver never ran" — which is how the 0.4% fill went unnoticed
+            # for three weeks. A non-separable set is born terminal-uncodable
+            # instead of looking pending.
+            if _sigs and not bool(_diag.get("separable")):
+                base_row["outcome_label"] = "uncodable"
+                base_row["resolved_action"] = ""
             base_row["regime"] = _ds.regime_for(str(ids.get("trigger", "")),
                                                 str(base_row["trigger_kind"]))
             base_row["resolver_rule"] = _ds.RESOLVER_RULE_VERSION

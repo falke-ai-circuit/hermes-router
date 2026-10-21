@@ -243,3 +243,30 @@ def test_midturn_without_options_still_writes_a_row():
     assert row.get("signatures_json", "") == ""
     # with no options there is nothing to resolve; regime may be unset
     assert row.get("regime", "") in ("", ds.REGIME_MIDTURN)
+
+
+# --- abstention must be RECORDED, never blank ------------------------------
+
+def test_non_separable_options_are_born_terminal_uncodable():
+    """Live row coder/3857: 'roll back the migration' vs 'fix forward on
+    current state' -> both write-shaped, no distinguishing path, separable
+    False. It was left with an EMPTY label, which reads the same as 'the
+    resolver never ran' — the ambiguity that hid this for three weeks."""
+    from hermes_router import decision_midturn as dm
+    row = dm._ledger_base(
+        "s", {}, sig="x", mode="on",
+        opts=["roll back the migration (fast, loses new rows)",
+              "fix forward on current state (slower, keeps rows)"])
+    assert json.loads(row["diagnosticity_json"])["separable"] is False
+    assert row["outcome_label"] == "uncodable"
+    assert row.get("resolved_action", "") == ""
+
+
+def test_a_separable_midturn_row_is_not_pre_labelled():
+    from hermes_router import decision_midturn as dm
+    row = dm._ledger_base(
+        "s", {}, sig="x", mode="on",
+        opts=["write_file the note to /opt/data/tmp/a.md",
+              "read_file /opt/data/plugins/hermes_router/decision.py"])
+    assert json.loads(row["diagnosticity_json"])["separable"] is True
+    assert row.get("outcome_label", "") == ""  # left for the resolver
