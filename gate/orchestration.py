@@ -1163,6 +1163,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _out_audit = _ca.audit_gate(
                     session_id, response_text, model=model, context=context,
                     hook_budget=_hook_remaining())
+                # R34-19b: the arm's VERDICT is always on record. Without this
+                # row, 'no post consult' could mean the arm never ran, or ran
+                # and declined — indistinguishable, which is exactly how the
+                # gap survived six weeks.
+                _hub()._log_route("POST", event_detail="audit_gate_returned",
+                                  returned=("text" if _out_audit else "none"),
+                                  chars=len(_out_audit or "") if _out_audit else 0,
+                                  session_id=session_id)
                 if _out_audit:
                     # R9 (2026-09-14): the audit's sync return IS this turn's
                     # delivery edge — any banner parked during the SAME turn
@@ -1219,8 +1227,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     except Exception:  # noqa: BLE001
                         pass
                     return _out_audit
-            except Exception:  # noqa: BLE001 — audit must never break delivery
+            except Exception as _audit_err:  # noqa: BLE001 — audit must never break delivery
+                # Fail-open, but NOT silent: this swallow is why the completion
+                # arm could vanish for six weeks with no row anywhere. The
+                # delivery still proceeds untouched; the reason is now on record.
                 _hub().logger.debug("completion audit gate error", exc_info=True)
+                _hub()._log_route("POST", event_detail="audit_arm_error",
+                                  error=type(_audit_err).__name__,
+                                  detail=str(_audit_err)[:160],
+                                  session_id=session_id)
             # Benign delivery — §10.4: consume any parked frontier-anchor
             # banner and append to this turn's DELIVERY (one-shot).
             try:
