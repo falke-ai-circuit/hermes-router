@@ -142,7 +142,12 @@ def test_banner_consumed_at_delivery_edge(_reset, monkeypatch):
     assert "· router ·" in (out or "")
     assert "shadow" in (out or "")
     assert "the agent's own visible reply" in (out or "")
-    # ...and consumed (one-shot): a second pass sees nothing.
+    # ...and the single-delivery guarantee is CROSS-TURN (the stale-leak
+    # class R33f-A closed). R34-15: a same-turn capture miss is RETAINED and
+    # retried on that turn's last banner-eligible pass; a turn-N banner never
+    # rides into a turn N+1 body — so this next pass must be a NEW user turn.
+    from hermes_router import advisory_consumption as _ac
+    _ac.note_turn_open(SID, "plain next turn")
     out2 = plugin.on_transform_llm_output(
         response_text="plain next turn", session_id=SID, model="minimax-m3")
     assert "· router ·" not in (out2 or "plain next turn")

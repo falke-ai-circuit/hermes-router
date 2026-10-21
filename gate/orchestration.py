@@ -683,7 +683,8 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
             # 20261006_190903_c82cbbcc). Passthrough (no claim).
             try:
                 _hub()._log_route("POST",
-                                  event_detail="banner_semaphore_expired",
+                                  event_detail="banner_park_dropped",
+                                  reason="attach_not_landed",
                                   edge=edge, session_id=session_id)
             except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
@@ -745,6 +746,70 @@ def _recover_orphan_anchor_swap(session_id: str) -> None:
                                  _ep, base_timeout=300)
     except Exception:  # noqa: BLE001 — recovery must never break delivery
         _hub().logger.debug("orphan anchor swap recovery error", exc_info=True)
+
+
+def _banner_turn_snapshot(session_id: str):
+    """R34-15: (park_turn_no, current_turn_no) for the parked-banner slot.
+
+    Retention is keyed on advisory_consumption.turn_no — the turn ledger the
+    PRE seam opens once per user ask. It is NOT keyed on close_turn(): that
+    fires on every transform PASS (line ~781), so a transform-close signal
+    cannot distinguish "this turn is still writing" from "the user moved on".
+    """
+    try:
+        from .. import advisory_consumption as _ac
+        from .. import debug_banner as _dbp
+
+        rec = _dbp.park_record(session_id) or {}
+        return int(rec.get("turn_no") or 0), int(_ac.turn_no(session_id) or 0)
+    except Exception:  # noqa: BLE001 — a snapshot never breaks delivery
+        return 0, 0
+
+
+def _resolve_midturn_capture_failure(session_id: str, parked_text: str,
+                                     park_turn: int, cur_turn: int,
+                                     reason: str) -> str:
+    """R34-15 item 1: a parked banner SURVIVES a mid-turn capture failure.
+
+    Same turn (park_turn == cur_turn != 0): the banner is re-parked under a
+    fresh one-delivery record and `banner_park_retained` is logged, so the
+    LAST banner-eligible pass of this turn consumes and delivers it. The
+    rewrite miss is expected there: the row being rewritten at a mid-turn
+    edge is an intermediate assistant message, not the delivered answer.
+
+    Later turn (park_turn < cur_turn): the turn closed undelivered -> the
+    banner is DROPPED and `banner_park_dropped reason=turn_closed_undelivered`
+    is logged. That preserves R33f-A verbatim: a turn-N banner never reaches
+    turn N+1 (the stale-leak class, session 20261006_190903_c82cbbcc).
+
+    Never raises; returns "retained" | "dropped" | "".
+    """
+    try:
+        pt = int(park_turn or 0)
+        ct = int(cur_turn or 0)
+        from .. import debug_banner as _dbp
+
+        txt = str(parked_text or "").strip("\n").strip()
+        # Retention needs a KNOWN turn on both sides: 0/0 means the PRE seam
+        # never opened a turn (no ledger), and an unowned park must fall back
+        # to the R33f-A one-delivery drop rather than live forever.
+        if pt and ct and pt == ct:
+            if txt:
+                _dbp.park_anchor_banner(session_id, txt)
+            _hub()._log_route("POST", event_detail="banner_park_retained",
+                              reason=reason, turn_no=ct,
+                              session_id=session_id)
+            return "retained"
+        try:
+            _dbp.consume_parked_banner(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+        _hub()._log_route("POST", event_detail="banner_park_dropped",
+                          reason="turn_closed_undelivered", cause=reason,
+                          turn_no=ct, session_id=session_id)
+        return "dropped"
+    except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+        return ""
 
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
@@ -1097,6 +1162,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 from ..core import telemetry as _tlm_b
                 from .. import debug_banner as _dbp
                 from ..features.banners import lifecycle as _bll_b
+                # R34-15: park turn vs live turn decides retention vs drop.
+                _park_turn, _cur_turn = _banner_turn_snapshot(session_id)
                 _hub()._decision_wait_before_consume(_hook_remaining())
                 try:
                     _merged_b = _bll_b.LIFECYCLE.deliver(
@@ -1166,13 +1233,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                         row_present=bool(
                                             _cb2.persisted_turn_row_exists(
                                                 session_id, response_text)),
-                                        semaphore_expired=True,
+                                        capture_landed=False,
+                                        turn_no=_cur_turn,
                                         session_id=session_id)
-                                    _hub()._log_route(
-                                        "POST",
-                                        event_detail="banner_semaphore_expired",
-                                        edge="benign",
-                                        session_id=session_id)
+                                    # R34-15 item 1: a mid-turn miss RETAINS
+                                    # (same turn); only a closed turn drops.
+                                    _resolve_midturn_capture_failure(
+                                        session_id, _parked, _park_turn,
+                                        _cur_turn, "mid_turn_no_match")
                                 except Exception:  # noqa: BLE001
                                     pass
                         except Exception:  # noqa: BLE001 — capture never breaks delivery
@@ -1188,12 +1256,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                            event_detail="parked_capture_failed",
                                            edge="benign",
                                            reason="capture_exception",
-                                           semaphore_expired=True,
+                                           capture_landed=False,
+                                           turn_no=_cur_turn,
                                            session_id=session_id)
-                                _hub()._log_route("POST",
-                                           event_detail="banner_semaphore_expired",
-                                           edge="benign",
-                                           session_id=session_id)
+                                _resolve_midturn_capture_failure(
+                                    session_id, _parked, _park_turn,
+                                    _cur_turn, "mid_turn_capture_exception")
                             except Exception:  # noqa: BLE001
                                 pass
                     return _final_b

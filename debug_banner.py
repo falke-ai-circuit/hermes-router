@@ -270,7 +270,14 @@ _ANCHOR_SEGS: Dict[str, list] = {}
 # keyed by the exact session id and never read across keys.
 _PARK_RECORDS: Dict[str, Dict[str, Any]] = {}
 _PARK_RECORDS_MAX = 64
-BANNER_SEMAPHORE_EXPIRED_EVENT = "banner_semaphore_expired"
+# R34-15 item 2: `banner_semaphore_expired` claimed an expiry nothing
+# measured (the same mislabelling class as `advisory_chars`). The real
+# condition is "the park did not land" -> named for what it is. The old
+# constant name stays as an alias so importers do not break; the EMITTED
+# event is `banner_park_dropped` with a reason.
+BANNER_PARK_DROPPED_EVENT = "banner_park_dropped"
+BANNER_PARK_RETAINED_EVENT = "banner_park_retained"
+BANNER_SEMAPHORE_EXPIRED_EVENT = BANNER_PARK_DROPPED_EVENT
 BANNER_OWNERSHIP_CLAIMED_EVENT = "banner_ownership_claimed"
 
 
@@ -293,10 +300,22 @@ def _record_park(session_id: str, task_id: str = "") -> None:
             return
         while len(_PARK_RECORDS) >= _PARK_RECORDS_MAX:
             _PARK_RECORDS.pop(next(iter(_PARK_RECORDS)), None)
+        # R34-15: the park is scoped to the TURN it belongs to. turn_no is
+        # the advisory_consumption ledger counter (one user ask = one turn);
+        # it is the retention discriminator — same turn -> the banner survives
+        # a mid-turn capture failure, later turn -> it is dropped undelivered.
+        _turn = 0
+        try:
+            from . import advisory_consumption as _ac
+
+            _turn = int(_ac.turn_no(sid) or 0)
+        except Exception:  # noqa: BLE001 — a stamp must never break a park
+            _turn = 0
         _PARK_RECORDS[sid] = {
             "event_seq": _next_park_event_seq(),
             "parked_at": time.time(),
             "task_id": str(task_id or "")[:40],
+            "turn_no": _turn,
         }
     except Exception:  # noqa: BLE001 — record failure never breaks the park
         pass

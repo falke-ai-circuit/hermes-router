@@ -179,13 +179,37 @@ class BannerLifecycle:
             except Exception:  # noqa: BLE001
                 pass
             try:
-                _log_route("POST", event_detail="banner_semaphore_expired",
+                _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
                            edge=str(log_edge if log_edge is not None else edge),
-                           outcome="deferred_expired",
+                           reason="deferral_ttl_expired",
                            session_id=str(session_id or ""))
             except Exception:  # noqa: BLE001
                 pass
             return (text if isinstance(text, str) else "") if mode == "append" else ""
+        # R34-15 item 1/3: park-turn ownership. A banner parked in an EARLIER
+        # turn is a turn that closed undelivered -> DROP it here, at the one
+        # chokepoint every delivery edge routes through, so no edge (benign,
+        # audit_sync, render) can attach a stale turn's banner. R33f-A stays
+        # intact: a turn-N banner never reaches turn N+1. Same-turn misses are
+        # retained by the caller (banner_park_retained) and retried on the
+        # last banner-eligible pass of that turn.
+        _e_guard = str(log_edge if log_edge is not None else edge)
+        try:
+            from ... import advisory_consumption as _act
+
+            _pt = int((db.park_record(session_id) or {}).get("turn_no") or 0)
+            _ct = int(_act.turn_no(session_id) or 0)
+            if _pt and _ct and _pt < _ct and \
+                    db._ANCHOR_BANNERS.get(str(session_id or "")):
+                db.consume_parked_banner(session_id)
+                _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
+                           reason="turn_closed_undelivered", turn_no=_ct,
+                           edge=_e_guard,
+                           session_id=str(session_id or ""))
+                return (text if isinstance(text, str) else "") \
+                    if mode == "append" else ""
+        except Exception:  # noqa: BLE001 — the guard never breaks delivery
+            pass
         # consume through the debug_banner delegate — the historical patch
         # surface (tests patch debug_banner.consume_parked_banner).
         parked = db.consume_parked_banner(session_id)
@@ -225,8 +249,9 @@ class BannerLifecycle:
             # banner leaking onto 4 later turns + double-appending on
             # shadow renders, session 20261006_190903_c82cbbcc).
             try:
-                _log_route("POST", event_detail="banner_semaphore_expired",
-                           edge=_e, session_id=str(session_id or ""))
+                _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
+                           edge=_e, reason="attach_not_landed",
+                           session_id=str(session_id or ""))
             except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
             return out
@@ -369,7 +394,7 @@ class BannerLifecycle:
                 # banner. Live: every uncensored-render banner died here —
                 # `debug_banner_emitted lane=uncensored-render` fired while
                 # zero delivered bodies carried the banner (R33f-A dropped
-                # it as banner_semaphore_expired/no_row_match).
+                # it as banner_park_dropped/no_row_match).
                 # The banner stays PARKED under the SAME semaphore record
                 # (same event_seq => still exactly ONE delivery) and the next
                 # legal delivery edge attaches it to the delivered body.

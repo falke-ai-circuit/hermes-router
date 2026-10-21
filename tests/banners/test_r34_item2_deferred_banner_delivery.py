@@ -94,7 +94,7 @@ def test_no_row_match_defers_instead_of_dropping(env, monkeypatch):
 
     events = [f.get("event_detail") for _, f in env]
     assert "banner_capture_fallback_deferred" in events
-    assert "banner_semaphore_expired" not in events
+    assert "banner_park_dropped" not in events
     # the banner SURVIVES, under the SAME semaphore record (one delivery)
     assert debug_banner._ANCHOR_BANNERS.get(SID)
     rec = debug_banner.park_record(SID)
@@ -130,4 +130,4 @@ def test_deferred_slot_expires_after_ttl(env, monkeypatch):
     out = _lc.LIFECYCLE.deliver(SID, "late body", "anchor", "benign")
     assert debug_banner.BANNER_HEAD not in out
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
-    assert "banner_semaphore_expired" in [f.get("event_detail") for _, f in env]
+    assert "banner_park_dropped" in [f.get("event_detail") for _, f in env]

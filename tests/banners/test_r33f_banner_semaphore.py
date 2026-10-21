@@ -114,7 +114,7 @@ def test_not_landed_attach_dropped_fail_loud(env):
     assert out is None
     assert not debug_banner._ANCHOR_BANNERS.get(SID)   # NOT re-parked
     events = [f.get("event_detail") for _, f in env]
-    assert "banner_semaphore_expired" in events
+    assert "banner_park_dropped" in events
     # the stale-leak chain is dead: a later turn sees nothing
     out2 = plugin.on_transform_llm_output(
         response_text="next turn", session_id=SID, model="minimax-m3")
@@ -139,7 +139,7 @@ def test_capture_fallback_no_row_match_defers_one_delivery(env, monkeypatch,
     assert debug_banner.park_record(SID).get("event_seq") == seq
     events = [f.get("event_detail") for _, f in env]
     assert "banner_capture_fallback_deferred" in events
-    assert "banner_semaphore_expired" not in events
+    assert "banner_park_dropped" not in events
 
 
 # ---------------------------------------------------------------------------

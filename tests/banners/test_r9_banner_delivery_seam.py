@@ -79,7 +79,7 @@ def test_benign_consume_drops_when_append_equal_r33f(r9_reset, monkeypatch):
     assert out is None  # pass-through contract: nothing landed -> original delivers
     assert not debug_banner._ANCHOR_BANNERS.get(SID)  # DROPPED, not re-parked
     rec = [f for e, f in r9_reset
-           if f.get("event_detail") == "banner_semaphore_expired"]
+           if f.get("event_detail") == "banner_park_dropped"]
     assert rec and rec[-1].get("edge") == "benign"
     crec = [f for e, f in r9_reset
             if f.get("event_detail") == "anchor_banner_consume"]
