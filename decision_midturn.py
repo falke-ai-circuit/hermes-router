@@ -688,7 +688,8 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         if mode == "shadow" or over_cap:
             reason = REASON_SHADOW if mode == "shadow" else REASON_RUN_CAP
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
-                    tool_name=tool_name, seam=seam, fail_open_reason=reason)
+                    tool_name=tool_name, seam=seam, fail_open_reason=reason,
+                    opts=opts)
             _log(session_id, "midturn_suppressed", reason=reason, sig=sig,
                  mode=mode, tool=tool_name, fork_class=fork_cls, seam=seam)
             return
@@ -697,7 +698,7 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         if _dec._breaker_open(cfg):
             _ledger(session_id, cfg, sig=sig, mode=mode, fork_cls=fork_cls,
                     tool_name=tool_name, seam=seam,
-                    fail_open_reason=_dec.REASON_BREAKER_OPEN)
+                    fail_open_reason=_dec.REASON_BREAKER_OPEN, opts=opts)
             _log(session_id, "midturn_suppressed",
                  reason=_dec.REASON_BREAKER_OPEN, sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
@@ -737,7 +738,7 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
         content, meta, reason = _dec.call_backend(envelope, cfg)
         base = _ledger_base(session_id, cfg, sig=sig, mode=mode,
                             fork_cls=fork_cls, tool_name=tool_name,
-                            seam=seam)
+                            seam=seam, opts=opts)
         base["envelope_hash"] = _dec.envelope_hash(envelope)
         base["model"] = str(meta.get("model") or cfg.get("model") or "")
         base["model_version"] = str(meta.get("model") or "")
@@ -912,8 +913,9 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
 
 def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
                  fork_cls: str = "", tool_name: str = "",
-                 seam: str = SEAM_TERMINAL) -> Dict[str, Any]:
-    return {
+                 seam: str = SEAM_TERMINAL,
+                 opts: Optional[Any] = None) -> Dict[str, Any]:
+    row = {
         "session_id": str(session_id or ""),
         "task_id": "midturn",
         "trigger": TRIGGER,
@@ -927,15 +929,37 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
         "tool_name": str(tool_name or ""),
         "seam": str(seam or ""),
     }
+    # R35: midturn is the STRONGEST outcome-capture surface — the fork lands
+    # after tool results but before the agent commits, so what follows is
+    # attributable. These rows used to carry no option set at all (this path
+    # bypasses decision._invoke's base_row), so the best surface was the one
+    # we could not measure.
+    try:
+        from . import decision_signatures as _ds
+        _labels = [o if isinstance(o, str) else str(o.get("label", "") or "")
+                   for o in (opts or [])]
+        if len(_labels) >= 2:
+            _sigs = [_ds.option_signature(l) for l in _labels]
+            row["options_json"] = json.dumps(
+                [{"id": f"opt-{i + 1}", "label": l} for i, l in enumerate(_labels)],
+                default=str)[:8000]
+            row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
+            row["diagnosticity_json"] = json.dumps(
+                _ds.diagnosticity(_sigs), default=str)[:600]
+            row["regime"] = _ds.REGIME_MIDTURN
+            row["resolver_rule"] = _ds.RESOLVER_RULE_VERSION
+    except Exception:  # noqa: BLE001 — capture never breaks the lane
+        pass
+    return row
 
 
 def _ledger(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
             fork_cls: str = "", tool_name: str = "", seam: str = "",
-            fail_open_reason: str = "") -> None:
+            fail_open_reason: str = "", opts: Optional[Any] = None) -> None:
     try:
         _dec.ledger_write(dict(_ledger_base(session_id, cfg, sig, mode,
                                             fork_cls, tool_name,
-                                            seam or SEAM_TERMINAL),
+                                            seam or SEAM_TERMINAL, opts),
                                fail_open_reason=str(fail_open_reason)))
     except Exception:  # noqa: BLE001 — ledger must never break the lane
         pass

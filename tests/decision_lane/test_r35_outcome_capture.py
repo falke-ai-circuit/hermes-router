@@ -132,10 +132,20 @@ def test_labels_never_say_followed_or_defied():
 
 # --- regime -----------------------------------------------------------------
 
-def test_regime_separates_pre_from_post():
-    assert ds.regime_for("pre", "") == ds.REGIME_IN_TURN
-    assert ds.regime_for("post", "") == ds.REGIME_AFTER_ACT
+def test_regime_separates_all_three_trigger_points():
+    """The lane fires pre / midturn / post and they are NOT the same
+    measurement. midturn is the strongest: fork detected after tool results,
+    before commitment, advisory delivered in-turn."""
+    assert ds.regime_for("pre", "pre_fork") == ds.REGIME_IN_TURN
+    assert ds.regime_for("midturn", "midturn_hook") == ds.REGIME_MIDTURN
+    assert ds.regime_for("post", "post_fork") == ds.REGIME_AFTER_ACT
     assert ds.regime_for("", "") == ds.REGIME_UNKNOWN
+
+
+def test_the_three_regimes_are_distinct_labels():
+    vals = {ds.REGIME_IN_TURN, ds.REGIME_MIDTURN, ds.REGIME_AFTER_ACT,
+            ds.REGIME_UNKNOWN}
+    assert len(vals) == 4
 
 
 # --- persistence + resolver wiring -----------------------------------------
@@ -204,3 +214,32 @@ def test_capture_outcome_is_idempotent(tmp_path, monkeypatch):
 def test_capture_never_raises_on_a_broken_ledger(tmp_path):
     from hermes_router import decision
     assert decision.capture_outcome("nope", db_path=str(tmp_path / "x" / "y.db")) in (None, 0)
+
+
+# --- midturn is the strongest surface and must carry signatures ------------
+
+def test_midturn_rows_carry_the_option_set_and_signatures():
+    """midturn bypasses decision._invoke's base_row, so before R35 the surface
+    that actually fires after tool results — the one where the fork lands
+    before commitment — recorded NO option set at all."""
+    from hermes_router import decision_midturn as dm
+    row = dm._ledger_base(
+        "s1", {}, sig="abc", mode="on", fork_cls="generic",
+        tool_name="terminal", seam="terminal",
+        opts=["write_file a note to /opt/data/tmp/x.md",
+              "read_file /opt/data/plugins/hermes_router/decision.py"])
+    assert row["regime"] == ds.REGIME_MIDTURN
+    sigs = json.loads(row["signatures_json"])
+    assert len(sigs) == 2
+    assert "write" in sigs[0]["effects"]
+    assert "read" in sigs[1]["effects"]
+    assert json.loads(row["diagnosticity_json"])["separable"] is True
+
+
+def test_midturn_without_options_still_writes_a_row():
+    from hermes_router import decision_midturn as dm
+    row = dm._ledger_base("s1", {}, sig="abc", mode="on")
+    assert row["session_id"] == "s1"
+    assert row.get("signatures_json", "") == ""
+    # with no options there is nothing to resolve; regime may be unset
+    assert row.get("regime", "") in ("", ds.REGIME_MIDTURN)

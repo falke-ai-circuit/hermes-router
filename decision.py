@@ -3294,6 +3294,15 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             "fork_signature": str(ids.get("fork_signature", "")),
             "ts": time.time(),
         }
+        # R35 closed-loop: settle the PREVIOUS unresolved fork for this session
+        # before opening a new one. Capture hanging off the POST leg alone left
+        # PRE rows unresolved forever, because POST does not fire on every turn.
+        # Turn N's outcome is settled when turn N+1 opens (N applies, N+1
+        # verifies) — the same shape the mutation gates use.
+        try:
+            capture_outcome(str(ids.get("session_id", "")))
+        except Exception:  # noqa: BLE001
+            pass
         # R35: record the CLOSED OPTION SET and what each option would look
         # like if realised. This has to happen here, at detection time — the
         # options exist only inside the envelope and are gone by the time a

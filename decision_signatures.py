@@ -63,6 +63,12 @@ RESOLVER_RULE_VERSION = "r35.1"
 REGIME_IN_TURN = "delivered_in_turn"
 # POST audit arrives after the act -> only counterfactual concordance.
 REGIME_AFTER_ACT = "after_act"
+# MIDTURN is the strongest surface: the fork is detected AFTER tool results but
+# BEFORE the agent commits, the note is delivered in-turn, and the agent then
+# continues. Actions following the fork are attributable to it — this is the
+# primary measurement surface, and it must never be pooled with either of the
+# other two (a PRE advisory can be skipped entirely; a POST one arrives late).
+REGIME_MIDTURN = "midturn_in_turn"
 # Neither confirmed: the metric is not well-posed on this row.
 REGIME_UNKNOWN = "unknown"
 
@@ -381,6 +387,10 @@ def regime_for(trigger: str, trigger_kind: str = "") -> str:
     """Which measurement does this row support? Never pool across these."""
     try:
         t = f"{trigger or ''} {trigger_kind or ''}".lower()
+        # midturn is checked FIRST: its trigger_kind is "midturn_hook" and its
+        # delta source is a tool result, not a post-turn scan.
+        if "midturn" in t:
+            return REGIME_MIDTURN
         if "post" in t:
             return REGIME_AFTER_ACT
         if t.strip():
