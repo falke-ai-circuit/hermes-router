@@ -297,3 +297,14 @@ def test_no_ask_and_no_pair_logs_instead_of_vanishing(monkeypatch):
     assert seen["calls"] == 0
     skips = [kw for ev, kw in seen["events"] if ev == "audit_gate_skip"]
     assert any(kw.get("reason") == "no_ask" for kw in skips), skips
+
+
+def test_paired_clean_verdict_is_a_visible_confirmation():
+    """Goran-direct: the POST half is a CONFIRMATION, and silence is not one.
+    A paired turn whose higher self had nothing to correct says so in one line;
+    an unpaired clean turn stays silent (no PRE for the silence to confirm)."""
+    from hermes_router import completion_audit as _ca
+
+    assert "holds" in _ca.HS_CONFIRMATION_LINE
+    assert len(_ca.HS_CONFIRMATION_LINE) <= 120, "one line, not a verdict dump"
+    assert "{" not in _ca.HS_CONFIRMATION_LINE

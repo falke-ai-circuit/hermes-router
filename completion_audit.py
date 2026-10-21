@@ -61,6 +61,11 @@ _MIN_RESPONSE_CHARS = 500
 # trailing "\n" preserved: _NOTE_MARKER is concatenated with _NOTE_PREFIX at
 # the note-assembly site (pre-R8h contract).
 _NOTE_MARKER = _HS_AUDIT_MARKER + "\n"
+# R34-19 (Goran-direct): the visible one-line confirmation of a PAIRED turn —
+# "your higher self checked and it holds". Never a verdict dump (that is the
+# L2 note), never claimed for an unpaired turn, never a quote of the brief.
+HS_CONFIRMATION_LINE = ("\u00b7 higher-self: checked at close \u2014 holds, "
+                        "nothing to correct \u00b7")
 _NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
@@ -827,6 +832,20 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     _out = _dbg.append_banner(_out, "\n" + _btext,
                                               _knob_checked=True)
                 except Exception:  # noqa: BLE001
+                    pass
+            # R34-19 (Goran-direct): the POST half is a CONFIRMATION, and a
+            # confirmation that says nothing is not a confirmation. When this
+            # turn had a PRE and the higher self had nothing to correct, say so
+            # in one line. Unpaired turns keep the older silence-is-approval
+            # behaviour — there is no PRE for the silence to confirm.
+            if _pair and not _note:
+                try:
+                    from . import debug_banner as _dbg
+                    _conf = HS_CONFIRMATION_LINE
+                    if isinstance(_out, str) and _out.strip():
+                        _out = _dbg.append_banner(_out, "\n" + _conf,
+                                                  _knob_checked=True)
+                except Exception:  # noqa: BLE001 — confirmation is cosmetic
                     pass
             return _out
         # async topology (or sync budget 0): legacy next-turn verdict.
