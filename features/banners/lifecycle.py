@@ -212,49 +212,69 @@ class BannerLifecycle:
             pass
         # consume through the debug_banner delegate — the historical patch
         # surface (tests patch debug_banner.consume_parked_banner).
+        # R34-17 item 3: read the semaphore record BEFORE the consume pops it.
+        # `parked` must mean "a parked banner actually reached this body" —
+        # the old event reported bool(consumed_text), so a turn whose consume
+        # found nothing (or whose attach never landed) logged parked=True with
+        # no banner in the body. A field may not outrun the thing it names.
+        _rec_pre: dict = {}
+        try:
+            _rec_pre = db.park_record(session_id) or {}
+        except Exception:  # noqa: BLE001 — record read never breaks delivery
+            _rec_pre = {}
         parked = db.consume_parked_banner(session_id)
         base = text if isinstance(text, str) else ""
         if mode == "discard":
             return base
         _e = str(log_edge if log_edge is not None else edge)
-        if log_consume:
-            _rec = {}
-            try:
-                # R33f-A: the record is read BEFORE consume_parked_banner in
-                # other paths; here the delegate already popped it — the
-                # consume event carries the slot truth only.
-                _rec = db.park_record(session_id)
-            except Exception:  # noqa: BLE001
-                _rec = {}
-            _log_route("POST", event_detail="anchor_banner_consume",
-                       parked=bool(parked), edge=_e,
-                       session_id=str(session_id or ""),
-                       **({"park_event_seq": int(_rec["event_seq"])}
-                          if _rec.get("event_seq") else {}))
+        _seq = ({"park_event_seq": int(_rec_pre["event_seq"])}
+                if _rec_pre.get("event_seq") else {})
         if not parked:
+            if log_consume:
+                # Truth: nothing was parked for this turn (anchor lane skipped)
+                # vs a slot that existed but no longer had a banner to give.
+                _log_route("POST", event_detail="anchor_banner_consume",
+                           parked=bool(_rec_pre), delivered=False, edge=_e,
+                           reason=("consume_missed" if _rec_pre
+                                   else "no_park_this_turn"),
+                           session_id=str(session_id or ""), **_seq)
             return (text if isinstance(text, str) else "") if mode == "append" else ""
         try:
             db.note_consumed_decision(session_id, parked)
         except Exception:  # noqa: BLE001
             pass
         if mode == "body":
-            return parked
-        merged = db.append_banner(base, "\n" + parked)
-        out = merged if isinstance(merged, str) and merged else str(base or "")
-        if parked.strip() not in out:
-            # R33f-A (supersedes R19.19 P0 / R19.21 re-park): TTL is ONE
-            # delivery — a consumed banner whose attach did not land is
-            # DROPPED fail-loud, never re-parked into later turns. The
-            # re-park loop was the live stale-leak class (a 19:35 frontier
-            # banner leaking onto 4 later turns + double-appending on
-            # shadow renders, session 20261006_190903_c82cbbcc).
-            try:
-                _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
-                           edge=_e, reason="attach_not_landed",
-                           session_id=str(session_id or ""))
-            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
-                pass
-            return out
+            out = parked
+            landed = True
+        else:
+            merged = db.append_banner(base, "\n" + parked)
+            out = merged if isinstance(merged, str) and merged else str(base or "")
+            landed = bool(parked.strip() and parked.strip() in out)
+            if not landed:
+                # R33f-A (supersedes R19.19 P0 / R19.21 re-park): TTL is ONE
+                # delivery — a consumed banner whose attach did not land is
+                # DROPPED fail-loud, never re-parked into later turns. The
+                # re-park loop was the live stale-leak class (a 19:35 frontier
+                # banner leaking onto 4 later turns + double-appending on
+                # shadow renders, session 20261006_190903_c82cbbcc).
+                try:
+                    _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
+                               edge=_e, reason="attach_not_landed",
+                               session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                    pass
+        if log_consume:
+            # R34-17 item 3: `parked` reports the PARK (there is a semaphore
+            # record for this turn — the thing a park event emits); `delivered`
+            # reports whether the banner actually reached the body. The old
+            # single bool claimed "parked=True" on turns where nothing was
+            # ever parked and no banner appeared.
+            _log_route("POST", event_detail="anchor_banner_consume",
+                       parked=bool(_rec_pre), delivered=bool(landed), edge=_e,
+                       reason=("delivered" if landed
+                               else "attach_not_landed" if _rec_pre
+                               else "unrecorded_slot"),
+                       session_id=str(session_id or ""), **_seq)
         return out
 
     # --- R20-D3 capture-fallback (moved verbatim from debug_banner) ---------

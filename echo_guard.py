@@ -112,34 +112,161 @@ def detect_envelope_echo(text: str) -> str:
 
 
 EVENT_BLOCKED = "advisory_echo_blocked"
+EVENT_STRIPPED = "advisory_echo_stripped"
+EVENT_WITHHELD = "advisory_echo_withheld"
 
-# R34-14 item 7 — the hand-back body. A turn that would close by DESCRIBING
-# the router's advisory carries no work product; delivering it teaches the
-# user a false thing (that the advisory was the answer). The smallest honest
-# mechanism at this seam is to refuse the close: discard the echoed body,
-# say so plainly, and end the turn as a FAILED turn rather than a round trip
-# through the model (a re-run re-enters the same lane that produced the
-# echo and bills twice).
+# R34-17 item 2 — TRUTH IN THE NOTICE. Whatever path produces a user-facing
+# notice, the notice may not assert a fact this code did not check.
+#
+# HAND_BACK_TEXT is only delivered on the NO-WORK path, where the work-signal
+# predicate WAS evaluated (`reason=no_work_signal`); on that path the claim
+# "nothing was executed" is a checked fact, not a guess.
 HAND_BACK_TEXT = (
     "[router] turn ended on the router's own advisory echo, not work product. "
-    "The echoed body was discarded and nothing was executed. Re-send the ask "
-    "to run this turn again."
+    "No tool activity or file write was observed this turn, so nothing was "
+    "executed. Re-send the ask to run this turn again."
 )
+
+# WITHHELD_TEXT is the fallback when work DID happen but the echo could not
+# be separated from the report. It claims nothing about execution — only what
+# the guard knows: the body was withheld and the log names the reason.
+WITHHELD_TEXT = (
+    "[router] this turn's body was withheld: it was the router's own advisory "
+    "echo and the work report could not be separated from it. This notice "
+    "says nothing about whether work ran — see the route log "
+    "(advisory_echo_withheld, reason=strip_failed). Re-send the ask if you "
+    "need the report."
+)
+
+# A stripped remainder must still look like a report; below this many
+# non-space characters the strip is treated as a failure (and the truthful
+# WITHHELD_TEXT is used instead of shipping a fragment).
+MIN_REPORT_CHARS = 24
+
+# --- stripping the echoed advisory out of a work turn ---------------------
+# The shapes we remove, in the order the envelope appends them:
+#   1. a raw advisory JSON tail  {"povs": [...]} / {"brief_bullets": ...}
+#   2. a POV / synthesis prose section ("POVs.", "Practitioner: ...")
+#   3. the §10.2 router banner tail line(s)  "· router · ..."
+#   4. an echoed advisory header block  "[ROUTER ADVISORY ..." / "[ROUTER FORK NOTE"
+# Markers only — the detection families are NOT widened (R34-17 constraint).
+_JSON_TAIL_RE = re.compile(
+    r'\{\s*"(?:povs|synthesis|brief_bullets)"\s*:', re.I)
+_POV_SECTION_RE = re.compile(
+    r"(?im)^[ \t>*\-]*(?:povs?[ \t]*[:.\u2014-]|povs?[ \t]*$|\*\*povs?\*\*|"
+    r"povs\s+and\s+synthesis)")
+_SYNTH_RE = re.compile(r"(?im)^[ \t>*\-]*synthesis\b")
+_POV_LABEL_RE = re.compile(r"(?im)^[ \t>*\-]*(?:practitioner|outsider|skeptic)\s*:")
+_HEADER_MARKERS = ("[router advisory", "router advisory \u2014 decision lane",
+                   "[router fork note")
+
+
+def strip_advisory_echo(text: str) -> "tuple[str, int]":
+    """Remove the echoed advisory block/tail from a body, keeping the agent's
+    own deliverable report. Returns (body, chars_removed). Never raises.
+
+    Deliberately conservative: it cuts a TAIL (JSON tail / POV section /
+    synthesis / router banner) and drops standalone header blocks and POV
+    label lines. It never re-orders or rewrites the remaining prose."""
+    try:
+        raw = str(text or "")
+        if not raw.strip():
+            return "", 0
+        cuts = []
+        for rx in (_JSON_TAIL_RE, _POV_SECTION_RE, _SYNTH_RE):
+            m = rx.search(raw)
+            if m:
+                cuts.append(m.start())
+        # router banner tail: the last line that opens with the tail marker
+        for m in re.finditer(r"(?m)^[ \t]*\u00b7 router \u00b7.*$", raw):
+            cuts.append(m.start())
+        body = raw[:min(cuts)] if cuts else raw
+        # drop standalone POV label lines and advisory header blocks
+        keep = []
+        skipping_header = False
+        for line in body.splitlines():
+            low = line.strip().lower()
+            if any(mk in low for mk in _HEADER_MARKERS):
+                skipping_header = True
+                continue
+            if skipping_header:
+                if not low:
+                    skipping_header = False
+                continue
+            if _POV_LABEL_RE.match(line):
+                continue
+            keep.append(line)
+        out = "\n".join(keep)
+        out = re.sub(r"\n{3,}", "\n\n", out).strip()
+        return out, max(0, len(raw) - len(out))
+    except Exception:  # noqa: BLE001
+        return "", 0
+
+
+class EchoResult:
+    """Outcome of the execution-echo guard.
+
+    action: "strip_keep_work" (body is the CLEANED WORK REPORT — deliver it and
+            keep running the delivery seam so the banner still attaches),
+            "handback_failure" (no work signal — the body is the hand-back
+            notice), or "withhold_echo" (work happened, strip failed — the body
+            is the truthful withheld notice).
+    """
+
+    __slots__ = ("action", "body", "families", "chars_removed", "work")
+
+    def __init__(self, action: str, body: str, families=None,
+                 chars_removed: int = 0, work=None):
+        self.action = action
+        self.body = body
+        self.families = list(families or [])
+        self.chars_removed = int(chars_removed or 0)
+        self.work = dict(work or {})
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return (f"EchoResult(action={self.action!r}, "
+                f"removed={self.chars_removed}, "
+                f"families={'|'.join(self.families)})")
+
+
+def _route(log_route, event: str, **fields) -> None:
+    try:
+        if log_route is None:
+            from .core import telemetry as _tlm
+
+            _tlm.log_route("POST", event_detail=event, **fields)
+        else:
+            log_route("POST", event_detail=event, **fields)
+    except Exception:  # noqa: BLE001 — telemetry never blocks the guard
+        pass
 
 
 def enforce_execution_echo(text: str, session_id: str = "",
                            frame: str = "",
-                           log_route: Optional[object] = None) -> Optional[str]:
-    """R34-14 item 7 EXECUTION_ECHO enforcement.
+                           log_route: Optional[object] = None
+                           ) -> "Optional[EchoResult]":
+    """R34-14 item 7 + R34-17 EXECUTION_ECHO enforcement.
 
     When the envelope-echo guard fires AND the turn's frame resolves to
-    `execution`, the echoed body must NOT be the delivered answer. Returns
-    the HAND_BACK_TEXT to deliver (blocking the close with an explicit
-    failure event) or None to leave the body alone.
+    `execution`, the echoed body must NOT be the delivered answer — but the
+    decision now depends on WHAT THE TURN DID, never on body shape alone:
 
-    Non-execution frames keep the previous log-only contract: an impulse
-    turn quoting the advisory is noise, an execution turn doing it is a
-    lost dispatch. Never raises — a guard failure must never break delivery.
+      * WORK turn (a terminal ran or a write/edit tool was called):
+        strip the echoed advisory and keep the agent's own report
+        (`advisory_echo_stripped action=strip_keep_work`). Blocking a turn
+        that wrote files and passed tests is worse than the bug being fixed,
+        and a guard may not report work as un-done.
+      * NO work signal: block the close with the hand-back notice
+        (`advisory_echo_blocked action=handback_failure
+        reason=no_work_signal`) — the only path where "nothing was executed"
+        is a checked fact.
+      * WORK turn where the strip cannot produce a report: withhold the body
+        with a notice that claims nothing about execution
+        (`advisory_echo_withheld action=withhold_echo reason=strip_failed`).
+
+    Returns an EchoResult, or None to leave the body alone. Non-execution
+    frames keep the log-only contract. Never raises — a guard failure must
+    never break delivery.
     """
     try:
         families = detect_envelope_echo_families(text)
@@ -156,23 +283,37 @@ def enforce_execution_echo(text: str, session_id: str = "",
         if _reg != "execution":
             return None
         chars = len(str(text or ""))
-        fields = {
-            "action": "handback_failure",
+        try:
+            from . import work_signal as _ws
+
+            work = _ws.work_facts(session_id)
+        except Exception:  # noqa: BLE001 — no verdict = no work claim
+            work = {"has_work": False, "predicate": "unavailable"}
+        base = {
             "chars": chars,
             "families": "|".join(families),
             "frame": _reg,
             "session_id": str(session_id or ""),
+            "work_signal": str(work.get("predicate") or ""),
+            "tools": int(work.get("tools") or 0),
+            "writes": int(work.get("writes") or 0),
+            "terminal": int(work.get("terminal") or 0),
         }
-        try:
-            if log_route is None:
-                from .core import telemetry as _tlm
-
-                _tlm.log_route("POST", event_detail=EVENT_BLOCKED, **fields)
-            else:
-                log_route("POST", event_detail=EVENT_BLOCKED, **fields)
-        except Exception:  # noqa: BLE001 — telemetry never blocks the guard
-            pass
-        return HAND_BACK_TEXT
+        if bool(work.get("has_work")):
+            stripped, removed = strip_advisory_echo(text)
+            if len(stripped.strip()) >= MIN_REPORT_CHARS:
+                _route(log_route, EVENT_STRIPPED, action="strip_keep_work",
+                       chars_removed=removed, **base)
+                return EchoResult("strip_keep_work", stripped, families,
+                                  removed, work)
+            _route(log_route, EVENT_WITHHELD, action="withhold_echo",
+                   reason="strip_failed", **base)
+            return EchoResult("withhold_echo", WITHHELD_TEXT, families,
+                              chars - len(stripped), work)
+        _route(log_route, EVENT_BLOCKED, action="handback_failure",
+               reason="no_work_signal", **base)
+        return EchoResult("handback_failure", HAND_BACK_TEXT, families,
+                          chars, work)
     except Exception:  # noqa: BLE001
         return None
 

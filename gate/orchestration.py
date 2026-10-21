@@ -318,6 +318,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         session_id = _hub()._session_id_from_context(**context)
         model = str(request.get("model") or "")
 
+        # R34-17: the TURN WORK PREDICATE's request-side tap. A payload that
+        # carries a write/edit tool call proves the turn changed the substrate;
+        # the terminal seam proves a terminal ran. Read-only traffic is
+        # tracked but does not qualify (a turn that only looked is still a
+        # no-work turn).
+        try:
+            from .. import work_signal as _wsin
+
+            _wsin.note_request_activity(session_id, request)
+        except Exception:  # noqa: BLE001 — the predicate never breaks routing
+            _hub().logger.debug("work-signal request tap error", exc_info=True)
+
         # v3.6 P0.1 (FF-2) — tool-result tap at the agent-loop surfacing point.
         # The llm_request middleware fires once per provider call; iterations
         # of the tool loop carry the newest tool result as a tool-role message
@@ -667,15 +679,31 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
         from .. import debug_banner as _dbd
 
         _hub()._decision_wait_before_consume(budget)
+        # R34-17 item 3: read the park record before the consume pops it, and
+        # report `parked=True` only when the banner actually reached the body.
+        try:
+            _rec = _dbd.park_record(session_id) or {}
+        except Exception:  # noqa: BLE001 — record read never breaks delivery
+            _rec = {}
         _parked = _dbd.consume_parked_banner(session_id)
         _dbd.note_consumed_decision(session_id, _parked)
-        _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                   parked=bool(_parked), edge=edge, session_id=session_id)
         if not _parked:
+            _hub()._log_route("POST", event_detail="anchor_banner_consume",
+                              parked=bool(_rec), delivered=False, edge=edge,
+                              reason=("consume_missed" if _rec
+                                      else "no_park_this_turn"),
+                              session_id=session_id)
             return None
         _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
         _out = _merged if isinstance(_merged, str) and _merged else str(response_text or "")
-        if _parked.strip() not in _out:
+        _landed = bool(_parked.strip() and _parked.strip() in _out)
+        _hub()._log_route("POST", event_detail="anchor_banner_consume",
+                          parked=bool(_rec), delivered=bool(_landed), edge=edge,
+                          reason=("delivered" if _landed
+                                  else "attach_not_landed" if _rec
+                                  else "unrecorded_slot"),
+                          session_id=session_id)
+        if not _landed:
             # R33f-A (supersedes the R19.19 P0 re-park contract): TTL is ONE
             # delivery — a consumed banner whose attach did not land is
             # DROPPED fail-loud, never re-parked into later turns (the
@@ -875,24 +903,38 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # audit consult, revision pass, decision/anchor pre-consume waits)
         # is budgeted under the runner timeout so a slow consult can never
         # orphan the hook. 5s margin covers consume/capture/append work.
-        # R34-14 item 7: EXECUTION_ECHO enforcement (supersedes the R34-8c
-        # log-only contract for frame=execution). An execution turn that
-        # closes by DESCRIBING the router's advisory delivered no work — the
-        # live case burned a full dispatch (session api_1792543869_964dbe2a:
+        # R34-14 item 7 / R34-17: EXECUTION_ECHO enforcement (supersedes the
+        # R34-8c log-only contract for frame=execution). An execution turn
+        # that closes by DESCRIBING the router's advisory delivered no work —
+        # the live case burned a full dispatch (session api_1792543869_964dbe2a:
         # advisory capped to 600 chars, body delivered 6459 chars of
-        # restatement, 6 tool calls, zero work). Capping the advisory input
-        # is not the fix; the turn must not close on the echo. Block first,
-        # then report — an `envelope_echo_delivered` row on a body we refused
-        # would be a lie.
+        # restatement, 6 tool calls, zero work).
+        #
+        # R34-17: the decision now keys on the TURN'S WORK SIGNAL, never on
+        # body shape alone. Live false positive (20261021_070153_f41a2f): an
+        # execution turn wrote dedupe.py + test_dedupe.py and passed pytest,
+        # but its body carried an echoed `"povs"` tail — the old guard threw
+        # the whole body away and told the user "nothing was executed". A
+        # WORK turn gets the advisory STRIPPED and the report KEPT (the seam
+        # keeps running so the parked banner still attaches); only a turn
+        # with no work signal is handed back.
         try:
             from .. import echo_guard as _eg
 
-            _echo_block = _eg.enforce_execution_echo(
+            _echo = _eg.enforce_execution_echo(
                 response_text, session_id, log_route=_hub()._log_route)
-            if _echo_block:
-                return _echo_block
-            _eg.observe(response_text, session_id,
-                        log_route=_hub()._log_route)
+            if _echo is not None:
+                if _echo.action == "strip_keep_work":
+                    # Deliver the agent's own report and CONTINUE down this
+                    # seam — banners, capture and persist all belong to the
+                    # delivered work turn.
+                    response_text = _echo.body
+                else:
+                    # handback_failure / withhold_echo replace the body.
+                    return _echo.body
+            else:
+                _eg.observe(response_text, session_id,
+                            log_route=_hub()._log_route)
         except Exception:  # noqa: BLE001 — guard never breaks delivery
             pass
         _hook_t0 = _hub().time.monotonic()
@@ -2140,6 +2182,16 @@ def on_transform_terminal_output(*, command: str = "", output: Any = None,
         _actool.note_tool_activity(
             str(context.get("session_id") or task_id or ""))
     except Exception:  # noqa: BLE001 — observability never breaks the seam
+        pass
+    # R34-17: a terminal tool result means a terminal RAN in this turn — the
+    # work predicate's authoritative signal (the echo guard must never call a
+    # turn with a terminal run "no work").
+    try:
+        from .. import work_signal as _wst
+
+        _wst.note_terminal_activity(
+            str(context.get("session_id") or task_id or ""), str(command or ""))
+    except Exception:  # noqa: BLE001 — predicate never breaks the seam
         pass
     """R19.2 ADDENDUM 4 — SEAM 1: transform_terminal_output platform hook.
     Core fires this after EVERY terminal tool result, mid-run (live-verified

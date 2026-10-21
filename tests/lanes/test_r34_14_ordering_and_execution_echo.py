@@ -62,17 +62,21 @@ def _events(rows, name):
 # ---------------------------------------------------------------- item 7
 def test_execution_echo_blocks_the_close(monkeypatch):
     """A capped advisory that becomes the SUBJECT of an execution turn must
-    not be the delivered answer. Capping is necessary, not sufficient."""
+    not be the delivered answer — and with NO work signal (the guard checked)
+    the hand-back is the correct, truthful outcome."""
     rows = []
     monkeypatch.setattr(echo_guard, "detect_envelope_echo_families",
                         lambda t: ["povs_array", "pov_triplet"])
     out = echo_guard.enforce_execution_echo(
         ECHO_BODY, SID, frame="execution",
         log_route=lambda e, **f: rows.append((e, dict(f))))
-    assert out == echo_guard.HAND_BACK_TEXT
+    assert out is not None
+    assert out.action == "handback_failure"
+    assert out.body == echo_guard.HAND_BACK_TEXT
     blocked = _events(rows, "advisory_echo_blocked")
     assert len(blocked) == 1
     assert blocked[0]["action"] == "handback_failure"
+    assert blocked[0]["reason"] == "no_work_signal"
     assert blocked[0]["chars"] == len(ECHO_BODY)
     assert blocked[0]["frame"] == "execution"
 

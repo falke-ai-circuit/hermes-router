@@ -1,3 +1,45 @@
+## 5.4.8 — 2026-10-21 (R34-17 — the echo guard stops lying about the filesystem)
+
+- R34-17-1 (LIVE FALSE POSITIVE, session 20261021_070153_f41a2f): the
+  execution-echo guard keyed on BODY SHAPE ALONE. A real execution turn wrote
+  `dedupe.py` (1849 b) + `test_dedupe.py` (1471 b) and ran pytest (5 passed);
+  because the body also carried an echoed `"povs": [...]` tail the guard threw
+  the whole body away and delivered "[router] ... nothing was executed".
+  WORSE THAN THE BUG IT FIXED: the user lost a correct turn AND was told a
+  falsehood about the filesystem. The guard now consults a TURN WORK
+  PREDICATE before any blocking decision (new `work_signal` module: a
+  terminal tool result from `transform_terminal_output`, or a write/edit
+  tool call seen on the request payload — `write_file`/`patch`/`edit`/…;
+  read-only traffic is tracked but does NOT qualify). Work turn -> the
+  advisory tail is STRIPPED and the agent's report KEPT
+  (`advisory_echo_stripped action=strip_keep_work families=<...>
+  chars_removed=<n>`); the seam keeps running so the parked banner still
+  attaches to the delivered work turn.
+- R34-17-2 (TRUTH IN THE NOTICE): the hand-back is reserved for turns with NO
+  work signal — `advisory_echo_blocked action=handback_failure
+  reason=no_work_signal` — the only path where "nothing was executed" is a
+  checked fact rather than an assumption. When a work turn's body cannot be
+  stripped into a report, the fallback says only what is true
+  (`advisory_echo_withheld action=withhold_echo reason=strip_failed`): the
+  body was withheld, see the route log. It claims nothing about execution.
+- R34-17-3 (lying field, session 20261021_065449_25ae5a): `anchor_banner_consume`
+  reported `parked=True` on turns where the anchor lane SKIPPED and nothing
+  was ever parked (`complexity_skip reason=clear_simple`, no park event, no
+  banner in the body) — the same mislabelling class as `semaphore_expired`.
+  `parked` is now derived from the park semaphore record (the thing a park
+  event emits) and the event carries `delivered=<did the banner reach the
+  body>` plus `reason=delivered|attach_not_landed|consume_missed|no_park_this_turn`.
+  A skipped turn now logs `parked=False reason=no_park_this_turn`.
+- Pins: the exact live shape (one ask, one anchor consult, advisory capped,
+  terminal + 2 file writes, body carries a povs echo -> report kept, echo
+  stripped, banner attached, zero "nothing was executed" text); the negative
+  direction (no tool signal + echo body -> handback with
+  `reason=no_work_signal`); read-only traffic is not work; unstrippable work
+  turn withholds without lying; `parked=True` never appears without a park
+  event. Suite: 1875 passed, 2 pre-existing failures
+  (tests/routing/test_r33m_refusal_semantics.py, failing on clean HEAD too),
+  2 skipped.
+
 ## 5.4.7 — 2026-10-21 (R34-13 — the work invariant stops crying wolf, and a skip is visible)
 
 - R34-13-1 (`advisory_consumed_turn` FALSE POSITIVE): the event fired
