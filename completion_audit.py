@@ -1605,7 +1605,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         if not allowed:
             _log("completion_audit_skipped reason=cap_blocked", session_id=session_id)
             return None
-        content, cost, pt, ct = anchor_exec.anchored_call(ep, api_kwargs, timeout=socket_timeout)
+        try:
+            content, cost, pt, ct = anchor_exec.anchored_call(
+                ep, api_kwargs, timeout=socket_timeout)
+        except Exception as _ac_err:  # noqa: BLE001 — audit never breaks delivery
+            _log("completion_audit_skipped", reason="anchored_call_raised",
+                 error=type(_ac_err).__name__, detail=str(_ac_err)[:160],
+                 session_id=session_id)
+            return None
         if cost is None and est_cost > 0:
             cost = est_cost
         if cost and cost > 0:
@@ -1631,7 +1638,20 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             except Exception:  # noqa: BLE001
                 pass
         if content is None:
-            _log("completion_audit_skipped reason=anchored_call_failed", session_id=session_id)
+            # R34-19d: WHICH call failed, on what payload, under what timeout.
+            # 'anchored_call_failed' alone sent the diagnosis to the wrong layer
+            # twice (the call works standalone with the same endpoint).
+            try:
+                _pl_chars = sum(len(str(_m.get("content") or "")) for _m in (msgs or [])
+                                if isinstance(_m, dict))
+            except Exception:  # noqa: BLE001
+                _pl_chars = -1
+            _log("completion_audit_skipped", reason="anchored_call_failed",
+                 model=str(getattr(ep, "model", "") or ""),
+                 msgs=len(msgs or []), payload_chars=_pl_chars,
+                 timeout=socket_timeout, max_tokens=api_kwargs.get("max_tokens"),
+                 est_cost=est_cost, pt=pt if pt is not None else -1,
+                 ct=ct if ct is not None else -1, session_id=session_id)
             return None
         verdict_text = str(content).strip()
         # R19.13 Frontier Part 2: two-question verdict — parse tolerantly
