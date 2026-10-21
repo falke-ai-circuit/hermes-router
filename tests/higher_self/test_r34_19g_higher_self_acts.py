@@ -211,3 +211,29 @@ def test_gist_falls_back_to_prose_when_there_is_no_bullet():
 def test_a_preamble_only_note_has_no_gist():
     note = "This is an internal message from your higher self."
     assert ca._confirmed_gist(note) == ""
+
+
+# --------------------------------------------------------------------------
+# 4. total_cap bounds the WHOLE payload, not just the user part
+# --------------------------------------------------------------------------
+
+def test_total_cap_counts_the_system_block(monkeypatch):
+    """Live-caught on coder: a 5,500 'cap' shipped 7,295 chars because the
+    system block (instructions + persona card) was never counted, and the sync
+    consult then blew its 24s hook (anchored_call_failed pt=-1 ct=-1)."""
+    import hermes_router.persona_card as pc
+
+    monkeypatch.setattr(pc, "build_persona_context",
+                        lambda *a, **k: "=== WHO YOU ARE ===\n" + ("p" * 2500),
+                        raising=False)
+    msgs = ca._audit_payload("the ask", "work digest " * 200, "response " * 900,
+                             4000, pre_brief="PRE " * 300,
+                             pre_trigger="complexity_orientation",
+                             total_cap=5500)
+    total = sum(len(m["content"]) for m in msgs)
+    assert total <= 5500, f"payload {total} exceeds the cap that was set"
+
+
+def test_total_cap_zero_means_uncapped():
+    msgs = ca._audit_payload("a", "", "r", 4000, total_cap=0)
+    assert msgs and msgs[-1]["role"] == "user"

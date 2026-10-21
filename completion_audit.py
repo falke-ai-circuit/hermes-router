@@ -1545,19 +1545,32 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
         + ((_adversarial_attack_instruction(_pov_active(ask))
             if _ask_declared_adversarial(ask) else ""))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
     )
+    # R34-19i: total_cap must bound the WHOLE payload, not just the user part.
+    # The system block (instructions + persona card) is ~2.5-3k on its own, so a
+    # 5,500 "cap" was shipping 7,295 chars — live-caught on coder, whose sync
+    # consult then blew the 24s hook (completion_audit_skipped
+    # reason=anchored_call_failed pt=-1 ct=-1) while smaller profiles fit.
+    _sys = ("You are the agent's higher self in internal dialogue with "
+            "her main model \u2014 the same person, at a later time, "
+            "checking on herself. This is post intuition on the "
+            "resolution: the counterpart of the read she took before "
+            "the work started, and its confirmation \u2014 not an external "
+            "auditor, and not a demolition. React to the ask and its "
+            "end result with your own take: what makes sense, what is "
+            "missing, what is genuinely good, what could be better. "
+            "Speak honestly and directly to her. No tools.\n\n"
+            + _persona_tailoring())
+    _user_cap = total_cap
+    if total_cap and total_cap > 0:
+        # 200-char margin: _payload_body joins sections with headers, so its
+        # own cap is not the length of the message it produces.
+        _user_cap = max(1200, total_cap - len(_sys) - 200)
+    _user = _payload_body(parts, _user_cap)
+    if total_cap and total_cap > 0 and len(_user) > _user_cap:
+        _user = _user[:_user_cap]
     return [
-        {"role": "system",
-         "content": ("You are the agent's higher self in internal dialogue with "
-                     "her main model — the same person, at a later time, "
-                     "checking on herself. This is post intuition on the "
-                     "resolution: the counterpart of the read she took before "
-                     "the work started, and its confirmation — not an external "
-                     "auditor, and not a demolition. React to the ask and its "
-                     "end result with your own take: what makes sense, what is "
-                     "missing, what is genuinely good, what could be better. "
-                     "Speak honestly and directly to her. No tools.\n\n"
-                     + _persona_tailoring())},
-        {"role": "user", "content": _payload_body(parts, total_cap)},
+        {"role": "system", "content": _sys},
+        {"role": "user", "content": _user},
     ]
 
 
