@@ -227,11 +227,30 @@ def test_unstrippable_work_turn_withholds_without_lying(logged):
     assert withheld[0]["action"] == "withhold_echo"
 
 
-def test_non_execution_frame_is_still_log_only():
+def test_non_execution_frame_strips_the_echo_but_never_hands_back():
+    """CONTRACT CHANGE (R34-19f, 2026-10-21).
+
+    Was: a non-execution frame was log-only, body untouched. That shipped the
+    router's own advisory to the user on every plain question — the fleet sweep
+    logged `envelope_echo_delivered` on 10/10 agents while the answer's tail
+    carried `{"adversarial": …, "povs": […]}` and, on reviewer, the whole
+    higher-self envelope including "SEAM INSTRUCTION: … now PROCEED".
+
+    Now: a non-execution frame is STRIPPED (delivery boundary) but is never
+    handed back and never withheld (those are execution-frame semantics). A
+    clean body is still returned untouched, which is what "log-only" really
+    meant.
+    """
     ac.note_turn_open(SID, ASK)
     ws.note_terminal_activity(SID, "pytest")
+    res = echo_guard.enforce_execution_echo(WORK_BODY, SID, frame="impulse")
+    assert res is not None
+    assert res.action == "strip_keep_work"
+    assert "nothing was executed" not in res.body
+    # a body with nothing to strip stays untouched
     assert echo_guard.enforce_execution_echo(
-        WORK_BODY, SID, frame="impulse") is None
+        "Just a plain answer with no advisory tail.", SID,
+        frame="impulse") is None
 
 
 def test_seam_keeps_the_banner_on_a_stripped_work_turn(logged, monkeypatch):

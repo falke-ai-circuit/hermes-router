@@ -81,11 +81,17 @@ def test_execution_echo_blocks_the_close(monkeypatch):
     assert blocked[0]["frame"] == "execution"
 
 
-def test_impulse_frame_keeps_log_only(monkeypatch):
+def test_impulse_frame_strips_the_echo(monkeypatch):
+    """CONTRACT CHANGE (R34-19f, 2026-10-21): a non-execution frame used to be
+    log-only, which put the router's advisory tail in front of the user on
+    turns that never touched a tool. Stripping is the delivery boundary; the
+    impulse frame is still never handed back or withheld."""
     monkeypatch.setattr(echo_guard, "detect_envelope_echo_families",
                         lambda t: ["povs_array"])
-    assert echo_guard.enforce_execution_echo(
-        ECHO_BODY, SID, frame="impulse") is None
+    res = echo_guard.enforce_execution_echo(ECHO_BODY, SID, frame="impulse")
+    assert res is not None
+    assert res.action == "strip_keep_work"
+    assert res.body.strip() and "nothing was executed" not in res.body
 
 
 def test_clean_execution_body_is_untouched():

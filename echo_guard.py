@@ -429,9 +429,6 @@ def enforce_execution_echo(text: str, session_id: str = "",
     never break delivery.
     """
     try:
-        families = detect_envelope_echo_families(text)
-        if not families:
-            return None
         try:
             _reg = str(frame or "").strip().lower()
             if not _reg:
@@ -440,7 +437,34 @@ def enforce_execution_echo(text: str, session_id: str = "",
                 _reg = str(_dmt._frame_register() or "").strip().lower()
         except Exception:  # noqa: BLE001 — unresolved frame = not execution
             _reg = ""
+        _families_pre = detect_envelope_echo_families(text)
         if _reg != "execution":
+            # R34-19f: a NON-execution frame is never handed back and never
+            # withheld — but it is not licence to ship the router's own
+            # advisory to the user either. Live fleet sweep, 2026-10-21: a plain
+            # question ("ask your higher-self: …") has no work signal, so the
+            # frame is not `execution`, and the old contract returned None here
+            # (log-only) — the `{"adversarial": …, "povs": […]}` tail and, on
+            # reviewer, the whole higher-self envelope with its
+            # "SEAM INSTRUCTION: … now PROCEED" reached the user. Stripping is
+            # not an execution decision; it is the delivery boundary.
+            stripped, removed = strip_advisory_echo(text)
+            if removed > 0 and len(stripped.strip()) >= MIN_REPORT_CHARS:
+                _route(log_route, "advisory_tail_stripped",
+                       action="strip_keep_work", frame=_reg,
+                       chars_removed=removed,
+                       families="|".join(_families_pre) or "none",
+                       session_id=str(session_id or ""))
+                return EchoResult("strip_keep_work", stripped, _families_pre,
+                                  removed, {})
+            # Nothing removable: leave the body exactly as written (log-only,
+            # as before) and say so, so an unstrippable echo is visible.
+            _route(log_route, "advisory_tail_unstrippable", action="log_only",
+                   frame=_reg, families="|".join(_families_pre) or "none",
+                   session_id=str(session_id or ""))
+            return None
+        families = _families_pre
+        if not families:
             return None
         chars = len(str(text or ""))
         try:

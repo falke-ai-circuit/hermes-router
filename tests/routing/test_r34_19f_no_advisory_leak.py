@@ -91,3 +91,48 @@ def test_banner_tail_is_not_promoted_into_the_answer():
     assert "router ·" not in out
     assert '"p_failure"' not in out
     assert out.startswith("The biggest risk is that a bad change")
+
+
+# --- the frame the leak actually shipped under -------------------------------
+# Every agent in the 2026-10-21 sweep logged `envelope_echo_delivered`
+# (observe-only) instead of `advisory_echo_stripped`: a plain question has no
+# work signal, so the frame is not `execution`, and the guard returned None
+# before it ever considered stripping. Stripping is the delivery boundary, not
+# an execution decision.
+from hermes_router.echo_guard import enforce_execution_echo
+
+
+def _no_frame(monkeypatch):
+    from hermes_router import decision_midturn as dmt
+    monkeypatch.setattr(dmt, "_frame_register", lambda: "dialogue", raising=False)
+    from hermes_router import work_signal as ws
+    monkeypatch.setattr(ws, "work_facts",
+                        lambda sid: {"has_work": False, "predicate": "none",
+                                     "tools": 0, "writes": 0, "terminal": 0},
+                        raising=False)
+
+
+def test_non_execution_frame_strips_the_advisory_tail(monkeypatch):
+    _no_frame(monkeypatch)
+    res = enforce_execution_echo(RAW_TAIL_BODY, "s-r34-19f-a")
+    assert res is not None, "a non-execution frame must still be stripped"
+    assert res.action == "strip_keep_work", res.action
+    assert '"p_failure"' not in res.body
+    assert res.body.startswith("The biggest risk is that a bad change")
+
+
+def test_non_execution_frame_strips_the_envelope(monkeypatch):
+    _no_frame(monkeypatch)
+    res = enforce_execution_echo(ENVELOPE_BODY, "s-r34-19f-b")
+    assert res is not None
+    low = res.body.lower()
+    assert "[higher-self" not in low
+    assert "seam instruction" not in low
+
+
+def test_non_execution_frame_is_never_handed_back(monkeypatch):
+    # the handback notice belongs to execution frames only; a question must
+    # never be replaced by "nothing was executed"
+    _no_frame(monkeypatch)
+    res = enforce_execution_echo(RAW_TAIL_BODY, "s-r34-19f-c")
+    assert "nothing was executed" not in res.body
