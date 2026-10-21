@@ -2748,7 +2748,15 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   p_failure REAL,
   frame_context_chars_used INTEGER,
   choice_label TEXT NOT NULL DEFAULT '',
-  label_source TEXT NOT NULL DEFAULT ''
+  label_source TEXT NOT NULL DEFAULT '',
+  options_json TEXT NOT NULL DEFAULT '',
+  signatures_json TEXT NOT NULL DEFAULT '',
+  regime TEXT NOT NULL DEFAULT '',
+  resolved_action TEXT NOT NULL DEFAULT '',
+  resolver_rule TEXT NOT NULL DEFAULT '',
+  evidence_json TEXT NOT NULL DEFAULT '',
+  diagnosticity_json TEXT NOT NULL DEFAULT '',
+  outcome_label TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -2780,6 +2788,21 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
                 conn.execute("ALTER TABLE decision_ledger"
                              " ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT ''")
                 conn.commit()
+            # R35: structural outcome capture. The option set was never
+            # persisted (only a 12-char options_hash + one choice_label), so a
+            # per-option signature could not be reconstructed afterwards and
+            # the construct was unmeasurable by construction.
+            for _r35col in ("options_json", "signatures_json", "regime",
+                            "resolved_action", "resolver_rule", "evidence_json",
+                            "diagnosticity_json", "outcome_label"):
+                if _r35col not in cols:
+                    try:
+                        conn.execute("ALTER TABLE decision_ledger"
+                                     " ADD COLUMN %s TEXT NOT NULL DEFAULT ''"
+                                     % _r35col)
+                        conn.commit()
+                    except Exception:  # noqa: BLE001
+                        pass
             # R19.2 midturn hook columns (drift migration, best-effort)
             for _ncol in ("delta_source", "fork_signature", "midturn_mode",
                           "envelope_ids", "tool_name", "seam"):
@@ -2889,7 +2912,9 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 "delta_source", "fork_signature", "midturn_mode",
                 "envelope_ids", "tool_name", "seam", "sense_check",
                 "p_failure", "frame_context_chars_used",
-                "choice_label", "label_source")
+                "choice_label", "label_source", "options_json",
+                "signatures_json", "regime", "resolved_action", "resolver_rule",
+                "evidence_json", "diagnosticity_json", "outcome_label")
         vals = []
         for c in cols:
             v = row.get(c)
@@ -3269,6 +3294,28 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             "fork_signature": str(ids.get("fork_signature", "")),
             "ts": time.time(),
         }
+        # R35: record the CLOSED OPTION SET and what each option would look
+        # like if realised. This has to happen here, at detection time — the
+        # options exist only inside the envelope and are gone by the time a
+        # turn closes, which is why outcome capture was never possible.
+        try:
+            from . import decision_signatures as _ds
+            _opts = envelope.get("options") or []
+            _sigs = [_ds.option_signature(o.get("label", ""),
+                                          o.get("cause_effect", ""),
+                                          o.get("cost", ""), o.get("risk", ""))
+                     for o in _opts if isinstance(o, dict)]
+            base_row["options_json"] = json.dumps(
+                [{"id": o.get("id", ""), "label": o.get("label", "")}
+                 for o in _opts if isinstance(o, dict)], default=str)[:8000]
+            base_row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
+            base_row["diagnosticity_json"] = json.dumps(
+                _ds.diagnosticity(_sigs), default=str)[:600]
+            base_row["regime"] = _ds.regime_for(str(ids.get("trigger", "")),
+                                                str(base_row["trigger_kind"]))
+            base_row["resolver_rule"] = _ds.RESOLVER_RULE_VERSION
+        except Exception as _exc:  # noqa: BLE001 — capture never breaks a turn
+            logger.debug("decision signature capture skipped: %s", str(_exc)[:120])
         if content is None:
             _record_failure(cfg)
             log_route("decision_suppressed", reason=str(reason),
@@ -3491,7 +3538,15 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
         cfg = cfg or _cfg()
         if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
             return
-        # tape recorder: fill actual_choice when the response names an option
+        # R35: structural outcome capture FIRST — resolve from what the agent
+        # actually invoked. The prose tape-recorder below is now corroboration
+        # only; it must never be the sole source of a discordance label.
+        try:
+            capture_outcome(session_id)
+        except Exception:  # noqa: BLE001
+            pass
+        # tape recorder (prose, corroborating): fill actual_choice when the
+        # response names an option
         _record_actual(session_id, response_text, cfg, log_route)
         # R19.12 FIX 2: POST pseudo-fire gate — the POST leg fires ONLY on
         # >= 2 DISTINCT named options WITH consequence markers (strict
@@ -3580,6 +3635,126 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
                 initiator="model")
     except Exception:  # noqa: BLE001 — POST leg never breaks delivery
         logger.debug("post_fork_scan error", exc_info=True)
+
+
+def _transcript_rows(session_id: str, after_ts: float = 0.0,
+                     limit: int = 40) -> List[Tuple[Any, ...]]:
+    """Read a turn's transcript rows for evidence. Read-only URI, never raises.
+
+    Returns (role, content, tool_name, tool_calls) tuples — the surfaces the
+    delivery path does NOT rewrite: what the agent actually invoked and what
+    came back. `tool_calls` carries the argv, which is where an option's
+    realisation is visible.
+    """
+    path = _db_path()
+    if not path or not session_id:
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=3.0)
+        try:
+            rows = conn.execute(
+                "SELECT role, content, tool_name, tool_calls FROM messages"
+                " WHERE session_id = ? AND timestamp >= ?"
+                " ORDER BY id DESC LIMIT ?",
+                (str(session_id), float(after_ts or 0.0), int(limit)),
+            ).fetchall()
+        finally:
+            conn.close()
+        return list(reversed(rows or []))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def capture_outcome(session_id: str, db_path: str = "",
+                    after_ts: float = 0.0) -> Optional[int]:
+    """R35: resolve what the agent DID, structurally, or abstain.
+
+    Replaces the prose `opt-N` regex, which was circular: that vocabulary
+    exists only where the lane itself injected it, so it measured the agent's
+    echo of the lane's enumeration rather than the agent's choices.
+
+    Evidence = tool calls and tool results from the turn. Labels are
+    concordant / discordant / none_observed / ambiguous / uncodable — never
+    "followed"/"defied", because a stripped PRE advisory was never delivered
+    and no behaviour can be a response to something unseen.
+
+    Never raises; never blocks delivery; writes only its own columns.
+    """
+    conn = None
+    try:
+        from . import decision_signatures as _ds
+
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return None
+        row = conn.execute(
+            "SELECT id, ts, choice, trigger, trigger_kind, signatures_json"
+            " FROM decision_ledger"
+            " WHERE session_id = ? AND resolved_action = ''"
+            " AND signatures_json != '' AND outcome_label = ''"
+            " ORDER BY id DESC LIMIT 1",
+            (str(session_id or ""),),
+        ).fetchone()
+        if not row:
+            return None
+
+        rid, ts, choice, trigger, kind, sigs_json = (
+            int(row[0]), float(row[1] or 0.0), str(row[2] or ""),
+            str(row[3] or ""), str(row[4] or ""), str(row[5] or ""))
+        try:
+            sigs = json.loads(sigs_json or "[]")
+        except Exception:  # noqa: BLE001
+            sigs = []
+        if not isinstance(sigs, list) or len(sigs) < 2:
+            return None
+
+        rows = _transcript_rows(session_id, after_ts=after_ts or ts, limit=40)
+        if not rows:
+            return None
+        evidence = _ds.evidence_from_messages(rows)
+
+        # A POST audit arrives AFTER the act, so its row is not well-posed for
+        # "did she comply" — it is counterfactual concordance only. Record the
+        # regime with the resolution so consumers never pool the two.
+        regime = _ds.regime_for(trigger, kind) or _ds.REGIME_UNKNOWN
+        result = _ds.resolve(choice, sigs, evidence)
+
+        conn.execute(
+            "UPDATE decision_ledger SET resolved_action = ?, outcome_label = ?,"
+            " evidence_json = ?, resolver_rule = ?, regime = ? WHERE id = ?",
+            (str(result.get("resolved_action") or "")[:40],
+             str(result.get("verdict") or "")[:32],
+             json.dumps({"hits": result.get("hits") or [],
+                         "abstain_reason": result.get("abstain_reason") or "",
+                         "matched": result.get("matched") or [],
+                         "noop_option_present": result.get("noop_option_present"),
+                         "basis": result.get("basis") or "",
+                         "evidence_items": len(evidence),
+                         "regime": regime}, default=str)[:4000],
+             str(result.get("rule") or "")[:32], regime, rid))
+        conn.commit()
+        try:
+            logger.info("decision_outcome_captured ledger_id=%s label=%s"
+                        " resolved=%s regime=%s evidence=%d",
+                        rid, result.get("verdict"),
+                        result.get("resolved_action") or "-", regime, len(evidence))
+        except Exception:  # noqa: BLE001
+            pass
+        return rid
+    except Exception as _exc:  # noqa: BLE001 — capture never breaks a turn
+        try:
+            logger.debug("capture_outcome error: %s", str(_exc)[:160])
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
 
 
 def _record_actual(session_id: str, response_text: str, cfg: Dict[str, Any],
