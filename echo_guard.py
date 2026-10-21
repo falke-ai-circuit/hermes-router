@@ -180,7 +180,17 @@ _FENCED_BLOCK_RE = re.compile(r"```[ \t]*[A-Za-z0-9_+.-]*[ \t]*\r?\n(.*?)```",
 # carrying any of them is an echoed envelope, however legitimate its sibling
 # keys (report/download/files/pytest) look.
 _ADVISORY_JSON_KEYS = ("povs", "synthesis", "advisory", "verdict_of_record",
-                       "families", "brief_bullets")
+                       "families", "brief_bullets",
+                       # R34-19f: the shapes the higher-self lanes actually
+                       # append. Live fleet sweep, 10/10 agents: a RAW
+                       # (unfenced) object tailed to the answer carrying
+                       # {"adversarial": …}, {"p_failure": …},
+                       # {"strongest_objection": …}, {"failure_mode": …} or
+                       # {"sense_check": …}. The old set only knew the
+                       # "povs"-first shape, so the guard fired on the family
+                       # but the strip removed nothing it could see.
+                       "adversarial", "p_failure", "strongest_objection",
+                       "failure_mode", "sense_check")
 # Last-resort scrub tokens (only used when a family fired and nothing else
 # was removable): the same keys plus the POV object fields and stance labels.
 _SCRUB_TOKENS = ('"povs"', '"synthesis"', '"brief_bullets"',
@@ -212,6 +222,51 @@ def _report_value(obj) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return ""
+
+
+
+# R34-19f — two leak shapes the tail regexes miss, both seen live.
+#
+# (a) RAW advisory JSON appended to the answer, with no fence and no
+#     advisory key first:  …traffic burns.", "p_failure": 0.72},
+#     "povs": [{"stance": …}]}   The regex tail only matched an object that
+#     STARTED with an advisory key, so the block shipped to the user.
+# (b) The higher-self ENVELOPE itself: "[HIGHER-SELF COMPLETION-AUDIT TURN |
+#     FRONTIER-DERIVED | PROVENANCE-LOGGED]", "[HIGHER-SELF MESSAGE …]" and the
+#     operating line "SEAM INSTRUCTION: the audit is complete - now PROCEED".
+#     On reviewer this put 4,750 chars of internal instruction text inside the
+#     delivered answer.
+#
+# STRIP ONLY. Detection families are deliberately NOT widened (R34-17).
+_ENVELOPE_TAIL_RE = re.compile(
+    r"(?im)^[ \t>*\-]*(?:\[higher-self|higher-self completion-audit turn|"
+    r"higher-self message|seam instruction[:\u2014-]|.*provenance-logged)")
+
+
+def _advisory_json_starts(text: str) -> List[int]:
+    """Start offsets of RAW json objects in `text` that carry advisory keys.
+
+    Never raises. Scans every '{' and keeps the offsets whose object parses and
+    holds an advisory-only key; nested objects are skipped (their start is
+    inside a larger match, and the larger start wins by being earlier)."""
+    out: List[int] = []
+    try:
+        body = str(text or "")
+        dec = json.JSONDecoder()
+        i = body.find("{")
+        while i != -1:
+            try:
+                obj, _end = dec.raw_decode(body[i:])
+            except Exception:  # noqa: BLE001 — not JSON from here
+                obj = None
+            if isinstance(obj, dict):
+                keys = {str(k).lower() for k in obj.keys()}
+                if keys.intersection(_ADVISORY_JSON_KEYS):
+                    out.append(i)
+            i = body.find("{", i + 1)
+    except Exception:  # noqa: BLE001
+        return out
+    return out
 
 
 def strip_advisory_echo(text: str) -> "tuple[str, int]":
@@ -262,6 +317,13 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
         # router banner tail: the last line that opens with the tail marker
         for m in re.finditer(r"(?m)^[ \t]*\u00b7 router \u00b7.*$", body_text):
             cuts.append(m.start())
+        # R34-19f: raw advisory JSON objects and the higher-self envelope are
+        # TAILS in every observed shape, so their earliest start is a cut point
+        # alongside the banner/POV cuts above.
+        cuts.extend(_advisory_json_starts(body_text))
+        _env = _ENVELOPE_TAIL_RE.search(body_text)
+        if _env:
+            cuts.append(_env.start())
         body = body_text[:min(cuts)] if cuts else body_text
         # drop standalone POV label lines and advisory header blocks
         keep = []

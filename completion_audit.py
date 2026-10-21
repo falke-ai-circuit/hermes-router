@@ -66,6 +66,17 @@ _NOTE_MARKER = _HS_AUDIT_MARKER + "\n"
 # L2 note), never claimed for an unpaired turn, never a quote of the brief.
 HS_CONFIRMATION_LINE = ("\u00b7 higher-self: checked at close \u2014 holds, "
                         "nothing to correct \u00b7")
+# R34-19f — the other two truthful outcomes of a paired POST. Before this, a
+# paired turn whose audit DID find something said nothing at all: the note was
+# produced (`audit_gate_returned returned=text`), the revision pass had no
+# budget left after the consult (`revised=False`), and the only place the note
+# ever appeared was the L2 envelope dump — i.e. the user saw the raw audit text
+# or nothing, never a confirmation. One line, no note substance, in all three
+# cases.
+HS_CONFIRMATION_ADJUSTED = ("\u00b7 higher-self: checked at close \u2014 adjusted "
+                            "before delivery \u00b7")
+HS_CONFIRMATION_FLAGGED = ("\u00b7 higher-self: checked at close \u2014 flagged, "
+                           "see the route log \u00b7")
 _NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
@@ -849,13 +860,29 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # turn had a PRE and the higher self had nothing to correct, say so
             # in one line. Unpaired turns keep the older silence-is-approval
             # behaviour — there is no PRE for the silence to confirm.
-            if _pair and not _note:
+            if _pair:
+                # R34-19f: a paired turn is CONFIRMED either way. Three
+                # outcomes, one line each, never the note's substance:
+                #   holds    -> the higher self had nothing to correct
+                #   adjusted -> it did, and the revision pass landed
+                #   flagged  -> it did, and the revision pass had no budget
+                #               (consult 24s of a 25s hook leaves ~0s) — say so
+                #               rather than let the confirmation vanish.
                 try:
                     from . import debug_banner as _dbg
-                    _conf = HS_CONFIRMATION_LINE
+                    if _note:
+                        _conf = (HS_CONFIRMATION_ADJUSTED
+                                 if _delivered != response_text
+                                 else HS_CONFIRMATION_FLAGGED)
+                    else:
+                        _conf = HS_CONFIRMATION_LINE
                     if isinstance(_out, str) and _out.strip():
                         _out = _dbg.append_banner(_out, "\n" + _conf,
                                                   _knob_checked=True)
+                        _log("higher_self_confirmation_emitted",
+                             kind=("adjusted" if _note and _delivered != response_text
+                                   else "flagged" if _note else "holds"),
+                             session_id=session_id)
                 except Exception:  # noqa: BLE001 — confirmation is cosmetic
                     pass
             return _out
@@ -1411,7 +1438,13 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                 _log("completion_audit_downgraded_async delivered=next_turn",
                      session_id=session_id)
             return
-        if meta and meta.get("note"):
+        # R34-19f: a consult that COMPLETED and found nothing is a RESULT, not
+        # a failure. Only a truthy note used to be recorded, so a NO-FINDINGS
+        # verdict returned None from the runner, audit_gate read that as
+        # `post_consult_failed`, and the paired "checked at close — holds"
+        # confirmation was structurally unreachable. That is why the visible
+        # confirmation never appeared on any agent, in any sweep.
+        if isinstance(meta, dict):
             result["meta"] = meta
 
     t = threading.Thread(target=_worker, name="router-completion-audit-sync",
