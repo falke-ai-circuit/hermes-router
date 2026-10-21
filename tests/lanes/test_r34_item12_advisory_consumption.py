@@ -29,10 +29,15 @@ def _reset():
     ac._STATE.clear()
     ac._ORDER.clear()
     ac._TOOL_SEQ = 0
+    # R34-14 item 1/2/4: the module now owns a turn-close ledger. Each test
+    # below models an INDEPENDENT turn on a shared SID, so the ledger resets
+    # with the rest of the in-process state.
+    ac.clear_turn_ledger()
     yield
     ac._STATE.clear()
     ac._ORDER.clear()
     ac._TOOL_SEQ = 0
+    ac.clear_turn_ledger()
 
 
 def test_dispatch_detection_covers_the_live_brief_shape():

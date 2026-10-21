@@ -111,6 +111,72 @@ def detect_envelope_echo(text: str) -> str:
     return fams[0] if fams else ""
 
 
+EVENT_BLOCKED = "advisory_echo_blocked"
+
+# R34-14 item 7 — the hand-back body. A turn that would close by DESCRIBING
+# the router's advisory carries no work product; delivering it teaches the
+# user a false thing (that the advisory was the answer). The smallest honest
+# mechanism at this seam is to refuse the close: discard the echoed body,
+# say so plainly, and end the turn as a FAILED turn rather than a round trip
+# through the model (a re-run re-enters the same lane that produced the
+# echo and bills twice).
+HAND_BACK_TEXT = (
+    "[router] turn ended on the router's own advisory echo, not work product. "
+    "The echoed body was discarded and nothing was executed. Re-send the ask "
+    "to run this turn again."
+)
+
+
+def enforce_execution_echo(text: str, session_id: str = "",
+                           frame: str = "",
+                           log_route: Optional[object] = None) -> Optional[str]:
+    """R34-14 item 7 EXECUTION_ECHO enforcement.
+
+    When the envelope-echo guard fires AND the turn's frame resolves to
+    `execution`, the echoed body must NOT be the delivered answer. Returns
+    the HAND_BACK_TEXT to deliver (blocking the close with an explicit
+    failure event) or None to leave the body alone.
+
+    Non-execution frames keep the previous log-only contract: an impulse
+    turn quoting the advisory is noise, an execution turn doing it is a
+    lost dispatch. Never raises — a guard failure must never break delivery.
+    """
+    try:
+        families = detect_envelope_echo_families(text)
+        if not families:
+            return None
+        try:
+            _reg = str(frame or "").strip().lower()
+            if not _reg:
+                from . import decision_midturn as _dmt
+
+                _reg = str(_dmt._frame_register() or "").strip().lower()
+        except Exception:  # noqa: BLE001 — unresolved frame = not execution
+            _reg = ""
+        if _reg != "execution":
+            return None
+        chars = len(str(text or ""))
+        fields = {
+            "action": "handback_failure",
+            "chars": chars,
+            "families": "|".join(families),
+            "frame": _reg,
+            "session_id": str(session_id or ""),
+        }
+        try:
+            if log_route is None:
+                from .core import telemetry as _tlm
+
+                _tlm.log_route("POST", event_detail=EVENT_BLOCKED, **fields)
+            else:
+                log_route("POST", event_detail=EVENT_BLOCKED, **fields)
+        except Exception:  # noqa: BLE001 — telemetry never blocks the guard
+            pass
+        return HAND_BACK_TEXT
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def observe(text: str, session_id: str = "", log_route: Optional[object] = None
             ) -> str:
     """Emit ONE `envelope_echo_delivered` route event PER matched family.

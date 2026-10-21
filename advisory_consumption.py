@@ -107,8 +107,131 @@ def looks_like_dispatch(text: Any) -> bool:
         return False
 
 
+EVENT_AFTER_CLOSE = "advisory_after_turn_close"
+EVENT_ORPHANED = "advisory_orphaned_post_close"
+
+# R34-14 item 1: turn-close ledger. A consult that resolves AFTER its turn
+# closed must be DISCARDED, not injected into a dead turn. `_CLOSED[sid]` is
+# the close timestamp of the newest closed turn; `_OPEN_SIG[sid]` is the
+# identity of the user message that turn belongs to. A retry/continuation
+# pass that carries the SAME user text is the SAME turn — it does not reopen
+# the session, so a late advisory stays orphaned instead of being blessed by
+# the duplicate sweep (live: session api_1792543426_8e2f94ef, two sweeps on
+# one posted message, advisory landing 13s after close).
+_CLOSED: Dict[str, float] = {}
+_OPEN_SIG: Dict[str, str] = {}
+_TURN_NO: Dict[str, int] = {}
+_SWEEPS: Dict[str, int] = {}
+_ORPHANS: Dict[str, int] = {}
+
+
+def _sig(user_text: Any) -> str:
+    """Stable identity of a turn's ask (content hash of the head). Never raises."""
+    try:
+        import hashlib
+
+        return hashlib.sha1(
+            str(user_text or "")[:2000].strip().encode("utf-8", "replace")
+        ).hexdigest()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def note_turn_open(session_id: str, user_text: Any = "") -> int:
+    """Mark a turn OPEN (a new user message began). Returns the turn number.
+
+    Same ask text as the newest closed turn = the SAME turn (a retry or a
+    duplicate transform pass), so the close marker STAYS: a consult that
+    resolves now is still post-close and must be discarded. Never raises.
+    """
+    try:
+        sid = _key(session_id)
+        if not sid:
+            return 0
+        sig = _sig(user_text)
+        if sig and sig == _OPEN_SIG.get(sid) and sid in _CLOSED:
+            return int(_TURN_NO.get(sid) or 0)
+        _OPEN_SIG[sid] = sig
+        _CLOSED.pop(sid, None)
+        _ORPHANS.pop(sid, None)
+        _SWEEPS.pop(sid, None)
+        _TURN_NO[sid] = int(_TURN_NO.get(sid) or 0) + 1
+        return int(_TURN_NO[sid])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def note_turn_closed(session_id: str) -> float:
+    """Mark the current turn CLOSED. Returns the close timestamp. Never raises."""
+    try:
+        sid = _key(session_id)
+        if not sid:
+            return 0.0
+        ts = time.time()
+        _CLOSED[sid] = ts
+        return ts
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def turn_no(session_id: str) -> int:
+    """Current turn number for the session (0 when unknown). Never raises."""
+    try:
+        return int(_TURN_NO.get(_key(session_id)) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def note_sweep(session_id: str) -> "tuple[int, bool]":
+    """R34-14 item 2: account a POST detection sweep. Returns (turn_no, dup).
+
+    `dup=True` means this session already ran a sweep in THIS turn number —
+    i.e. one user message produced two transform passes. Never raises.
+    """
+    try:
+        sid = _key(session_id)
+        n = turn_no(sid)
+        key = f"{sid}#{n}"
+        prev = int(_SWEEPS.get(key) or 0)
+        _SWEEPS[key] = prev + 1
+        return n, prev > 0
+    except Exception:  # noqa: BLE001
+        return 0, False
+
+
+def clear_turn_ledger(session_id: str = "") -> None:
+    """Test helper: drop the close/open ledger for a session (or all)."""
+    try:
+        sid = _key(session_id)
+        targets = [sid] if sid else list(set(list(_CLOSED) + list(_OPEN_SIG)))
+        for k in targets:
+            _CLOSED.pop(k, None)
+            _OPEN_SIG.pop(k, None)
+            _TURN_NO.pop(k, None)
+            _ORPHANS.pop(k, None)
+        for k in list(_SWEEPS):
+            if not sid or k.startswith(sid + "#"):
+                _SWEEPS.pop(k, None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _orc(edge: str, event: str, log_route: Optional[Any] = None,
+         **fields: Any) -> None:
+    """Best-effort route-log writer for the turn ledger. Never raises."""
+    try:
+        if log_route is None:
+            from .core import telemetry as _tlm
+
+            _tlm.log_route(edge, event_detail=event, **fields)
+        else:
+            log_route(edge, event_detail=event, **fields)
+    except Exception:  # noqa: BLE001 — telemetry never breaks a turn
+        pass
+
+
 def note_advisory_injected(session_id: str, user_text: str = "",
-                           chars: int = 0, envelope_chars: int = 0) -> None:
+                           chars: int = 0, envelope_chars: int = 0) -> bool:
     """Record that a PRE advisory entered this turn's model context.
 
     `chars` is the ADVISORY BODY (the capped frontier answer); `envelope_chars`
@@ -123,7 +246,29 @@ def note_advisory_injected(session_id: str, user_text: str = "",
     try:
         sid = _key(session_id)
         if not sid:
-            return
+            return False
+        # R34-14 item 1: a consult that resolves AFTER its turn closed must be
+        # DISCARDED — never injected, never billed-and-ignored. The caller
+        # uses this return value to skip the injection entirely.
+        _closed_at = _CLOSED.get(sid)
+        if _closed_at is not None:
+            # A DIFFERENT ask than the closed turn's is a genuinely new turn
+            # (the PRE seam normally calls note_turn_open; callers that do not
+            # own that seam still get the right answer here). The same ask —
+            # or an unknown one — stays post-close and is orphaned.
+            _sig_now = _sig(user_text)
+            _sig_turn = _OPEN_SIG.get(sid)
+            if _sig_now and _sig_turn and _sig_now != _sig_turn:
+                note_turn_open(sid, user_text)
+            else:
+                _delta = max(0.0, time.time() - float(_closed_at))
+                _ORPHANS[sid] = int(_ORPHANS.get(sid) or 0) + 1
+                _orc("POST", EVENT_AFTER_CLOSE, session_id=sid,
+                     delta_s=round(_delta, 3), advisory_chars=int(chars or 0))
+                _orc("POST", EVENT_ORPHANED, session_id=sid,
+                     delta_s=round(_delta, 3), advisory_chars=int(chars or 0),
+                     action="discarded")
+                return False
         _purge()
         st = _STATE.get(sid)
         if isinstance(st, dict):
@@ -132,7 +277,8 @@ def note_advisory_injected(session_id: str, user_text: str = "",
                 st["chars"] = int(chars or 0)
             if int(envelope_chars or 0) > 0:
                 st["envelope_chars"] = int(envelope_chars or 0)
-            return
+            return True
+        _OPEN_SIG.setdefault(sid, _sig(user_text))
         _STATE[sid] = {
             "injected": time.time(),
             "tools": 0,
@@ -143,8 +289,9 @@ def note_advisory_injected(session_id: str, user_text: str = "",
             "seq0": _TOOL_SEQ,
         }
         _ORDER.append(sid)
+        return True
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def _attribute_tool(sid: str) -> bool:
@@ -200,13 +347,35 @@ def close_turn(session_id: str, log_route: Optional[Any] = None) -> bool:
         sid = _key(session_id)
         if not sid:
             return False
+        # R34-14 item 1/4: closing the turn is what makes a later consult
+        # orphaned. Record the close timestamp BEFORE any return path.
+        note_turn_closed(sid)
         st = _STATE.pop(sid, None)
         try:
             _ORDER.remove(sid)
         except ValueError:
             pass
         if not isinstance(st, dict):
+            # R34-14 item 4: an advisory that resolved post-close was
+            # DISCARDED (never injected), so there is no state to accuse.
+            # Name the real condition instead of staying silent — this event
+            # is the one the old `no_tools=true` was falsely reporting.
+            if int(_ORPHANS.get(sid) or 0) > 0:
+                _n = int(_ORPHANS.pop(sid, 0))
+                _orc("POST", EVENT_ORPHANED, log_route, session_id=sid,
+                     action="orphaned_at_close", count=_n)
+                return True
             return False
+        # R34-14 item 4: an orphaned post-close consult WINS the explanation.
+        # When our own consult arrived too late for this turn, "no tools" is
+        # not the agent's fault and not the truth of the turn — the advisory
+        # that consumed it never landed inside it. Report the orphan, retire
+        # the accusation.
+        if int(_ORPHANS.get(sid) or 0) > 0:
+            _n = int(_ORPHANS.pop(sid, 0))
+            _orc("POST", EVENT_ORPHANED, log_route, session_id=sid,
+                 action="orphaned_at_close", count=_n)
+            return True
         if int(st.get("tools") or 0) > 0:
             return False
         if _TOOL_SEQ > int(st.get("seq0") or 0):

@@ -1611,10 +1611,27 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                 session_id, _cooldown_hash(session_id, user_text))
                             try:
                                 from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
+                                # R34-14 item 9: a risk fire must be
+                                # diagnosable from the log alone — the
+                                # classifier verdict AND the signal that
+                                # produced it (same treatment as
+                                # complexity_skip). Live: "risk r2 on a
+                                # technical bug report" could not be
+                                # explained post-hoc because the event
+                                # carried only the class. Visibility only:
+                                # thresholds are NOT retuned here.
+                                _rsig = (_rmeta.get("signal")
+                                         or _rmeta.get("matched")
+                                         or _rmeta.get("signals") or "")
+                                if isinstance(_rsig, (list, tuple, set)):
+                                    _rsig = "|".join(str(s) for s in _rsig)
                                 _lr("PRE", session_id=session_id,
                                     event_detail="risk_consult_fire",
                                     risk_class=_rcls,
                                     stage=str(_rmeta.get("stage") or "stage1"),
+                                    verdict=str(_rmeta.get("verdict") or _rcls),
+                                    signal=str(_rsig or ""),
+                                    score=_rmeta.get("score"),
                                     task_id=task_id)
                             except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                                 _obs_warn('risk_consult_fire', _obs_exc)  # rider 19 item 1

@@ -39,6 +39,23 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _sweep_account(session_id: str) -> "Tuple[int, bool]":
+    """R34-14 item 2: account this POST sweep against the turn ledger.
+
+    Returns (turn_no, duplicate). `duplicate=True` means the session already
+    ran a detection sweep in the SAME turn number — one user message produced
+    two transform passes (live: api_1792543426_8e2f94ef, sweeps at 00:45:22
+    and 00:46:22 with no user row between them). Never raises; (0, False) on
+    any gap so the invariant line still lands.
+    """
+    try:
+        from ... import advisory_consumption as _ac
+
+        return _ac.note_sweep(session_id)
+    except Exception:  # noqa: BLE001
+        return 0, False
+
 FALLBACK_MODEL = "z-ai/glm-5.3-flash"
 JUDGE_TIMEOUT_SECONDS = 8
 JUDGE_MAX_TOKENS = 120
@@ -556,8 +573,10 @@ def post_detection_scan(session_id: str, response_text: str,
         # before any guard/gate can exit; fail-open (log failure never
         # blocks detection).
         try:
+            _sw_turn, _sw_dup = _sweep_account(session_id)
             _log(log_route, "sweep_started", session_id=session_id,
-                 response_chars=len(response_text or ""))
+                 response_chars=len(response_text or ""),
+                 turn_no=_sw_turn, duplicate_sweep="true" if _sw_dup else "false")
         except Exception:  # noqa: BLE001 — invariant logging never raises
             pass
         if not isinstance(response_text, str) or not response_text.strip():

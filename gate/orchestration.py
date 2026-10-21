@@ -284,6 +284,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not content.strip():
             return _hs_pass()
 
+        # R34-14 item 1/2: a user message defines the turn. Same text as the
+        # newest CLOSED turn is the same turn (a retry / duplicate transform
+        # pass) and does NOT reopen it, so a consult that resolves late stays
+        # orphaned instead of being legitimized by the second pass.
+        try:
+            from .. import advisory_consumption as _acturn
+
+            _acturn.note_turn_open(
+                _hub()._session_id_from_context(**context), content)
+        except Exception:  # noqa: BLE001 — ledger never breaks the PRE seam
+            pass
+
         # Phase 1 route gate (BLUEPRINT-request-routing-2026-09-12): the
         # sentinel firewall + completion-audit delivery early-returns are
         # now EXPLICIT no-route branches OF the unified gate (reviewer
@@ -798,15 +810,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # audit consult, revision pass, decision/anchor pre-consume waits)
         # is budgeted under the runner timeout so a slow consult can never
         # orphan the hook. 5s margin covers consume/capture/append work.
-        # R34-8c: envelope-echo observability (log-only, never rewrites).
-        # A delivered body that restates the router's own envelope is a
-        # shipped defect, not content: report it, deliver it untouched.
+        # R34-14 item 7: EXECUTION_ECHO enforcement (supersedes the R34-8c
+        # log-only contract for frame=execution). An execution turn that
+        # closes by DESCRIBING the router's advisory delivered no work — the
+        # live case burned a full dispatch (session api_1792543869_964dbe2a:
+        # advisory capped to 600 chars, body delivered 6459 chars of
+        # restatement, 6 tool calls, zero work). Capping the advisory input
+        # is not the fix; the turn must not close on the echo. Block first,
+        # then report — an `envelope_echo_delivered` row on a body we refused
+        # would be a lie.
         try:
             from .. import echo_guard as _eg
 
+            _echo_block = _eg.enforce_execution_echo(
+                response_text, session_id, log_route=_hub()._log_route)
+            if _echo_block:
+                return _echo_block
             _eg.observe(response_text, session_id,
                         log_route=_hub()._log_route)
-        except Exception:  # noqa: BLE001 — observability never breaks delivery
+        except Exception:  # noqa: BLE001 — guard never breaks delivery
             pass
         _hook_t0 = _hub().time.monotonic()
 
@@ -1894,10 +1916,13 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     _kind, envelope.get("producer"), envelope.get("route_id"),
                     envelope.get("limitations"), envelope.get("answer"),
                     model=_st_model, cost=_st_cost)
-            msgs.append({"role": "assistant", "content": advisory})
-            # R34-12 item 9: the advisory IS in this turn's model context.
-            # Mark it so the turn-close seam can report an advisory that
-            # consumed a dispatch turn with zero tool calls.
+            # R34-14 item 1: a consult that resolves AFTER its turn closed is
+            # DISCARDED here — never appended to a dead turn's context, never
+            # billed-and-ignored silently. `note_advisory_injected` returns
+            # False and logs `advisory_after_turn_close delta_s=<n>` +
+            # `advisory_orphaned_post_close`. The seam instruction is skipped
+            # too: with no advisory in context there is nothing to proceed on.
+            _inject_ok = True
             try:
                 from .. import advisory_consumption as _ac
                 _last_user = ""
@@ -1905,12 +1930,17 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     if isinstance(_m, dict) and _m.get("role") == "user":
                         _last_user = str(_m.get("content") or "")
                         break
-                _ac.note_advisory_injected(
+                _inject_ok = bool(_ac.note_advisory_injected(
                     session_id, _last_user,
                     chars=len(str(envelope.get("answer") or "")),
-                    envelope_chars=len(str(advisory or "")))
-            except Exception:  # noqa: BLE001 — observability only
-                pass
+                    envelope_chars=len(str(advisory or ""))))
+            except Exception:  # noqa: BLE001 — ledger never blocks delivery
+                _inject_ok = True
+            if not _inject_ok:
+                # Orphaned post-close: drop the envelope and hand the turn
+                # back untouched (the original request, no advisory).
+                return next_call(request)
+            msgs.append({"role": "assistant", "content": advisory})
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
             # after the advisory envelope, explicitly instruct the main model to
             # PROCEED with the task. Higher-self produced the data; the main model

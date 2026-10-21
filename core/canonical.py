@@ -401,11 +401,45 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
         return False
 
 
+def _refuse_empty_body(session_id: str, refused_for: str) -> None:
+    """R34-14 item 3: log a refused empty-body persist. Never raises.
+
+    The invariant: a transform may not blank a persisted assistant row. When
+    the write-back carries an empty body while the row being matched is
+    non-empty, the write is refused and this event says so — a silent 0-char
+    row over a 2476-char sweep is exactly what this makes impossible.
+    """
+    try:
+        from . import telemetry as _tlm
+
+        _tlm.log_route("POST", event_detail="persist_empty_body_refused",
+                       reason="empty_body_over_nonempty_row",
+                       refused_for_chars=len(str(refused_for or "")),
+                       session_id=str(session_id or ""))
+    except Exception:  # noqa: BLE001 — logging never breaks delivery
+        logger.warning("refused empty persisted-body write (session=%s)",
+                       session_id)
+
+
 def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
                   delivered_text: str, allow_empty_match: bool) -> bool:
-    """One rewrite attempt (lock-retry body of rewrite_persisted_turn)."""
+    """One rewrite attempt (lock-retry body of rewrite_persisted_turn).
+
+    R34-14 item 3: the persisted assistant row may NEVER be blanked on behalf
+    of a transform. Live case: the turn closed with a 2476-char POST sweep and
+    the persisted row for that close was len=0 — a transform/persist ordering
+    bug where the write-back carried the (empty) transformed text instead of
+    the response it already held. Refuse the empty write outright: when the
+    delivered text is empty and the row we are about to match is non-empty,
+    the write is skipped and the refusal is logged.
+    """
     import sqlite3
 
+    _dl = str(delivered_text or "")
+    if not _dl.strip():
+        if str(refusal_text or "").strip():
+            _refuse_empty_body(session_id, refusal_text)
+        return False
     conn = sqlite3.connect(db_path, timeout=2.0)
     try:
         if refusal_text:

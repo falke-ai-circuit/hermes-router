@@ -111,11 +111,48 @@ def risk_cfg() -> Dict[str, Any]:
 
 
 def risk_enabled() -> bool:
-    """Master switch. Default ON (zero-config default per spec). Never raises."""
+    """Master switch for the risk lane. Never raises.
+
+    R34-14 item 8 — the live defect: `router_core` gated the complexity leg on
+    `level > 0 and _lane_enabled(...)` but the risk leg ONLY on this function,
+    whose default was True. A profile that said `complexity.level: 1`
+    ("manual anchor only") therefore still fired risk consults — the live
+    hijack (api_1792543869_964dbe2a, 01:03:18Z: complexity_skip
+    clear_simple + risk_consult_fire risk_class=r2 on the same turn) was that
+    disagreement, not a classifier problem.
+
+    Semantics now: an EXPLICIT `risk.enabled` always wins. With no explicit
+    key the lane INHERITS the complexity mute — auto risk consults require
+    the same auto-consult tier the complexity lane needs (`level >= 2`).
+    L1 means "only when I ask", and an automatic risk consult is not asking.
+
+    Independent mute still exists (`risk.enabled: false` alone) — but silence
+    by omission must mean silence: a profile that never opted into autonomous
+    consults does not get them from a different lane's default.
+    """
     try:
-        return bool(risk_cfg().get("enabled", True))
+        from . import config_access
+
+        raw = config_access.sub_block("risk")
+        if isinstance(raw, dict) and raw.get("enabled") is not None:
+            return bool(raw.get("enabled"))
+    except Exception:  # noqa: BLE001 — config errors never break routing
+        pass
+    try:
+        from . import config_access
+
+        block = config_access.sub_block("complexity") or {}
+        # Legacy zero-config default stays ON (spec). The mute applies only
+        # when the profile EXPLICITLY declares an auto-consult tier below 2:
+        # saying `complexity.level: 1` is saying "only when I ask", and an
+        # automatic risk consult is not asking (live: level 1 + risk r2 on the
+        # same turn, api_1792543869_964dbe2a).
+        if "level" not in block:
+            return True
+        level = int(block.get("level") or 0)
     except Exception:  # noqa: BLE001
         return True
+    return level >= 2
 
 
 # ---------------------------------------------------------------------------
