@@ -1773,8 +1773,31 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         model = str(sec.get("model") or "") or "z-ai/glm-5.3"
         base = (str(sec.get("base_url") or "").strip()
                 or "https://inference-api.nousresearch.com/v1")
+        # R34-19j: the revision IS the frontier lane — it must follow the
+        # configured anchor chain, never a hardcoded model. Left hardcoded, an
+        # anchor swap moved the consult and left the revision behind on
+        # glm-5.3 + reasoning_effort=max; on a Claude-class anchor that pairing
+        # is precisely the empty-response shape (thinking eats the budget,
+        # content comes back null). Ported from the live Hetzner recovery
+        # patched copy, where it was the only thing making the pass work.
+        key_envs = ["NOUS_API_KEY"]
+        _eff_override: Optional[str] = "max"   # legacy default: no anchor
+        try:
+            from . import anchor_chain as _acr
+            _epr = _acr.load_anchor_chain().primary
+            if _epr is not None:
+                model = str(_epr.model or "") or model
+                base = str(_epr.base_url or "") or base
+                if _epr.api_key_env:
+                    key_envs = [str(_epr.api_key_env)] + key_envs
+                _effc = (_cac.sub_block("anchor_chain") or {}).get("reasoning_effort")
+                # blank in config = the family takes NO effort knob (Claude-class)
+                _eff_override = (_effc.strip()
+                                 if isinstance(_effc, str) and _effc.strip() else "")
+        except Exception:  # noqa: BLE001 — config read must never break the pass
+            pass
         api_key = ""
-        for env_name in ("NOUS_API_KEY",):
+        for env_name in key_envs:
             val = os.environ.get(env_name, "").strip()
             if val and val.lower() not in _PLACEHOLDER_VALUES:
                 api_key = val
@@ -1803,8 +1826,9 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         from .core import budgets as _budgets
         payload = {"messages": [{"role": "user", "content": prompt}],
                    "max_tokens": _budgets.budget("completion_audit")["max_tokens"],
-                   "temperature": 0.2,
-                   "reasoning_effort": "max"}
+                   "temperature": 0.2}
+        if _eff_override:
+            payload["reasoning_effort"] = _eff_override
         from openai import OpenAI
 
         client = OpenAI(base_url=base, api_key=api_key,
