@@ -414,6 +414,59 @@ class BannerLifecycle:
                 # re-check under the module lock: a late live consume wins
                 if db._ANCHOR_BANNERS.get(sid, "") != captured:
                     return
+                # R34-19f4: DO NOT repair a turn that is still running.
+                # Live (analyst …38a356): the PRE consult parked a banner at
+                # t+3s, the agent then worked for a minute, the 45s watcher
+                # fired mid-turn, found the PREVIOUS turn's assistant row
+                # (this turn had persisted nothing yet), appended the banner
+                # to THAT row and popped the slot — so the delivery edge later
+                # logged `anchor_banner_consume parked=False reason=no_park_
+                # this_turn` and the user's message carried no receipt, while
+                # `banner_render_captured edge=capture_fallback` made the
+                # transcript look fine. The watcher exists to catch a park no
+                # edge will ever claim; a park belonging to the OPEN turn is by
+                # definition still claimable. Leave it parked.
+                _rec_open: dict = {}
+                try:
+                    _rec_open = db.park_record(sid) or {}
+                except Exception:  # noqa: BLE001
+                    _rec_open = {}
+                _park_turn = int(_rec_open.get("turn_no") or 0)
+                if _park_turn:
+                    _cur_turn, _cur_sig = 0, ""
+                    try:
+                        from ... import advisory_consumption as _ac
+
+                        _cur_turn = int(_ac.turn_no(sid) or 0)
+                        _cur_sig = str(_ac.open_signal(sid) or "")
+                    except Exception:  # noqa: BLE001
+                        _cur_turn, _cur_sig = 0, ""
+                    _park_sig = str(_rec_open.get("ask_sig") or "")
+                    _same_turn = bool(
+                        _cur_turn and _cur_turn == _park_turn
+                        and (not _park_sig or not _cur_sig
+                             or _park_sig == _cur_sig[:40]))
+                    if _same_turn:
+                        try:
+                            logger.warning(
+                                "banner_capture_fallback_deferred "
+                                "detail=turn_open turn_no=%s session_id=%s — "
+                                "banner stays parked for this turn's delivery "
+                                "edge", _park_turn, sid)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        try:
+                            _log_route(
+                                "POST",
+                                event_detail="banner_capture_fallback_deferred",
+                                outcome="turn_open", edge="capture_fallback",
+                                turn_no=_park_turn, session_id=sid,
+                                **({"park_event_seq": int(_rec_open["event_seq"])}
+                                   if _rec_open.get("event_seq") else {}))
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "banner_capture_fallback event log failed")
+                        return
                 row = self._newest_persisted_assistant_row(sid)
                 delivered = ("%s\n\n%s" % (row, captured)) if row else ""
                 ok = False
