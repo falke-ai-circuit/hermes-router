@@ -699,10 +699,18 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # route-log via module-local helper (never cross-package import:
         # gateway loads the plugin under a different top-level name and a
         # hard import here would kill the whole gate silently — live-caught)
-        if not _fire:
-            _log("audit_gate_skip",
+        # R34-19c: a paired turn is the PRE's CONFIRMATION. The cadence gate
+        # exists to sample ordinary turns ("audit every Nth substantive turn");
+        # when the higher self spoke at the start of THIS turn, skipping its
+        # confirmation means the agent is warned and never told how it went.
+        # Cadence never defers a confirmation — same rule as the length floor.
+        if not _fire and not _pair:
+            _log("audit_gate_skip", reason="cadence",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
+        if not _fire and _pair:
+            _log("audit_cadence_bypassed_for_pair",
+                       turn=_turn_n, of=_min_turns, session_id=session_id)
         _ok, _why = eligible(session_id, ask, response_text, model,
                              turn_n=_turn_n, paired=bool(_pair))
         _log("completion_audit_gate",
