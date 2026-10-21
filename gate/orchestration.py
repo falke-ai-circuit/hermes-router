@@ -1090,6 +1090,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
         matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
+        try:  # TEMP PROBE (remove before final)
+            _hub()._log_route("POST", event_detail="probe_stage1_scan",
+                              n_matches=len(matches or []),
+                              chars=len(str(response_text or "")),
+                              session_id=session_id)
+        except Exception:
+            pass
         semantic_verdict: Optional[str] = None
         # R33-FIX2: provenance of the route trigger. A stage-1 regex hit is
         # "stage1" (unconfirmed); a TIER-1 FAIL-OPEN detection is
