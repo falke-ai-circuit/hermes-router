@@ -1366,8 +1366,6 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                     _lrx("PRE", event_detail="higher_self_pair", stage="pre",
                          paired=bool(_rec_pair), trigger=_pre_trigger,
                          stored_chars=len(str(_rec_pair.get("text") or "")) if _rec_pair else 0,
-                         store_id=id(getattr(_st, "_PRE_ADVISORY", {})),
-                         store_len=len(getattr(_st, "_PRE_ADVISORY", {}) or {}),
                          session_id=str(session_id or ""))
                 except Exception:  # noqa: BLE001 — telemetry only
                     pass

@@ -705,15 +705,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation means the agent is warned and never told how it went.
         # Cadence never defers a confirmation — same rule as the length floor.
         if not _fire and not _pair:
-            try:
-                from . import state as _st_dbg
-
-                _dbg = {"store_id": id(getattr(_st_dbg, "_PRE_ADVISORY", {})),
-                        "store_len": len(getattr(_st_dbg, "_PRE_ADVISORY", {}) or {}),
-                        "has_key": bool(str(session_id or "") in (getattr(_st_dbg, "_PRE_ADVISORY", {}) or {}))}
-            except Exception:  # noqa: BLE001
-                _dbg = {}
-            _log("audit_gate_skip", reason="cadence", **_dbg,
+            _log("audit_gate_skip", reason="cadence",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
         if not _fire and _pair:
