@@ -996,6 +996,42 @@ TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
                  "midturn_hook": "midturn_hook"}
 
 
+# R35d: WHICH ROWS ARE DECISION FORKS AT ALL.
+#
+# decision_ledger is shared with the frontier/higher-self lane, which is a
+# different measurement entirely (an advisory envelope, no option choice) and
+# which writes ~2,070 rows/day across the fleet against ~450 real forks. Any
+# "decision lane fill rate" computed over the whole table is diluted ~84% by
+# rows that were never forks — which is why the 0.4% figure could not be
+# interpreted: it described a polluted denominator, not a broken capture path.
+#
+# These are the triggers that represent an actual fork between named options.
+FORK_TRIGGERS = ("pre", "midturn", "midturn_hook", "post", "manual")
+_NON_FORK_TRIGGERS = ("frontier_consult", "frontier_post",
+                      "frontier_adversarial_parse_fail", "pre_cooldown")
+
+
+def is_decision_fork(trigger: Optional[str]) -> bool:
+    """True when this ledger row is a fork the lane could measure an outcome
+    for. Never raises; unknown triggers are NOT assumed to be forks."""
+    try:
+        t = str(trigger or "").strip().lower()
+        if not t:
+            return False
+        if t in _NON_FORK_TRIGGERS or t.startswith("frontier") \
+                or t.startswith("pre_cooldown"):
+            return False
+        return t in FORK_TRIGGERS or t.endswith("_fork")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fork_only_clause() -> str:
+    """SQL WHERE fragment that excludes non-fork rows from a denominator."""
+    return ("trigger IN ('pre','midturn','midturn_hook','post','manual')"
+            " AND trigger NOT LIKE 'frontier%'")
+
+
 def trigger_kind(trigger: str) -> str:
     """§5.7 ledger trigger kind: pre_fork | post_fork_scan | on_demand."""
     try:

@@ -270,3 +270,34 @@ def test_a_separable_midturn_row_is_not_pre_labelled():
               "read_file /opt/data/plugins/hermes_router/decision.py"])
     assert json.loads(row["diagnosticity_json"])["separable"] is True
     assert row.get("outcome_label", "") == ""  # left for the resolver
+
+
+# --- the denominator must not include non-fork rows ------------------------
+
+def test_the_frontier_lane_is_not_a_decision_fork():
+    """decision_ledger is shared with the higher-self lane, which writes ~2,070
+    rows/day against ~450 forks. Counting those as decision rows is what made
+    the fill rate uninterpretable."""
+    from hermes_router import decision as d
+    assert d.is_decision_fork("pre") is True
+    assert d.is_decision_fork("midturn") is True
+    assert d.is_decision_fork("midturn_hook") is True
+    assert d.is_decision_fork("post") is True
+    assert d.is_decision_fork("manual") is True
+    for t in ("frontier_consult", "frontier_post", "pre_cooldown",
+              "frontier_adversarial_parse_fail"):
+        assert d.is_decision_fork(t) is False, t
+
+
+def test_unknown_triggers_are_not_assumed_to_be_forks():
+    from hermes_router import decision as d
+    for t in ("", None, "something_new", "unknown"):
+        assert d.is_decision_fork(t) is False
+
+
+def test_the_fork_clause_excludes_frontier_rows():
+    from hermes_router import decision as d
+    sql = d.fork_only_clause()
+    assert "frontier" in sql
+    for t in ("pre", "midturn", "post", "manual"):
+        assert f"'{t}'" in sql
