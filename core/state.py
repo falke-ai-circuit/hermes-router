@@ -379,7 +379,11 @@ def mark_pre_advisory(session_id: str, trigger: str, text: str,
             return None
         rec = {"ts": time.time(), "trigger": str(trigger or "")[:80],
                "text": body[:max(200, int(cap or 2400))],
-               "turn": int(turn_n or 0), "ask_sig": _ask_sig(ask)}
+               "turn": int(turn_n or 0), "ask_sig": _ask_sig(ask),
+               # The ask text itself, bounded: the POST seam frequently has no
+               # ask available (context lacks user_message, last-seen empty), and
+               # without the text the confirmation silently gave up.
+               "ask": str(ask or "")[:2000]}
         with _TURN_FLAG_LOCK:
             _PRE_ADVISORY[session_id or ""] = rec
         return rec

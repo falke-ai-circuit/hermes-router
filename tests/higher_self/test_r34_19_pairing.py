@@ -266,3 +266,34 @@ def test_unpaired_terse_report_still_respects_the_length_floor(monkeypatch):
     terse = "done"
     assert ca.audit_gate(SID, terse, ask_override=SHORT_ASK) is None
     assert seen["calls"] == 0
+
+
+def test_paired_post_fires_when_the_hook_has_no_ask(monkeypatch):
+    """Live 2026-10-21: the transform hook reached the gate with pair=True and
+    audit_enabled True, then bailed SILENTLY because it could not resolve the
+    ask (no user_message in context, empty last-seen). The PRE record holds the
+    ask it was taken for, so the confirmation answers that instead of giving
+    up — and the give-up path now logs instead of vanishing."""
+    seen = _patch_post(monkeypatch)
+    monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+    monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    monkeypatch.setattr(ca, "_pre_pairing", lambda sid, ask="": state.pre_advisory(sid))
+    state.mark_pre_advisory(SID, "orientation", "PRE BRIEF: mind the key arg",
+                            ask=SHORT_ASK)
+    monkeypatch.setattr(state, "get_last_seen", lambda sid: "")
+
+    out = ca.audit_gate(SID, RESP, context={})   # no ask anywhere in the hook
+    assert seen["calls"] == 1, "the confirmation must not die for lack of an ask"
+    assert out is not None
+    assert seen["kwargs"].get("pre_brief") == "PRE BRIEF: mind the key arg"
+
+
+def test_no_ask_and_no_pair_logs_instead_of_vanishing(monkeypatch):
+    seen = _patch_post(monkeypatch)
+    monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+    monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    monkeypatch.setattr(state, "get_last_seen", lambda sid: "")
+    assert ca.audit_gate(SID, RESP, context={}) is None
+    assert seen["calls"] == 0
+    skips = [kw for ev, kw in seen["events"] if ev == "audit_gate_skip"]
+    assert any(kw.get("reason") == "no_ask" for kw in skips), skips
