@@ -1181,12 +1181,39 @@ def _ask_declared_adversarial(ask: str) -> bool:
 
 def _pre_pairing(session_id: str, ask: str = "") -> Optional[Dict[str, Any]]:
     """R34-19: the PRE advisory awaiting this turn's POST confirmation.
-    `ask` (when known) binds the pairing to the SAME turn — a PRE taken for
-    a different ask is not a pairing."""
+
+    `ask` binds the pairing to the SAME turn, but the fingerprint is ADVISORY,
+    not absolute (R34-19c, live-caught). The PRE stores the original user ask;
+    the POST seam resolves its ask from a different source (last-seen message,
+    injected advisory, sentinel-wrapped text), so strict equality rejected the
+    very record the PRE had just written — the pair was stored
+    (`paired=True stored_chars=3158 store_len=1 has_key=True`) and the gate
+    still saw None. Behaviour now:
+
+      1. strict fingerprint match -> pairing;
+      2. no strict match, but a live record exists for this session inside the
+         TTL -> accept it and log `pair_sig_mismatch_accepted`, because the
+         record is one-shot (popped the moment a POST consumes it) and session
+         + TTL is the actual boundary;
+      3. anything else -> unpaired.
+    """
     try:
         from . import state as _st
 
-        return _st.pre_advisory(session_id, ask=(ask or "") or None)
+        _rec = _st.pre_advisory(session_id, ask=(ask or "") or None)
+        if _rec:
+            return _rec
+        if not (ask or "").strip():
+            return None
+        _loose = _st.pre_advisory(session_id)
+        if _loose:
+            _log("pair_sig_mismatch_accepted",
+                 trigger=str(_loose.get("trigger") or "")[:40],
+                 stored_ask_chars=len(str(_loose.get("ask") or "")),
+                 post_ask_chars=len(str(ask or "")),
+                 session_id=session_id)
+            return _loose
+        return None
     except Exception:  # noqa: BLE001 — fail-open to unpaired
         return None
 
