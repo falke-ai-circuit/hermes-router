@@ -147,16 +147,30 @@ def _confirmed_gist(note: str, cap: int = 160) -> str:
     substantive line is used. Never raises; never longer than `cap`.
     """
     try:
-        rows = []
+        rows, bullets = [], []
         for ln in str(note or "").splitlines():
-            t = ln.strip().lstrip("-*\u2022> ").strip()
+            raw = ln.strip()
+            is_bullet = bool(re.match(r"^(?:[-*\u2022]|\d+[.)])\s+\S", raw))
+            t = raw.lstrip("-*\u2022> ").strip()
             if not t:
                 continue
-            if re.match(r"(?i)^(confirmed|pre[- ]warning[- ](?:held|missed))\b", t):
+            # the audit's own preamble and its answer to its own PRE are not
+            # findings — live-caught: the first "finding" quoted to the user was
+            # "This is an internal message from your higher self — …"
+            if re.match(r"(?i)^(confirmed\b|pre[- ]warning[- ](?:held|missed)\b"
+                        r"|this is an internal\b|your higher self\b|higher[- ]self\b"
+                        r"|note\b|verdict\b|sense[_-]?check\b|povs?\b)", t):
                 continue
-            if t.startswith("{") or t.startswith("[") or t.startswith("```"):
+            if t.startswith("{") or t.startswith("[") or t.startswith("```") \
+                    or t.startswith("===") or t.startswith("*"):
                 continue
-            rows.append(re.sub(r"\s+", " ", t))
+            flat = re.sub(r"\s+", " ", t)
+            rows.append(flat)
+            if is_bullet:
+                bullets.append(flat)
+        # a bullet is the audit's own list of observations, so it outranks any
+        # prose line that survived the filter
+        rows = bullets if bullets else rows
         # No fallback to the raw note: when every line is the PRE-answer or the
         # JSON envelope there IS no finding to quote, and falling back would
         # ship the audit's own "CONFIRMED: ..." line to the user as a flag —

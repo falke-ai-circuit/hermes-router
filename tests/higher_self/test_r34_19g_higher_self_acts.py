@@ -179,3 +179,30 @@ def test_an_uncontended_hook_still_attempts_the_revision(monkeypatch):
     assert seen["revise_calls"] == 1
     kinds = [e for e, _ in seen["events"]]
     assert "completion_audit_revision_skipped" not in kinds
+
+
+def test_gist_prefers_a_bullet_over_the_audit_preamble():
+    """Live-caught: the first "finding" quoted to the user was the note's own
+    preamble — "This is an internal message from your higher self — …". A bullet
+    is the audit's own list of observations and outranks surviving prose."""
+    note = ("This is an internal message from your higher self — the "
+            "self-reflection of the work just done.\n"
+            "CONFIRMED: the plan named the phase split and it held.\n"
+            "- The answer never separates connect timeouts from read timeouts.\n"
+            "- Second observation.\n"
+            '{"sense_check": {"requested_vs_delivered": 0.6}}')
+    gist = ca._confirmed_gist(note)
+    assert gist.startswith("The answer never separates connect timeouts")
+    assert "internal message" not in gist
+
+
+def test_gist_falls_back_to_prose_when_there_is_no_bullet():
+    note = ("PRE-WARNING-HELD: it bit, result still acceptable.\n"
+            "The delivered answer claims the row was rewritten without "
+            "quoting the row.")
+    assert ca._confirmed_gist(note).startswith("The delivered answer claims")
+
+
+def test_a_preamble_only_note_has_no_gist():
+    note = "This is an internal message from your higher self."
+    assert ca._confirmed_gist(note) == ""
