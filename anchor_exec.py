@@ -791,12 +791,51 @@ def _bounded_replay_cfg() -> Dict[str, Any]:
         return {
             "enabled": bool(block.get("enabled", True)),
             "last_n_turns": max(2, int(block.get("last_n_turns", 24))),
-            "max_input_tokens": max(8000, int(block.get("max_input_tokens", 120000))),
+            "max_input_tokens": max(8000, int(block.get("max_input_tokens", 40000))),
             "summary_header": bool(block.get("summary_header", True)),
+            "tool_trim_head": max(0, int(block.get("tool_trim_head", 1200))),
+            "tool_trim_tail": max(0, int(block.get("tool_trim_tail", 600))),
         }
     except Exception:  # noqa: BLE001
         return {"enabled": True, "last_n_turns": 24,
-                "max_input_tokens": 120000, "summary_header": True}
+                "max_input_tokens": 40000, "summary_header": True,
+                "tool_trim_head": 1200, "tool_trim_tail": 600}
+
+
+def _condense_tool_body(content: Any, head: int, tail: int) -> Any:
+    """R34-19O: keep the shape of a tool result, drop the bulk.
+
+    Measured across 507 consulted sessions: tool output is 71% of consult input
+    mass and that mass is spread EVENLY across the 24-turn window — so trimming
+    the window removes context proportionally instead of waste. The median tool
+    message is only 156 tokens; the cost lives in the tail (p90 965, max 13,727:
+    file dumps, diffs, logs). Condensing the bodies keeps every turn's structure
+    — who asked, what the agent concluded, what was inspected — and cuts only
+    the dumps. Never touches non-tool content, never splits a short message.
+    """
+    try:
+        if not isinstance(content, str):
+            return content
+        if head <= 0 and tail <= 0:
+            return content
+        if len(content) <= head + tail + 200:
+            return content
+        elided = len(content) - head - tail
+        return (content[:head]
+                + f"\n…[{elided} chars elided from tool result]…\n"
+                + content[-tail:])
+    except Exception:  # noqa: BLE001
+        return content
+
+
+def _is_tool_message(msg: Dict[str, Any]) -> bool:
+    try:
+        if msg.get("role") == "tool":
+            return True
+        t = str(msg.get("content") or "")
+        return "tool_result" in t[:300] or t.startswith("__HERMES_TOOL")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def bounded_replay(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -813,11 +852,33 @@ def bounded_replay(api_kwargs: Dict[str, Any]) -> Dict[str, Any]:
             return api_kwargs
         system_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "system"]
         convo = [m for m in msgs if not (isinstance(m, dict) and m.get("role") == "system")]
-        if len(convo) <= cfg["last_n_turns"]:
-            return api_kwargs
+        _windowed = len(convo) > cfg["last_n_turns"]
         kept = convo[-cfg["last_n_turns"]:]
+        # R34-19O: condense tool bodies, newest tool result left whole (the
+        # freshest evidence is what the consult is usually about). This runs
+        # for SHORT sessions too — the old early-return skipped the trim for
+        # every conversation under last_n_turns, which is most of them, so the
+        # file dumps we measured were still shipped in full.
+        _h, _t = cfg.get("tool_trim_head", 1200), cfg.get("tool_trim_tail", 600)
+        _trimmed = False
+        if (_h or _t) and kept:
+            _last_tool = max((i for i, m in enumerate(kept)
+                              if isinstance(m, dict) and _is_tool_message(m)),
+                             default=-1)
+            _new = []
+            for i, m in enumerate(kept):
+                if isinstance(m, dict) and _is_tool_message(m) and i != _last_tool:
+                    _c = _condense_tool_body(m.get("content"), _h, _t)
+                    if _c is not m.get("content"):
+                        _trimmed = True
+                    _new.append({**m, "content": _c})
+                else:
+                    _new.append(m)
+            kept = _new
+        if not _windowed and not _trimmed:
+            return api_kwargs
         header = ""
-        if cfg.get("summary_header"):
+        if cfg.get("summary_header") and _windowed:
             first_user = next((m for m in convo if isinstance(m, dict) and m.get("role") == "user"), None)
             ask = str((first_user or {}).get("content") or "")[:400]
             header = (f"[context note: consult replay is bounded to the last "
