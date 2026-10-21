@@ -308,15 +308,27 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
             if len(prose) < MIN_REPORT_CHARS and len(prose_below) < MIN_REPORT_CHARS:
                 repl = _report_value(obj)
             body_text = head + (("\n\n" + repl) if repl else "") + tail
+        # --- R34-19f2: the banner is NOT the echo -------------------------
+        # The strip exists to remove what the router said to the AGENT. The
+        # `· router ·` line is what the user is supposed to see: it is the
+        # receipt for a billed consult. Cutting it here made banner presence
+        # depend on the delivery seam re-attaching it, and live the seam does
+        # not always fire (a turn with no audit edge keeps the stripped body),
+        # so a routed turn could deliver WITHOUT its banner. Pin the banner tail
+        # aside, sanitise the head, put the banner back.
+        _banner_tail = ""
+        _bm = re.search(r"(?m)^[ \t]*\u00b7 router \u00b7", body_text)
+        if _bm and _bm.start() > 0:
+            _banner_tail = body_text[_bm.start():]
+            body_text = body_text[: _bm.start()]
+
         # --- the pre-existing tail cuts -----------------------------------
         cuts = []
         for rx in (_JSON_TAIL_RE, _POV_SECTION_RE, _SYNTH_RE):
             m = rx.search(body_text)
             if m:
                 cuts.append(m.start())
-        # router banner tail: the last line that opens with the tail marker
-        for m in re.finditer(r"(?m)^[ \t]*\u00b7 router \u00b7.*$", body_text):
-            cuts.append(m.start())
+        # (banner already split aside above; any inline one is still a cut)
         # R34-19f: raw advisory JSON objects and the higher-self envelope are
         # TAILS in every observed shape, so their earliest start is a cut point
         # alongside the banner/POV cuts above.
@@ -351,6 +363,8 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
             del lines[_fence_idx[-1]]
             out = "\n".join(lines)
         out = re.sub(r"\n{3,}", "\n\n", out).strip()
+        if _banner_tail:
+            out = (out + "\n\n" + _banner_tail.strip()).strip()
         # --- the invariant: a detected family must yield a real removal ---
         if len(out) >= len(raw):
             scrubbed = [ln for ln in out.splitlines()

@@ -59,6 +59,15 @@ def test_unresolvable_scheme_returns_none(monkeypatch):
 def test_load_anchor_chain_missing_config(monkeypatch):
     import hermes_cli.config as hc
 
+    # ORDER DEPENDENCE (found 2026-10-21): config_access keeps an mtime-keyed
+    # last-good cache of the router section, so when another test had already
+    # loaded the real config this pin read the CACHED chain and failed — it
+    # passed alone and failed in a multi-directory run. Clear the cache with
+    # the config, the way every other isolation pin does.
+    from hermes_router.core import config_access as _cac
+
+    for _k in list(getattr(_cac, "_cache", {}) or {}):
+        _cac._cache[_k] = None
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
     chain = anchor_chain.load_anchor_chain()
     assert chain.primary is None and chain.judge is None

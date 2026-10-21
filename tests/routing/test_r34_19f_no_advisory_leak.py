@@ -82,15 +82,22 @@ def test_ordinary_json_in_an_answer_is_left_alone():
     assert "bounce the gateway" in out
 
 
-def test_banner_tail_is_not_promoted_into_the_answer():
+def test_banner_tail_survives_the_strip():
+    """The banner is the RECEIPT for a billed consult — the one thing in the
+    body the user is meant to see. Cutting it here made banner presence depend
+    on the delivery seam re-attaching it, and live the seam does not always
+    fire, so a routed turn could deliver with no banner at all. Pin it aside,
+    sanitise the head, put it back."""
     body = RAW_TAIL_BODY + (
         "\n\n· router · higher-self (frontier) | post-check | "
         "anthropic/claude-sonnet-5.5 | $0.017816 | 24s ·"
     )
     out, _ = strip_advisory_echo(body)
-    assert "router ·" not in out
     assert '"p_failure"' not in out
+    assert '"povs"' not in out
+    assert "· router ·" in out, "the receipt must survive"
     assert out.startswith("The biggest risk is that a bad change")
+    assert out.rstrip().endswith("·")
 
 
 # --- the frame the leak actually shipped under -------------------------------
