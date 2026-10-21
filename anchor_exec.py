@@ -702,6 +702,71 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         return None, None, None, None
 
 
+# ---------------------------------------------------------------------------
+# R34-19N: ONE advisory budget, enforced at the provider call
+#
+# The injected advisory was capped at ADVISORY_CONTENT_MAX (600 chars) AFTER the
+# call returned, so the frontier wrote a full answer and the lane discarded most
+# of it. Live: a consult produced 1,417 output tokens / 2,776 chars / $0.0185 and
+# 600 chars reached the agent — 79% of a paid answer thrown away, every turn.
+# A cap that only binds after billing is not a budget, it is postage.
+#
+# `advisory_char_budget()` is now the single source of truth: it sizes BOTH the
+# request's max_tokens (with finish-the-thought slack) and the injected text, so
+# what we buy is what we may use. Raised from 600 because 600 chars cannot carry
+# an orientation; the request budget is what makes raising it affordable.
+# ---------------------------------------------------------------------------
+
+ADVISORY_CHAR_BUDGET_DEFAULT = 3800
+
+
+def advisory_char_budget() -> int:
+    """Char budget for one injected advisory. Config: `advisory_char_budget`
+    (router section, live-read). Default 1800, clamped to [400, 8000].
+    Never raises."""
+    try:
+        from . import config_access
+        raw = (config_access.router_section() or {}).get("advisory_char_budget")
+        v = int(raw) if raw is not None else ADVISORY_CHAR_BUDGET_DEFAULT
+        return max(400, min(8000, v))
+    except Exception:  # noqa: BLE001
+        return ADVISORY_CHAR_BUDGET_DEFAULT
+
+
+def advisory_max_tokens(char_budget: Optional[int] = None) -> int:
+    """max_tokens that can produce `advisory_char_budget()` characters and still
+    finish its sentence. ~3.2 chars/token for prose, plus slack so the model is
+    not cut mid-thought (a truncated consult reads as a broken consult)."""
+    try:
+        n = int(char_budget if char_budget is not None else advisory_char_budget())
+    except Exception:  # noqa: BLE001
+        n = ADVISORY_CHAR_BUDGET_DEFAULT
+    # Measured over 1,850 anchor consults: natural advisory text median 3,208
+    # chars at median 1,846 billed output tokens -> 1.74 chars per output token
+    # (the billed count carries reasoning overhead, not just visible text).
+    # Sizing on 3.2 chars/token would have truncated half the answers.
+    return max(300, int(n / 1.74) + 120)
+
+
+def apply_advisory_budget(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Bound an advisory CONSULT so the provider cannot generate more than we
+    intend to inject. Never raises, never raises a caller's smaller budget,
+    never touches tiny probes (their max_tokens is the point of the probe)."""
+    try:
+        from .core import budgets as _b
+        out = dict(payload or {})
+        cur = out.get("max_tokens")
+        if _b.is_probe(cur):
+            return out
+        want = advisory_max_tokens()
+        if isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur <= want:
+            return out  # caller already asked for less — honour it
+        out["max_tokens"] = want
+        return out
+    except Exception:  # noqa: BLE001 — budgeting must never break the lane
+        return dict(payload or {})
+
+
 def orientation_ask_cap() -> int:
     """orientation_ask_cap (int, default 4000 = SUBSTANCE_FRAME_ASK_CAP).
     Char cap on the verbatim ask inside the orientation-brief frame.
@@ -971,7 +1036,9 @@ ADVISORY_ONLY_INSTRUCTION = (
 
 # R34-12 item 8: ONE cap value shared by the two advisory seams (8d's
 # in-exec anchor envelope + the ANCHOR INJECTION seam in gate/orchestration).
-ADVISORY_CONTENT_MAX = 600
+# R34-19N: the injected cap is no longer an independent literal — it is the
+# same budget the request was sized from (see advisory_char_budget()).
+ADVISORY_CONTENT_MAX = ADVISORY_CHAR_BUDGET_DEFAULT
 
 
 def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
@@ -1143,6 +1210,14 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                                 _frame += _pov_inst()
                         except Exception:  # noqa: BLE001 — POV never breaks the consult
                             pass
+                        # R34-19N: tell her the budget instead of truncating
+                        # her answer behind her back. A model that knows the
+                        # limit writes a complete thought inside it; one that
+                        # does not gets cut mid-sentence and reads as broken.
+                        _bud = advisory_char_budget()
+                        _frame += ("\n\nLength: keep your ENTIRE answer within "
+                                   f"{_bud} characters. Complete sentences only — "
+                                   "this is delivered verbatim.")
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):
                         # prepend the profile's own compact persona card so the
@@ -1172,7 +1247,18 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                         api_kwargs["messages"] = _msgs
             except Exception:  # noqa: BLE001 — orientation frame is best-effort
                 pass
-        content, cost, pt, ct = anchored_call(endpoint, bounded_replay(api_kwargs))
+        # R34-19N: bound the OUTPUT here, before we are billed for it. The
+        # flash payload carries the agent's own max_tokens (often 12000), which
+        # is how a consult produced 2,776 chars that a 600-char injection cap
+        # then threw away.
+        _bounded = apply_advisory_budget(bounded_replay(api_kwargs))
+        # NOTE: `_log` is a closure local to retry_anchored_async — NOT in scope
+        # here. Calling it raised NameError inside the fail-open wrapper and
+        # silently aborted the consult (live: 59 tests red, PRE billed 0 calls).
+        logger.info("anchor_advisory_budget max_tokens=%s char_budget=%s was=%s",
+                    _bounded.get("max_tokens"), advisory_char_budget(),
+                    api_kwargs.get("max_tokens"))
+        content, cost, pt, ct = anchored_call(endpoint, _bounded)
         if content is None or not str(content).strip():
             # R16-4 (rider 16): anchored consult timed out / failed. The old
             # path just returned None — the flash call passed through and the

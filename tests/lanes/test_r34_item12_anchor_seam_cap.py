@@ -77,12 +77,14 @@ def test_anchor_injection_seam_caps_a_4033_char_advisory(_sink, monkeypatch):
     cap = [r for r in _sink if r[1] == "anchor_advisory_capped"]
     assert cap, [r[1] for r in _sink]
     assert cap[0][2].get("from") == len(BIG)
-    assert cap[0][2].get("to") == 600
+    # R34-19N: the injected cap is the shared advisory budget, not a literal.
+    assert cap[0][2].get("to") == anchor_exec.advisory_char_budget()
     assert cap[0][2].get("session_id") == SID
 
     fired = [r for r in _sink if r[1] == "anchor_route_fired"]
     assert fired
-    assert fired[0][2].get("anchor_chars") == 600  # anchor_chars=4033 impossible
+    # the oversized advisory can no longer reach the seam at all
+    assert fired[0][2].get("anchor_chars") == anchor_exec.advisory_char_budget()
 
 
 def test_small_advisory_is_not_capped(_sink, monkeypatch):

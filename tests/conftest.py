@@ -32,6 +32,25 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_daily_spend(monkeypatch, tmp_path):
+    """The suite must not depend on how much this profile has ACTUALLY spent
+    today. `cap_check` reads the live spend ledger, so once the real number
+    crosses `daily_cap_usd` every consult returns ("cap_blocked", …) and ~42
+    envelope/consult tests go red for a reason that has nothing to do with the
+    code under test (live 2026-10-21: conductor at $2.0009 of $2.00, 42 red).
+    Tests that exercise the cap patch `today_spend` themselves and win."""
+    from hermes_router import anchor_chain
+    from hermes_router.core import routing_caps
+    # Redirect the STORAGE, never the arithmetic: capping tests must still be
+    # able to record spend and assert a denial, while an unrelated envelope test
+    # must not inherit whatever this profile has really spent today.
+    lp = str(tmp_path / "anchor-spend-test.json")
+    monkeypatch.setattr(anchor_chain, "_LEDGER_PATH_OVERRIDE", lp)
+    cp = str(tmp_path / "routing-caps-test.json")
+    monkeypatch.setattr(routing_caps, "_STATE_PATH_OVERRIDE", cp)
+
+
+@pytest.fixture(autouse=True)
 def _two_vote_gate_bypass():
     """R33-D5: the two-vote confirm gate is DELETED — nothing to bypass.
     Kept as a no-op autouse fixture so legacy batteries that assumed the

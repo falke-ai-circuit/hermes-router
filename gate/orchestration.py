@@ -2090,7 +2090,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 if _dbcap.debug_banner_level() >= 1:
                     _raw_answer = envelope.get("answer")
                     _raw_n = len(str(_raw_answer or ""))
-                    _cap = int(getattr(_axcap, "ADVISORY_CONTENT_MAX", 600) or 600)
+                    # R34-19N: same source of truth the request was sized
+                    # from — what we bought is what we may inject.
+                    _cap = int(_axcap.advisory_char_budget())
                     if _raw_n > _cap:
                         envelope["answer"] = str(_raw_answer or "")[:_cap]
                         envelope["advisory_truncated"] = True
