@@ -364,6 +364,33 @@ class BannerLifecycle:
         except Exception:  # noqa: BLE001
             return 45.0
 
+    def _newest_persisted_assistant_row_ts(self, session_id: str) -> float:
+        """Wall-clock timestamp of the newest persisted assistant row for this
+        session, 0.0 when unknown. Used to prove a row was written AFTER the
+        banner was parked before the fallback repairs anything."""
+        try:
+            import os
+            import sqlite3
+
+            from ...core import canonical as _canon
+
+            db_path = _canon._state_db_path()
+            if not db_path or not os.path.exists(db_path):
+                return 0.0
+            conn = sqlite3.connect(db_path, timeout=2.0)
+            try:
+                cur = conn.execute(
+                    "SELECT timestamp FROM messages WHERE session_id = ?"
+                    " AND role = 'assistant' ORDER BY id DESC LIMIT 1",
+                    (str(session_id or ""),),
+                )
+                row = cur.fetchone()
+            finally:
+                conn.close()
+            return float(row[0]) if row and row[0] else 0.0
+        except Exception:  # noqa: BLE001 — never raises
+            return 0.0
+
     def _newest_persisted_assistant_row(self, session_id: str) -> str:
         """R20-D3: newest persisted assistant row content for this session
         from state.db. Read-only; "" on any failure. Never raises."""
@@ -463,6 +490,34 @@ class BannerLifecycle:
                                 turn_no=_park_turn, session_id=sid,
                                 **({"park_event_seq": int(_rec_open["event_seq"])}
                                    if _rec_open.get("event_seq") else {}))
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "banner_capture_fallback event log failed")
+                        return
+                # R34-19f5: the row must be NEWER than the park. On reviewer
+                # (20261021_152814_ec1702) the turn number had already advanced
+                # when the 45s watcher fired, so the turn-open guard did not
+                # hold and the watcher still repaired the PREVIOUS turn's row
+                # and popped the slot — the delivery edge then logged
+                # `parked=False reason=no_park_this_turn` and the user got no
+                # receipt. A row written before the banner existed cannot be
+                # the row the banner belongs to.
+                _parked_at = 0.0
+                try:
+                    _parked_at = float(_rec_open.get("parked_at") or 0.0)
+                except Exception:  # noqa: BLE001
+                    _parked_at = 0.0
+                if _parked_at:
+                    _row_ts = self._newest_persisted_assistant_row_ts(sid)
+                    if _row_ts and _row_ts < _parked_at:
+                        try:
+                            _log_route(
+                                "POST",
+                                event_detail="banner_capture_fallback_deferred",
+                                outcome="no_row_after_park",
+                                edge="capture_fallback",
+                                parked_at=round(_parked_at, 3),
+                                row_ts=round(_row_ts, 3), session_id=sid)
                         except Exception:  # noqa: BLE001
                             logger.exception(
                                 "banner_capture_fallback event log failed")

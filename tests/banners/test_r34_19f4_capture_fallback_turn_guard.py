@@ -94,3 +94,34 @@ def test_no_park_record_means_no_deferral(monkeypatch):
     rows = _run(monkeypatch, sid, BANNER, turn=4, sig="ask-abc")
     kinds = [e for e, _ in rows]
     assert "banner_render_captured" in kinds, kinds
+
+
+def test_a_row_older_than_the_park_is_not_repaired(monkeypatch):
+    """R34-19f5. The turn-open guard is not enough: on reviewer the turn number
+    had advanced by the time the 45s watcher fired, so it repaired the PREVIOUS
+    turn's row and popped the slot — delivery then found no park. A row written
+    BEFORE the banner was parked cannot be the row it belongs to."""
+    sid = "s-f5-old-row"
+    captured = _park(sid, turn=4)
+    db._PARK_RECORDS[sid]["parked_at"] = 1_000.0
+    monkeypatch.setattr(lc.BannerLifecycle, "_newest_persisted_assistant_row_ts",
+                        lambda self, s2: 900.0)  # older than the park
+    rows = _run(monkeypatch, sid, captured, turn=5, sig="ask-zzz")
+    kinds = [e for e, _ in rows]
+    assert "banner_capture_fallback_deferred" in kinds, kinds
+    deferred = [f for e, f in rows if e == "banner_capture_fallback_deferred"][0]
+    assert deferred["outcome"] == "no_row_after_park"
+    assert db._ANCHOR_BANNERS.get(sid) == captured
+    assert "banner_render_captured" not in kinds
+
+
+def test_a_row_newer_than_the_park_is_repaired(monkeypatch):
+    sid = "s-f5-new-row"
+    captured = _park(sid, turn=4)
+    db._PARK_RECORDS[sid]["parked_at"] = 900.0
+    monkeypatch.setattr(lc.BannerLifecycle, "_newest_persisted_assistant_row_ts",
+                        lambda self, s2: 1_000.0)  # written after the park
+    rows = _run(monkeypatch, sid, captured, turn=5, sig="ask-zzz")
+    kinds = [e for e, _ in rows]
+    assert "banner_render_captured" in kinds, kinds
+    assert sid not in db._ANCHOR_BANNERS
