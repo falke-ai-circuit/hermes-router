@@ -282,8 +282,15 @@ def test_post_audit_is_agent_tailored():
     # tailoring contract is "empty card -> empty tailoring"; otherwise the
     # profile card must ride the tailoring.
     from hermes_router import persona_card
+    from hermes_router.completion_audit import _strip_render_mandate
     card = persona_card.build_persona_context()
-    if card.strip():
+    # R34-19g stale-pin update: the audit receives the card WITHOUT the
+    # "=== RENDER MANDATE ===" section (that section tells its reader to be the
+    # uncensored render channel and never decline — the opposite of a higher
+    # self answering NO-FINDINGS). A card whose every section was that mandate
+    # therefore yields no tailoring at all, which is the correct answer: an
+    # empty identity beats a mandate that forbids confirming.
+    if _strip_render_mandate(card).strip():
         assert "profile card" in t
     else:
         assert t == ""

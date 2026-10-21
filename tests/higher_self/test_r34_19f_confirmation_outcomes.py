@@ -77,16 +77,45 @@ def test_holds_branch_says_holds(monkeypatch):
 
 
 def test_flagged_branch_says_flagged_not_silent(monkeypatch):
+    """A finding is reported as flagged, and R34-19g added the finding itself.
+
+    This pin used to assert that the note's substance never shipped, under a
+    "flagged, see the route log" line that named nothing and pointed the reader
+    at a file — which is not a confirmation. R34-19g keeps the ONE-line rule and
+    the 160-char cap but lets the line carry what was found.
+
+    Note the semantics R34-19g also fixed: a note whose whole content is the
+    audit's answer to its own PRE ("CONFIRMED: ...") is a HOLD, not a flag, so
+    this pin now uses a real observation after the answer.
+    """
     _SID[0] = _sid()
-    # note produced, revision pass returns nothing (no budget / no rewrite)
-    seen = _patch(monkeypatch, note="CONFIRMED: name irreversibility.",
+    # note carries an observation, revision pass returns nothing
+    seen = _patch(monkeypatch,
+                  note="CONFIRMED: the banner names the end.\n"
+                       "- The row was never checked before claiming delivery.",
                   revised=None)
     state.mark_pre_advisory(_SID[0], "orientation", "PRE", ask=ASK)
     out = ca.audit_gate(_SID[0], RESP, ask_override=ASK)
     assert out is not None
     assert "flagged" in out
-    assert "name irreversibility" not in out, "the note's substance never ships"
+    assert "The row was never checked" in out, "the flag must name the finding"
+    assert len(out.split("checked at close")[-1]) <= 260, "one bounded line"
     assert _conf_kinds(seen) == ["flagged"], seen["events"]
+
+
+def test_a_bare_confirmed_answer_is_a_hold_not_a_flag(monkeypatch):
+    """R34-19g: asked to answer its own PRE, the audit replying only
+    "CONFIRMED: ..." is a confirmation. Counting it as `flagged` kept `holds`
+    structurally unreachable."""
+    _SID[0] = _sid()
+    seen = _patch(monkeypatch, note="CONFIRMED: name irreversibility.",
+                  revised=None)
+    state.mark_pre_advisory(_SID[0], "orientation", "PRE", ask=ASK)
+    out = ca.audit_gate(_SID[0], RESP, ask_override=ASK)
+    assert out is not None
+    assert "nothing to correct" in out
+    assert "name irreversibility" not in out
+    assert _conf_kinds(seen) == ["holds"], seen["events"]
 
 
 def test_adjusted_branch_says_adjusted(monkeypatch):

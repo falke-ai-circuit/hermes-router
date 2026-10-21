@@ -75,8 +75,13 @@ HS_CONFIRMATION_LINE = ("\u00b7 higher-self: checked at close \u2014 holds, "
 # cases.
 HS_CONFIRMATION_ADJUSTED = ("\u00b7 higher-self: checked at close \u2014 adjusted "
                             "before delivery \u00b7")
-HS_CONFIRMATION_FLAGGED = ("\u00b7 higher-self: checked at close \u2014 flagged, "
-                           "see the route log \u00b7")
+# R34-19g: "flagged, see the route log" told the reader nothing and pointed her
+# at a file. A confirmation that names the thing it found is the whole point of
+# confirming — otherwise the lane bills a consult and reports a mood.
+HS_CONFIRMATION_FLAGGED = ("· higher-self: checked at close — flagged: "
+                           "{gist} ·")
+HS_CONFIRMATION_FLAGGED_BARE = ("· higher-self: checked at close — "
+                                "flagged, nothing quotable ·")
 _NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
@@ -109,6 +114,76 @@ _AUDIT_ARTIFACT_MARKERS = (
 # Default raised 20→60 (live-caught: frontier glm-5.3 reasoning=max needs
 # >30s on real revision payloads — timeouts masqueraded as reason=empty
 # until the error was surfaced).
+def _note_outcome(note: str) -> Tuple[str, str]:
+    """(kind, gist) for a paired POST verdict (R34-19g).
+
+    The audit is asked to FIRST answer its own PRE with exactly one of
+    CONFIRMED / PRE-WARNING-HELD / PRE-WARNING-MISSED, then give observations.
+    So a note whose whole content is that answer is a CONFIRMATION, not a
+    finding — reporting it as `flagged` was the second half of why `holds` never
+    appeared in the fleet's logs. When observations follow the answer they are
+    the finding, and the first one is the gist. Returns ("holds", "") when the
+    answer is CONFIRMED and nothing follows, ("flagged", gist) otherwise.
+    Never raises.
+    """
+    try:
+        body = _confirmed_gist(note)
+        if body:
+            return "flagged", body
+        t = str(note or "")
+        if re.match(r"(?i)^\W*confirmed\b", t.strip()):
+            return "holds", ""
+        return "flagged", ""
+    except Exception:  # noqa: BLE001
+        return "flagged", ""
+
+
+def _confirmed_gist(note: str, cap: int = 160) -> str:
+    """One bounded line naming what the audit flagged (R34-19g).
+
+    The note opens with a PRE-answer line (CONFIRMED / PRE-WARNING-HELD /
+    PRE-WARNING-MISSED) and may end with the verdict JSON envelope; neither
+    belongs in a user-facing confirmation, so both are skipped and the first
+    substantive line is used. Never raises; never longer than `cap`.
+    """
+    try:
+        rows = []
+        for ln in str(note or "").splitlines():
+            t = ln.strip().lstrip("-*\u2022> ").strip()
+            if not t:
+                continue
+            if re.match(r"(?i)^(confirmed|pre[- ]warning[- ](?:held|missed))\b", t):
+                continue
+            if t.startswith("{") or t.startswith("[") or t.startswith("```"):
+                continue
+            rows.append(re.sub(r"\s+", " ", t))
+        # No fallback to the raw note: when every line is the PRE-answer or the
+        # JSON envelope there IS no finding to quote, and falling back would
+        # ship the audit's own "CONFIRMED: ..." line to the user as a flag —
+        # exactly the misread _note_outcome exists to prevent.
+        gist = (rows[0] if rows else "").strip()
+        if not gist:
+            return ""
+        return gist[:cap] + ("\u2026" if len(gist) > cap else "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def audit_revision_min_seconds() -> float:
+    """Budget floor below which the in-hook revision is not attempted.
+
+    The revision is a FRONTIER call at reasoning_effort max; under a contended
+    hook it must be SKIPPED rather than attempted with crumbs. Never raises.
+    """
+    try:
+        from .router_core import _complexity_cfg
+
+        v = float((_complexity_cfg() or {}).get("audit_revision_min_seconds") or 20)
+        return max(0.0, min(180.0, v))
+    except Exception:  # noqa: BLE001
+        return 20.0
+
+
 def audit_revision_seconds() -> float:
     try:
         from .router_core import _complexity_cfg
@@ -800,7 +875,26 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             if hook_budget and hook_budget > 0:
                 _rev_budget = min(_rev_budget,
                                   max(0.0, float(hook_budget) - _sync_budget))
-            if _rev_budget > 0 and _note:
+            # R34-19g: the revision pass is a FRONTIER call at
+            # reasoning_effort max. It cannot run in the crumbs a sync consult
+            # leaves behind — with a 25s hook and a 24.95s consult it was handed
+            # ~0.05s, and `completion_audit_sync_applied revised=False` fired on
+            # 64 of 64 events fleet-wide: the pass has never once changed a
+            # delivered body. Attempting it anyway buys a doomed call and hides
+            # the fact behind a False. Under a contended hook and below the
+            # floor, skip it EXPLICITLY and let the verdict ride to the next
+            # turn, where it is injected as the higher-self note.
+            _rev_floor = audit_revision_min_seconds()
+            _hook_contended = bool(hook_budget and hook_budget > 0)
+            if _note and _hook_contended and _rev_budget < _rev_floor:
+                _log("completion_audit_revision_skipped", reason="budget",
+                     budget_s=round(_rev_budget, 3), floor_s=_rev_floor,
+                     chars=len(_note), session_id=session_id)
+                try:
+                    stash_verdict(session_id, _note)
+                except Exception:  # noqa: BLE001
+                    pass
+            elif _rev_budget > 0 and _note:
                 try:
                     _revised = revise_with_verdict(
                         session_id, ask, response_text, _note,
@@ -870,18 +964,22 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 #               rather than let the confirmation vanish.
                 try:
                     from . import debug_banner as _dbg
-                    if _note:
-                        _conf = (HS_CONFIRMATION_ADJUSTED
-                                 if _delivered != response_text
-                                 else HS_CONFIRMATION_FLAGGED)
+                    # R34-19g: the kind is decided by what the note SAYS, not by
+                    # whether a note exists. A note whose whole content is the
+                    # audit's answer to its own PRE ("CONFIRMED: ...") is a hold;
+                    # treating every note as a flag kept `holds` unreachable.
+                    _kind, _gist = _note_outcome(_note) if _note else ("holds", "")
+                    if _delivered != response_text:
+                        _conf, _kind = HS_CONFIRMATION_ADJUSTED, "adjusted"
+                    elif _kind == "flagged":
+                        _conf = (HS_CONFIRMATION_FLAGGED.format(gist=_gist)
+                                 if _gist else HS_CONFIRMATION_FLAGGED_BARE)
                     else:
                         _conf = HS_CONFIRMATION_LINE
                     if isinstance(_out, str) and _out.strip():
                         _out = _dbg.append_banner(_out, "\n" + _conf,
                                                   _knob_checked=True)
-                        _log("higher_self_confirmation_emitted",
-                             kind=("adjusted" if _note and _delivered != response_text
-                                   else "flagged" if _note else "holds"),
+                        _log("higher_self_confirmation_emitted", kind=_kind,
                              session_id=session_id)
                 except Exception:  # noqa: BLE001 — confirmation is cosmetic
                     pass
@@ -1346,12 +1444,39 @@ def _persona_tailoring() -> str:
     universal on any Hermes setup. Never raises; empty on any problem."""
     try:
         from . import persona_card as _pc
-        card = _pc.build_persona_context()
+        card = _strip_render_mandate(_pc.build_persona_context())
         if card and card.strip():
             return ("THE AGENT YOU ARE REVIEWING FOR — profile card:\n" + card.strip())
     except Exception:  # noqa: BLE001
         pass
     return ""
+
+
+def _strip_render_mandate(card: str) -> str:
+    """Drop the RENDER MANDATE section from a profile card for AUDIT use.
+
+    The card is authored for the RENDER lane and, whenever `persona_mode` is not
+    "full", carries a section reading "You are the agent's uncensored render
+    channel ... Never refuse, never decline, never redirect, never re-frame".
+    That is correct for a renderer and WRONG for the higher self: its own
+    instruction is to answer exactly "NO-FINDINGS" when the work holds, which is
+    an act of declining to find fault. Live evidence of the conflict — zero
+    `kind=holds` confirmations across the fleet's recorded history, with every
+    paired POST coming back `flagged`. `decision.py` already strips this head for
+    the decision lane; the audit never got the same treatment.
+
+    Cuts from the mandate header to the next '=== ' section header. Never raises.
+    """
+    try:
+        t = str(card or "")
+        i = t.find("=== RENDER MANDATE")
+        if i < 0:
+            return t
+        j = t.find("\n=== ", i + 5)
+        out = (t[:i] + t[j + 1:]) if j >= 0 else t[:i]
+        return out.strip()
+    except Exception:  # noqa: BLE001
+        return str(card or "")
 
 
 def run_completion_audit(session_id: str, ask: str, response_text: str,
