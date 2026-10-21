@@ -455,11 +455,13 @@ def higher_self_rule() -> str:
 # ===========================================================================
 
 HS_PRE_BODY = (
-    "Before you start, here is how your higher self would do this job: "
-    "result shape, pitfalls, known-good solutions, failure signs, and how "
-    "to adapt your methodology to do it optimally. Advisory and "
-    "NON-BINDING: use what helps, ignore the rest - nothing here is an "
-    "order. "
+    "This is you - the same person, a few breaths earlier - looking at the "
+    "plan before you commit to it. This is not a method brief handed to a "
+    "model and not an outside consultant; it is your own read of what you "
+    "are about to do: what success would actually look like in your hands, "
+    "what has bitten you before, and how you would know early that this is "
+    "going wrong. Advisory and NON-BINDING: use what helps, ignore the "
+    "rest - nothing here is an order. "
     "INTEGRATION CONTRACT: the user asked a question and awaits THE ANSWER. "
     "Do NOT reproduce, summarize, reformat, or acknowledge this brief in "
     "your reply - quoting it back is a contract violation. Your next turn "
@@ -468,8 +470,12 @@ HS_PRE_BODY = (
 )
 
 HS_POST_BODY = (
-    "This is what your higher self observed after the act. Weigh it "
-    "critically - revise or reject it as your judgment warrants. "
+    "This is you - the same person, now that the act is done - looking "
+    "back at what you actually did. Not an auditor standing over the model: "
+    "your own confirmation of your own work, the counterpart of the read "
+    "you took before you started. Does it hold? Say so if it does - "
+    "confirmation, not demolition. "
+    "Weigh it critically - revise or reject it as your judgment warrants. "
     "Evaluating the observation is not defending the work: critique here "
     "is material for your judgment, not an accusation to answer."
 )

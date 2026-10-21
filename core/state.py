@@ -294,7 +294,7 @@ def mark_pre_fired(session_id: str, turn_n: int = 0) -> None:
         pass
 
 
-def pre_fired_this_turn(session_id: str, current_turn: int = None,
+def pre_fired_this_turn(session_id: str, current_turn: Optional[int] = None,
                         window_s: float = 120.0) -> bool:
     """True when a PRE consult staged for this session and the POST gate is
     evaluating the SAME substantive turn (mutual exclusion, one frontier call
@@ -337,6 +337,85 @@ def post_audited_this_turn(session_id: str, window_s: float = 120.0) -> bool:
         return bool(ts and now - ts <= window_s)
     except Exception:  # noqa: BLE001
         return False
+
+
+# R34-19 (Goran-direct, PRE->POST pairing): the PRE orientation advisory is
+# the thing the POST confirmation answers. The record exists ONLY when the
+# PRE consult actually produced text (cap-blocked / failed / never staged =>
+# no record => the POST falls back to its own gate and logs no_pre). One
+# record per session, overwritten by a newer PRE, consumed by the paired
+# POST — that is the hard cap: one PRE, one paired POST per turn.
+_PRE_ADVISORY: Dict[str, dict] = {}
+_PRE_ADVISORY_TTL = 300.0
+
+
+def _ask_sig(ask: str) -> str:
+    """Normalized ask fingerprint: binds a PRE record to the turn that
+    produced it, so a POST for a DIFFERENT ask never consumes it."""
+    try:
+        import hashlib
+
+        norm = " ".join(str(ask or "").split())[:4000]
+        return hashlib.sha1(norm.encode("utf-8", "ignore")).hexdigest()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def mark_pre_advisory(session_id: str, trigger: str, text: str,
+                      turn_n: int = 0, cap: int = 2400,
+                      ask: str = "") -> Optional[dict]:
+    """Record the PRE advisory for the turn so its POST confirmation can
+    answer it. `text` is bounded by `cap` (the caller reuses the audit
+    payload cap — never an unbounded injection). Never raises; returns the
+    stored record (or None when there is nothing to store)."""
+    try:
+        body = str(text or "").strip()
+        # No session id => no turn identity => nothing to pair. Storing under
+        # a falsy key makes every anonymous turn collide into one record and
+        # hands a later POST a PRE it never had (observed as suite-wide
+        # order-dependent failures). The truthful outcome is no record, so
+        # the POST falls back to its own gate and logs paired=False no_pre.
+        if not body or not (session_id or "").strip():
+            return None
+        rec = {"ts": time.time(), "trigger": str(trigger or "")[:80],
+               "text": body[:max(200, int(cap or 2400))],
+               "turn": int(turn_n or 0), "ask_sig": _ask_sig(ask)}
+        with _TURN_FLAG_LOCK:
+            _PRE_ADVISORY[session_id or ""] = rec
+        return rec
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def pre_advisory(session_id: str, window_s: float = _PRE_ADVISORY_TTL,
+                 ask: Optional[str] = None) -> Optional[dict]:
+    """The PRE advisory awaiting its POST confirmation, or None. Read-only
+    (the paired POST clears it after it fires — hard cap one POST). When
+    `ask` is given, a record taken for a DIFFERENT ask is not a pairing."""
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            rec = _PRE_ADVISORY.get(session_id or "")
+        if not rec:
+            return None
+        if now - float(rec.get("ts") or 0) > window_s:
+            clear_pre_advisory(session_id)
+            return None
+        if ask is not None and rec.get("ask_sig") and _ask_sig(ask) != rec["ask_sig"]:
+            return None
+        return rec
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def clear_pre_advisory(session_id: str) -> None:
+    """Consume the pairing record (called once the paired POST fires)."""
+    try:
+        with _TURN_FLAG_LOCK:
+            _PRE_ADVISORY.pop(session_id or "", None)
+    except Exception:  # noqa: BLE001
+        pass
+
 
 
 def last_staged_consult(session_id: str) -> Tuple[Optional[float], str]:

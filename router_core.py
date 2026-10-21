@@ -1931,6 +1931,10 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
             "route_id": decision.route_id,
             "task_id": decision.task_id,
             "mode": decision.mode,
+            # R34-19: the trigger that staged this consult rides the record so
+            # the PRE pair event and the POST confirmation can name it
+            # (complexity_orientation / risk_* / declared ...).
+            "reason": str(getattr(decision, "reason", "") or ""),
             "orientation": bool(getattr(decision, "orientation", False)),
             "role": role,
             "endpoint": ep,

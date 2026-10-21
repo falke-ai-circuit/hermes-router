@@ -171,5 +171,6 @@ def test_orientation_frame_in_payload():
     out = ax.maybe_execute_anchored("sx", kw)
     assert out and out[0] == "done"
     txt = called["msgs"][-1]["content"]
-    assert "ORIENTATION BRIEF" in txt and "failure" in txt and "the ask" in txt.lower()
+    assert ("looking at the plan before she commits" in txt
+            and "failure signs" in txt and "the ask" in txt.lower())
     monkey.undo()

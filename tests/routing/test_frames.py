@@ -150,11 +150,15 @@ def test_pre_post_share_frame_differ_body(monkeypatch):
     post = frames.reflection_advisory("audit", "p", "r1", "none", "VERDICT")
     frame = frames.higher_self_frame_sentence("observer")
     assert frame in pre and frame in post  # ONE frame, both bodies
-    assert "how your higher self would do this job" in pre
+    # R34-19: same person at two times — PRE reads her own plan before she
+    # commits, POST confirms her own act (framing changed, contracts did not).
+    assert "the same person, a few breaths earlier" in pre
+    assert "looking at the plan before you commit to it" in pre
     assert "NON-BINDING" in pre
     assert "INTEGRATION CONTRACT" in pre
     assert "quoting it back is a contract violation" in pre
-    assert "observed after the act" in post
+    assert "the same person, now that the act is done" in post
+    assert "confirmation, not demolition" in post
     assert "revise or reject it as your judgment warrants" in post
     assert "Evaluating the observation is not defending the work" in post
     assert "ANSWER" in pre and "VERDICT" in post

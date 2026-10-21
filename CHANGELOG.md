@@ -1,3 +1,41 @@
+## 5.5.0 — 2026-10-21 (R34-19 — the higher self is one person at two times)
+
+- R34-19-1 (FRAMING): PRE and POST now read as the SAME PERSON checking on
+  herself at two times — PRE before she commits ("you are her own higher self
+  — the same person, a few breaths earlier — looking at the plan before she
+  commits to it"), POST after she acted ("the same person, now that the act is
+  done ... your own confirmation of your own work ... confirmation, not
+  demolition"). Not a method brief at one end and an external audit at the
+  other. Every safety clause is unchanged: non-binding advisory, the
+  no-quote/anti-echo integration contract, no-delegation, fail-open, one call.
+- R34-19-2 (FIVE VANTAGES, STILL ONE CALL): `_pov_instruction()` carries
+  practitioner / outsider / skeptic / world-knowledge / the person inside the
+  single prompt. World-knowledge must CHALLENGE with prior art and established
+  failure modes, not merely observe; the person vantage names what the person
+  acting has at stake. `povs` rows extend to five stance values; legacy
+  three-stance rows (and any future stance) still parse — the parser validates
+  shape, not vocabulary.
+- R34-19-3 (IDENTITY, NOT A FEATURE): `frontier.pov_mode` defaults to
+  `always`, so every consult at either end carries the vantage block. This
+  adds ZERO billed calls — the block rides the same single call. `auto` and
+  `off` remain opt-outs (dual config blocks: `uncensored_router:` legacy read
+  first, then `hermes_router:`).
+- R34-19-4 (PRE→POST PAIRING): a PRE that produced an advisory is recorded as
+  the thing its POST confirmation answers; that POST fires for the same turn
+  regardless of `audit_mode` (off included). Telemetry: `higher_self_pair
+  stage=pre` at the PRE, `higher_self_pair stage=post paired=True
+  pre_trigger=<trigger>` when the paired POST fires, `paired=False` with
+  `reason=no_pre` when the POST fires on its own gate. A PRE that was
+  cap-blocked or failed writes nothing — there is nothing to pair. Hard cap:
+  one PRE and one POST per turn (the pairing record is consumed on fire; the
+  once-per-task marker still binds, and a blocked POST consumes the pairing
+  instead of cascading).
+- R34-19-5 (POST ANSWERS THE PRE): the paired payload carries the PRE brief
+  (bounded by the existing `audit_max_chars` cap) and requires exactly one of
+  CONFIRMED / PRE-WARNING-HELD / PRE-WARNING-MISSED before the normal
+  observations. NO-FINDINGS stays available, and the pairing is logged before
+  the note is read, so telemetry keeps it either way.
+
 ## 5.4.9 — 2026-10-21 (R34-18 — the strip actually strips, and the banner tells delivery truth)
 
 - R34-18-1 (STRIP NO-OP, session 20261021_074100_e9a8eb): R34-17's core fix held

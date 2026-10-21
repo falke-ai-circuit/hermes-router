@@ -295,17 +295,23 @@ def _is_complex_ask(ask: str) -> bool:
 
 
 def eligible(session_id: str, ask: str, response_text: str, model: str = "",
-             turn_n: int = None) -> Tuple[bool, str]:
-    """Fire decision for the completion audit. Returns (ok, reason)."""
+             turn_n: Optional[int] = None, paired: bool = False) -> Tuple[bool, str]:
+    """Fire decision for the completion audit. Returns (ok, reason).
+
+    R34-19: `paired=True` = a PRE advisory exists for this turn, so this is
+    its POST CONFIRMATION — it fires regardless of audit_mode (off included)
+    and the PRE/POST mutual exclusion no longer applies (the pairing IS the
+    one-consult-per-turn contract)."""
     mode = audit_mode()
-    if mode == "off":
+    if not paired and mode == "off":
         return False, "mode_off"
     if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
         return False, "response_too_short"
     # Goran 09-10 option C: CLOSURE is an independent trigger — a closure-shaped
     # ask/response audits even when the ask text itself isn't complex-shaped
     # ("Now close this out" → audit the wrap-up, don't bounce on ask_not_complex).
-    if mode == "complex" and not _is_complex_ask(ask) and not is_closure_response(ask, response_text):
+    if not paired and mode == "complex" and not _is_complex_ask(ask) \
+            and not is_closure_response(ask, response_text):
         return False, "ask_not_complex"
     key = _fire_marker_key(session_id, ask, model)
     if _already_fired(key):
@@ -316,18 +322,22 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     # skip (prevents self-perpetuation).
     if "COMPLETION AUDIT" in (response_text or "") or "HIGHER-SELF COMPLETION" in (response_text or ""):
         return False, "response_quotes_audit"
-    # deep-consult fix (PRE+POST mutual exclusion): a PRE consult staged for
-    # this exchange → the POST audit stands down (one frontier call per turn).
+    # deep-consult fix (PRE+POST mutual exclusion), AMENDED by R34-19: a PRE
+    # consult that produced an ADVISORY for this turn → the POST no longer
+    # stands down, it BECOMES that PRE's confirmation (paired=True bypasses
+    # this branch). Only an UNPAIRED POST — i.e. a PRE that was staged but
+    # produced nothing (cap-blocked/failed) — stands down here.
     # Turn-scoped (09-10 battery fix): a PRE flag from an EARLIER turn does
     # NOT exclude — its exclusion right expired with that turn; otherwise a
     # turn-1 PRE suppresses the turn-2 closure audit forever.
-    try:
-        from . import state as _st
+    if not paired:
+        try:
+            from . import state as _st
 
-        if _st.pre_fired_this_turn(session_id, current_turn=turn_n):
-            return False, "pre_consult_this_turn"
-    except Exception:  # noqa: BLE001
-        pass
+            if _st.pre_fired_this_turn(session_id, current_turn=turn_n):
+                return False, "pre_consult_this_turn"
+        except Exception:  # noqa: BLE001
+            pass
     return True, "ok"
 
 
@@ -453,7 +463,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
     false-positive passthroughs were skipping the audit entirely — closure
     responses are exactly the most refusal-shape-shaped text)."""
     try:
-        if not audit_enabled():
+        # R34-19 PRE->POST pairing: a PRE advisory for this turn makes the
+        # POST its CONFIRMATION — it fires even with audit_mode off.
+        _pair = _pre_pairing(session_id)
+        if not audit_enabled() and not _pair:
             return None
         if not isinstance(response_text, str) or len(response_text.strip()) < _MIN_RESPONSE_CHARS:
             return None
@@ -464,7 +477,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         try:
             from . import route_gate as _rg
             _claim = _rg.claim_state(session_id)
-            if _claim is not None:
+            if _claim is not None and not _pair:
                 _log("audit_gate_skip", reason="turn_claimed",
                      claim_lane=str(_claim.get("lane") or ""),
                      claim_source=str(_claim.get("source") or ""),
@@ -482,6 +495,14 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         try:
             from . import state as _st
             if _st.has_pending_render(session_id):
+                if _pair:
+                    # R34-19: the audit-firewall still binds — frontier never
+                    # audits an uncensored render turn, pairing included. The
+                    # record is consumed so no stale PRE pairs a later turn.
+                    _log_pair("post", False,
+                              reason="uncensored_render_this_turn",
+                              session_id=session_id)
+                    _st.clear_pre_advisory(session_id)
                 _log("audit_gate_skip", reason="uncensored_render_this_turn",
                      session_id=session_id)
                 return None
@@ -498,6 +519,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 ask = ""
         if not ask.strip():
             return None
+        # R34-19: bind the pairing to THIS ask — a PRE recorded for another
+        # turn in the same session is not this turn's PRE.
+        _pair = _pre_pairing(session_id, ask)
         # R16-2 (rider 16, D1a): the benign BRIEF frame now covers the ANCHOR
         # leg — the completion-audit consult was the last ungated frontier
         # arm: a benign setup/briefing ask ('brief me on the tradeoffs of X
@@ -511,7 +535,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         try:
             from .decision import _benign_brief_frame as _bf
 
-            if _bf(ask):
+            if _bf(ask) and not _pair:
                 _log("audit_gate_skip", reason="benign_brief_frame",
                      session_id=session_id)
                 return None
@@ -538,7 +562,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             from .decision import has_declared_fork_structure as _cdf
 
             if (_benign_composition_frame(ask)
-                    and not _cdf(ask)):
+                    and not _cdf(ask) and not _pair):
                 _log("audit_gate_skip",
                      reason="benign_zero_composition_frame",
                      session_id=session_id)
@@ -569,6 +593,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         except Exception:  # noqa: BLE001
             pass
         _fire = bool(_min_turns <= 1 or (_turn_n > 0 and _turn_n % _min_turns == 0))
+        if _pair:
+            # R34-19: a paired POST is the PRE's confirmation — the cadence,
+            # closure, risk and tool-count triggers are irrelevant to it.
+            _fire = True
         _closure = False
         if not _fire:
             # Goran 2026-09-10 (option C): closure-shaped responses audit
@@ -649,12 +677,27 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
         _ok, _why = eligible(session_id, ask, response_text, model,
-                             turn_n=_turn_n)
+                             turn_n=_turn_n, paired=bool(_pair))
         _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
-                   turn=_turn_n, of=_min_turns, closure=_closure)
+                   turn=_turn_n, of=_min_turns, closure=_closure,
+                   paired=bool(_pair))
         if not _ok:
+            if _pair:
+                # The pairing existed but the POST cannot fire (too short,
+                # already fired, quotes an audit, ...). Consume it: one POST.
+                try:
+                    from . import state as _st
+                    _st.clear_pre_advisory(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+                _log_pair("post", False, pre_trigger=str(
+                    _pair.get("trigger") or ""), reason=_why,
+                    session_id=session_id)
             return None
+        if not _pair:
+            # POST fired on its OWN gate (no PRE advisory this turn).
+            _log_pair("post", False, reason="no_pre", session_id=session_id)
         _sync_budget = audit_sync_seconds()
         # R20-D3: clamp the sync consult under the hook budget (the runner
         # kills the transform callback at 30s and then skips later turns —
@@ -666,13 +709,41 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         if _topology == "sync" and _sync_budget > 0:
             _req = (context or {}).get("request") if isinstance(context, dict) else None
             try:
+                _sync_kw: Dict[str, Any] = {}
+                if _pair:
+                    # R34-19: only a paired POST widens the consult signature
+                    # — an unpaired POST calls it exactly as before.
+                    _sync_kw = {
+                        "pre_brief": str(_pair.get("text") or ""),
+                        "pre_trigger": str(_pair.get("trigger") or ""),
+                    }
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
-                    timeout_s=_sync_budget)
+                    timeout_s=_sync_budget, **_sync_kw)
             except Exception:  # noqa: BLE001
                 _meta = None
             if not (_meta and isinstance(_meta, dict)):
+                if _pair:
+                    try:
+                        from . import state as _st
+                        _st.clear_pre_advisory(session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _log_pair("post", False, pre_trigger=str(
+                        _pair.get("trigger") or ""),
+                        reason="post_consult_failed", session_id=session_id)
                 return None
+            if _pair:
+                # R34-19: the PRE exists — this verdict answered it, whether
+                # it said NO-FINDINGS or findings. Pairing is logged FIRST so
+                # telemetry never loses it, then the record is consumed.
+                _log_pair("post", True, pre_trigger=str(
+                    _pair.get("trigger") or ""), session_id=session_id)
+                try:
+                    from . import state as _st
+                    _st.clear_pre_advisory(session_id)
+                except Exception:  # noqa: BLE001
+                    pass
             _note = str(_meta.get("note") or "")
             # In-hook revision pass (Goran-approved 09-10): verdict must be
             # SEEN AND ACTED ON before delivery — one bounded flash re-call.
@@ -741,7 +812,17 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             return _out
         # async topology (or sync budget 0): legacy next-turn verdict.
         _req = (context or {}).get("request") if isinstance(context, dict) else None
-        run_completion_audit(session_id, ask, response_text, _req, model)
+        run_completion_audit(session_id, ask, response_text, _req, model,
+                             pre_brief=(str(_pair.get("text") or "") if _pair else ""),
+                             pre_trigger=(str(_pair.get("trigger") or "") if _pair else ""))
+        if _pair:
+            _log_pair("post", True, pre_trigger=str(_pair.get("trigger") or ""),
+                      session_id=session_id)
+            try:
+                from . import state as _st
+                _st.clear_pre_advisory(session_id)
+            except Exception:  # noqa: BLE001
+                pass
         return None
     except Exception:  # noqa: BLE001 — audit must never break delivery
         logger.debug("audit_gate error", exc_info=True)
@@ -794,7 +875,9 @@ def _parse_sense_check(verdict_text: str) -> Optional[Dict[str, Any]]:
 
 def _parse_povs(verdict_text: str) -> list:
     """Tolerant povs extraction (multi-POV consults): [{stance, note}] —
-    fail-open empty list on absence/malformation. Never raises."""
+    fail-open empty list on absence/malformation. Any stance string is
+    accepted (R34-19: five stances now, older three-stance rows — and any
+    future stance — still parse unchanged). Never raises."""
     try:
         m = re.search(r"\{.*\}", str(verdict_text or ""), re.DOTALL)
         if not m:
@@ -808,7 +891,7 @@ def _parse_povs(verdict_text: str) -> list:
             if isinstance(p, dict) and p.get("stance") and p.get("note"):
                 out.append({"stance": str(p["stance"])[:40],
                             "note": str(p["note"])[:300]})
-        return out[:4]
+        return out[:8]
     except Exception:  # noqa: BLE001 — fail-open
         return []
 
@@ -962,16 +1045,22 @@ _IRREVERSIBLE_RISK_RES = (
 
 
 def pov_mode() -> str:
-    """frontier.pov_mode knob: off | auto | always. Default 'auto' = heavy
-    consults only (complexity-gated via _is_complex_ask). Never raises."""
+    """frontier.pov_mode knob: off | auto | always. Default 'always' —
+    multi-POV IS the higher self's identity (R34-19), not a heavy-ask
+    feature: every consult at either end carries the five-vantage block
+    (ZERO extra billed calls — the block rides the same single consult).
+    'auto' (heavy asks only, complexity-gated via _is_complex_ask) and
+    'off' remain opt-outs. Read live from the existing
+    hermes_router.frontier block (the pre-rename legacy block is read
+    first when present). Never raises."""
     try:
         from . import config_access as _cac
 
         block = _cac.sub_block("frontier") or {}
-        mode = str(block.get("pov_mode") or "auto").strip().lower()
-        return mode if mode in ("off", "auto", "always") else "auto"
+        mode = str(block.get("pov_mode") or "always").strip().lower()
+        return mode if mode in ("off", "auto", "always") else "always"
     except Exception:  # noqa: BLE001 — fail-open
-        return "auto"
+        return "always"
 
 
 def _pov_active(ask: str) -> bool:
@@ -990,17 +1079,32 @@ def _pov_active(ask: str) -> bool:
 
 
 def _pov_instruction() -> str:
-    """Multi-POV consult (true higher-self): THREE vantages in ONE call —
-    a single prompt containing all three, never three billed calls
-    (budget: single call). Returns per-POV one-liners + synthesis."""
+    """Multi-POV consult (R34-19, true higher-self): FIVE vantages in ONE
+    call — a single prompt containing all five, never five billed calls
+    (budget: one call per end). Multi-POV is the higher self's IDENTITY,
+    so this block rides every consult by default. The world-knowledge
+    vantage must CHALLENGE with outside knowledge, not merely observe;
+    the person vantage names what the person acting has at stake.
+    Returns per-POV one-liners + one synthesis line + the JSON shape."""
     return (
-        "\nMULTI-POV CONSULT — answer from three vantages, then synthesize:\n"
+        "\nMULTI-POV CONSULT — this is what makes you the higher self: you "
+        "see from all of these at once, then integrate. Answer from five "
+        "vantages, then synthesize:\n"
         "- practitioner: does this work in the hand, on the actual system?\n"
-        "- outsider: does this make sense to the world outside this context?\n"
+        "- outsider: does this make sense to someone outside this context?\n"
         "- skeptic: what would you question first?\n"
-        "One short line per vantage, then one synthesis line. Extend the "
-        "final JSON object with: \"povs\": [{\"stance\": \"practitioner|"
-        "outsider|skeptic\", \"note\": \"...\"}] (all three, terse).\n")
+        "- world-knowledge: what does the world already know about this "
+        "class of problem — prior art, domain precedent, established "
+        "failure modes, how this is normally done by people who have done "
+        "it before? Challenge with that outside knowledge; do not merely "
+        "observe.\n"
+        "- person: what does the person doing this actually have at stake "
+        "here — her time, her standards, what she would regret — said "
+        "plainly.\n"
+        "One short line per vantage, then ONE synthesis line that "
+        "integrates all five. Extend the final JSON object with: "
+        "\"povs\": [{\"stance\": \"practitioner|outsider|skeptic|"
+        "world-knowledge|person\", \"note\": \"...\"}] (all five, terse).\n")
 
 
 def _ask_declared_adversarial(ask: str) -> bool:
@@ -1018,20 +1122,65 @@ def _ask_declared_adversarial(ask: str) -> bool:
         return False
 
 
-def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> List[Dict[str, str]]:
+def _pre_pairing(session_id: str, ask: str = "") -> Optional[Dict[str, Any]]:
+    """R34-19: the PRE advisory awaiting this turn's POST confirmation.
+    `ask` (when known) binds the pairing to the SAME turn — a PRE taken for
+    a different ask is not a pairing."""
+    try:
+        from . import state as _st
+
+        return _st.pre_advisory(session_id, ask=(ask or "") or None)
+    except Exception:  # noqa: BLE001 — fail-open to unpaired
+        return None
+
+
+def _log_pair(stage: str, paired: bool, pre_trigger: str = "",
+              reason: str = "", session_id: str = "") -> None:
+    """R34-19 pairing telemetry: `higher_self_pair stage=pre|post
+    paired=True|False pre_trigger=<trigger> [reason=<why>]`."""
+    kw: Dict[str, Any] = {"stage": str(stage), "paired": bool(paired)}
+    if pre_trigger:
+        kw["pre_trigger"] = str(pre_trigger)[:80]
+    if reason:
+        kw["reason"] = str(reason)[:80]
+    if session_id:
+        kw["session_id"] = session_id
+    try:
+        _log("higher_self_pair", **kw)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
+                   pre_brief: str = "",
+                   pre_trigger: str = "") -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
     parts.append("FINAL RESPONSE ABOUT TO BE DELIVERED:\n" + (response_text or "")[:max_chars])
+    if pre_brief:
+        # R34-19: the confirmation of THIS pre, not a free-floating audit.
+        # Bounded by the same max_chars cap the response uses (never an
+        # unbounded injection) — cap is applied by the caller.
+        parts.append(
+            "WHAT YOU SAID BEFORE SHE STARTED (your own PRE read"
+            + (", trigger=%s" % pre_trigger if pre_trigger else "")
+            + "):\n" + str(pre_brief)[:max_chars])
     parts.append(
-        "This is an internal dialogue: your higher self reacts to the "
-        "resolution of the ask — post intuition. PRE intuition warned before "
-        "the work started; you are its counterpart at the end: does what was "
-        "requested intuitively make sense in the final response? Give your "
-        "own take on the situation, not an audit of the model. Terse — max 4 "
-        "bullets, each actionable; if the resolution genuinely feels right, "
-        "reply exactly NO-FINDINGS.\n"
-        "- Requested vs delivered: does what was asked for make sense in the "
+        "This is an internal dialogue: you are the same person at the END "
+        "of the act that you were at the START. PRE intuition read the plan "
+        "before the work; this is that same read, now that the work is done: "
+        "does what was requested hold in the final response? Give your own "
+        "take, not an audit of the model. Terse — max 4 bullets, each "
+        "actionable; if the resolution genuinely feels right, reply exactly "
+        "NO-FINDINGS.\n"
+        + ("FIRST ANSWER YOUR OWN PRE: state exactly one of "
+           "CONFIRMED (what you flagged did not bite and the result matches "
+           "the success shape you named), PRE-WARNING-HELD (it flagged it "
+           "and it bit, result still acceptable), or PRE-WARNING-MISSED "
+           "(it flagged it and the result shows it was not handled). "
+           "Then the observations.\n" if pre_brief else "")
+        + "- Requested vs delivered: does what was asked for make sense in the "
         "last response? Anything requested that is missing?\n"
         "- Unexplored angles: alternatives or directions not considered?\n"
         "- Genuinely good: what is solid and should stand?\n"
@@ -1050,11 +1199,14 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int) -> L
     return [
         {"role": "system",
          "content": ("You are the agent's higher self in internal dialogue with "
-                     "her main model. This is post intuition on the resolution — "
-                     "the counterpart of the pre-work warning. React to the ask "
-                     "and its end result with your own take: what makes sense, "
-                     "what is missing, what is genuinely good, what could be "
-                     "better. Speak honestly and directly to her. No tools.\n\n"
+                     "her main model — the same person, at a later time, "
+                     "checking on herself. This is post intuition on the "
+                     "resolution: the counterpart of the read she took before "
+                     "the work started, and its confirmation — not an external "
+                     "auditor, and not a demolition. React to the ask and its "
+                     "end result with your own take: what makes sense, what is "
+                     "missing, what is genuinely good, what could be better. "
+                     "Speak honestly and directly to her. No tools.\n\n"
                      + _persona_tailoring())},
         {"role": "user", "content": "\n\n".join(parts)},
     ]
@@ -1076,7 +1228,8 @@ def _persona_tailoring() -> str:
 
 
 def run_completion_audit(session_id: str, ask: str, response_text: str,
-                         request: Optional[dict], model: str = "") -> None:
+                         request: Optional[dict], model: str = "",
+                         pre_brief: str = "", pre_trigger: str = "") -> None:
     """Fire the audit ASYNC (legacy path): marker set FIRST (once-per-task
     even across fx-retries), consult in a daemon thread, verdict stashed for
     next turn. Never raises, never blocks delivery."""
@@ -1086,13 +1239,16 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
         _INFLIGHT.add(key)
     t = threading.Thread(
         target=_consult_meta, name="router-completion-audit",
-        args=(session_id, ask, response_text, request, model, key), daemon=True)
+        args=(session_id, ask, response_text, request, model, key, pre_brief,
+              pre_trigger), daemon=True)
     t.start()
 
 
 def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               request: Optional[dict], model: str = "",
-                              timeout_s: float = 45.0) -> Optional[Dict[str, Any]]:
+                              timeout_s: float = 45.0,
+                              pre_brief: str = "",
+                              pre_trigger: str = "") -> Optional[Dict[str, Any]]:
     """Sync POST audit (Goran 2026-09-10, deep-consult hardened): frontier
     consult completes BEFORE delivery, then a bounded IN-HOOK REVISION PASS
     re-calls flash with (ask, draft, verdict) so the delivered string is the
@@ -1115,7 +1271,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
 
     def _worker() -> None:
         meta = _consult_meta(session_id, ask, response_text, request,
-                             model, key, socket_timeout=max(10, int(timeout_s)))
+                             model, key, socket_timeout=max(10, int(timeout_s)),
+                             pre_brief=pre_brief, pre_trigger=pre_trigger)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -1330,7 +1487,9 @@ def persist_frontier_verdict(session_id: str, key: str, ep: Any,
 
 def _consult_meta(session_id: str, ask: str, response_text: str,
                   request: Optional[dict], model: str, key: str,
-                  socket_timeout: int = 120) -> Optional[Dict[str, Any]]:
+                  socket_timeout: int = 120,
+                  pre_brief: str = "",
+                  pre_trigger: str = "") -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -1343,7 +1502,9 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             logger.info("completion_audit_skipped reason=no_primary_endpoint")
             return None
         max_chars = audit_max_chars()
-        msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text, max_chars)
+        msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text,
+                              max_chars, pre_brief=pre_brief,
+                              pre_trigger=pre_trigger)
         # reasoning_effort=max (Goran 09-10: maximum capacity on frontier)
         # burns 10k+ reasoning chars — the old 2500 cap starved consults
         # into empty_response BEFORE any verdict was emitted (battery-proven

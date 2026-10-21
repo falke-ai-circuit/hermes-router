@@ -1086,15 +1086,23 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                         except Exception:  # noqa: BLE001 — tail never breaks the consult
                             _causal_block = ""
                         _frame = (
-                            "You are the agent's higher intuition at task START. "
-                            "Do NOT solve the task. Given the ask below, produce a terse "
-                            "ORIENTATION BRIEF (max 8 bullets total):\n"
-                            "1. What the end result SHOULD look like (success shape).\n"
-                            "2. What to be careful of during the process.\n"
-                            "3. Common pitfalls and known good solutions.\n"
-                            "4. What to avoid.\n"
-                            "5. How failure would look like (early-warning signs).\n"
-                            "Advisory only — the agent may deviate.\n\nTHE ASK:\n"
+                            "You are her own higher self — the same person, a "
+                            "few breaths earlier — looking at the plan before "
+                            "she commits to it. "
+                            "Do NOT solve the task. Look at the ask below the "
+                            "way you would look at your own plan before you "
+                            "start, then say what you see (max 8 bullets "
+                            "total):\n"
+                            "1. What success would look like in her hands "
+                            "(the shape the result should take).\n"
+                            "2. What you would be careful of as you go.\n"
+                            "3. What has bitten you before here — pitfalls "
+                            "and the known-good ways through them.\n"
+                            "4. What you would avoid.\n"
+                            "5. How you would notice early that it is going "
+                            "wrong (failure signs).\n"
+                            "Advisory only — the agent may deviate; never "
+                            "restate this frame in your reply.\n\nTHE ASK:\n"
                             + _orig[:orientation_ask_cap()] + _sr_block + _causal_block
                         )
                         # R19.13 B+ 5b (Goran addendum): PRE doubt-seed — the
@@ -1333,6 +1341,30 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         except Exception:  # noqa: BLE001 — ledger must never break the consult
             pass
 
+        # R34-19 (Goran-direct, PRE->POST pairing): a PRE advisory that
+        # actually produced text is recorded as the thing its POST
+        # confirmation must ANSWER. Cap-blocked / failed / no-text PREs write
+        # nothing — the POST then falls back to its own gate (paired=False
+        # reason=no_pre). One record per session (overwrite) => hard cap one
+        # paired POST. Never breaks the consult.
+        if bool(rec.get("orientation")):
+            try:
+                from . import state as _st
+
+                _pre_trigger = str(rec.get("reason") or "orientation")
+                _st.mark_pre_advisory(session_id, _pre_trigger, str(content),
+                                      cap=orientation_ask_cap(),
+                                      ask=str(locals().get("_orig") or ""))
+                try:
+                    from .core.telemetry import log_route as _lrx
+
+                    _lrx("PRE", event_detail="higher_self_pair", stage="pre",
+                         paired=True, trigger=_pre_trigger,
+                         session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+            except Exception:  # noqa: BLE001 — pairing never breaks the consult
+                pass
         decision_like = router_core.RouteDecision(
             task_id=rec.get("task_id") or "", lane=router_core.LANE_COMPLEXITY,
             mode=rec.get("mode") or router_core.MODE_CONSULT,

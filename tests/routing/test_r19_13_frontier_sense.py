@@ -63,9 +63,11 @@ def test_parse_sense_check_bounds():
 
 # --- pov knob ----------------------------------------------------------------
 
-def test_pov_mode_default_auto(monkeypatch):
+def test_pov_mode_default_always(monkeypatch):
+    # R34-19: multi-POV is the higher self's IDENTITY — every consult at
+    # either end carries the five-vantage block under the default.
     monkeypatch.setattr(_cac, "sub_block", lambda name: {})
-    assert CA.pov_mode() == "auto"
+    assert CA.pov_mode() == "always"
 
 
 def test_pov_mode_values(monkeypatch):
@@ -75,7 +77,7 @@ def test_pov_mode_values(monkeypatch):
         assert CA.pov_mode() == mode
     monkeypatch.setattr(_cac, "sub_block",
                         lambda name: {"pov_mode": "banana"})
-    assert CA.pov_mode() == "auto"  # bad value degrades to default
+    assert CA.pov_mode() == "always"  # bad value degrades to default
 
 
 def test_pov_active_gates(monkeypatch):

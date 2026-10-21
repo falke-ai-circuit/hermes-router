@@ -266,5 +266,19 @@ def _isolate_router_config(monkeypatch, request):
     # R16 (2026-09-22): consult cooldown pinned to legacy behavior (0=off)
     # suite-wide unless a test enables it (same isolation class as above).
     monkeypatch.setattr(_rc, "consult_cooldown_turns", lambda: 0, raising=True)
+    # R34-19: the PRE->POST pairing store is module-level and TTL'd at 300s,
+    # while the suite runs in ~4 minutes — so a PRE recorded by one test was
+    # still live for every test after it, handing later POSTs a PRE they never
+    # had (41 order-dependent failures, each passing in isolation). Same
+    # isolation class as the pins above: every test starts with no pairing.
+    try:
+        from hermes_router.core import state as _st
+        _st._PRE_ADVISORY.clear()
+    except Exception:  # noqa: BLE001 — store absent => nothing to isolate
+        pass
     yield
     _dbg._LAST_GOOD_SECTION.clear()
+    try:
+        _st._PRE_ADVISORY.clear()
+    except Exception:  # noqa: BLE001
+        pass
