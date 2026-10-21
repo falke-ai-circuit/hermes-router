@@ -114,6 +114,72 @@ _AUDIT_ARTIFACT_MARKERS = (
 # Default raised 20→60 (live-caught: frontier glm-5.3 reasoning=max needs
 # >30s on real revision payloads — timeouts masqueraded as reason=empty
 # until the error was surfaced).
+_ON_DEMAND_TRIGGERS = ("request_routing_declared", "declared_user")
+
+
+def post_pair_mode() -> str:
+    """complexity.post_pair_mode: worthwhile (default) | always | off.
+
+    R34-19h (Goran-direct): "post when it makes sense, not mechanically".
+    `always` reproduces R34-19 behaviour (every PRE turn is confirmed) and
+    exists so the two policies can be A/B'd; `off` retires the paired arm
+    entirely. Never raises.
+    """
+    try:
+        from .router_core import _complexity_cfg
+
+        v = str((_complexity_cfg() or {}).get("post_pair_mode") or "worthwhile")
+        v = v.strip().lower()
+        return v if v in ("worthwhile", "always", "off") else "worthwhile"
+    except Exception:  # noqa: BLE001
+        return "worthwhile"
+
+
+def _pair_worth_confirming(ask: str, response_text: str,
+                           pair: Dict[str, Any]) -> Tuple[bool, str]:
+    """Would a POST confirmation say something on THIS turn? (R34-19h)
+
+    A confirmation is worth a frontier consult when the higher self has
+    something to confirm TO:
+
+      * on_demand      — the user asked her higher self; a confirmation is the
+                         other half of what they asked for, always.
+      * closure        — the turn reads as a wrap-up/verdict; that is the
+                         moment a second pair of eyes has value.
+      * decision_frame — the ask carries a declared fork/manual trigger, i.e.
+                         the turn is choosing between options.
+
+    Mid-work chatter ("continuing", "pin green", a status line) earns nothing:
+    confirming it bills a consult to agree with a sentence. Skipping DEFERS the
+    PRE's confirmation rather than cancelling it — the record TTLs out on its
+    own, and the next worthwhile turn confirms.
+
+    Never raises; on doubt the pair IS confirmed (fail-open to the old arm).
+    """
+    try:
+        trig = str(pair.get("trigger") or "")
+        if trig in _ON_DEMAND_TRIGGERS:
+            return True, "on_demand"
+        try:
+            if is_closure_response(ask, response_text):
+                return True, "closure"
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from .decision import (
+                _manual_trigger_in_text as _mt,
+                has_declared_fork_structure as _df,
+            )
+
+            if _mt(ask) or _df(ask):
+                return True, "decision_frame"
+        except Exception:  # noqa: BLE001
+            pass
+        return False, "mid_work"
+    except Exception:  # noqa: BLE001
+        return True, "fail_open"
+
+
 def _note_outcome(note: str) -> Tuple[str, str]:
     """(kind, gist) for a paired POST verdict (R34-19g).
 
@@ -720,10 +786,39 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         except Exception:  # noqa: BLE001
             pass
         _fire = bool(_min_turns <= 1 or (_turn_n > 0 and _turn_n % _min_turns == 0))
+        _pair_declined = False
         if _pair:
             # R34-19: a paired POST is the PRE's confirmation — the cadence,
             # closure, risk and tool-count triggers are irrelevant to it.
-            _fire = True
+            # R34-19h (Goran-direct): "post when it makes sense, not
+            # mechanically". Confirming EVERY turn that had a PRE billed a
+            # consult on ordinary mid-work chatter, so the paired arm is now
+            # gated on the turn actually being one where a confirmation means
+            # something. Unpaired turns keep their own independent triggers.
+            _mode = post_pair_mode()
+            if _mode == "off":
+                _fire = False
+                _pair_declined = True
+                _log_pair("post", False,
+                          pre_trigger=str(_pair.get("trigger") or ""),
+                          reason="pair_mode_off", session_id=session_id)
+            elif _mode == "always":
+                _fire = True
+            else:
+                _worth, _why = _pair_worth_confirming(ask, response_text, _pair)
+                _fire = _worth
+                if not _worth:
+                    _pair_declined = True
+                    # the PRE advisory is NOT cleared: a mid-work turn defers
+                    # its confirmation to the next turn that earns one (the
+                    # record still TTLs out on its own).
+                    _log_pair("post", False,
+                              pre_trigger=str(_pair.get("trigger") or ""),
+                              reason="pair_deferred_" + _why,
+                              session_id=session_id)
+                else:
+                    _log("higher_self_pair_worthwhile", reason=_why,
+                         session_id=session_id)
         _closure = False
         if not _fire:
             # Goran 2026-09-10 (option C): closure-shaped responses audit
@@ -784,7 +879,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                             pass
             except Exception:  # noqa: BLE001 — L3 must never break the gate
                 pass
-        if not _fire:
+        if not _fire and not _pair_declined:
             # >=3 tool-role messages in the outbound payload → audited even
             # on turn 1 (heavy work turn).
             try:
@@ -804,9 +899,17 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # when the higher self spoke at the start of THIS turn, skipping its
         # confirmation means the agent is warned and never told how it went.
         # Cadence never defers a confirmation — same rule as the length floor.
+        # R34-19h: "never defers a confirmation" assumes the turn EARNED one.
+        # A mid-work turn whose confirmation was deferred above must not be
+        # re-armed by this bypass — that re-arm is exactly what made the old
+        # policy mechanical, and it fired on every PRE turn regardless.
         if not _fire and not _pair:
             _log("audit_gate_skip", reason="cadence",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
+            return None
+        if not _fire and _pair and _pair_declined:
+            _log("audit_gate_skip", reason="pair_deferred",
+                 turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
         if not _fire and _pair:
             _log("audit_cadence_bypassed_for_pair",

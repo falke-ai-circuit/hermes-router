@@ -114,6 +114,7 @@ def test_flagged_confirmation_names_the_finding(monkeypatch):
     monkeypatch.setattr(ca, "stash_verdict", lambda *a, **k: None)
     monkeypatch.setattr(ca, "audit_enabled", lambda: True)
     monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    monkeypatch.setattr(ca, "post_pair_mode", lambda: "always")
     state.mark_pre_advisory(sid, "orientation", "PRE", ask=ASK)
 
     out = ca.audit_gate(sid, RESP, ask_override=ASK)
@@ -150,6 +151,10 @@ def _wire(monkeypatch, note="- something to fix", hook_budget=25.0,
                         lambda sid, v: seen["stashed"].append(v))
     monkeypatch.setattr(ca, "audit_enabled", lambda: True)
     monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    # this file tests CONFIRMATION MECHANICS, not the fire policy — pin the
+    # paired arm on so R34-19h's worthwhileness gate (mid-work deferral) does
+    # not decide whether the mechanic gets exercised
+    monkeypatch.setattr(ca, "post_pair_mode", lambda: "always")
     return seen
 
 

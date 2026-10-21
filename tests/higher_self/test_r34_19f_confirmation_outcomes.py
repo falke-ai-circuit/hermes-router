@@ -52,6 +52,10 @@ def _patch(monkeypatch, note="CONFIRMED: holds.", revised=None):
     monkeypatch.setattr(ca, "revise_with_verdict", _revise)
     monkeypatch.setattr(ca, "audit_enabled", lambda: True)
     monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
+    # these pins test the three CONFIRMATION OUTCOMES, not the fire policy —
+    # pin the paired arm on so R34-19h's mid-work deferral cannot decide
+    # whether the outcome mechanic is reached at all
+    monkeypatch.setattr(ca, "post_pair_mode", lambda: "always")
     return seen
 
 
