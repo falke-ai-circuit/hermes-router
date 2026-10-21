@@ -303,6 +303,13 @@ def classify(text: str, level: int) -> Tuple[bool, Dict]:
         verdict, signals = stage1_verdict(text, level)
         meta["signals"] = signals
         meta["stage1"] = verdict
+        try:
+            # R34-13: deterministic signal count — the number the SKIP log
+            # reports so a no-fire is readable without re-deriving regexes.
+            meta["score"] = int(sum(
+                int(v) for v in signals.values() if isinstance(v, int)))
+        except Exception:  # noqa: BLE001 — score is observability only
+            meta["score"] = 0
         if verdict == "clear_complex":
             meta["stage"] = "stage1"
             return True, meta

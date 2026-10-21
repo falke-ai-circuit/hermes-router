@@ -1905,8 +1905,10 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     if isinstance(_m, dict) and _m.get("role") == "user":
                         _last_user = str(_m.get("content") or "")
                         break
-                _ac.note_advisory_injected(session_id, _last_user,
-                                           chars=len(str(advisory or "")))
+                _ac.note_advisory_injected(
+                    session_id, _last_user,
+                    chars=len(str(envelope.get("answer") or "")),
+                    envelope_chars=len(str(advisory or "")))
             except Exception:  # noqa: BLE001 — observability only
                 pass
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:

@@ -1,3 +1,34 @@
+## 5.4.7 — 2026-10-21 (R34-13 — the work invariant stops crying wolf, and a skip is visible)
+
+- R34-13-1 (`advisory_consumed_turn` FALSE POSITIVE): the event fired
+  `no_tools=true` on a turn that made 14 tool calls (session
+  api_1792540767_c76f02f0). ROOT CAUSE: the host fires
+  `transform_terminal_output` with kwargs (command, output, returncode,
+  task_id, env_type) and NEVER a session id, so the counter — keyed only on
+  the session — never incremented; the close then read a zero it had itself
+  failed to fill. Tool activity is now attributed to the turn that is
+  executing (exact session when the seam supplies one, otherwise the newest
+  open advisory turn), and a second guard compares the process-wide tool
+  sequence against the value captured at injection: if any tool ran in the
+  window and cannot be attributed, the event stays SILENT. A false positive
+  is worse than a missing row.
+- R34-13-2 (field labels): the event now separates the two numbers it had
+  been conflating — `envelope_chars=<whole injected envelope>` and
+  `advisory_chars=<capped advisory body>`. Live shape: anchor capped to 600
+  while the envelope measured 1951; the old field name made the cap look
+  broken.
+- R34-13-3 (`complexity_skip`): the SKIP path was silent, so a no-fire was
+  indistinguishable from a broken lane (live: the same brief fired
+  `complexity_orientation` at 22:44/22:50, not at 23:53, fired again at
+  00:00). Every non-route now logs `complexity_skip reason=<class>
+  score=<n> stage1=<class>`; a cooldown suppression logs
+  `reason=consult_cooldown` in the same event family, and
+  `complexity_pre_shadow` / `complexity_pre_off` carry `score=`. LOG-ONLY:
+  the classifier is untouched.
+- Regression pinned from the real turn shape (1 user / 10 assistant / 14
+  tool messages): 14 tool calls through the real no-session-id seam must NOT
+  emit; zero tool calls on an advisory dispatch turn MUST emit.
+
 ## 5.4.6 — 2026-10-20 (R34-12 — the advisory envelope may not eat an execution turn)
 
 - R34-12-7 (`envelope_echo_delivered`): the echo detector now reports EVERY

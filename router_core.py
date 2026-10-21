@@ -1401,6 +1401,26 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         "stage1": "clear_complex" if route_complex else "clear_simple"}
             else:
                 route_complex, meta = complexity.classify(user_text, level)
+            _skip_score = int(meta.get("score") or 0)
+            _skip_cls = str(meta.get("stage1") or "clear_simple")
+            if str(meta.get("stage2") or "") == "routine":
+                _skip_cls = "stage2_routine"
+            # R34-13 (behavioural finding, LOG-ONLY): the identical refactor
+            # brief fired complexity_orientation at 22:44 and 22:50, did NOT
+            # fire at 23:53, then DID at 00:00 — and the no-fire left no
+            # trace at all. Report the classification verdict on the SKIP path
+            # so a non-route is observable instead of silent. The classifier
+            # is untouched; this only makes its verdict visible.
+            if not route_complex:
+                try:
+                    from .core.telemetry import log_route as _lr_skip  # P1: core telemetry (import cycle broken)
+                    _lr_skip("PRE", session_id=session_id,
+                             event_detail="complexity_skip",
+                             reason=_skip_cls, score=_skip_score,
+                             stage1=str(meta.get("stage1") or ""),
+                             task_id=task_id, level=level)
+                except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
+                    _obs_warn('complexity_skip', _obs_exc)  # rider 19 item 1
             if _pre_mode in ("shadow", "off") and route_complex and override != "anchor":
                 # Shadow/off (Goran 09-08 ruling): frontier consults belong at
                 # the completion audit, never at task start. 'shadow' keeps
@@ -1409,6 +1429,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                            event_detail=("complexity_pre_shadow" if _pre_mode == "shadow"
                                          else "complexity_pre_off"),
                            stage1=str(meta.get("stage1")),
+                           score=_skip_score,
                            task_id=task_id, level=level)
                 route_complex = False
             if (route_complex and override != "anchor"
@@ -1455,6 +1476,19 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 # R16: auto-lane consult candidate — cooldown check on the
                 # normalized content hash (declared/manual never reaches here).
                 if _consult_cooldown_active(session_id, user_text):
+                    # R34-13: the no-fire cause is visible in the same event
+                    # family as every other skip (the classifier verdict is
+                    # carried too, so a cooldown skip is distinguishable from
+                    # a clear_simple).
+                    try:
+                        from .core.telemetry import log_route as _lr_cd
+                        _lr_cd("PRE", session_id=session_id,
+                               event_detail="complexity_skip",
+                               reason="consult_cooldown", score=_skip_score,
+                               stage1=str(meta.get("stage1") or ""),
+                               task_id=task_id, level=level)
+                    except Exception as _obs_exc:  # noqa: BLE001
+                        _obs_warn('complexity_skip', _obs_exc)
                     return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
                                 "consult_cooldown_suppressed")
                 _record_cooldown_fire(session_id,
