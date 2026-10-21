@@ -900,6 +900,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         if _hub() is None:  # hub unresolvable (no package context) — pass through
             return None
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("post_classify", True)):
+            _hub()._log_route("POST", event_detail="post_seam_skip",
+                              reason=("router_disabled" if not _hub()._enabled()
+                                      else "post_classify_off"),
+                              session_id=session_id)
             return None
         # R20-D3 (rider 20): the host plugin runner kills this callback at
         # 30s ("timed out after 30s — skipping") and then SKIPS later
@@ -939,6 +943,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     response_text = _echo.body
                 else:
                     # handback_failure / withhold_echo replace the body.
+                    _hub()._log_route("POST", event_detail="post_seam_skip",
+                                      reason="echo_" + str(getattr(_echo, "action", "") or "handback"),
+                                      session_id=session_id)
                     return _echo.body
             else:
                 _eg.observe(response_text, session_id,
@@ -1135,6 +1142,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001 — detection never breaks delivery
                 _trigger_kind = None
                 _hub().logger.debug("r22 detection scan error", exc_info=True)
+        if matches:
+            # A turn that routed is answered by the render lane, not audited.
+            # Logged so "no post consult" is never explainable by silence: the
+            # six-week disappearance of this arm was invisible precisely
+            # because every non-firing path returned without a row.
+            _hub()._log_route("POST", event_detail="audit_arm_skipped",
+                              reason="detection_route", trigger_kind=str(_trigger_kind or ""),
+                              session_id=session_id)
         if not matches:
             # v3.6.1 completion-audit arm — unified audit_gate (Goran
             # 2026-09-08 ruling + 09-10 battery): the ONLY automatic frontier

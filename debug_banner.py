@@ -136,7 +136,21 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         if "://" in ep_s:
             ep_s = ep_s.split("://", 1)[1].split("/", 1)[0]  # host only
         ep_s = ep_s[:120]
-        trig_s = str(trigger or "none")[:120]
+        # R34-19b (Goran-direct, 2026-10-21): the banner must say WHICH end of
+        # the consult it marks. 'consult' was rendered for the PRE advisory and
+        # 'completion_audit' for the POST confirmation, both attaching at the
+        # delivery edge — so the PRE banner sat below the answer and read as if
+        # it were a post banner. The user's own memory of "post consult banners"
+        # was accurate about the position and wrong only because the label
+        # never distinguished the two ends.
+        _END_LABELS = {
+            "consult": "pre-check",
+            "orientation": "pre-check",
+            "completion_audit": "post-check",
+            "audit": "post-check",
+        }
+        trig_s = _END_LABELS.get(str(trigger or "").strip().lower(),
+                                 str(trigger or "none"))[:120]
         lvl = debug_banner_level() if level is None else max(0, min(3, int(level or 0)))
         lat_s = (" | %ds" % int(lat)) if lat >= 1 else ""
         # L1 (default): compact one-liner (Goran 09-07).

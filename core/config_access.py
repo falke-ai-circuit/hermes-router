@@ -296,6 +296,22 @@ def _type_ok(value: Any, expected: Any) -> bool:
     return isinstance(value, expected)
 
 
+_MISSING_KEY_SEEN: set = set()
+
+
+def _note_missing_key_once(path: str, telemetry) -> None:
+    """Emit `config_key_missing` at most once per path per process. Never
+    raises; the typed default is returned by the caller either way."""
+    try:
+        key = str(path or "")
+        if not key or key in _MISSING_KEY_SEEN:
+            return
+        _MISSING_KEY_SEEN.add(key)
+        telemetry.log_route("config_key_missing", path=key, once=True)
+    except Exception:  # noqa: BLE001 — telemetry never breaks a config read
+        pass
+
+
 def get(path: str, default: Any = None) -> Any:
     """Typed config read — THE read primitive (proposal §2.3).
 
@@ -314,7 +330,13 @@ def get(path: str, default: Any = None) -> Any:
             return default
         value = _walk(router_section(), path)
         if value is _MISSING:
-            telemetry.log_route("config_key_missing", path=path)
+            # A missing key is a property of the profile's config, not an
+            # event of this read. Logging it on EVERY read let one absent key
+            # (`budgets.completion_audit.max_tokens`, absent from all 11
+            # profiles) flood the route log at one row per turn — which is what
+            # buried the disappearance of the completion-audit gate itself for
+            # six weeks. Once per key per process is signal; every read is fog.
+            _note_missing_key_once(path, telemetry)
             return default if default is not None else k.default
         if value is None and k.nullable:
             return None

@@ -161,7 +161,7 @@ def test_declared_higherself_success_delivers_banner(r16_reset, monkeypatch):
     fired = [kw for s, d, kw in sink if d == "anchor_route_fired"]
     assert fired, "consult must route"
     assert calls, "consult must execute (anchored call ran)"
-    assert "router" in body and "consult" in body, body
+    assert "router" in body and "pre-check" in body, body  # R34-19b end-label
 
 
 def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
@@ -182,7 +182,7 @@ def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
     fired = [kw for s, d, kw in sink if d == "anchor_route_fired"]
     assert fired and fired[0].get("reason") == "manual_open_question_frontier"
     assert calls, "consult must execute"
-    assert "router" in body and "consult" in body, body
+    assert "router" in body and "pre-check" in body, body  # R34-19b end-label
 
 
 # ---------------------------------------------------------------------------

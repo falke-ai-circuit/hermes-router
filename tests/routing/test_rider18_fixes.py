@@ -156,7 +156,7 @@ def test_declared_frontier_form_also_emits_frontier_event(
 
 
 def calls_ok(body):
-    return "router" in body and "consult" in body
+    return "router" in body and "pre-check" in body  # R34-19b end-label
 
 
 # ---------------------------------------------------------------------------
