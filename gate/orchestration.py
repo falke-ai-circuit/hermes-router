@@ -948,6 +948,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # WORK turn gets the advisory STRIPPED and the report KEPT (the seam
         # keeps running so the parked banner still attaches); only a turn
         # with no work signal is handed back.
+        # R34-19L: turn_finalizer persists the assistant row BEFORE this hook
+        # fires, so the transcript holds the body AS ENTERED. Every later
+        # mutation (advisory strip, audit revision) produces a body the
+        # exact-match rewrite can no longer find — the store then keeps the
+        # pre-strip copy (leaked advisory JSON included) while delivery is
+        # clean, and `delivered=True` becomes unfalsifiable. Keep the entry
+        # text and reconcile the row against it.
+        _seam_entry_text = response_text
         try:
             from .. import echo_guard as _eg
 
@@ -959,6 +967,29 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # seam — banners, capture and persist all belong to the
                     # delivered work turn.
                     response_text = _echo.body
+                    # R34-19L: write the stripped body back over the row the
+                    # runner persisted on entry, or every later exact-match
+                    # rewrite (banner capture, audit sync) silently misses and
+                    # the transcript keeps the advisory tail the user never saw.
+                    try:
+                        from .. import canonical as _can_strip
+                        if _can_strip.rewrite_persisted_turn(
+                                session_id, _seam_entry_text, response_text):
+                            _hub()._log_route(
+                                "POST", event_detail="persisted_body_reconciled",
+                                reason="advisory_tail_stripped",
+                                chars_from=len(_seam_entry_text or ""),
+                                chars_to=len(response_text or ""),
+                                session_id=session_id)
+                        elif (_seam_entry_text or "") != (response_text or ""):
+                            _hub()._log_route(
+                                "POST", event_detail="persisted_body_reconcile_failed",
+                                reason="rewrite_no_match",
+                                chars_from=len(_seam_entry_text or ""),
+                                chars_to=len(response_text or ""),
+                                session_id=session_id)
+                    except Exception:  # noqa: BLE001 — provenance never breaks delivery
+                        _hub().logger.debug("persisted reconcile error", exc_info=True)
                 else:
                     # handback_failure / withhold_echo replace the body.
                     _hub()._log_route("POST", event_detail="post_seam_skip",
