@@ -848,6 +848,9 @@ def _resolve_midturn_capture_failure(session_id: str, parked_text: str,
         return ""
 
 
+_PASS_COUNT: Dict[str, int] = {}
+
+
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
     try:
@@ -899,6 +902,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
     try:
         if _hub() is None:  # hub unresolvable (no package context) — pass through
             return None
+        # R34-19c diagnostic: how many passes does a turn actually take, and
+        # which one reaches the audit arm? close_turn() below pops turn state on
+        # the FIRST pass, so a turn-close-keyed arm can never fire on the pass
+        # that delivers. Counting is the prerequisite for moving the
+        # confirmation onto the delivery edge.
+        try:
+            _pn = _PASS_COUNT.get(str(session_id or ""), 0) + 1
+            _PASS_COUNT[str(session_id or "")] = _pn
+            if len(_PASS_COUNT) > 512:  # bounded — never grow per session forever
+                _PASS_COUNT.clear()
+            _hub()._log_route("POST", event_detail="transform_pass", n=_pn,
+                              chars=len(str(response_text or "")),
+                              session_id=session_id)
+        except Exception:  # noqa: BLE001 — counting never breaks delivery
+            pass
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("post_classify", True)):
             _hub()._log_route("POST", event_detail="post_seam_skip",
                               reason=("router_disabled" if not _hub()._enabled()
