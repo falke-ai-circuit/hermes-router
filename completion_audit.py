@@ -472,6 +472,14 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # R34-19 PRE->POST pairing: a PRE advisory for this turn makes the
         # POST its CONFIRMATION — it fires even with audit_mode off.
         _pair = _pre_pairing(session_id)
+        try:  # TEMP PROBE (remove before final)
+            from .core.telemetry import log_route as _lp
+            _lp("POST", event_detail="audit_gate_entered",
+                pair=bool(_pair), audit_enabled=bool(audit_enabled()),
+                chars=len(str(response_text or "")),
+                session_id=str(session_id or ""))
+        except Exception:
+            pass
         if not audit_enabled() and not _pair:
             return None
         # R34-19: the length floor exists to stop a one-line reply from buying
