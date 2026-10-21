@@ -128,8 +128,15 @@ def post_pair_mode() -> str:
     try:
         from .router_core import _complexity_cfg
 
-        v = str((_complexity_cfg() or {}).get("post_pair_mode") or "worthwhile")
-        v = v.strip().lower()
+        raw = (_complexity_cfg() or {}).get("post_pair_mode")
+        # YAML 1.1 parses a bare `off:` value as False and `always`-shaped
+        # truthiness as True — accept both spellings rather than silently
+        # falling back to the default (live-caught while verifying this gate).
+        if raw is True:
+            return "always"
+        if raw is False:
+            return "off"
+        v = str(raw or "worthwhile").strip().lower()
         return v if v in ("worthwhile", "always", "off") else "worthwhile"
     except Exception:  # noqa: BLE001
         return "worthwhile"
