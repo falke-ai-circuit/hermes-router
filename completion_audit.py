@@ -1813,7 +1813,35 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
 
 
 def _log(msg: str, **kw: Any) -> None:
+    """Route telemetry for the completion gate.
+
+    `router_core` exposes NO module-level `_log_route` — that name only exists on
+    the plugin hub instance. The old call here raised AttributeError on EVERY
+    row and fell through to a python logger, so the gate's every decision
+    (skip reasons, consult outcomes, pairing) was invisible in the route log.
+    That is why six weeks of "no post consult" could not be explained: the
+    explanations were being written into a hole.
+
+    Resolution order: hub instance first (the real surface), then a module-level
+    function if a future version adds one, then the python logger as last resort.
+    """
     try:
-        router_core._log_route("POST", event_detail=msg, **kw)
+        from .gate.orchestration import _hub as _get_hub
+
+        _h = _get_hub()
+        if _h is not None:
+            _h._log_route("POST", event_detail=msg, **kw)
+            return
+    except Exception:  # noqa: BLE001 — telemetry never breaks a turn
+        pass
+    try:
+        _fn = getattr(router_core, "_log_route", None)
+        if callable(_fn):
+            _fn("POST", event_detail=msg, **kw)
+            return
     except Exception:  # noqa: BLE001
+        pass
+    try:
         logger.info("completion_audit %s %s", msg, kw)
+    except Exception:  # noqa: BLE001
+        pass
