@@ -152,6 +152,23 @@ def run_arm(arm: str, prompt: str, hermes_home: str, workdir: str,
         rc = -1
     wall = time.monotonic() - t0
     after = _git_artifacts(workdir)
+    # Conductor addition: persist the delivered body. Artifact-per-turn is the
+    # metric, and a body that talks instead of building must be readable.
+    try:
+        with open(os.path.join(workdir, ".lane_ab_body.txt"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(body or "")
+    except Exception:
+        pass
+    # Artifact count must work in a plain directory, not only a git repo.
+    fs_files = 0
+    try:
+        for _root, _dirs, _files in os.walk(workdir):
+            for _f in _files:
+                if not _f.startswith(".lane_ab"):
+                    fs_files += 1
+    except Exception:
+        pass
     turns = _turns_from_usage(usage) or 1
     tokens = _tokens_from_usage(usage)
     return {
@@ -164,6 +181,7 @@ def run_arm(arm: str, prompt: str, hermes_home: str, workdir: str,
         "wall_s": round(wall, 1),
         "commits": max(0, after["commits"] - before["commits"]),
         "files_touched": after["files_touched"],
+        "fs_files": fs_files,
         "returncode": rc,
         "prompt_chars": len(prompt),
     }
@@ -172,8 +190,10 @@ def run_arm(arm: str, prompt: str, hermes_home: str, workdir: str,
 def compare(off: Dict[str, Any], on: Dict[str, Any]) -> str:
     """Goran's rule: lanes-on wins if artifact_on >= artifact_off with
     turns_on <= turns_off."""
-    a_off = int(off.get("commits") or 0) or int(off.get("files_touched") or 0)
-    a_on = int(on.get("commits") or 0) or int(on.get("files_touched") or 0)
+    a_off = (int(off.get("commits") or 0) or int(off.get("files_touched") or 0)
+             or int(off.get("fs_files") or 0))
+    a_on = (int(on.get("commits") or 0) or int(on.get("files_touched") or 0)
+            or int(on.get("fs_files") or 0))
     t_off = int(off.get("turns") or 1)
     t_on = int(on.get("turns") or 1)
     win = (a_on >= a_off) and (t_on <= t_off)
