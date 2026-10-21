@@ -230,3 +230,21 @@ def test_a_non_pre_claim_still_stands_the_gate_down(monkeypatch):
     ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
     assert ran == [], "a render claim must still own the turn"
     assert any(k.get("reason") == "turn_claimed" for e, k in events), events
+
+
+def test_a_stale_advisory_cannot_relabel_an_on_demand_turn(monkeypatch):
+    """R34-19k2: a stored record from a DIFFERENT ask is accepted leniently, and
+    its PRE trigger used to overwrite the claim's — deferring an on-demand turn
+    as mid-work and costing the confirmation the user explicitly asked for."""
+    sid = _sid()
+    ran = []
+    events = _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
+    import hermes_router.route_gate as rg
+    monkeypatch.setattr(rg, "claim_state", lambda *a, **k: {
+        "lane": "higher-pre", "source": "declared_user"}, raising=False)
+    # stale advisory: different ask, PRE-owned trigger
+    state.mark_pre_advisory(sid, "complexity_orientation", "OLD PRE",
+                            ask="something else entirely")
+    ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
+    assert ran, "an on-demand claim must confirm even with a stale advisory"
+    assert any(e == "higher_self_pair_trigger_from_claim" for e, _ in events), events

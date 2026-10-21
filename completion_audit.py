@@ -653,7 +653,12 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
     try:
         # R34-19 PRE->POST pairing: a PRE advisory for this turn makes the
         # POST its CONFIRMATION — it fires even with audit_mode off.
-        _pair = _pre_pairing(session_id)
+        # R34-19k2: the ask-less read below accepts ANY live record for the
+        # session (lenient by design, R34-19c). Run against a turn that already
+        # has a stored advisory from a DIFFERENT ask it returns that record, so
+        # `not _pair` was false and claim-derived pairing never ran — the stale
+        # advisory silently vetoed the per-turn truth. Resolve the claim FIRST.
+        _pair = None
         # R34-19k: resolve the CLAIM before any floor. A turn whose higher self
         # already spoke is owed a confirmation however terse the report is, so
         # claim-derived pairing must be visible to the length check below (it
@@ -661,7 +666,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         try:
             from . import route_gate as _rg
             _claim = _rg.claim_state(session_id)
-            if _claim is not None and not _pair:
+            if _claim is not None and not _pair:  # claim first, then stored
                 # R34-19k: the CLAIM is pairing evidence in its own right.
                 # On a host where the PRE advisory text never made it into the
                 # store (live: recovery, where every PRE consult was billed,
@@ -690,6 +695,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     return None
         except Exception:  # noqa: BLE001 — fail-open
             pass
+        if _pair is None:
+            _pair = _pre_pairing(session_id)
 
         if not audit_enabled() and not _pair:
             _log("audit_gate_skip", reason="mode_off_no_pair",
@@ -754,7 +761,23 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # R34-19k: this second, ask-bound read must not ERASE claim-derived
         # pairing (the host with no stored advisory is exactly the host this
         # read returns None on). Keep whichever evidence exists.
-        _pair = _pre_pairing(session_id, ask) or _pair
+        _stored_pair = _pre_pairing(session_id, ask)
+        if _stored_pair and _pair and _pair.get("claim_derived"):
+            # R34-19k2: a claim is per-TURN truth; a stored record whose ask
+            # fingerprint does not match is accepted leniently (R34-19c) and
+            # carries the PRE's own trigger — which then overwrote the claim's
+            # `declared_user` and made an on-demand turn look like mid-work, so
+            # it deferred and lost the confirmation the user asked for. The
+            # claim decides WHY this turn is worthwhile; the stored text is
+            # only cargo.
+            _stored_pair = {**_stored_pair,
+                            "trigger": _pair.get("trigger"),
+                            "claim_derived": True}
+            _log("higher_self_pair_trigger_from_claim",
+                 stored_trigger=str(_stored_pair.get("trigger_stored") or ""),
+                 claim_trigger=str(_pair.get("trigger") or ""),
+                 session_id=session_id)
+        _pair = _stored_pair or _pair
         # R16-2 (rider 16, D1a): the benign BRIEF frame now covers the ANCHOR
         # leg — the completion-audit consult was the last ungated frontier
         # arm: a benign setup/briefing ask ('brief me on the tradeoffs of X
