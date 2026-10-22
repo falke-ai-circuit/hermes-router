@@ -2759,9 +2759,32 @@ def verdict_row_json(verdict: Dict[str, Any], content: Any) -> str:
     the scanned content) so downstream invalid-fork filters can check
     choice-in-source without re-reading sessions. Never raises."""
     try:
-        return json.dumps(dict(verdict or {},
-                               delta_source_excerpt=str(content or "")[:500]),
-                          default=str)
+        row = dict(verdict or {},
+                   delta_source_excerpt=str(content or "")[:500])
+        # R36j: STAMP THE BAND ON EVERY ROW.
+        #
+        # The mechanical weighting block (band + per-option weights) is built
+        # for the envelope handed to the model and was never persisted — every
+        # row in coder's ledger had band=None, so the lane's own claim that a
+        # decision was "statistically meaningless" could not be audited after
+        # the fact. Same failure as the R35 signature gap: the evidence existed
+        # in memory, was not written down, and the number became unexplainable.
+        #
+        # Two bands are recorded because two scorings exist on one row:
+        #   weighting_band      mechanical, from ledger priors (if present)
+        #   confidence_band     derived from the recorded confidence using the
+        #                       lane's published constants
+        # Recording both is what makes the disagreement between them visible
+        # instead of silently resolved in favour of whichever renders louder.
+        try:
+            w = row.get("weighting")
+            if isinstance(w, dict) and w.get("band"):
+                row["weighting_band"] = str(w.get("band"))
+            if row.get("confidence") is not None:
+                row["confidence_band"] = impulse_band(float(row["confidence"]))
+        except Exception:  # noqa: BLE001
+            pass
+        return json.dumps(row, default=str)
     except Exception:  # noqa: BLE001
         return "{}"
 

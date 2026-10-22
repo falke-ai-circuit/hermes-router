@@ -187,6 +187,30 @@ def render_verdict_record(rid: Any) -> str:
         conf = row.get("confidence")
         if not choice or conf is None:
             return ""
+        # R36j: RECORD-SIDE RECONCILIATION.
+        #
+        # The row carries TWO unconnected scorings. The weighting block is
+        # mechanical (derived from ledger priors) and is handed to the model in
+        # the envelope; the `confidence` on the row is the model's own
+        # self-rating. Nothing reconciled them, so a model could answer 0.19 —
+        # which the lane's own constants call "noise: statistically
+        # meaningless, ignore freely" — and still be stamped
+        # "verdict-of-record: opt-4 @ 0.19" as though a decision had been made.
+        # Observed live on coder row 3855.
+        #
+        # An abstention is a RESULT, not an absence (R35 5.7.2), so this does
+        # not go silent: it says plainly that there is no verdict of record and
+        # why. Silence here would be indistinguishable from "the resolver never
+        # ran", which is the ambiguity that let the 0.4% sit unnoticed.
+        try:
+            from .decision import IMPULSE_BAND_WEAK_MIN as _weak_min
+
+            if float(conf) < float(_weak_min):
+                return ("no verdict of record (row %d): recorded confidence "
+                        "%.2f is in the noise band — evidence too flat to name "
+                        "a decision" % (int(row.get("id") or 0), float(conf)))
+        except Exception:  # noqa: BLE001 — never lose the segment on a constants miss
+            pass
         return ("verdict-of-record: %s @ %.2f (ledger row %d)"
                 % (str(choice), float(conf), int(row.get("id") or 0)))
     except Exception:  # noqa: BLE001
