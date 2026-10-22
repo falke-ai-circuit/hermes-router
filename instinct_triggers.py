@@ -150,8 +150,17 @@ def _cause_text(text: str) -> str:
     if hits:
         # Last hits are the most specific: the outer wrapper ("error: command
         # failed") comes before the real cause ("ModuleNotFoundError: ...").
-        clean = [h.split('", "')[0].split('"}')[0].rstrip('",} ') for h in hits[-2:]]
-        return _norm(" | ".join(clean))
+        clean = [h.split('", "')[0].split('"}')[0].rstrip('",} ') for h in hits]
+        # DEDUPE. A traceback repeats the failure line (once in the traceback
+        # body, once in the stderr summary), so taking the last two lines gave
+        # "X | X" for one result and "X" for another and the signatures never
+        # matched across routes. Observed live: identical ModuleNotFoundError
+        # from terminal and execute_code produced two different signatures.
+        uniq = []
+        for c in clean:
+            if c and c not in uniq:
+                uniq.append(c)
+        return _norm(" | ".join(uniq[-2:]))
     return _norm(raw)
 
 

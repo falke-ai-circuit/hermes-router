@@ -189,3 +189,21 @@ def test_the_envelope_does_not_define_the_cause():
     b = 'command failed after 3 attempts\nValueError: bad input\nsee log /tmp/a.log'
     assert itr._cause_text(a) == itr._cause_text(b), (
         itr._cause_text(a), itr._cause_text(b))
+
+
+def test_a_repeated_failure_line_inside_one_result_does_not_split_the_sig():
+    """A traceback repeats the failure line — once in the body, once in the
+    stderr summary. Taking the last two causes gave "X | X" for one result and
+    "X" for another, so identical failures from terminal and execute_code
+    produced different signatures and the cross-route signal could never fire.
+    Observed live on the coder canary."""
+    one = ('{"output": "Traceback (most recent call last):\\n'
+           'ModuleNotFoundError: No module named \'www\'", "exit_code": 1}')
+    two = ('{"status": "error", "output": "--- stderr ---\\n'
+           'ModuleNotFoundError: No module named \'www\'\\n'
+           '--- end ---\\nModuleNotFoundError: No module named \'www\'"}')
+    assert itr._sig(one) == itr._sig(two)
+    st = {}
+    assert itr.recognise(st, "terminal", one) is None
+    hit = itr.recognise(st, "execute_code", two)
+    assert hit and hit["signal"] == "same_cause_different_route"
