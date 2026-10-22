@@ -995,6 +995,60 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _hub()._log_route("POST", event_detail="post_seam_skip",
                                       reason="echo_" + str(getattr(_echo, "action", "") or "handback"),
                                       session_id=session_id)
+                    # R36m: the strip branch above reconciles the persisted row
+                    # (R34-19L) and this branch never did — it returns a
+                    # replacement body and skips the rest of the seam, so
+                    # nothing ever writes that body to the transcript. Live
+                    # specimen: sessions api_1792643928_e46a2731 and
+                    # api_1792644362_722dd41f ended with a single 0-char
+                    # assistant row while the log showed transform_pass
+                    # chars=699 -> advisory_echo_blocked -> post_seam_skip and
+                    # NOTHING after it (no canonical_committed, no
+                    # render_swap_decision), while every clean turn in the same
+                    # window shows both. The replacement body has to reach the
+                    # row that will be read back, or the delivered text and the
+                    # transcript disagree — the exact unfalsifiable
+                    # `delivered=True` shape R34-19L was written to kill.
+                    try:
+                        from ..core import canonical as _can_hb
+                        # Two steps, because the exact-content guard cannot
+                        # reach the row that is actually there. Proven against a
+                        # copy of coder's real store (session
+                        # api_1792643928_e46a2731): the row for the hand-back
+                        # turn is EMPTY, not the 699-char echo, so
+                        # rewrite_persisted_turn(entered) misses — and
+                        # allow_empty_match only engages when refusal_text is
+                        # falsy (it is the else-branch), which is why passing
+                        # the entry text with the flag set still missed.
+                        _ok = _can_hb.rewrite_persisted_turn(
+                            session_id, _seam_entry_text, _echo.body)
+                        if not _ok:
+                            _ok = _can_hb.rewrite_persisted_turn(
+                                session_id, "", _echo.body,
+                                allow_empty_match=True)
+                        _hub()._log_route(
+                            "POST",
+                            event_detail=("handback_persist_reconciled" if _ok
+                                          else "handback_persist_miss"),
+                            reason=str(getattr(_echo, "action", "") or ""),
+                            chars_from=len(_seam_entry_text or ""),
+                            chars_to=len(_echo.body or ""),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — never breaks delivery
+                        _hub().logger.debug("handback persist error", exc_info=True)
+                    try:
+                        from ..core import canonical as _can_chk
+                        # verify against the DELIVERED text, not against the
+                        # row we just wrote — a check that reads back what it
+                        # wrote proves nothing.
+                        _hub()._log_route(
+                            "POST", event_detail="handback_delivery_check",
+                            persisted_verified=_can_chk.verify_persisted_turn(
+                                session_id, _echo.body or ""),
+                            chars=len(_echo.body or ""),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
                     return _echo.body
             else:
                 _eg.observe(response_text, session_id,
