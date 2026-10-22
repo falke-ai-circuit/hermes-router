@@ -131,10 +131,17 @@ def test_flagged_confirmation_names_the_finding(monkeypatch):
 # --------------------------------------------------------------------------
 
 def _wire(monkeypatch, note="- something to fix", hook_budget=25.0,
-          sync_s=24.95, rev_s=60):
+          sync_s=24.95, rev_s=60, revised=None):
     seen = {"events": [], "revise_calls": 0, "stashed": []}
+    # R37-1: the revision is the SECOND HALF of the consult result. No second
+    # in-hook frontier call exists on the delivery path any more, so the body
+    # arrives on the meta (revise_with_verdict is not wired here on purpose —
+    # if the delivery path still depended on it, these pins would see 0).
     monkeypatch.setattr(ca, "_consult_meta", lambda *a, **k: {
         "note": note, "model": "m", "endpoint": "e",
+        "revised_response": revised,
+        "revised_source": ("folded" if revised else "none"),
+        "revised_reason": ("folded" if revised else "needs_tool_work"),
         "tokens_in": 1, "tokens_out": 1, "cost": 0.0})
     monkeypatch.setattr(ca, "_log",
                         lambda ev, **kw: seen["events"].append((ev, kw)))
@@ -144,7 +151,7 @@ def _wire(monkeypatch, note="- something to fix", hook_budget=25.0,
 
     def _revise(*a, **k):
         seen["revise_calls"] += 1
-        return "REVISED BODY " + ("y" * 400)
+        return revised
 
     monkeypatch.setattr(ca, "revise_with_verdict", _revise)
     monkeypatch.setattr(ca, "stash_verdict",
@@ -158,32 +165,53 @@ def _wire(monkeypatch, note="- something to fix", hook_budget=25.0,
     return seen
 
 
-def test_contended_hook_skips_the_revision_and_stashes_the_verdict(monkeypatch):
+def test_null_revision_delivers_the_original_and_stashes_the_verdict(monkeypatch):
+    """R37-1: `revised_response: null` means the defect needs TOOL work — the
+    turn delivers its own body unchanged and the verdict rides to the next turn.
+
+    This replaces the pre-R37 "contended hook skips the revision" pin: under the
+    folded contract there IS no second call to skip, so the failure mode that pin
+    guarded (a doomed 0.05s frontier call) is now structurally impossible. What
+    must still be true is this: no revision means no rewrite, and the note is
+    not dropped on the floor."""
     sid = _sid()
-    seen = _wire(monkeypatch, hook_budget=25.0, sync_s=24.95, rev_s=60)
+    seen = _wire(monkeypatch, hook_budget=25.0, sync_s=24.95, rev_s=60,
+                 revised=None)
     state.mark_pre_advisory(sid, "orientation", "PRE", ask=ASK)
 
     out = ca.audit_gate(sid, RESP, ask_override=ASK, hook_budget=25.0)
     kinds = [e for e, _ in seen["events"]]
-    assert "completion_audit_revision_skipped" in kinds, seen["events"]
-    assert seen["revise_calls"] == 0, "a doomed frontier call was still made"
+    assert seen["revise_calls"] == 0, "a second frontier call was made"
     assert seen["stashed"], "the verdict must ride to the next turn"
     # the delivered text is the agent's own work, unchanged
-    assert "REVISED BODY" not in (out or "")
+    assert out.startswith(RESP), "the original turn must be what is delivered"
     assert "flagged:" in out
+    applied = [kw for ev, kw in seen["events"]
+               if ev == "completion_audit_sync_applied"]
+    assert applied and applied[-1].get("revised") is False
+    assert applied[-1].get("revised_source") == "none"
+    assert applied[-1].get("reason") == "needs_tool_work"
+    assert "completion_audit_revision_skipped" not in kinds
 
 
-def test_an_uncontended_hook_still_attempts_the_revision(monkeypatch):
-    """No hook budget supplied => no contention => the pass behaves as before."""
+def test_a_folded_revision_is_delivered(monkeypatch):
+    """R37-1: when the consult returns a corrected body, THAT is delivered —
+    the delivery path reads it off the consult result, never off a second call."""
     sid = _sid()
-    seen = _wire(monkeypatch, hook_budget=None, sync_s=45, rev_s=60)
+    revised = "REVISED BODY " + ("y" * 400)
+    seen = _wire(monkeypatch, hook_budget=None, sync_s=45, rev_s=60,
+                 revised=revised)
     monkeypatch.setattr(ca, "audit_revision_seconds", lambda: 60)
     state.mark_pre_advisory(sid, "orientation", "PRE", ask=ASK)
 
-    ca.audit_gate(sid, RESP, ask_override=ASK)
-    assert seen["revise_calls"] == 1
-    kinds = [e for e, _ in seen["events"]]
-    assert "completion_audit_revision_skipped" not in kinds
+    out = ca.audit_gate(sid, RESP, ask_override=ASK)
+    assert seen["revise_calls"] == 0, "the folded body must need no second call"
+    assert (out or "").startswith("REVISED BODY"), out
+    assert not seen["stashed"], "an applied revision must not ride to next turn"
+    applied = [kw for ev, kw in seen["events"]
+               if ev == "completion_audit_sync_applied"]
+    assert applied and applied[-1].get("revised") is True
+    assert applied[-1].get("revised_source") == "folded"
 
 
 def test_gist_prefers_a_bullet_over_the_audit_preamble():

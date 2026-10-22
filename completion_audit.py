@@ -1032,7 +1032,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     }
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
-                    timeout_s=_sync_budget, **_sync_kw)
+                    timeout_s=_sync_budget, fold_revision=True, **_sync_kw)
             except Exception:  # noqa: BLE001
                 _meta = None
             if not (_meta and isinstance(_meta, dict)):
@@ -1058,46 +1058,53 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 except Exception:  # noqa: BLE001
                     pass
             _note = str(_meta.get("note") or "")
-            # In-hook revision pass (Goran-approved 09-10): verdict must be
-            # SEEN AND ACTED ON before delivery — one bounded flash re-call.
+            # R37-1: the revision rode INSIDE the consult call. There is no
+            # second in-hook frontier call on this path any more — two calls
+            # cannot fit one hook budget (measured: the consult spends the whole
+            # budget, the old revision pass was handed ~0.05s, and
+            # `completion_audit_sync_applied revised=False` fired on 64 of 64
+            # events fleet-wide: it has never once changed a delivered body).
             _delivered = response_text
-            _rev_budget = audit_revision_seconds()
-            # R20-D3: the revision pass cannot push the hook past its budget
-            # (sync consult + revision sum stays under hook_budget).
-            if hook_budget and hook_budget > 0:
-                _rev_budget = min(_rev_budget,
-                                  max(0.0, float(hook_budget) - _sync_budget))
-            # R34-19g: the revision pass is a FRONTIER call at
-            # reasoning_effort max. It cannot run in the crumbs a sync consult
-            # leaves behind — with a 25s hook and a 24.95s consult it was handed
-            # ~0.05s, and `completion_audit_sync_applied revised=False` fired on
-            # 64 of 64 events fleet-wide: the pass has never once changed a
-            # delivered body. Attempting it anyway buys a doomed call and hides
-            # the fact behind a False. Under a contended hook and below the
-            # floor, skip it EXPLICITLY and let the verdict ride to the next
-            # turn, where it is injected as the higher-self note.
-            _rev_floor = audit_revision_min_seconds()
-            _hook_contended = bool(hook_budget and hook_budget > 0)
-            if _note and _hook_contended and _rev_budget < _rev_floor:
-                _log("completion_audit_revision_skipped", reason="budget",
-                     budget_s=round(_rev_budget, 3), floor_s=_rev_floor,
-                     chars=len(_note), session_id=session_id)
+            _revised = _meta.get("revised_response")
+            _revised_source = "none"
+            _revised_reason = str(_meta.get("revised_reason") or "not_requested")
+            if isinstance(_revised, str) and _revised.strip():
+                _delivered = _revised.strip()
+                _revised_source = "folded"
+                _revised_reason = str(_meta.get("revised_reason") or "folded")
+                # persisted == delivered (R34-19L): turn_finalizer persisted the
+                # ENTRY text before this hook fired, so the SWAPPED body has to
+                # be reconciled over that row — the same write the strip branch
+                # does. The banner is appended AFTER this point and is never part
+                # of the reconciled body; the banner capture that follows chains
+                # onto this write through canonical's R16-2b last-rewrite
+                # cascade, so persisted ends up as the DELIVERED text.
+                try:
+                    from .core import canonical as _can_fold
+                    _fold_ok = _can_fold.rewrite_persisted_turn(
+                        session_id, response_text, _delivered)
+                    _log("persisted_body_reconciled" if _fold_ok
+                         else "persisted_body_reconcile_failed",
+                         reason="folded_swap",
+                         chars_from=len(response_text or ""),
+                         chars_to=len(_delivered or ""),
+                         session_id=session_id)
+                except Exception:  # noqa: BLE001 — provenance never breaks delivery
+                    logger.debug("folded-body reconcile error", exc_info=True)
+            elif _note:
+                # revised_response is null: the defect needs TOOL work (or the
+                # fold failed its own checks). Behave exactly as before — deliver
+                # the original and let the verdict ride to the next turn, where
+                # it is injected as the higher-self note.
                 try:
                     stash_verdict(session_id, _note)
-                except Exception:  # noqa: BLE001
-                    pass
-            elif _rev_budget > 0 and _note:
-                try:
-                    _revised = revise_with_verdict(
-                        session_id, ask, response_text, _note,
-                        timeout_s=_rev_budget)
-                    if _revised:
-                        _delivered = _revised
                 except Exception:  # noqa: BLE001
                     pass
             _log("completion_audit_sync_applied",
                        chars=len(_note), budget_s=_sync_budget,
                        revised=(_delivered != response_text),
+                       revised_source=_revised_source,
+                       reason=_revised_reason,
                        session_id=session_id)
             try:
                 from . import state as _state
@@ -1567,10 +1574,45 @@ def _payload_body(parts: list, total_cap: int = 0) -> str:
     return body
 
 
+def _fold_revision_instruction(char_cap: int) -> str:
+    """R37-1: the SYNC ask returns verdict AND revised body in ONE call.
+
+    Two frontier calls cannot fit one hook budget (measured: the consult consumes
+    it all, the revision pass is handed ~0.05s, `revised=False` on 64/64 events
+    fleet-wide). Folding the revision into the consult is the only shape that can
+    actually change a delivered body, so the consult is asked for both halves
+    together — verdict first, then the corrected full response, or null when the
+    defect cannot be fixed in the text (it needs tool work).
+
+    The cap is stated at GENERATION time: we do not buy a 2k-token answer to use
+    600 chars, and we never truncate a delivered answer after the fact.
+    """
+    return (
+        "\n\nOUTPUT FORMAT (this call is both the read AND the correction): "
+        "reply with ONE JSON object and nothing else:\n"
+        '{"note": "<your verdict as described above, or exactly '
+        '\\"NO-FINDINGS\\">", '
+        '"revised_response": "<the complete corrected final response>" | null}\n'
+        "Set revised_response ONLY when the defect is fixable IN THE TEXT "
+        "(truncation, a missing section, emphasis, an unsupported claim, a "
+        "wrong lead). Then return the WHOLE corrected response — not a diff, "
+        "not a summary, not commentary about what you changed — keeping the "
+        "original voice and structure, at most %d characters. "
+        "Set revised_response to null when fixing the defect needs TOOL WORK "
+        "(a command to run, a file to read, a measurement to take): the "
+        "original response is delivered unchanged and your note rides to the "
+        "next turn. Never mention this review, the audit, or this process "
+        "inside revised_response, and never include any banner or marked "
+        "text in it." % int(char_cap or 0)
+    )
+
+
 def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
                    pre_brief: str = "",
                    pre_trigger: str = "",
-                   total_cap: int = 0) -> List[Dict[str, str]]:
+                   total_cap: int = 0,
+                   fold_revision: bool = False,
+                   fold_char_cap: int = 0) -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
@@ -1612,6 +1654,9 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
         # whose audit merely fired via the risk report trigger.
         + ((_adversarial_attack_instruction(_pov_active(ask))
             if _ask_declared_adversarial(ask) else ""))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
+        # R37-1: the folded revision ask rides LAST — payload trimming keeps
+        # the tail, so the output contract can never be trimmed away.
+        + (_fold_revision_instruction(fold_char_cap) if fold_revision else "")
     )
     # R34-19i: total_cap must bound the WHOLE payload, not just the user part.
     # The system block (instructions + persona card) is ~2.5-3k on its own, so a
@@ -1705,12 +1750,17 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               request: Optional[dict], model: str = "",
                               timeout_s: float = 45.0,
                               pre_brief: str = "",
-                              pre_trigger: str = "") -> Optional[Dict[str, Any]]:
-    """Sync POST audit (Goran 2026-09-10, deep-consult hardened): frontier
-    consult completes BEFORE delivery, then a bounded IN-HOOK REVISION PASS
-    re-calls flash with (ask, draft, verdict) so the delivered string is the
-    REVISED response — sync semantics, not annotation. On revision failure,
-    timeout, or NO-FINDINGS the ORIGINAL draft delivers unchanged (fail-open).
+                              pre_trigger: str = "",
+                              fold_revision: bool = True) -> Optional[Dict[str, Any]]:
+    """Sync POST audit (Goran 2026-09-10; R37-1 folded revision): frontier
+    consult completes BEFORE delivery and returns BOTH halves in ONE call —
+    the verdict and (when the defect is text-fixable) the corrected final
+    response. Sync semantics, not annotation: the delivered string is the
+    REVISED response. There is NO second in-hook frontier call on the delivery
+    path; two calls cannot fit one hook budget (measured: the consult spends it
+    all, the revision is handed ~0.05s, `revised=False` on 64/64 events
+    fleet-wide). On revision absence, timeout, or NO-FINDINGS the ORIGINAL
+    draft delivers unchanged (fail-open).
 
     Timeout semantics: worker thread with socket timeout capped at the sync
     budget; caller joins for timeout_s. On join timeout the daemon thread is
@@ -1729,7 +1779,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     def _worker() -> None:
         meta = _consult_meta(session_id, ask, response_text, request,
                              model, key, socket_timeout=max(10, int(timeout_s)),
-                             pre_brief=pre_brief, pre_trigger=pre_trigger)
+                             pre_brief=pre_brief, pre_trigger=pre_trigger,
+                             fold_revision=fold_revision)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -1972,11 +2023,158 @@ def persist_frontier_verdict(session_id: str, key: str, ep: Any,
         return None
 
 
+def _fold_char_cap(draft: str) -> int:
+    """R37-1: characters the folded revised body may use — fixed at generation.
+
+    `advisory_char_budget()` (anchor_exec — NOT this module) is the single source
+    of truth for what one injected advisory may cost, and it is used here as the
+    FLOOR of the allowance. It is not used as a hard ceiling: a draft longer than
+    the advisory budget (a real answer is often 6-20k chars) would then have to be
+    COMPRESSED by the model to fit, which is the same damage as post-hoc
+    truncation — just moved into the prompt. So the allowance is
+    max(advisory_char_budget(), len(draft) + 600): the advisory budget when the
+    answer fits it, the answer's own length plus slack when it does not.
+    Never raises.
+    """
+    try:
+        from .anchor_exec import advisory_char_budget
+        floor = int(advisory_char_budget())
+    except Exception:  # noqa: BLE001 — budget read never breaks the audit
+        from .anchor_exec import ADVISORY_CHAR_BUDGET_DEFAULT as floor
+    try:
+        return max(floor, len(_strip_audit_artifacts(draft or "")) + 600)
+    except Exception:  # noqa: BLE001
+        return floor
+
+
+def _fold_revision_tokens(char_cap: int) -> int:
+    """R37-1: ADDITIONAL output tokens the folded revised body may buy.
+
+    Sized through anchor_exec's advisory helpers so there is one budget source:
+    `apply_advisory_budget` normalizes the ask (it honours a smaller caller
+    budget and never touches probe payloads) and `advisory_max_tokens` converts
+    the char allowance into output tokens with finish-the-thought slack. This
+    allocation is ADDED to the verdict's own budget — the verdict still needs its
+    reasoning headroom, and shrinking it to the advisory size is the exact
+    starvation that produced empty consults. Never raises.
+    """
+    try:
+        from .anchor_exec import advisory_max_tokens, apply_advisory_budget
+        ask = advisory_max_tokens(int(char_cap))
+        normalized = apply_advisory_budget({"max_tokens": ask})
+        out = normalized.get("max_tokens")
+        # apply_advisory_budget clamps to the DEFAULT advisory size; a draft that
+        # legitimately exceeds it keeps its own allowance (see _fold_char_cap).
+        if isinstance(out, int) and not isinstance(out, bool) and out > 0 \
+                and out >= ask:
+            return out
+        return ask
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """First JSON object in `text` (fenced or bare), or None. Never raises."""
+    try:
+        t = str(text or "").strip()
+        if not t:
+            return None
+        for fence in ("```json", "```"):
+            if t.startswith(fence):
+                t = t[len(fence):]
+                if t.rstrip().endswith("```"):
+                    t = t.rstrip()[:-3]
+                t = t.strip()
+                break
+        start = t.find("{")
+        while start >= 0:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(t)):
+                ch = t[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            obj = json.loads(t[start:i + 1])
+                        except Exception:  # noqa: BLE001
+                            obj = None
+                        if isinstance(obj, dict):
+                            return obj
+                        break
+            start = t.find("{", start + 1)
+    except Exception:  # noqa: BLE001 — parsing never raises
+        return None
+    return None
+
+
+def _parse_folded_verdict(verdict_text: str, draft: str,
+                          char_cap: int) -> Tuple[str, Optional[str], str]:
+    """R37-1 fail-open envelope parse: (note, revised_response|None, reason).
+
+    The folded contract is `{"note": ..., "revised_response": ... | null}`. Any
+    shape/parse failure is NOT an error path that may raise or that may annotate
+    delivery — it returns the raw text as the note and no revision, exactly the
+    pre-R37 behaviour, with a reason for the log. A revision that fails its own
+    sanity checks is dropped WHOLE (never truncated, never half-applied).
+    """
+    raw = str(verdict_text or "").strip()
+    obj = _extract_json_object(raw)
+    if not isinstance(obj, dict) or not ("note" in obj or "revised_response" in obj):
+        # unstructured (legacy or prose) verdict: deliver original, note as-is.
+        return raw, None, "unstructured"
+    note = obj.get("note")
+    note_txt = str(note).strip() if isinstance(note, str) else ""
+    rev = obj.get("revised_response")
+    if rev is None or (isinstance(rev, str) and rev.strip().lower() in ("", "null", "none")):
+        return (note_txt or raw), None, "needs_tool_work"
+    if not isinstance(rev, str):
+        return (note_txt or raw), None, "shape_not_text"
+    body = rev.strip()
+    if not body:
+        return (note_txt or raw), None, "empty_revision"
+    # sanity: an echo/shell is not a correction
+    if len(body) < max(200, len(draft or "") // 10):
+        return (note_txt or raw), None, "too_short"
+    # The revision is an ANSWER, not an envelope: reject only the higher-self
+    # ENVELOPE markers. `_is_audit_artifact()` is deliberately NOT used here —
+    # its marker set includes the bare words "debug_banner" and
+    # "router · frontier", so an answer that legitimately discusses this plugin's
+    # own banner code would have been thrown away as an artifact. That is the
+    # same over-broad-strip false positive the R34-19L reconcile was written to
+    # make visible, one layer down.
+    _envelope_markers = (_NOTE_MARKER,
+                         "HIGHER-SELF COMPLETION REFLECTION",
+                         "HIGHER-SELF ORIENTATION TURN")
+    if any(m and m in body for m in _envelope_markers):
+        return (note_txt or raw), None, "carries_note_marker"
+    if char_cap and len(body) > int(char_cap):
+        # never truncate a delivered answer: the over-budget revision is dropped
+        # and the original delivers. The cap was stated at generation, so this
+        # is a contract miss, not a licence to cut.
+        return (note_txt or raw), None, "over_char_budget"
+    return (note_txt or raw), body, "folded"
+
+
 def _consult_meta(session_id: str, ask: str, response_text: str,
                   request: Optional[dict], model: str, key: str,
                   socket_timeout: int = 120,
                   pre_brief: str = "",
-                  pre_trigger: str = "") -> Optional[Dict[str, Any]]:
+                  pre_trigger: str = "",
+                  fold_revision: bool = False) -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -1992,17 +2190,28 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # R34-19e: budget-aware total cap — under ~40s the frontier call cannot
         # chew a 13k payload and still emit a verdict.
         _total_cap = 12000 if socket_timeout >= 40 else 5500
+        # R37-1: fixed at GENERATION time, before the call is billed.
+        _fold_cap = _fold_char_cap(response_text) if fold_revision else 0
         msgs = _audit_payload(ask, _work_digest(request, max_chars), response_text,
                               max_chars, pre_brief=pre_brief,
-                              pre_trigger=pre_trigger, total_cap=_total_cap)
+                              pre_trigger=pre_trigger, total_cap=_total_cap,
+                              fold_revision=fold_revision,
+                              fold_char_cap=_fold_cap)
         # reasoning_effort=max (Goran 09-10: maximum capacity on frontier)
         # burns 10k+ reasoning chars — the old 2500 cap starved consults
         # into empty_response BEFORE any verdict was emitted (battery-proven
         # 09-10: finish=length, 10254 reasoning chars, 0 verdict). 12000
         # matches the uncensored-chain floor: thinking room + full verdict.
         from .core import budgets as _budgets
+        _mt = int(_budgets.budget("completion_audit")["max_tokens"])
+        if fold_revision:
+            # R37-1: the folded body is bought INSIDE this call, so its allowance
+            # is added to the verdict's, never carved out of it — shrinking the
+            # verdict budget to the advisory size is the starvation that produced
+            # empty consults (finish=length, 0 verdict).
+            _mt += int(_fold_revision_tokens(_fold_cap))
         api_kwargs = {"messages": msgs,
-                      "max_tokens": _budgets.budget("completion_audit")["max_tokens"],
+                      "max_tokens": _mt,
                       "temperature": 0.2}
         # cap check mirrors the PRE lane; consult is small but respects spend
         est_in, est_out = anchor_exec.estimate_tokens_from_payload(api_kwargs)
@@ -2060,6 +2269,20 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                  ct=ct if ct is not None else -1, session_id=session_id)
             return None
         verdict_text = str(content).strip()
+        # R37-1: ONE call carries both halves. The envelope is parsed here (where
+        # the draft and the generation cap are known) and the revised body is
+        # returned only if it survives its own sanity checks; everything
+        # downstream keeps working on the inner verdict text exactly as before.
+        _revised_body: Optional[str] = None
+        _revised_reason = "not_requested"
+        if fold_revision:
+            verdict_text, _revised_body, _revised_reason = _parse_folded_verdict(
+                verdict_text, response_text, _fold_cap)
+            _log("completion_audit_fold_parsed",
+                 revised_source=("folded" if _revised_body else "none"),
+                 reason=_revised_reason,
+                 revised_chars=len(_revised_body or ""), cap_chars=_fold_cap,
+                 session_id=session_id)
         # R19.13 Frontier Part 2: two-question verdict — parse tolerantly
         # (fail-open: absent field = backcompat, lane continues).
         _sc = _parse_sense_check(verdict_text)
@@ -2149,7 +2372,9 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 })
             except Exception:  # noqa: BLE001 — ledger never breaks the audit
                 pass
-        if not verdict_text or verdict_text == "NO-FINDINGS":
+        # R37-1: a folded revision with an otherwise empty verdict is still a
+        # correction — it must not be discarded by the NO-FINDINGS early return.
+        if (not verdict_text or verdict_text == "NO-FINDINGS") and not _revised_body:
             if verdict_text:
                 _log("completion_audit_done chars=0 verdict=no-findings",
                      session_id=session_id)
@@ -2272,6 +2497,13 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "sense_check": _sc, "povs": _povs,
                 "adversarial": _adv,
                 "ledger_row": _rid,
+                # R37-1: the second half of the folded call. None means "needs
+                # tool work" (or the revision failed its checks) — the caller
+                # then delivers the original and stashes the verdict exactly as
+                # the pre-R37 lane did.
+                "revised_response": _revised_body,
+                "revised_source": ("folded" if _revised_body else "none"),
+                "revised_reason": _revised_reason,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
         logger.error("completion_audit_failed detail=%.300s", str(exc))

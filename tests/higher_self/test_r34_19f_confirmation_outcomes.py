@@ -34,8 +34,13 @@ RESP = ("The banner was parked at turn one and consumed at a benign mid-turn "
 
 def _patch(monkeypatch, note="CONFIRMED: holds.", revised=None):
     seen = {"events": [], "revision_calls": 0}
+    # R37-1: the revision rides INSIDE the consult result now — there is no
+    # second in-hook frontier call, so the folded body arrives on the meta.
     monkeypatch.setattr(ca, "_consult_meta", lambda *a, **k: {
         "note": note, "model": "m", "endpoint": "e",
+        "revised_response": revised,
+        "revised_source": ("folded" if revised else "none"),
+        "revised_reason": ("folded" if revised else "needs_tool_work"),
         "tokens_in": 1, "tokens_out": 1, "cost": 0.0})
     monkeypatch.setattr(ca, "_log",
                         lambda ev, **kw: seen["events"].append((ev, kw)))
@@ -44,12 +49,6 @@ def _patch(monkeypatch, note="CONFIRMED: holds.", revised=None):
     # async (next-turn) branch, where no confirmation is owed yet
     monkeypatch.setattr(ca, "audit_sync_seconds", lambda: 45)
     monkeypatch.setattr(ca, "audit_revision_seconds", lambda: 5)
-
-    def _revise(*a, **k):
-        seen["revision_calls"] += 1
-        return revised
-
-    monkeypatch.setattr(ca, "revise_with_verdict", _revise)
     monkeypatch.setattr(ca, "audit_enabled", lambda: True)
     monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
     # these pins test the three CONFIRMATION OUTCOMES, not the fire policy —
@@ -124,7 +123,11 @@ def test_a_bare_confirmed_answer_is_a_hold_not_a_flag(monkeypatch):
 
 def test_adjusted_branch_says_adjusted(monkeypatch):
     _SID[0] = _sid()
-    revised = "SHARPER: the banner was parked at turn one and dropped at a "
+    revised = ("SHARPER: the banner was parked at turn one and dropped at a "
+               "benign mid-turn edge where the rewrite could not match the row, "
+               "so keying retention on turn_no instead of close_turn is what "
+               "actually fixes it — close_turn fires per transform pass, not "
+               "per turn, which is the case the original answer never named.")
     seen = _patch(monkeypatch, note="CONFIRMED: sharper.", revised=revised)
     state.mark_pre_advisory(_SID[0], "orientation", "PRE", ask=ASK)
     out = ca.audit_gate(_SID[0], RESP, ask_override=ASK)

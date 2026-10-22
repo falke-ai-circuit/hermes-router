@@ -121,17 +121,38 @@ def test_an_unknown_signal_renders_nothing():
 
 # --- config -------------------------------------------------------------
 
-def test_mode_defaults_off_so_it_earns_a_canary_first():
+def _isolate_live_cfg(monkeypatch):
+    """Keep the profile's real config out of the coercion pins.
+
+    `mode_of()` reads the canonical reader FIRST and lets it override a passed
+    cfg (correct in production, and pinned by
+    test_recognition_is_read_through_the_canonical_reader). On any profile that
+    has `recognition` configured, the two coercion pins would then assert
+    against the live config instead of their own fixtures — red for a reason
+    that has nothing to do with the code under test (proven red at 9080644).
+    """
+    from hermes_router.core import config_access
+
+    monkeypatch.setattr(config_access, "sub_block_alias",
+                        lambda *a, **k: {}, raising=False)
+
+
+def test_mode_defaults_off_so_it_earns_a_canary_first(monkeypatch):
+    # the canonical reader WINS over a passed cfg (production precedence), so a
+    # profile that has recognition configured would decide this unit pin. These
+    # two pins test the COERCION, not the precedence — isolate the reader.
+    _isolate_live_cfg(monkeypatch)
     assert itr.mode_of({}) == "off"
     assert itr.mode_of({"decision": {"recognition": "on"}}) == "on"
     assert itr.mode_of({"decision": {"recognition": "shadow"}}) == "shadow"
     assert itr.mode_of({"decision": {"recognition": "banana"}}) == "off"
 
 
-def test_yaml_boolean_on_is_read_as_on():
+def test_yaml_boolean_on_is_read_as_on(monkeypatch):
     """YAML 1.1 parses a bare `on` as True. Coercing with str() yields 'True',
     which matched no mode and silently disabled the feature in the commit that
     added it — observed live on the coder canary."""
+    _isolate_live_cfg(monkeypatch)
     assert itr.mode_of({"decision": {"recognition": True}}) == "on"
     assert itr.mode_of({"decision": {"recognition": False}}) == "off"
     assert itr.mode_of({"decision": {"recognition": "true"}}) == "on"

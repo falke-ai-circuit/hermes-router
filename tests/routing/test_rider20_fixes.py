@@ -187,9 +187,11 @@ def test_d3_hook_budget_clamps_sync_and_revision_sum(r20_reset, monkeypatch):
     timeout_s <= N - sync."""
     recorded = {}
 
-    def _sync(session_id, ask, resp, req, model, timeout_s=45.0):
+    def _sync(session_id, ask, resp, req, model, timeout_s=45.0, **kw):
         recorded["sync"] = timeout_s
-        return {"note": "NO-FINDINGS", "model": "m", "endpoint": "e",
+        recorded["fold"] = kw.get("fold_revision")
+        return {"note": "- the row was never checked before the claim",
+                "model": "m", "endpoint": "e", "revised_response": None,
                 "tokens_in": 10, "tokens_out": 10, "cost": 0.0001}
 
     def _rev(session_id, ask, resp, note, timeout_s=60.0):
@@ -206,24 +208,23 @@ def test_d3_hook_budget_clamps_sync_and_revision_sum(r20_reset, monkeypatch):
                         lambda: {"audit_sync_seconds": 5})
     ca.audit_gate(SID, RESP, ask_override="closure report: all three fixes "
                                          "landed and verified", hook_budget=12.0)
-    # R34-19g: a 12s hook cannot host the revision pass at all — the revision is
-    # a FRONTIER call at reasoning_effort max with a 20s floor, and the old
-    # arithmetic handed it 12 - 5 = 7s, which is a guaranteed empty result. The
-    # pass is now SKIPPED EXPLICITLY (and the verdict stashed for the next turn)
-    # rather than attempted and reported as revised=False. Sync still clamps.
+    # R37-1: there is nothing to carve a second window for — the revision rides
+    # INSIDE the consult, so ONE clamped call must fit the hook on its own.
     assert recorded["sync"] <= 12.0
-    assert "rev" not in recorded, "a doomed frontier call was still made"
+    assert recorded["fold"] is True, "the consult must be asked for both halves"
+    assert "rev" not in recorded, "a second frontier call was still made"
 
 
-def test_d3_a_large_hook_budget_still_hosts_the_revision(r20_reset, monkeypatch):
-    """R34-19g: with room for it, the revision pass still runs and still
-    clamps — sync + revision stay inside the hook budget."""
+def test_d3_a_large_hook_budget_still_hosts_the_fold(r20_reset, monkeypatch):
+    """R37-1: with room, the SAME single call carries the revision — the hook
+    hosts one clamped consult, never a consult plus a doomed second pass."""
     recorded = {}
 
-    def _sync(session_id, ask, resp, req, model, timeout_s=45.0):
+    def _sync(session_id, ask, resp, req, model, timeout_s=45.0, **kw):
         recorded["sync"] = timeout_s
+        recorded["fold"] = kw.get("fold_revision")
         return {"note": "- the row was never checked before the claim",
-                "model": "m", "endpoint": "e",
+                "model": "m", "endpoint": "e", "revised_response": None,
                 "tokens_in": 10, "tokens_out": 10, "cost": 0.0001}
 
     def _rev(session_id, ask, resp, note, timeout_s=60.0):
@@ -242,8 +243,8 @@ def test_d3_a_large_hook_budget_still_hosts_the_revision(r20_reset, monkeypatch)
     ca.audit_gate(SID, RESP, ask_override="closure report: all three fixes "
                                          "landed and verified", hook_budget=120.0)
     assert recorded["sync"] <= 120.0
-    assert recorded["rev"] <= 120.0 - recorded["sync"]
-    assert recorded["sync"] + recorded["rev"] <= 120.0
+    assert recorded["fold"] is True
+    assert "rev" not in recorded, "a second frontier call was still made"
 
 
 def test_d3_no_hook_budget_keeps_configured_sync_budget(r20_reset, monkeypatch):
@@ -251,7 +252,7 @@ def test_d3_no_hook_budget_keeps_configured_sync_budget(r20_reset, monkeypatch):
     unchanged — no behavior regression for callers that do not pass one."""
     recorded = {}
 
-    def _sync(session_id, ask, resp, req, model, timeout_s=45.0):
+    def _sync(session_id, ask, resp, req, model, timeout_s=45.0, **kw):
         recorded["sync"] = timeout_s
         return {"note": "NO-FINDINGS", "model": "m", "endpoint": "e",
                 "tokens_in": 10, "tokens_out": 10, "cost": 0.0001}

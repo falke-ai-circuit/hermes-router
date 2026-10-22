@@ -51,6 +51,27 @@ def _isolate_daily_spend(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_pending_audit_verdicts():
+    """R37-1: the folded POST stashes its verdict whenever the consult could
+    not deliver a text revision (`revised_response: null`) — that is the
+    designed next-turn ride. `eligible()` then reports
+    `audit_verdict_pending` for the same session, so a test that drives
+    `audit_gate` on a shared SID would silently stop consulting in the NEXT
+    test. Clear the pending slot around every case: the behaviour is correct,
+    the leak between cases is not."""
+    try:
+        from hermes_router import completion_audit as _ca
+
+        with _ca._PENDING_LOCK:
+            _ca._PENDING.clear()
+        yield
+        with _ca._PENDING_LOCK:
+            _ca._PENDING.clear()
+    except Exception:  # noqa: BLE001 — isolation must never fail a test
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _two_vote_gate_bypass():
     """R33-D5: the two-vote confirm gate is DELETED — nothing to bypass.
     Kept as a no-op autouse fixture so legacy batteries that assumed the
