@@ -416,6 +416,8 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
             return
         opts = _dec.extract_options(text)
         if not opts:
+            if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
+                return
             _log(session_id, "midturn_suppressed",
                  reason=_dec.REASON_NO_OPTIONS, mode=mode,
                  tool=str(tool_name or ""), seam=seam)
@@ -451,6 +453,8 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  tool=str(tool_name or ""), seam=seam)
             return
         if not _dec.has_declared_fork_structure(text):
+            if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
+                return
             if _inj_sig:
                 _log(session_id, "injection_flagged_fork_suppressed",
                      family="prompt_injection", signal=str(_inj_sig),
@@ -1017,6 +1021,43 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
 # -----------------------------------------------------------------------
 # LEG 2 — advisory envelope (mode 'on' only)
 # -----------------------------------------------------------------------
+
+def _instinct_fire(session_id: str, tool_name: str, text: str,
+                   cfg: Dict[str, Any], mode: str, seam: str) -> bool:
+    """R36c: recognition path. Called ONLY where a declared fork was absent, so
+    a real fork and a reflex can never double-fire on one result.
+
+    Returns True when a reflex fired (caller stops). Deterministic by design:
+    noticing that the same error came back twice does not need a model, and a
+    reflex that costs tokens per tool result is a reflex you switch off.
+    """
+    try:
+        from . import instinct_triggers as _itr
+
+        rmode = _itr.mode_of(cfg)
+        if rmode == "off":
+            return False
+        hit = _itr.recognise(_state(str(session_id)), str(tool_name or ""),
+                             text)
+        if not hit:
+            return False
+        note = _itr.render_note(hit)
+        _log(session_id, "instinct_fired", signal=str(hit.get("signal")),
+             repeats=int(hit.get("repeats") or 0), tool=str(tool_name or ""),
+             mode=rmode, seam=seam, chars=len(note),
+             advisory=("parked" if rmode == "on" and note else "shadow_only"))
+        if rmode != "on" or not note:
+            return True  # shadow: counted, never delivered
+        try:
+            from . import debug_banner as _db
+
+            _db.park_anchor_banner(session_id, note, task_id="instinct")
+        except Exception:  # noqa: BLE001 — delivery must never break the turn
+            _log(session_id, "instinct_park_failed", signal=hit.get("signal"))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _render_execution_fork_note(verdict: Dict[str, Any],
                                 envelope: Dict[str, Any]) -> str:
