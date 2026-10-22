@@ -80,6 +80,21 @@ def test_dict_results_are_flattened_to_text(monkeypatch):
     assert "ModuleNotFoundError" in got["text"]
 
 
+def test_the_platform_kwarg_is_tool_name_not_function_name(monkeypatch):
+    """model_tools._emit_post_tool_call_hook invokes the hook with tool_name=.
+    A handler taking only function_name got an empty tool, the route set never
+    gained a second entry, and the reflex could not fire — observed live with
+    two identical ModuleNotFoundError results and no event."""
+    monkeypatch.setattr(itr, "mode_of", lambda cfg=None: "on")
+    got = {}
+    monkeypatch.setattr(dm, "_instinct_fire",
+                        lambda k, tool, text, cfg, mode, seam: got.update(
+                            tool=tool))
+    dm.on_post_tool_call(tool_name="execute_code", result="boom",
+                         session_id="s1")
+    assert got["tool"] == "execute_code"
+
+
 def test_the_seam_never_raises():
     dm.on_post_tool_call(function_name=None, result=object(), session_id=None)
     dm.on_post_tool_call()

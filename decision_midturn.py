@@ -1413,7 +1413,15 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
 
 def on_post_tool_call(function_name: str = "", result: Any = None,
                       session_id: str = "", **kwargs: Any) -> None:
-    """Reflex-only seam. Never raises, never returns a value, never blocks."""
+    """Reflex-only seam. Never raises, never returns a value, never blocks.
+
+    The platform dispatches this hook with `tool_name=`, NOT `function_name=`
+    (model_tools._emit_post_tool_call_hook -> invoke_hook("post_tool_call",
+    tool_name=...)). Taking only `function_name` silently yielded an empty tool
+    name, the route set never gained a second entry, and the reflex could not
+    fire — observed live: two identical ModuleNotFoundError results from
+    terminal and execute_code and no event at all.
+    """
     try:
         from . import instinct_triggers as _itr
 
@@ -1425,7 +1433,9 @@ def on_post_tool_call(function_name: str = "", result: Any = None,
         text = result if isinstance(result, str) else _flatten_result(result)
         if not text:
             return
-        _instinct_fire(key, str(function_name or ""), text,
+        tool = (function_name or kwargs.get("tool_name")
+                or kwargs.get("name") or "")
+        _instinct_fire(key, str(tool), text,
                        {"decision": {}}, "on", "post_tool_call")
     except Exception:  # noqa: BLE001
         logger.debug("decision_midturn.on_post_tool_call error", exc_info=True)
