@@ -110,3 +110,24 @@ def test_yaml_boolean_on_is_read_as_on():
     assert itr.mode_of({"decision": {"recognition": False}}) == "off"
     assert itr.mode_of({"decision": {"recognition": "true"}}) == "on"
     assert itr.mode_of({"decision": {"recognition": "false"}}) == "off"
+
+
+def test_recognition_is_read_through_the_canonical_reader(monkeypatch):
+    """The `decision.frame` trap repeating: decision._cfg() only carries keys it
+    already knows, so a new key is invisible in production while a hand-built
+    cfg passes in tests. Live symptom was config=on, midturn mode=on, and the
+    reflex never firing."""
+    from hermes_router.core import config_access as ca
+
+    monkeypatch.setattr(ca, "sub_block_alias",
+                        lambda a, b=None: {"recognition": True})
+    assert itr.mode_of({}) == "on"
+
+
+def test_a_canonical_read_failure_falls_back_to_the_passed_cfg(monkeypatch):
+    from hermes_router.core import config_access as ca
+
+    def _boom(a, b=None):
+        raise RuntimeError("no config")
+    monkeypatch.setattr(ca, "sub_block_alias", _boom)
+    assert itr.mode_of({"decision": {"recognition": "shadow"}}) == "shadow"

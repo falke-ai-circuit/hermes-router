@@ -203,6 +203,20 @@ def render_note(hit: Dict[str, Any]) -> str:
 def mode_of(cfg: Optional[Dict[str, Any]]) -> str:
     """'off' | 'shadow' | 'on'. Default OFF: this changes when the lane fires,
     so it earns its place on a canary before the fleet."""
+    # Read through the CANONICAL config reader, not decision._cfg(). The same
+    # trap as `decision.frame`: the historical reader never surfaces keys it
+    # does not already know, so `recognition` was invisible in production while
+    # a hand-built cfg in tests passed. Live symptom: config said
+    # recognition: on, the lane logged mode=on for midturn, and the reflex
+    # never fired.
+    try:
+        from .core import config_access as _ca
+
+        _blk = _ca.sub_block_alias("reflex", "decision")
+        if isinstance(_blk, dict) and _blk.get("recognition") is not None:
+            cfg = {"decision": {"recognition": _blk.get("recognition")}}
+    except Exception:  # noqa: BLE001
+        pass
     try:
         blk = (cfg or {}).get("decision")
         if isinstance(blk, dict):
