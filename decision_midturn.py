@@ -801,7 +801,13 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             frame_context_chars_used=(_fcu or None),
             confidence=round(float(verdict["confidence"]), 4),
             choice_label=_lbl, label_source=_lsrc,
-            verdict_json=json.dumps(verdict, default=str)))
+            # R36j2: go through the SAME funnel as every other write. This line
+            # used to json.dumps the verdict raw, which silently skipped the
+            # band stamping — observed live: row 3858, written after the
+            # 5.11.0 bounce, landed with confidence_band=None while the fix was
+            # already deployed. Exactly the R35 shape repeating on the other
+            # side of the same file: the midturn path bypassing the patched one.
+            verdict_json=_dec.verdict_row_json(verdict, text)))
         _dec._record_success()
         try:
             meta["choice_label"] = str(_lbl or _dec.choice_label(verdict, envelope))[:60]
