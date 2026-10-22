@@ -160,10 +160,18 @@ _CONSEQ_TARGET = (
     r"files?|dirs?|director(?:y|ies)|backups?|archives?|"
     r"repos?|repo\w*|branch\w*|main|origin|remote|git|"
     r"prod|production|live|fleet|gateway\w*|services?|containers?|plugins?|"
-    r"packages?|dependenc(?:y|ies)|versions?|cron\w*|systemd|units?)"
+    r"packages?|dependenc(?:y|ies)|versions?|cron\w*|systemd|units?|"
+    r"retr(?:y|ies)|caps?|limits?|thresholds?|timeouts?|rules?|handlers?|"
+    r"loaders?|endpoints?|tests?|scripts?)"
 )
+# Same-clause window: up to 80 chars, may not cross a sentence break. A dot
+# inside a token (complexity.level, .env) is not a sentence break, so the span
+# only stops at "." followed by whitespace or end of line.
+_CONSEQ_SPAN = r"(?:(?!\.(?=\s|$))[^\n]){0,80}?"
 _CONSEQUENCE: List[str] = [
-    r"\b%s\b.{0,40}?\b%s\b" % (_CONSEQ_VERB, _CONSEQ_TARGET),
+    r"\b%s\b%s\b%s\b" % (_CONSEQ_VERB, _CONSEQ_SPAN, _CONSEQ_TARGET),
+    # ".env" cannot sit behind \b (no word char before the dot).
+    r"\b%s\b%s\.env\b" % (_CONSEQ_VERB, _CONSEQ_SPAN),
 ]
 
 # Subset that is expensive or hard to undo: a hit here reads as clearly
@@ -175,7 +183,8 @@ _CONSEQ_HIGH_RISK = (
     r"delete|drop|wipe|truncate|purge|reset|revert|roll\s*back|rotate|revoke)"
 )
 _CONSEQUENCE_HIGH: List[str] = [
-    r"\b%s\b.{0,40}?\b%s\b" % (_CONSEQ_VERB, _CONSEQ_HIGH_RISK),
+    r"\b%s\b%s\b%s\b" % (_CONSEQ_VERB, _CONSEQ_SPAN, _CONSEQ_HIGH_RISK),
+    r"\b%s\b%s\.env\b" % (_CONSEQ_VERB, _CONSEQ_SPAN),
 ]
 
 # Bucket MULTI-PART LONG ASKS — enumerated multi-part requests (>=3 numbered or
