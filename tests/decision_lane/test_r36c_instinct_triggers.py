@@ -1,68 +1,89 @@
-"""R36c: a reflex fires on RECOGNITION, not on an enumerated menu."""
+"""R36c/R36f: a reflex fires on RECOGNITION, not on an enumerated menu.
+
+R36f narrowed this hard. The first version's two signals (repeat failure, stall)
+turned out to duplicate the harness guardrails, which are tuned and escalate to
+block. What survives is the one thing per-tool, per-turn counters cannot see:
+the same cause arriving through a different route.
+"""
 import pytest
 
 from hermes_router import instinct_triggers as itr
 
+TRACE_A = ("Traceback (most recent call last):\n  File \"/opt/x.py\", line 12\n"
+           "ModuleNotFoundError: No module named 'numpy'")
+TRACE_B = ("Traceback (most recent call last):\n  File \"/opt/y.py\", line 47\n"
+           "ModuleNotFoundError: No module named 'numpy'")
 
-def test_the_same_failure_twice_is_recognised():
+
+# --- the surviving signal ------------------------------------------------
+
+def test_the_same_cause_through_a_second_tool_is_recognised():
     st = {}
-    err1 = ("Traceback (most recent call last):\n  File \"/opt/x.py\", line 12\n"
-            "ValueError: bad input 8812")
-    err2 = ("Traceback (most recent call last):\n  File \"/opt/x.py\", line 47\n"
-            "ValueError: bad input 3331")
-    assert itr.recognise(st, "terminal", err1) is None
-    hit = itr.recognise(st, "terminal", err2)
-    assert hit and hit["signal"] == "repeat_failure"
+    assert itr.recognise(st, "terminal", TRACE_A) is None
+    hit = itr.recognise(st, "execute_code", TRACE_B)
+    assert hit and hit["signal"] == "same_cause_different_route"
+    assert hit["routes"] == ["terminal", "execute_code"]
 
 
-def test_different_failures_are_not_a_repeat():
+def test_the_same_cause_through_the_same_tool_is_NOT_ours():
+    """That is `repeated_exact_failure_warning` / `same_tool_failure_warning`.
+    The harness owns it and escalates to block."""
     st = {}
-    a = "fatal: not a git repository"
-    b = "error: cannot find module 'foo'"
-    assert itr.recognise(st, "terminal", a) is None
-    assert itr.recognise(st, "terminal", b) is None
+    assert itr.recognise(st, "terminal", TRACE_A) is None
+    assert itr.recognise(st, "terminal", TRACE_B) is None
 
 
-def test_a_repeat_fires_once_per_pair_not_every_time():
+def test_different_causes_are_never_a_recognised_cause():
+    """Two unrelated failures through two tools is not "the same problem
+    again" — it is just two failures."""
     st = {}
-    err = "npm ERR! code E404"
-    itr.recognise(st, "terminal", err)
-    assert itr.recognise(st, "terminal", err) is not None
-    # third identical: repeat already consumed; only the stall counter moves
-    assert itr.recognise(st, "terminal", err) is None
+    assert itr.recognise(st, "terminal",
+                         "fatal: not a git repository") is None
+    assert itr.recognise(st, "execute_code",
+                         "ImportError: cannot import name 'x'") is None
 
 
-def test_three_identical_results_is_a_stall():
+def test_a_cause_fires_once_not_on_every_further_route():
     st = {}
-    out = "waiting for lock on /var/lib/dpkg/lock"
-    assert itr.recognise(st, "terminal", out) is None
-    assert itr.recognise(st, "terminal", out) is None
-    hit = itr.recognise(st, "terminal", out)
-    assert hit and hit["signal"] == "stall"
+    itr.recognise(st, "terminal", TRACE_A)
+    assert itr.recognise(st, "execute_code", TRACE_B) is not None
+    assert itr.recognise(st, "web_search", TRACE_B) is None
+    assert itr.recognise(st, "analyst", TRACE_B) is None
 
 
-def test_a_stall_fires_once_then_rearms():
+def test_the_store_stays_bounded_over_a_long_session():
     st = {}
-    out = "same"
-    for _ in range(3):
-        itr.recognise(st, "terminal", out)
-    assert st["instinct"]["repeat"] == 0  # re-armed, not stuck firing
+    for n in range(120):
+        itr.recognise(st, "terminal", f"error: distinct failure {n}")
+    assert len(st["instinct"]["seen"]) <= 40
+    assert len(st["instinct"].get("fired") or []) <= 40
 
 
-def test_varying_clean_output_never_fires():
+# --- deference to the harness -------------------------------------------
+
+@pytest.mark.parametrize("code", [
+    "repeated_exact_failure_warning",
+    "repeated_exact_failure_block",
+    "same_tool_failure_warning",
+    "same_tool_failure_halt",
+    "idempotent_no_progress_warning",
+    "idempotent_no_progress_block",
+    "[Tool loop warning: repeated_exact_failure_warning; count=2",
+])
+def test_the_reflex_never_talks_over_a_harness_guardrail(code):
+    """Observed live: the harness emitted `repeated_exact_failure_warning;
+    count=2` in the same result the reflex fired on, one line above it. A
+    second quieter voice saying the same thing is noise."""
+    st = {}
+    itr.recognise(st, "terminal", TRACE_A)
+    assert itr.recognise(st, "execute_code", TRACE_B + "\n\n" + code) is None
+
+
+def test_a_clean_result_never_fires():
     st = {}
     for n in range(6):
         assert itr.recognise(st, "terminal", f"ok, {n} tests passed") is None
-
-
-def test_identical_non_error_output_is_a_stall_at_three():
-    """No new information is the definition of a stall. Documented
-    false-positive class: polling."""
-    st = {}
-    out = "waiting on dpkg lock"
-    assert itr.recognise(st, "terminal", out) is None
-    assert itr.recognise(st, "terminal", out) is None
-    assert itr.recognise(st, "terminal", out)["signal"] == "stall"
+    assert itr.recognise(st, "execute_code", "ok, 6 tests passed") is None
 
 
 def test_standing_instructions_riding_the_turn_are_not_the_world_failing():
@@ -70,36 +91,41 @@ def test_standing_instructions_riding_the_turn_are_not_the_world_failing():
     note = ("<recalled memory context>\nBackground process proc_1 completed "
             "with exit code 0\nError in the summary text above")
     assert itr.recognise(st, "terminal", note) is None
-    assert itr.recognise(st, "terminal", note) is None
+    assert itr.recognise(st, "execute_code", note) is None
 
+
+# --- register -----------------------------------------------------------
 
 def test_the_note_offers_no_menu_and_no_confidence():
-    for sig in ("repeat_failure", "stall"):
-        note = itr.render_note({"signal": sig, "tool": "terminal"})
-        assert note.startswith(itr.NOTE_HEAD)
-        assert len(note) <= itr.NOTE_MAX_CHARS
-        low = note.lower()
-        for banned in ("option", "opt-", "confidence", "choose", "which do you"):
-            assert banned not in low, (sig, banned)
-        assert "change" in low or "stop" in low
+    note = itr.render_note({"signal": "same_cause_different_route",
+                            "routes": ["terminal", "execute_code"]})
+    assert note.startswith(itr.NOTE_HEAD)
+    assert len(note) <= itr.NOTE_MAX_CHARS
+    low = note.lower()
+    for banned in ("option", "opt-", "confidence", "choose", "which do you"):
+        assert banned not in low, banned
+    assert "same cause" in low
+    assert "terminal and execute_code" in note
+
+
+def test_the_note_names_the_routes_it_came_through():
+    note = itr.render_note({"signal": "same_cause_different_route",
+                            "routes": ["terminal", "coder", "reviewer"]})
+    assert "terminal and coder and reviewer" in note
 
 
 def test_an_unknown_signal_renders_nothing():
     assert itr.render_note({"signal": "nonsense"}) == ""
+    assert itr.render_note({}) == ""
 
+
+# --- config -------------------------------------------------------------
 
 def test_mode_defaults_off_so_it_earns_a_canary_first():
     assert itr.mode_of({}) == "off"
     assert itr.mode_of({"decision": {"recognition": "on"}}) == "on"
     assert itr.mode_of({"decision": {"recognition": "shadow"}}) == "shadow"
     assert itr.mode_of({"decision": {"recognition": "banana"}}) == "off"
-
-
-def test_recognition_never_raises_on_garbage():
-    st = {}
-    for junk in (None, 0, "", [], {}, "x" * 10000):
-        itr.recognise(st, None, junk)
-    assert True
 
 
 def test_yaml_boolean_on_is_read_as_on():
@@ -131,3 +157,35 @@ def test_a_canonical_read_failure_falls_back_to_the_passed_cfg(monkeypatch):
         raise RuntimeError("no config")
     monkeypatch.setattr(ca, "sub_block_alias", _boom)
     assert itr.mode_of({"decision": {"recognition": "shadow"}}) == "shadow"
+
+
+def test_recognition_never_raises_on_garbage():
+    st = {}
+    for junk in (None, 0, "", [], {}, "x" * 10000):
+        itr.recognise(st, None, junk)
+    assert True
+
+
+def test_two_tools_wrapping_one_cause_share_a_signature():
+    """terminal returns {"output":..,"exit_code":1}; execute_code returns its
+    own shape. Hashing the whole body gives two signatures for one cause, so the
+    cross-route signal could never fire. The failure line is what has to match."""
+    terminal_shape = ('{"output": "Traceback (most recent call last):\\n  '
+                      'File \\"<string>\\", line 1, in <module>\\n'
+                      'ModuleNotFoundError: No module named \'zzz\'", '
+                      '"exit_code": 1, "error": null}')
+    exec_shape = ('Error executing code block\n'
+                  'ModuleNotFoundError: No module named \'zzz\'\n'
+                  'at line 4 of notebook cell')
+    st = {}
+    assert itr.recognise(st, "terminal", terminal_shape) is None
+    hit = itr.recognise(st, "execute_code", exec_shape)
+    assert hit and hit["signal"] == "same_cause_different_route", itr._cause_text(exec_shape)
+
+
+def test_the_envelope_does_not_define_the_cause():
+    """A differing exit code or wrapper must not create a new cause."""
+    a = '{"output": "ValueError: bad input", "exit_code": 1}'
+    b = 'command failed after 3 attempts\nValueError: bad input\nsee log /tmp/a.log'
+    assert itr._cause_text(a) == itr._cause_text(b), (
+        itr._cause_text(a), itr._cause_text(b))

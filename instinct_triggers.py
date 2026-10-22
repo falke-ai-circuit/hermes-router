@@ -1,51 +1,54 @@
-"""Instinct triggers — recognition, not enumeration.
+"""Instinct triggers — the one recognition the harness guardrails cannot make.
 
-WHY THIS EXISTS
----------------
-The reflex lane's trigger today is: "does this tool result contain >=2 named
-options with consequence markers?" That is a DECISION DETECTOR. It waits for
-someone to write a menu, then picks from it. A reflex does not work that way —
-it does not need options to exist in order to notice that something is wrong.
+WHY THIS FILE GOT SMALLER
+-------------------------
+The first version recognised two situations: the same failure twice, and three
+identical results (a "stall"). Then the harness was read properly
+(/opt/hermes/agent/tool_guardrails.py) and both turned out to be already
+covered, tuned, and escalating harder than any advisory can:
 
-Evidence that the wrong shape was being detected: 55% of the lane's real option
-labels carry no observable at all (prose sentences, not action forks), the
-synthetic probes needed a declared structure to fire at all, and the lane
-meanwhile fired on markdown headings inside documentation files and produced
-six "options" with identical weights.
+    repeated_exact_failure_warning  count>=2  identical arguments
+    repeated_exact_failure_block
+    same_tool_failure_warning       count>=3  same tool, ANY arguments
+    same_tool_failure_halt          count>=8
+    idempotent_no_progress_warning  identical RESULT hash   <- was "stall"
+    idempotent_no_progress_block
 
-What a reflex actually fires on is RECOGNITION of a recurring situation. This
-module recognises two, both derivable from the tool result with no model call:
+Shipping those as a reflex would have been a second, quieter voice saying what a
+warning inside the tool result already said more firmly. Observed live: the
+harness emitted `repeated_exact_failure_warning; count=2` in the same result the
+reflex fired on, one line above it.
 
-  repeat_failure   the same failure signature has already been seen this
-                   session. Retrying unchanged will cost the same again.
+WHAT IS ACTUALLY LEFT
+---------------------
+The harness counters are keyed per tool_name and reset each turn (see
+`reset_for_turn`), so they are structurally blind to one thing: THE SAME CAUSE
+ARRIVING THROUGH A DIFFERENT ROUTE. `terminal` fails with
+ModuleNotFoundError: numpy, then `execute_code` fails the same way, then a test
+run fails the same way — three tools, three argument hashes, no guardrail
+warning at any point, and a human watching would say "that's the same problem
+again".
 
-  stall            three consecutive NON-ERROR results are identical after
-                   normalisation. Nothing new is arriving; more of the same
-                   will not move it.
+That is the signal this module reports, and only that:
 
-                   Known false-positive class: legitimate polling (waiting on
-                   a lock, re-checking `git status`). The note is advisory and
-                   says "change approach or stop", which is tolerable advice
-                   in that case — but it is the reason this ships to a canary
-                   before the fleet rather than straight on.
+    same_cause_different_route   the same failure signature seen this session
+                                 under a DIFFERENT tool.
 
-Deliberately NOT implemented yet (and why):
-  scope_drift      needs the task's declared scope; approximating it from the
-                   tool text would fire on ordinary path variety and poison
-                   trust in every other signal. Not worth a false reflex.
-  irreversible     needs the COMMAND, not the result — this seam sees results
-                   only. A result-text guess ("deleted", "removed") would fire
-                   after the fact, which is the wrong timing for a warning.
-  known_bad        needs resolved precedent; activates by itself once the
-                   conscience has data. No point pretending before then.
+This seam receives (session_id, tool_name, result) — no arguments — so "same
+command" cannot be detected here and does not need to be: the harness owns that,
+and this module defers to it.
 
-A reflex here is DETERMINISTIC ON PURPOSE. Noticing that the same error came
-back twice does not require a language model, and a reflex that costs tokens
-per tool result would be a reflex you turn off. The advisory is a bounded note
-built from the recognition itself. Model-backed judgement stays where it
-belongs: the higher self.
+DEFERENCE IS EXPLICIT
+---------------------
+If the result already carries a harness guardrail code, this module does not
+fire. The harness is closer to the loop, escalates to block, and has thresholds
+someone tuned on purpose. A reflex that talks over it is noise.
 
-Never raises. Off by config by default; canary profile opts in.
+`stall` is gone entirely: `idempotent_no_progress_warning` is the same
+observation with better instrumentation.
+
+Deterministic on purpose — a reflex that costs tokens per tool result is a reflex
+you switch off. Never raises. Ships off; canary opts in.
 """
 from __future__ import annotations
 
@@ -56,10 +59,6 @@ from typing import Any, Dict, Optional
 NOTE_HEAD = "[ROUTER INSTINCT — reflex; advisory, not a reply]"
 NOTE_MAX_CHARS = 320
 
-# Enough of a hit to call it a repeat, not two unrelated failures.
-REPEAT_MIN = 2
-STALL_MIN = 3
-
 _ERR_RE = re.compile(
     r"(traceback \(most recent call last\)"
     r"|\b(?:fatal|panic|exception)\b"
@@ -69,12 +68,25 @@ _ERR_RE = re.compile(
     r"|\bnon-zero exit\b"
     r"|\bexit code [1-9]|\bexit_code[\"']?\s*[:=]\s*[1-9]"
     r"|\bcommand not found\b"
-    r"|\bno such file or directory\b)",
+    r"|\bno such file or directory\b"
+    r"|ModuleNotFoundError|ImportError|PermissionError)",
     re.I)
 
-# Digits, hex, paths, timings and line numbers differ between two instances of
-# the same underlying failure. Normalise them out or "same failure twice" never
-# matches.
+# Every code the harness can emit, so deference never depends on remembering to
+# add the next one to a list in two places.
+_HARNESS_RE = re.compile(
+    r"(repeated_exact_failure_warning"
+    r"|repeated_exact_failure_block"
+    r"|same_tool_failure_warning"
+    r"|same_tool_failure_halt"
+    r"|idempotent_no_progress_warning"
+    r"|idempotent_no_progress_block"
+    r"|\[Tool loop warning"
+    r"|tool_guardrail)", re.I)
+
+# Digits, hex, paths, line numbers and timings differ between two instances of
+# the same underlying failure. Normalised so "same cause" can match across
+# routes.
 _NOISE_RE = re.compile(
     r"(0x[0-9a-f]+|\b[0-9a-f]{8,}\b|/[^\s:'\"]+|:\d+(?::\d+)?|\b\d+(?:\.\d+)?\b)")
 _WS_RE = re.compile(r"\s+")
@@ -85,82 +97,126 @@ _SKIP_RE = re.compile(
     r"auto-generated|hermes agent documentation)", re.I)
 
 
-def _norm_exact(text: str) -> str:
-    """Whitespace only. Used for STALL: identity must mean identity.
+def _norm(text: str) -> str:
+    t = _WS_RE.sub(" ", str(text or "")).strip()
+    return _NOISE_RE.sub("_", t)[:400]
 
-    Do NOT strip digits here. 'ok, 1 tests passed' and 'ok, 5 tests passed' are
-    different results; collapsing them to the same string invents a stall out of
-    a perfectly healthy loop, and a false reflex is worse than no reflex.
+
+# The failure MESSAGE, not the envelope. Two tools wrap the same underlying
+# failure differently — terminal returns {"output": "...", "exit_code": 1},
+# execute_code returns its own shape — so hashing the whole body gives two
+# different signatures for one cause and the cross-route signal could never
+# fire. What has to match is the line that names the failure.
+_CAUSE_LINE_RE = re.compile(
+    r"^(?:.*?)([A-Za-z_][\w.]*(?:Error|Exception|Warning)\b[^\n]{0,160}"
+    r"|fatal:[^\n]{0,160}"
+    r"|error(?: TS\d+)?:[^\n]{0,160}"
+    r"|cannot find module[^\n]{0,120}"
+    r"|command not found[^\n]{0,80}"
+    r"|no such file or directory[^\n]{0,80})",
+    re.I | re.M)
+
+
+def _unwrap(text: str) -> str:
+    """Strip a JSON envelope before looking for the cause.
+
+    Tool results arrive as {"output": ..., "exit_code": 1, "error": null}. If the
+    cause regex runs over that raw string it swallows the trailing JSON and two
+    shapes of the same failure stop matching. Unwrapping first is what makes
+    cross-route recognition possible at all.
     """
-    return _WS_RE.sub(" ", str(text or "")).strip()[:400]
+    raw = str(text or "")
+    t = raw.strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return raw
+    try:
+        import json as _json
+
+        obj = _json.loads(t)
+    except Exception:  # noqa: BLE001
+        return raw
+    if not isinstance(obj, dict):
+        return raw
+    parts = [str(obj.get(k) or "") for k in ("error", "output", "message",
+                                             "detail", "stderr")]
+    parts = [p for p in parts if p]
+    return "\n".join(parts) if parts else raw
 
 
-def _norm_error(text: str) -> str:
-    """Digit/hex/path/line-number noise removed. Used for REPEAT FAILURE: the
-    same failure at line 12 and line 47 is the same failure, and that is the
-    thing worth recognising."""
-    return _NOISE_RE.sub("_", _norm_exact(text))
+def _cause_text(text: str) -> str:
+    """The distinctive failure line(s), else the whole normalised body."""
+    raw = _unwrap(text)
+    hits = [m.group(1) for m in _CAUSE_LINE_RE.finditer(raw) if m.group(1)]
+    if hits:
+        # Last hits are the most specific: the outer wrapper ("error: command
+        # failed") comes before the real cause ("ModuleNotFoundError: ...").
+        clean = [h.split('", "')[0].split('"}')[0].rstrip('",} ') for h in hits[-2:]]
+        return _norm(" | ".join(clean))
+    return _norm(raw)
 
 
 def _sig(text: str) -> str:
-    """Exact signature (stall)."""
     return hashlib.sha256(
-        _norm_exact(text).encode("utf-8", "replace")).hexdigest()[:12]
-
-
-def _esig(text: str) -> str:
-    """Failure signature (repeat)."""
-    return hashlib.sha256(
-        _norm_error(text).encode("utf-8", "replace")).hexdigest()[:12]
+        _cause_text(text).encode("utf-8", "replace")).hexdigest()[:12]
 
 
 def has_error(text: str) -> bool:
     return bool(_ERR_RE.search(str(text or "")))
 
 
+def harness_already_spoke(text: str) -> bool:
+    """True when a harness guardrail code rides this result."""
+    return bool(_HARNESS_RE.search(str(text or "")))
+
+
 def recognise(store: Dict[str, Any], tool_name: str, text: str
               ) -> Optional[Dict[str, Any]]:
     """Return a recognition hit, or None.
 
-    `store` is the per-session dict the lane already keeps (decision_midturn
-    ._state(session_id)). Every field written here is namespaced under
-    'instinct' so this can never collide with the fork machinery's own keys.
+    Fires ONLY when the same failure signature appears under a different tool
+    this session — the one case the per-tool, per-turn harness counters cannot
+    represent.
+
+    `store` is the per-session dict the lane already keeps
+    (decision_midturn._state(session_id)). Everything written here is namespaced
+    under 'instinct' so it can never collide with the fork machinery's keys.
     """
     try:
         raw = str(text or "")
         if not raw or _SKIP_RE.search(raw):
             return None
-        st = store.setdefault("instinct", {})
+
+        # Deference: the harness is closer to the loop and escalates to block.
+        if harness_already_spoke(raw):
+            return None
+
+        if not has_error(raw):
+            return None
+
         sig = _sig(raw)
-        out_sig = st.get("last_sig")
-        out_rep = int(st.get("repeat") or 0)
-        out_err = st.get("err_sig")
+        st = store.setdefault("instinct", {})
+        seen: Dict[str, list] = st.setdefault("seen", {})
+        tool = str(tool_name or "")
 
-        # SIGNAL DIVISION: one result never means both things.
-        #   error text      -> repeat_failure (2nd occurrence is the signal;
-        #                      the same failure twice is already a wasted round)
-        #   non-error text  -> stall (3rd identical: no new information at all)
-        # Counting errors toward BOTH produced two advisories for one situation
-        # and made "retry unchanged" fire on something that was already covered.
-        _is_err = has_error(raw)
+        routes = list(seen.get(sig) or [])
+        if tool and tool not in routes:
+            routes.append(tool)
+        seen[sig] = routes
+        if len(seen) > 40:  # bounded: one session must not accumulate forever
+            for k in list(seen)[:-40]:
+                seen.pop(k, None)
 
-        rep = out_rep + 1 if sig == out_sig else 1
-        st["last_sig"] = sig
-        st["repeat"] = rep
-        if rep >= STALL_MIN and not _is_err:
-            st["repeat"] = 0  # fire once per stall, not on every further repeat
-            return {"signal": "stall", "repeats": rep, "sig": sig,
-                    "tool": str(tool_name or "")}
+        if len(routes) < 2:
+            return None
 
-        # REPEAT FAILURE — same error signature seen again this session.
-        if _is_err:
-            esig = _esig(raw)
-            if esig == out_err:
-                st["err_sig"] = None  # one fire per repeated pair
-                return {"signal": "repeat_failure", "repeats": REPEAT_MIN,
-                        "sig": esig, "tool": str(tool_name or "")}
-            st["err_sig"] = esig
-        return None
+        fired = list(st.get("fired") or [])
+        if sig in fired:
+            return None  # one reflex per cause, not again on every further route
+        fired.append(sig)
+        st["fired"] = fired[-40:]
+
+        return {"signal": "same_cause_different_route", "sig": sig,
+                "tool": tool, "routes": routes}
     except Exception:  # noqa: BLE001
         return None
 
@@ -173,25 +229,19 @@ def reset(store: Dict[str, Any]) -> None:
 
 
 def render_note(hit: Dict[str, Any]) -> str:
-    """The reflex, in the execution register: what it resembles and what to do.
+    """The reflex, in the execution register: what it recognises, what to do.
 
-    No menu, no options, no invitation to choose, no confidence number — a
-    recognition is not a probability and dressing it as one invites the model
-    to argue with it.
+    No menu, no options, no confidence number — a recognition is not a
+    probability, and dressing it as one invites the model to argue with it.
     """
     try:
-        signal = str((hit or {}).get("signal") or "")
-        tool = str((hit or {}).get("tool") or "command")
-        if signal == "repeat_failure":
-            body = ("same failure as earlier this session (%s). It did not "
-                    "change the outcome the first time — change the approach, "
-                    "or stop and report. Do not retry unchanged." % tool)
-        elif signal == "stall":
-            body = ("third identical result in a row (%s). Nothing new is "
-                    "arriving — more of the same will not move it. Change "
-                    "approach or stop and report." % tool)
-        else:
+        if str((hit or {}).get("signal") or "") != "same_cause_different_route":
             return ""
+        routes = [str(r) for r in (hit.get("routes") or []) if r]
+        via = " and ".join(routes[:3]) if len(routes) > 1 else "two tools"
+        body = ("the same failure has now come back through %s. Different "
+                "routes, same cause — so the command is not the problem. Fix "
+                "the cause, or stop and report." % via)
         note = "%s %s" % (NOTE_HEAD, body)
         if len(note) > NOTE_MAX_CHARS:
             note = note[:NOTE_MAX_CHARS - 1].rstrip() + "…"
@@ -202,7 +252,7 @@ def render_note(hit: Dict[str, Any]) -> str:
 
 def mode_of(cfg: Optional[Dict[str, Any]]) -> str:
     """'off' | 'shadow' | 'on'. Default OFF: this changes when the lane fires,
-    so it earns its place on a canary before the fleet."""
+    so it earns a canary before the fleet."""
     # Read through the CANONICAL config reader, not decision._cfg(). The same
     # trap as `decision.frame`: the historical reader never surfaces keys it
     # does not already know, so `recognition` was invisible in production while
