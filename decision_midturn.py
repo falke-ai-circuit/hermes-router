@@ -1369,13 +1369,40 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # (pre-migration rows, stand-downs, label-less envelopes).
         shown = []
         confs = []
+        # R36k: the SAME reconciliation the verdict-of-record segment got in
+        # R36j, applied to the OTHER render site — but by ANNOTATION, not
+        # suppression. The banner ranked by confidence and never consulted the
+        # band, so a row the lane's own constants call "noise: statistically
+        # meaningless, ignore freely" was advertised as a top verdict: live, my
+        # own turn rendered `Top verdicts: opt-1 (~0.65) / opt-1 (~0.47)`.
+        #
+        # Hiding low confidence is NOT the fix — B1 rider 5 pinned
+        # threshold-agnostic display precisely because a tail that showed
+        # "0 shown >=0.9" silently withheld real verdicts at 0.4-0.87. So every
+        # verdict still shows; the ones the lane calls noise are LABELLED as
+        # such, and when none clears the band the rollup says outright that no
+        # verdict is of record.
+        try:
+            from .decision import IMPULSE_BAND_WEAK_MIN as _wm
+        except Exception:  # noqa: BLE001
+            _wm = 0.7
+        shown = []
+        confs = []
+        _named = False
         for c in top:
             _ch = str(c.get("choice") or "")
             if not _ch:
                 continue
+            try:
+                _cf = float(c.get("confidence") or 0.0)
+            except Exception:  # noqa: BLE001
+                _cf = 0.0
+            if _cf >= float(_wm):
+                _named = True
             _lbl = _cap_at_boundary(str(c.get("choice_label") or "").strip(), 90)
             shown.append(_lbl or _ch)
-            confs.append("%.2f" % float(c.get("confidence") or 0.0))
+            confs.append("%.2f" % _cf)
+        _record_note = bool(top) and not _named
         # R34-11 item 2: in the EXECUTION register at L1 the delivered body is
         # the ONE-LINER ONLY — no `Top verdicts:` tail, no option labels. A
         # menu of options is an invitation to answer the menu instead of the
@@ -1393,6 +1420,10 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
                 "%s (~%s)" % (s, cf)
                 for s, cf in zip(shown, confs))
             parts.append("Top verdicts: " + tail)
+            if _record_note:
+                # abstention is a RESULT (5.7.2): a verdict ran, the rollup
+                # simply refuses to call one of them the record
+                parts.append("no verdict of record (noise band)")
         return "\n".join(parts)
     except Exception:  # noqa: BLE001
         return ""
