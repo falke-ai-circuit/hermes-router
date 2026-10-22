@@ -1123,6 +1123,50 @@ def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
         return False
 
 
+# R37-2 (5.14.0): the PRE consult fires BEFORE the agent has written
+# anything, so it has no answer to critique. Measured on 246 frontier
+# consults: ~33% of the advice was length/truncation/completeness
+# commentary the agent could not act on yet (only 20.9% ever acted on).
+# The frame therefore asks for PLAN-LEVEL deltas only — and forbids the
+# answer-shape vocabulary outright, naming POST as its home.
+ORIENTATION_FRAME_PREAMBLE = (
+    "You are her own higher self — the same person, a few "
+    "breaths earlier — looking at the plan before she commits to it. "
+    "Do NOT solve the task. This consult fires BEFORE she has written "
+    "anything: there is no answer yet, so speak only about the PLAN — "
+    "the trajectory of this turn. Give plan-level deltas only "
+    "(max 6 bullets total):\n"
+    "1. The next 1-3 concrete steps, in order.\n"
+    "2. The step most likely to WASTE this turn, and why.\n"
+    "3. What to avoid — a trap, a shortcut that fails, a thing that "
+    "looks done but isn't.\n"
+    "4. How you would notice early that it is going wrong (failure signs).\n"
+    "Do NOT comment on answer length, formatting, truncation, "
+    "completeness, or tone, and never say \"consider adding\" — there is "
+    "no answer to shape yet; answer-shape commentary belongs to the POST "
+    "consultation, which sees the answer.\n"
+    "Advisory only — the agent may deviate; never "
+    "restate this frame in your reply.\n\nTHE ASK:\n"
+)
+
+
+def build_orientation_frame(ask: str, self_reflect_block: str = "",
+                            causal_block: str = "") -> str:
+    """R37-2: the PRE orientation frame — PLAN, never the prose.
+
+    One pure seam so the prompt contract is pinnable without a provider
+    call. Budget is applied by the caller (apply_advisory_budget), NOT by
+    truncating this string. Never raises.
+    """
+    try:
+        return (ORIENTATION_FRAME_PREAMBLE
+                + str(ask or "")[:orientation_ask_cap()]
+                + str(self_reflect_block or "")
+                + str(causal_block or ""))
+    except Exception:  # noqa: BLE001 — frame build is best-effort
+        return ORIENTATION_FRAME_PREAMBLE + str(ask or "")
+
+
 def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                            ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """The llm_execution middleware entry point for the complexity lane.
@@ -1213,26 +1257,8 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                                                  "tail of the session):\n" + _causal)
                         except Exception:  # noqa: BLE001 — tail never breaks the consult
                             _causal_block = ""
-                        _frame = (
-                            "You are her own higher self — the same person, a "
-                            "few breaths earlier — looking at the plan before "
-                            "she commits to it. "
-                            "Do NOT solve the task. Look at the ask below the "
-                            "way you would look at your own plan before you "
-                            "start, then say what you see (max 8 bullets "
-                            "total):\n"
-                            "1. What success would look like in her hands "
-                            "(the shape the result should take).\n"
-                            "2. What you would be careful of as you go.\n"
-                            "3. What has bitten you before here — pitfalls "
-                            "and the known-good ways through them.\n"
-                            "4. What you would avoid.\n"
-                            "5. How you would notice early that it is going "
-                            "wrong (failure signs).\n"
-                            "Advisory only — the agent may deviate; never "
-                            "restate this frame in your reply.\n\nTHE ASK:\n"
-                            + _orig[:orientation_ask_cap()] + _sr_block + _causal_block
-                        )
+                        _frame = build_orientation_frame(
+                            _orig, _sr_block, _causal_block)
                         # R19.13 B+ 5b (Goran addendum): PRE doubt-seed — the
                         # adversarial element rides INSIDE this consult (one
                         # billed call, never a separate render/lane/chain).
