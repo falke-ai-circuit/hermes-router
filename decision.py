@@ -1817,6 +1817,18 @@ _IMPULSE_SLOT_MIN = 8
 def _agent_frame(cfg: Dict[str, Any]) -> str:
     """§3.1 AGENT FRAME from the profile DNA (persona card, bounded 800c).
     Fail-open to a minimal static frame."""
+    # R36: instinct frame first — WHO + NOTICE + LEARNED. A reflex is a single
+    # cheap call with no retrieval step, so precedent that is not already in
+    # the frame is not available to it at all. Falls back to the plain persona
+    # card when the instinct frame cannot be built.
+    try:
+        from . import instinct_frame as _ifr
+
+        _inst = _ifr.build(cfg)
+        if _inst:
+            return clean_snippet(_inst, 1200)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from . import persona_card
 

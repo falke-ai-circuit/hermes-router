@@ -114,7 +114,17 @@ ADVISORY_HEADER = ("[ROUTER ADVISORY — decision lane; banner at turn close; "
 #                         to choose (the note must never be answered instead
 #                         of the work).
 FRAME_KEY = "frame"
+# R36: `execution` is the behaviourally correct register for a reflex — a fork
+# note, one instruction, no menu, no invitation to choose. `impulse` emits a
+# menu with options and an invitation — a consult wearing a reflex's name, which
+# is what let reflex firings hijack turns.
+#
+# ORDER IS NOT THE LEVER. The code default stays `impulse` because a documented
+# contract and 19 pins hang off it; the FLEET register is set per profile in
+# config.yaml (read live per dispatch, no bounce). That keeps the change
+# surgical and lets any profile fall back by editing one key.
 VALID_FRAMES = ("impulse", "execution")
+REFLEX_REGISTER = "execution"
 FORK_NOTE_HEAD = "[ROUTER FORK NOTE — decision lane; advisory, not a reply]"
 FORK_NOTE_MAX_CHARS = 400
 FORK_NOTE_DIRECTIVE = (
@@ -176,8 +186,9 @@ def _frame_resolution(cfg: Optional[Dict[str, Any]] = None
 
 
 def _frame_register(cfg: Optional[Dict[str, Any]] = None) -> str:
-    """The frame register for this profile ('impulse' | 'execution').
-    Unknown/absent -> 'impulse' (today's behavior). Never raises."""
+    """The frame register for this profile ('execution' | 'impulse').
+    Unknown/absent -> 'impulse' (the code default). The fleet runs `execution`
+    via config; a reflex reports, it does not present a menu. Never raises."""
     try:
         return _frame_resolution(cfg)[0]
     except Exception:  # noqa: BLE001
