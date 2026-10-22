@@ -100,3 +100,13 @@ def test_recognition_never_raises_on_garbage():
     for junk in (None, 0, "", [], {}, "x" * 10000):
         itr.recognise(st, None, junk)
     assert True
+
+
+def test_yaml_boolean_on_is_read_as_on():
+    """YAML 1.1 parses a bare `on` as True. Coercing with str() yields 'True',
+    which matched no mode and silently disabled the feature in the commit that
+    added it — observed live on the coder canary."""
+    assert itr.mode_of({"decision": {"recognition": True}}) == "on"
+    assert itr.mode_of({"decision": {"recognition": False}}) == "off"
+    assert itr.mode_of({"decision": {"recognition": "true"}}) == "on"
+    assert itr.mode_of({"decision": {"recognition": "false"}}) == "off"

@@ -206,9 +206,18 @@ def mode_of(cfg: Optional[Dict[str, Any]]) -> str:
     try:
         blk = (cfg or {}).get("decision")
         if isinstance(blk, dict):
-            v = str(blk.get("recognition") or "").strip().lower()
-            if v in ("on", "shadow", "off"):
-                return v
+            raw = blk.get("recognition")
+            # YAML 1.1 reads a bare `on` as boolean True. Coercing through
+            # str() turns it into "True", which matched no mode and silently
+            # disabled the feature in the very commit that introduced it —
+            # observed live: config showed recognition: True, lane stayed off.
+            if raw is True:
+                return "on"
+            if raw is False:
+                return "off"
+            v = str(raw or "").strip().lower()
+            if v in ("on", "shadow", "off", "true", "false"):
+                return {"true": "on", "false": "off"}.get(v, v)
     except Exception:  # noqa: BLE001
         pass
     return "off"
