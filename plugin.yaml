@@ -1,6 +1,6 @@
 # hermes-router — generic two-lane Hermes router plugin (manifest v2)
 name: hermes-router
-version: 5.9.3
+version: 5.10.0
 manifest_version: 2
 api_version: 1
 license: MIT
@@ -37,6 +37,7 @@ requires_env:
 hooks:
   - transform_llm_output
   - transform_terminal_output
+  - post_tool_call
 middleware:
   - llm_request
   - llm_execution

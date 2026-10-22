@@ -1390,3 +1390,54 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         return "\n".join(parts)
     except Exception:  # noqa: BLE001
         return ""
+
+
+# ---------------------------------------------------------------------------
+# LEG 5 — REFLEX SEAM (post_tool_call)
+# ---------------------------------------------------------------------------
+# The midturn seam is `transform_terminal_output`: TERMINAL ONLY, hardcoded at
+# its single call site (gate/orchestration.py). That means the one recognition
+# the harness cannot make — the same cause arriving through a DIFFERENT tool —
+# was structurally invisible to the reflex: a second route could never appear,
+# because the seam only ever saw one tool.
+#
+# `post_tool_call` is a registered platform hook (hermes_cli/plugins.py
+# VALID_HOOKS) dispatched from tool_executor with function_name AND result, so
+# it sees every tool. The reflex listens there.
+#
+# It does NOT run the fork machinery. Fork detection stays on the terminal seam
+# exactly as before: routing every tool result through detection would multiply
+# the lane's denominators and change what it counts as a decision, which is a
+# doctrine change nobody asked for. The reflex is additive or it is nothing.
+
+
+def on_post_tool_call(function_name: str = "", result: Any = None,
+                      session_id: str = "", **kwargs: Any) -> None:
+    """Reflex-only seam. Never raises, never returns a value, never blocks."""
+    try:
+        from . import instinct_triggers as _itr
+
+        if _itr.mode_of(None) == "off":
+            return
+        key = _sanitize_session_key(session_id or kwargs.get("task_id") or "")
+        if not key:
+            return
+        text = result if isinstance(result, str) else _flatten_result(result)
+        if not text:
+            return
+        _instinct_fire(key, str(function_name or ""), text,
+                       {"decision": {}}, "on", "post_tool_call")
+    except Exception:  # noqa: BLE001
+        logger.debug("decision_midturn.on_post_tool_call error", exc_info=True)
+
+
+def _flatten_result(result: Any) -> str:
+    """Tool results arrive as dicts/lists/objects. The reflex needs text."""
+    try:
+        import json as _json
+
+        if isinstance(result, (dict, list)):
+            return _json.dumps(result, ensure_ascii=False)
+        return str(result or "")
+    except Exception:  # noqa: BLE001
+        return ""

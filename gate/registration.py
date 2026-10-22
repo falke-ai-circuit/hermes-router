@@ -89,6 +89,18 @@ def register(ctx) -> None:
     _reg("register.transform_terminal_output",
          lambda: ctx.register_hook("transform_terminal_output",
                                    on_transform_terminal_output))
+    # R36g: REFLEX SEAM — every tool result, not just terminal.
+    # transform_terminal_output is terminal-only by construction, so the reflex
+    # could never see the same cause arrive through a second tool. post_tool_call
+    # carries function_name + result for every tool. Reflex-only: fork detection
+    # stays on the terminal seam untouched.
+    def _reg_reflex_seam() -> None:
+        from .. import decision_midturn
+
+        ctx.register_hook("post_tool_call",
+                          decision_midturn.on_post_tool_call)
+
+    _reg("register.post_tool_call", _reg_reflex_seam)
     # v3.0.0: router control tools (phase 3) — registered defensively so a
     # tool registration failure never disables the middleware lanes.
     def _reg_tools() -> None:
