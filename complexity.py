@@ -147,12 +147,11 @@ _CROSS_FILE: List[str] = [
 # merely discusses a subject). Read verbs (show/read/list/check/explain) are
 # absent by construction, so "what's in the config" never fires.
 _CONSEQ_VERB = (
-    r"(?:set|change|update|edit|patch|modify|overwrite|bump|flip|swap|rename|"
-    r"move|add|append|insert|write|apply|enable|disable|turn\s+(?:on|off)|"
-    r"delete|remove|drop|rm|wipe|truncate|purge|clear|reset|revert|roll\s*back|"
+    r"(?:set|change|update|edit|patch|modify|overwrite|bump|flip|swap|"
+    r"enable|disable|turn\s+(?:on|off)|"
+    r"delete|remove|drop|rm|wipe|truncate|purge|reset|revert|roll\s*back|"
     r"deploy|push|commit|merge|rebase|install|upgrade|downgrade|uninstall|"
-    r"migrate|rotate|revoke|regenerate|restart|bounce|kill|stop|start|"
-    r"run|execute|fire|trigger)"
+    r"migrate|rotate|revoke|regenerate|restart|bounce)"
 )
 _CONSEQ_TARGET = (
     r"(?:config\w*|ya?ml|settings?|level|lanes?|routes?|routing|flags?|env|"
@@ -246,10 +245,15 @@ def stage1_verdict(text: str, level: int) -> Tuple[str, Dict[str, int]]:
     # that auto-routes. Footprint outranks prose: a terse ask that mutates live
     # state earns a challenge; a long analytical ask about reading code does not
     # get one purely for being long.
-    if signals["consequence_high"] >= 1:
+    #
+    # A footprint hit is a STRUCTURAL fact (this turn will write to live state),
+    # not a complexity judgment, so the stage-2 semantic aux must not veto it:
+    # asking the aux "is this routine?" and honouring "routine" let every terse
+    # config edit through after stage-1 had already caught it. Measured live:
+    # `complexity_skip reason=stage2_routine stage1=borderline` on a config
+    # mutation. Consequence therefore routes at every auto-routing level.
+    if signals["consequence"] >= 1 or signals["consequence_high"] >= 1:
         return "clear_complex", signals
-    if signals["consequence"] >= 1:
-        return ("clear_complex" if level >= 3 else "borderline"), signals
 
     if level >= 3:
         # aggressive: any single strong bucket hit = clear; weak touches = borderline

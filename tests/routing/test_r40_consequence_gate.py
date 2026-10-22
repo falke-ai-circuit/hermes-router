@@ -65,11 +65,30 @@ def test_high_risk_target_is_clear_complex_even_at_conservative():
     assert verdict == "clear_complex"
 
 
-def test_ordinary_state_edit_is_borderline_at_l2_and_clear_at_l3():
-    """Ordinary edits get a semantic second look at L2, not a guaranteed consult."""
+def test_consequence_is_not_deferred_to_the_semantic_aux():
+    """A footprint hit must not be downgraded to borderline.
+
+    Stage-2 asks "is this request routine?" — a different question from "will
+    this turn write to live state?". Deferring consequence to it was measured
+    live as `complexity_skip reason=stage2_routine stage1=borderline` on a
+    config mutation, i.e. the aux vetoed a hit stage-1 had already found.
+    """
     text = "set the level to 0 in config"
-    assert C.stage1_verdict(text, 2)[0] == "borderline"
+    assert C.stage1_verdict(text, 2)[0] == "clear_complex"
     assert C.stage1_verdict(text, 3)[0] == "clear_complex"
+
+
+@pytest.mark.parametrize("text", [
+    "add a comment to the config",
+    "run the test suite",
+    "what did the last deploy change",
+    "tell me what the commit did",
+    "the deploy failed yesterday",
+])
+def test_ambiguous_and_past_tense_verbs_do_not_fire(text):
+    """Reporting on a past mutation is not asking for one."""
+    _v, signals = C.stage1_verdict(text, 2)
+    assert signals["consequence"] == 0, signals
 
 
 def test_consequence_never_routes_when_lane_is_off_or_manual():
