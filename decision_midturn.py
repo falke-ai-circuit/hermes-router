@@ -1416,8 +1416,8 @@ def on_post_tool_call(function_name: str = "", result: Any = None,
     """Reflex-only seam. Never raises, never returns a value, never blocks.
 
     The platform dispatches this hook with `tool_name=`, NOT `function_name=`
-    (model_tools._emit_post_tool_call_hook -> invoke_hook("post_tool_call",
-    tool_name=...)). Taking only `function_name` silently yielded an empty tool
+    (the core post-tool-call emitter invokes the hook with tool_name=...).
+    Taking only `function_name` silently yielded an empty tool
     name, the route set never gained a second entry, and the reflex could not
     fire — observed live: two identical ModuleNotFoundError results from
     terminal and execute_code and no event at all.
