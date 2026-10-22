@@ -917,6 +917,15 @@ def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
         threshold = float(cfg.get("confidence_threshold") or 0.60)
         if verdict is not None and float(verdict.get("confidence") or 0.0) >= threshold \
                 and verdict.get("decision") == "apply_precedent":
+            # R37-3 D2: below-band confidence => NO advisory at all (silence,
+            # not an annotated guess). Delivery decision only — the ledger row
+            # is already written upstream.
+            _emit_reason, _emit_band, _emit_conf = emission_gate(verdict, None)
+            if _emit_reason:
+                log_route("decision_suppressed", reason=_emit_reason,
+                          confidence=round(_emit_conf, 3), band=_emit_band,
+                          mode=("sync" if sync else "async"))
+                return None
             envelope = render_envelope(verdict, frame)
             if envelope:
                 from . import debug_banner
@@ -1920,6 +1929,80 @@ def impulse_band(weight: float) -> str:
         return "noise"
     except Exception:  # noqa: BLE001
         return "noise"
+
+
+# ---------------------------------------------------------------------------
+# R37-3 D2 — EMISSION GATE (delivery decision, never a detection decision).
+#
+# The lane's own constants call <0.7 "noise: statistically meaningless, ignore
+# freely", and R36j stopped the RECORD from naming such a row a verdict. The
+# advisory still shipped, annotated, and an agent can act on an annotated
+# guess. Silence is the only safe emission below the band: no advisory, no
+# verdict line, no fork-note text — while the ledger row (all options,
+# signatures, confidence, band) keeps the measurement surface intact.
+#
+# A fork whose options are indistinguishable (decision_signatures.
+# diagnosticity -> separable=False) or that carries fewer than two labelled
+# routes is not a fork the lane can decide; it is also silent.
+# ---------------------------------------------------------------------------
+EMIT_REASON_NOISE_BAND = "noise_band"
+EMIT_REASON_NOT_SEPARABLE = "not_separable"
+
+
+def emission_gate(verdict: Dict[str, Any], envelope: Optional[Dict[str, Any]] = None
+                  ) -> Tuple[str, str, float]:
+    """R37-3: may this verdict be EMITTED as advisory text?
+
+    Returns (reason, band, confidence):
+      ("", band, conf)            -> emit
+      ("noise_band", "noise", c)  -> suppress (confidence below the band)
+      ("not_separable", band, c)  -> suppress (no decidable fork)
+
+    `envelope=None` runs the band gate only (the legacy precedent-advisory
+    path carries no option set). Never raises; a gate error suppresses rather
+    than guessing.
+    """
+    try:
+        conf = (verdict or {}).get("confidence")
+        try:
+            conf_f = float(conf or 0.0)
+        except Exception:  # noqa: BLE001 — unparseable confidence = no claim
+            conf_f = 0.0
+        band = impulse_band(conf_f)
+        if band == "noise":
+            return EMIT_REASON_NOISE_BAND, band, conf_f
+        if envelope is None:
+            return "", band, conf_f
+        labels: List[str] = []
+        for o in (envelope.get("options") or []):
+            if isinstance(o, dict):
+                l = str(o.get("label") or "").strip()
+            elif isinstance(o, str):
+                l = o.strip()
+            else:
+                continue
+            if l:
+                labels.append(l)
+        if len(labels) < 2:
+            return EMIT_REASON_NOT_SEPARABLE, band, conf_f
+        # SEPARABILITY (emission sense): the fork must present at least two
+        # DISTINCT routes, each carrying real text. One route is not a fork
+        # ("no_options"/"no_declared_structure" already silence those) and two
+        # identical labels cannot be chosen between — a verdict on either is a
+        # guess. Deliberately NOT decision_signatures.diagnosticity(): that
+        # measures whether the options' OBSERVABLES are distinguishable for
+        # outcome capture (it calls two short-but-distinct routes like
+        # redis/memcached "indistinguishable"), which is a measurement
+        # question, not a delivery one.
+        norm = [re.sub(r"\s+", " ", l).strip().lower() for l in labels]
+        uniq = {n for n in norm}
+        if len(uniq) < 2:
+            return EMIT_REASON_NOT_SEPARABLE, band, conf_f
+        if not all(re.search(r"[A-Za-z0-9]{3,}", l) for l in labels):
+            return EMIT_REASON_NOT_SEPARABLE, band, conf_f
+        return "", band, conf_f
+    except Exception:  # noqa: BLE001
+        return EMIT_REASON_NOT_SEPARABLE, "noise", 0.0
 
 
 def _impulse_weighting(ask: str, ids: List[str], framed: List[Dict[str, Any]],
@@ -3519,16 +3602,31 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                               task_id=str(ids.get("task_id") or ""))
                 except Exception:  # noqa: BLE001 — observability only
                     pass
-        advisory = render_advisory(verdict, envelope)
+        # R37-3 D2: emission gate. A below-band guess, or a fork whose options
+        # are not separable, emits NO advisory and NO verdict line — the ledger
+        # row above keeps the full measurement surface. The banner is the
+        # billing receipt and still parks (suppression is a DELIVERY decision).
+        _g_reason, _g_band, _g_conf = emission_gate(verdict, envelope)
+        advisory = ""
+        if _g_reason:
+            log_route("decision_suppressed",
+                      reason=_g_reason, confidence=round(_g_conf, 3),
+                      band=_g_band, ledger_id=rid,
+                      trigger=ids.get("trigger", "pre"))
+        else:
+            advisory = render_advisory(verdict, envelope)
         banner = render_decision_banner(
             ids.get("trigger", "pre"), base_row["model"], meta,
             initiator=ids.get("initiator", "user"),
             ledger_ref=rid, tokens_ok=tokens_ok)
         # F1 (rider 6): the advisory carries the verdict-of-record read back
         # from the ledger row — no render-layer shaping may diverge from the
-        # recorded choice/confidence. No row -> no claim.
-        advisory = " ".join(x for x in (advisory, render_verdict_record(rid))
-                            if x)
+        # recorded choice/confidence. No row -> no claim. R37-3: a suppressed
+        # fork has no advisory to attach a record to.
+        if advisory:
+            advisory = " ".join(x for x in (advisory,
+                                            render_verdict_record(rid))
+                                if x)
         parked = "\n\n".join(x for x in (advisory, banner) if x)
         if parked:
             from . import debug_banner

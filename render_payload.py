@@ -198,17 +198,16 @@ def render_verdict_record(rid: Any) -> str:
         # "verdict-of-record: opt-4 @ 0.19" as though a decision had been made.
         # Observed live on coder row 3855.
         #
-        # An abstention is a RESULT, not an absence (R35 5.7.2), so this does
-        # not go silent: it says plainly that there is no verdict of record and
-        # why. Silence here would be indistinguishable from "the resolver never
-        # ran", which is the ambiguity that let the 0.4% sit unnoticed.
+        # R37-3 (supersedes the R36j ANNOTATED abstention): annotating a
+        # below-band guess still hands the agent a verdict line to act on. The
+        # delivery surface goes SILENT at noise; the abstention stays visible
+        # in the ledger (the row, its confidence and its band are unchanged),
+        # which is where measurement lives.
         try:
             from .decision import IMPULSE_BAND_WEAK_MIN as _weak_min
 
             if float(conf) < float(_weak_min):
-                return ("no verdict of record (row %d): recorded confidence "
-                        "%.2f is in the noise band — evidence too flat to name "
-                        "a decision" % (int(row.get("id") or 0), float(conf)))
+                return ""
         except Exception:  # noqa: BLE001 — never lose the segment on a constants miss
             pass
         return ("verdict-of-record: %s @ %.2f (ledger row %d)"
@@ -338,6 +337,16 @@ def render_advisory(verdict: Dict[str, Any],
     R19.15: renders the HUMAN-READABLE option label (60c max, id fallback)
     — 'opt-1' alone is meaningless to the user reading the banner."""
     try:
+        # R37-3 D2: a below-band confidence emits NO advisory (silence, not an
+        # annotated guess). Defense in depth — callers gate too, but every path
+        # must agree that a guess under the lane's own noise floor is not text.
+        try:
+            from .decision import emission_gate as _emit_gate
+
+            if _emit_gate(verdict, None)[0]:
+                return ""
+        except Exception:  # noqa: BLE001 — never lose the clamp on a gate miss
+            pass
         # R19.20 (reviewer F-batch-1): CLOSED-SET CLAMP at the advisory
         # choke point — a choice not mapping to a declared envelope option
         # (id or label) renders NO advisory at all. Her live specimen:

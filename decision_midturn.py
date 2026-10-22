@@ -840,6 +840,23 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _log(session_id, "tokens_ledger_write_failed",
                  detail="decision_midturn")
         _record_consumed(session_id, verdict, meta, cfg, rid=rid)
+        # R37-3 D2: emission gate AFTER the row + tokens ledger are written
+        # (measurement integrity: suppression is a DELIVERY decision). Below
+        # the lane's own noise floor, or on a non-separable fork, the lane
+        # emits NO advisory, NO verdict line and NO fork-note text — and logs
+        # the suppression with the band so it stays measurable.
+        try:
+            _emit_reason, _emit_band, _emit_conf = _dec.emission_gate(
+                verdict, envelope)
+        except Exception:  # noqa: BLE001 — a gate miss is not a guess
+            _emit_reason, _emit_band, _emit_conf = (
+                _dec.EMIT_REASON_NOT_SEPARABLE, "noise", 0.0)
+        if _emit_reason:
+            _log(session_id, "decision_suppressed", reason=_emit_reason,
+                 confidence=round(float(_emit_conf), 3), band=_emit_band,
+                 ledger_id=rid, sig=sig, mode=mode, tool=tool_name,
+                 seam=seam, fork_class=fork_cls)
+            return
         _log(session_id, "midturn_verdict",
              choice=str(verdict["choice"]),
              confidence=round(float(verdict["confidence"]), 3),
@@ -1089,6 +1106,41 @@ def _render_execution_fork_note(verdict: Dict[str, Any],
         return ""
 
 
+def _render_collapsed_route(verdict: Dict[str, Any],
+                            envelope: Dict[str, Any]) -> str:
+    """R37-3 D3 — BRANCH COLLAPSE. ONE named route, one imperative sentence,
+    no alternatives.
+
+    The impulse register used to render every option with its pull weight
+    ("<a> pulls 0.50 | <b> pulls 0.50") and the why_not line restated the
+    rejected option — a MENU wearing an advisory's name. Live specimen
+    api_1792682802_3a6179a3: the delivered note carried long prose-fragment
+    labels plus the alternatives it had rejected, so the agent was told to
+    choose rather than what the lane had chosen. The rejected set stays in the
+    ledger (options_json/signatures_json) — measurement surface and delivery
+    surface diverge here ON PURPOSE. Never raises; '' when there is no route
+    to name.
+    """
+    try:
+        label = ""
+        try:
+            label = str(_dec.choice_label(verdict, envelope) or "").strip()
+        except Exception:  # noqa: BLE001 — label is cosmetic
+            label = ""
+        if not label:
+            return ""
+        # single sentence, single whitespace run; a delivered line never
+        # carries a newline or a list separator
+        label = re.sub(r"\s+", " ", label).strip().strip(".:;,-—")
+        if len(label) > 60:
+            cut = label[:60]
+            label = (cut.rsplit(" ", 1)[0] if " " in cut else cut) + "…"
+        return "%s take %s (advisory only — never a command)." % (
+            ADVISORY_HEADER, label)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _render_midturn_advisory(verdict: Dict[str, Any],
                              envelope: Dict[str, Any],
                              meta: Dict[str, Any],
@@ -1097,30 +1149,23 @@ def _render_midturn_advisory(verdict: Dict[str, Any],
     stamped header + verdict + why_not (alternatives). Never rewrites
     model/tool content; non-binding. F1 (rider 6): carries the
     verdict-of-record segment read back from the ledger row — zero
-    divergence from the recorded choice/confidence."""
+    divergence from the recorded choice/confidence.
+
+    R37-3: the 'execution' register stays a bounded fork note; the 'impulse'
+    register is now a COLLAPSED route (one named route, imperative, no
+    alternatives, no why_not, no verdict-of-record line). Alternatives live in
+    the ledger, never in what the agent is told.
+    """
     try:
+        # R37-3 D2: below-band confidence / non-separable fork => NO text.
+        _gate = _dec.emission_gate(verdict, envelope)
+        if _gate[0]:
+            return ""
         # R34-8b: the 'execution' register replaces the advisory envelope with
         # a bounded fork note (no menu, no why_not).
         if _frame_register() == "execution":
             return _render_execution_fork_note(verdict, envelope)
-        alts = [str(a) for a in (verdict.get("alternatives") or [])
-                if str(a or "").strip()]
-        # R34-8a: NEVER emit the why_not header with a placeholder body. No
-        # alternatives -> the whole section is omitted (the placeholder
-        # sentence was the shape that reached a delivered body as literal
-        # '(The option text for "why_not" was omitted by the author...)').
-        why_not = ("why_not: %s" % ", ".join(alts)) if alts else ""
-        vor = ""
-        try:
-            vor = _dec.render_verdict_record(rid)
-        except Exception:  # noqa: BLE001 — record never breaks the advisory
-            vor = ""
-        return "\n".join([x for x in (
-            ADVISORY_HEADER,
-            _dec.render_advisory(verdict, envelope),
-            vor,
-            why_not,
-        ) if x])
+        return _render_collapsed_route(verdict, envelope)
     except Exception:  # noqa: BLE001
         return ""
 

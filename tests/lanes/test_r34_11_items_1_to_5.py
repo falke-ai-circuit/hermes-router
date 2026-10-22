@@ -33,7 +33,10 @@ ENV = {
     "scope": {},
     "fork_class": "code_work_vs_skill_curation",
 }
-VERDICT = {"choice": "opt-1", "confidence": 0.51,
+# R37-3: a below-band verdict now emits NOTHING, so this battery pins its
+# other properties (fork-note shape / off-task suppression) at a confidence
+# above the lane's noise floor.
+VERDICT = {"choice": "opt-1", "confidence": 0.82,
            "alternatives": ["opt-2"]}
 FORK_TEXT = ("which path do we take here?\n"
              "Option A: CREATE A CLASS-LEVEL UMBRELLA\n"

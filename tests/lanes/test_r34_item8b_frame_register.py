@@ -34,12 +34,16 @@ def _render(monkeypatch, register):
     return dmt._render_midturn_advisory(VERDICT, ENV, {})
 
 
-def test_impulse_register_is_unchanged(monkeypatch):
+def test_impulse_register_is_collapsed_to_one_route(monkeypatch):
+    """R37-3 D3 supersedes the menu: ONE named route, imperative, and the
+    rejected alternative never appears in what the agent is told."""
     out = _render(monkeypatch, None)          # absent -> impulse
     assert out.startswith(dmt.ADVISORY_HEADER)
-    assert "the fork surfaces as:" in out
-    assert "ship the narrow fix pulls" in out
-    assert "why_not: opt-2" in out
+    assert "ship the narrow fix" in out
+    assert "pulls" not in out
+    assert "why_not" not in out.lower()
+    assert "revert the branch" not in out     # rejected route not enumerated
+    assert "opt-2" not in out
     # explicit 'impulse' is the same bytes
     assert _render(monkeypatch, "impulse") == out
 

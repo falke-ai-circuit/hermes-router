@@ -76,11 +76,12 @@ def test_fail_open_garbage_inputs():
 
 
 def test_midturn_advisory_carries_label():
-    """All reflex banner emission points route through render_advisory —
-    midturn's _render_midturn_advisory wraps it."""
+    """All reflex banner emission points route through the collapsed route
+    renderer — midturn's _render_midturn_advisory names the chosen label only."""
     from hermes_router import decision_midturn as DM
     adv = DM._render_midturn_advisory(
         {"choice": "opt-2", "confidence": 0.7, "alternatives": ["opt-1"]},
         _env(), {"model": "typesafe/jev-router"})
-    assert "Rewrite the parser pulls" in adv
+    assert "Rewrite the parser" in adv
+    assert "Keep the parser" not in adv      # R37-3 D3: no alternatives
     assert D.PROVENANCE_TAG not in adv  # R20: advisory body carries no provenance prefix

@@ -119,12 +119,11 @@ def test_detection_triggers_off_tool_result_not_middleware(
     pending = dmt.flush(SID)
     assert len(pending) == 1
     assert pending[0].startswith(dmt.ADVISORY_HEADER)
-    # R19.15 / v1.1: the impulse frame renders the human-readable option
-    # LABEL — bare 'opt-N' only when no label exists in the envelope options
-    assert " pulls " in pending[0]
-    assert "opt-1 pulls" not in pending[0]
-    # R34-8a: no alternatives -> the why_not SECTION is omitted entirely
-    # (the placeholder sentence is never emitted)
+    # R37-3 D3: BRANCH COLLAPSE — ONE named route, no menu, no alternatives.
+    assert "pulls" not in pending[0]
+    assert "redis" in pending[0]
+    assert "memcached" not in pending[0]
+    # R34-8a: no alternatives -> no why_not section (never the placeholder)
     assert "why_not" not in pending[0].lower()
     assert dmt.flush(SID) == []
 

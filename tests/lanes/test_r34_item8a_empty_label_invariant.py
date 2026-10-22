@@ -56,10 +56,14 @@ def test_no_alternatives_omits_why_not_section():
     assert "no viable alternative" not in note.lower()
 
 
-def test_alternatives_still_render_why_not():
+def test_alternatives_are_never_enumerated():
+    """R37-3 D3 (supersedes the why_not section): the rejected option stays in
+    the LEDGER, never in the delivered note."""
     env = _env([{"id": "opt-1", "label": "ship the narrow fix"},
                 {"id": "opt-2", "label": "revert the branch"}])
     verdict = {"choice": "opt-1", "confidence": 0.8,
                "alternatives": ["opt-2"]}
     note = dmt._render_midturn_advisory(verdict, env, {})
-    assert "why_not: opt-2" in note
+    assert note and "ship the narrow fix" in note
+    assert "why_not" not in note.lower()
+    assert "opt-2" not in note and "revert the branch" not in note

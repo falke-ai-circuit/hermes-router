@@ -1055,6 +1055,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             log_route=_hub()._log_route)
         except Exception:  # noqa: BLE001 — guard never breaks delivery
             pass
+        # R37-3 D1: LANE-MARKER QUARANTINE at the delivery boundary. The lane's
+        # advisory is injected into the in-flight request as an assistant
+        # message; a model can echo its marker into the delivered body (live:
+        # "[END ROUTER FORK NOTE]" opening a probe turn before the answer —
+        # session api_1792679326-era, ledger row 4065). The pre-existing strip
+        # knew only the exact opening forms. A marker is lane furniture, never
+        # work product: remove it from EVERY delivered body, on every frame.
+        try:
+            from .. import echo_guard as _eg_mk
+
+            _mk_body, _mk_removed = _eg_mk.strip_lane_markers(response_text)
+            if _mk_removed > 0:
+                response_text = _mk_body
+                _hub()._log_route("POST", event_detail="lane_marker_stripped",
+                                  chars_removed=_mk_removed,
+                                  session_id=session_id)
+        except Exception:  # noqa: BLE001 — marker guard never breaks delivery
+            pass
         _hook_t0 = _hub().time.monotonic()
 
         def _hook_remaining() -> float:

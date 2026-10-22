@@ -13,20 +13,21 @@ def _row(monkeypatch, choice, conf):
 
 def test_noise_band_confidence_does_not_name_a_verdict(monkeypatch):
     """Observed live: coder row 3855 recorded conf 0.19 — noise by the lane's
-    own constants — and was still stamped 'verdict-of-record: opt-4 @ 0.19'."""
+    own constants — and was still stamped 'verdict-of-record: opt-4 @ 0.19'.
+    R37-3 supersedes the R36j annotated abstention: the delivery surface is
+    SILENT below the band."""
     _row(monkeypatch, "opt-4", 0.19)
     out = rp.render_verdict_record(3855)
+    assert out == ""
     assert "verdict-of-record:" not in out
-    assert "no verdict of record" in out
-    assert "noise band" in out
-    assert "3855" in out
+    assert "3855" not in out     # no verdict line at all, not even a notice
 
 
-def test_the_abstention_is_explicit_not_silent(monkeypatch):
-    """Silence is indistinguishable from 'the resolver never ran' — the exact
-    ambiguity that let the 0.4% sit unnoticed for three weeks."""
+def test_noise_band_silence_is_absolute_not_annotated(monkeypatch):
+    """R37-3 D2: an annotation is still a guess the agent may act on. No
+    advisory, no verdict line, no notice."""
     _row(monkeypatch, "opt-4", 0.19)
-    assert rp.render_verdict_record(1) != ""
+    assert rp.render_verdict_record(1) == ""
 
 
 def test_weak_band_still_names_the_verdict(monkeypatch):
@@ -44,7 +45,7 @@ def test_the_threshold_is_the_lane_published_constant(monkeypatch):
     """Pinned to IMPULSE_BAND_WEAK_MIN, not a number invented here."""
     assert dec.IMPULSE_BAND_WEAK_MIN == 0.7
     _row(monkeypatch, "opt-1", dec.IMPULSE_BAND_WEAK_MIN - 0.01)
-    assert "no verdict of record" in rp.render_verdict_record(1)
+    assert rp.render_verdict_record(1) == ""
     _row(monkeypatch, "opt-1", dec.IMPULSE_BAND_WEAK_MIN)
     assert rp.render_verdict_record(1).startswith("verdict-of-record:")
 

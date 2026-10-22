@@ -37,7 +37,7 @@ EVENT = "envelope_echo_delivered"
 # Marker families -> literal marker strings (case-insensitive substring).
 FAMILIES = (
     ("advisory_header", ("[ROUTER ADVISORY", "ROUTER ADVISORY — decision lane",
-                         "[ROUTER FORK NOTE")),
+                         "[ROUTER FORK NOTE", "ROUTER FORK NOTE")),
     ("option_text_placeholder", ("option text for",)),
     ("omission_placeholder", ("omitted by the author",)),
 )
@@ -267,6 +267,46 @@ def _advisory_json_starts(text: str) -> List[int]:
     except Exception:  # noqa: BLE001
         return out
     return out
+
+
+# R37-3 D1 — LANE MARKER QUARANTINE (delivery boundary).
+#
+# Live specimen: a delivered probe turn BEGAN with "[END ROUTER FORK NOTE]"
+# before the actual answer (session api_1792679326-era probe, ledger row
+# 4065). The advisory is injected into the in-flight request as an assistant
+# message; the model continues and echoes the marker — and the pre-existing
+# strip only knew the exact opening forms "[ROUTER FORK NOTE" / "[ROUTER
+# ADVISORY", so an END/begin variant sailed through into the body.
+#
+# No lane marker may reach a delivered body. This drops any line carrying a
+# fork-note/advisory marker, with or without a BEGIN/END/START qualifier, and
+# removes an inline marker from a line that also carries real text.
+_LANE_MARKER_RE = re.compile(
+    r"(?i)\[\s*(?:end\s+|begin\s+|start\s+)?router\s+"
+    r"(?:fork\s+note|advisory)\b[^\]]*\]?")
+
+
+def strip_lane_markers(text: str) -> "tuple[str, int]":
+    """Remove every fork-note/advisory LANE MARKER from a delivered body.
+    Returns (body, chars_removed); the body's own text is never re-ordered.
+    Never raises."""
+    try:
+        raw = str(text or "")
+        if not raw.strip() or not _LANE_MARKER_RE.search(raw):
+            return raw, 0
+        out: List[str] = []
+        removed = 0
+        for line in raw.splitlines():
+            if not _LANE_MARKER_RE.search(line):
+                out.append(line)
+                continue
+            cleaned = _LANE_MARKER_RE.sub("", line).strip()
+            removed += len(line) - len(cleaned)
+            if cleaned:
+                out.append(cleaned)
+        return "\n".join(out).strip("\n"), removed
+    except Exception:  # noqa: BLE001 — a marker guard never breaks delivery
+        return str(text or ""), 0
 
 
 def strip_advisory_echo(text: str) -> "tuple[str, int]":

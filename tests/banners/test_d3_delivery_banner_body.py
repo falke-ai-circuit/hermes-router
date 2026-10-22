@@ -195,5 +195,9 @@ def test_request_side_frame_flush_unchanged(r2_reset, monkeypatch):
                                         session_id=SID, platform="api_server")
     _wait_consumed()
     pending = dmt.flush(SID)
-    assert pending and TAG not in pending[0] and 'the fork surfaces as:' in pending[0]  # R20
+    # R37-3 D3: the staged frame is a COLLAPSED route (one named route, no
+    # menu), not the old "the fork surfaces as: ..." enumeration.
+    assert pending and TAG not in pending[0] and "take " in pending[0]
+    assert "pulls" not in pending[0]
+    assert "the fork surfaces as:" not in pending[0]
     assert dmt.flush(SID) == []  # one-shot
