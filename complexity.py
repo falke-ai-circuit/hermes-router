@@ -133,6 +133,52 @@ _CROSS_FILE: List[str] = [
     r"\b(?:coupling|cohesion)\b.{0,40}\b(?:analysis|audit|review|between)\b",
 ]
 
+# Bucket CONSEQUENCE — turns that MUTATE live state, however tersely asked.
+#
+# Why this bucket exists: every other bucket scores how much the user WROTE.
+# That makes the lane blind in exactly the case where a wrong move is most
+# expensive — "set the level to 0 in config" is nine words, scores zero on all
+# lexical buckets, and used to classify clear_simple at every level including
+# aggressive. The higher self was therefore never asked on short irreversible
+# asks, which is the opposite of when a challenger is worth its cost.
+#
+# Footprint, not verbosity: a mutating verb within 40 chars of a state TARGET.
+# TIGHT verb+target pairs only (R14 lesson: bare verbs overfire on prose that
+# merely discusses a subject). Read verbs (show/read/list/check/explain) are
+# absent by construction, so "what's in the config" never fires.
+_CONSEQ_VERB = (
+    r"(?:set|change|update|edit|patch|modify|overwrite|bump|flip|swap|rename|"
+    r"move|add|append|insert|write|apply|enable|disable|turn\s+(?:on|off)|"
+    r"delete|remove|drop|rm|wipe|truncate|purge|clear|reset|revert|roll\s*back|"
+    r"deploy|push|commit|merge|rebase|install|upgrade|downgrade|uninstall|"
+    r"migrate|rotate|revoke|regenerate|restart|bounce|kill|stop|start|"
+    r"run|execute|fire|trigger)"
+)
+_CONSEQ_TARGET = (
+    r"(?:config\w*|ya?ml|settings?|level|lanes?|routes?|routing|flags?|env|"
+    r"env\s*vars?|\.env|secrets?|keys?|tokens?|credentials?|passwords?|certs?|"
+    r"database|db|tables?|schema|migrations?|rows?|records?|state|ledger|"
+    r"files?|dirs?|director(?:y|ies)|backups?|archives?|"
+    r"repos?|repo\w*|branch\w*|main|origin|remote|git|"
+    r"prod|production|live|fleet|gateway\w*|services?|containers?|plugins?|"
+    r"packages?|dependenc(?:y|ies)|versions?|cron\w*|systemd|units?)"
+)
+_CONSEQUENCE: List[str] = [
+    r"\b%s\b.{0,40}?\b%s\b" % (_CONSEQ_VERB, _CONSEQ_TARGET),
+]
+
+# Subset that is expensive or hard to undo: a hit here reads as clearly
+# consequential rather than merely state-touching.
+_CONSEQ_HIGH_RISK = (
+    r"(?:prod|production|live|fleet|secrets?|keys?|credentials?|passwords?|"
+    r"certs?|database|db|migrations?|schema|backups?|repos?|main|origin|"
+    r"remote|deploy\w*|gateways?|services?|cron\w*|systemd|"
+    r"delete|drop|wipe|truncate|purge|reset|revert|roll\s*back|rotate|revoke)"
+)
+_CONSEQUENCE_HIGH: List[str] = [
+    r"\b%s\b.{0,40}?\b%s\b" % (_CONSEQ_VERB, _CONSEQ_HIGH_RISK),
+]
+
 # Bucket MULTI-PART LONG ASKS — enumerated multi-part requests (>=3 numbered or
 # bulleted sub-goals), or very long sectioned asks.
 _MULTIPART_MIN_CHARS = 900
@@ -157,13 +203,16 @@ def stage1_signals(text: str) -> Dict[str, int]:
       planning_arch, debug_chains, cross_file, multiparts
     Never raises; zeros on any problem.
     """
-    out = {"planning_arch": 0, "debug_chains": 0, "cross_file": 0, "multiparts": 0}
+    out = {"planning_arch": 0, "debug_chains": 0, "cross_file": 0, "multiparts": 0,
+           "consequence": 0, "consequence_high": 0}
     try:
         if not isinstance(text, str) or not text.strip():
             return out
         out["planning_arch"] = _scan_bucket(text, _PLANNING_ARCH)
         out["debug_chains"] = _scan_bucket(text, _DEBUG_CHAINS)
         out["cross_file"] = _scan_bucket(text, _CROSS_FILE)
+        out["consequence"] = _scan_bucket(text, _CONSEQUENCE)
+        out["consequence_high"] = _scan_bucket(text, _CONSEQUENCE_HIGH)
         parts = len(_NUMBERED_PARTS_RE.findall(text))
         if parts >= 3:
             out["multiparts"] = 1
@@ -192,6 +241,15 @@ def stage1_verdict(text: str, level: int) -> Tuple[str, Dict[str, int]]:
     if level == 1:
         # manual-only: detection never auto-routes
         return "clear_simple", signals
+
+    # CONSEQUENCE gate — evaluated before the verbosity buckets, at every level
+    # that auto-routes. Footprint outranks prose: a terse ask that mutates live
+    # state earns a challenge; a long analytical ask about reading code does not
+    # get one purely for being long.
+    if signals["consequence_high"] >= 1:
+        return "clear_complex", signals
+    if signals["consequence"] >= 1:
+        return ("clear_complex" if level >= 3 else "borderline"), signals
 
     if level >= 3:
         # aggressive: any single strong bucket hit = clear; weak touches = borderline
