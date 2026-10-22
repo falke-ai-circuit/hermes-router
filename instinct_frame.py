@@ -49,6 +49,7 @@ Never raises. Missing DNA, missing ledger, unreadable DB -> empty slot.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,6 +88,32 @@ def _profile_name() -> str:
     return parts[-1] if parts else ""
 
 
+_SECTION_RE = re.compile(r"^=== .*? ===$", re.M)
+
+
+def _strip_mandate(card: str) -> str:
+    """Remove the RENDER MANDATE *section*, wherever it sits.
+
+    NOT a prefix split. The compact card puts RENDER MANDATE FIRST (636c), so
+    `card.split("=== RENDER MANDATE", 1)[0]` returns an empty string and the
+    identity never survives — which is the pre-existing `_agent_frame()` defect:
+    it silently fell through to its impersonal fallback on every dispatch, so
+    the lane's persona slot has been empty in practice.
+    """
+    if not card:
+        return ""
+    marks = list(_SECTION_RE.finditer(card))
+    if not marks:
+        return card
+    kept = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(card)
+        if "RENDER MANDATE" in m.group(0).upper():
+            continue
+        kept.append(card[m.start():end])
+    return "".join(kept).strip()
+
+
 def who_block() -> str:
     """Shared DNA anchor. Delegates to the existing persona card so there is
     exactly ONE derivation of identity in the codebase, then trims it for a
@@ -94,9 +121,7 @@ def who_block() -> str:
     try:
         from . import persona_card
 
-        txt = str(persona_card.build_persona_context() or "")
-        # Backend instruction text, never part of a voice.
-        txt = txt.split("=== RENDER MANDATE", 1)[0]
+        txt = _strip_mandate(str(persona_card.build_persona_context() or ""))
         txt = txt.strip()
         if not txt:
             return ""
