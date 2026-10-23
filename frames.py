@@ -150,6 +150,55 @@ HS_COMPLETION_AUDIT_MARKER = ("[HIGHER-SELF COMPLETION-AUDIT TURN | "
                               + HS_MARKER_SUFFIX + "]")
 HS_SEAM_MARKER = "[HIGHER-SELF SEAM | PLATFORM-INTERNAL | PROVENANCE-LOGGED]"
 
+# ---------------------------------------------------------------------------
+# Per-rule platform provenance (R41: replay discrimination).
+# A generic seam stamp says "platform" but not WHICH platform rule — and a
+# platform instruction delivered in a user-role carrier is indistinguishable
+# from a genuine user turn on replay. Every platform rule therefore carries
+# its OWN marker line, naming the rule id, so (a) provenance is readable
+# without knowing the text family, and (b) delivery can be deduped by rule
+# id across ANY role/carrier rather than by a single text match.
+# ---------------------------------------------------------------------------
+PLATFORM_RULE_MARKER_PREFIX = "[PLATFORM RULE: "
+
+# Canonical rule ids. Stable — compliance/replay keys on these strings.
+HS_RULE_ID = "higher_self_integration_rule"
+HS_SEAM_INSTRUCTION_RULE_ID = "higher_self_seam_instruction"
+
+
+def platform_rule_marker(rule_id: Any) -> str:
+    """Marker line identifying one platform rule by id. Never raises."""
+    rid = re.sub(r"[^a-z0-9_]+", "_", str(rule_id or "").strip().lower())
+    return "%s%s | PLATFORM-INTERNAL | PROVENANCE-LOGGED]" % (
+        PLATFORM_RULE_MARKER_PREFIX, rid)
+
+
+def mark_platform_rule(rule_id: Any, text: Any) -> str:
+    """Return `text` prefixed with its per-rule marker line (idempotent —
+    a text already carrying its own marker is returned unchanged). Non-str
+    text yields an empty body, so the caller's stampability gate still
+    decides delivery. Never raises."""
+    marker = platform_rule_marker(rule_id)
+    body = text if isinstance(text, str) else ""
+    if marker in body:
+        return body
+    return marker + "\n" + body
+
+
+def platform_rule_present(messages: Any, rule_id: Any) -> bool:
+    """True when this message list already carries the rule (ANY role, any
+    position). Deliberately role-agnostic: a platform rule replayed under a
+    user-role carrier still counts as delivered, so it is never re-injected
+    as a second copy. Never raises."""
+    try:
+        marker = platform_rule_marker(rule_id)
+        for m in (messages or []):
+            if isinstance(m, dict) and marker in str(m.get("content") or ""):
+                return True
+    except Exception:  # noqa: BLE001 — dedupe must never break routing
+        return False
+    return False
+
 # Phenomenology per variant (the ONLY axis that differs between variants).
 # R8i (Goran 2026-09-18): intuition + observer merged into ONE variant —
 # 'internal-observer'. Rationale: both shared the identical internal-anchor
@@ -484,6 +533,7 @@ HS_POST_BODY = (
 # advisory envelope).
 HS_SEAM_INSTRUCTION = (
     HS_SEAM_MARKER + "\n"
+    + platform_rule_marker(HS_SEAM_INSTRUCTION_RULE_ID) + "\n"
     "Your higher self has completed its reflection above and handed the "
     "task back to you. PROCEED NOW: do the actual work with your tools and "
     "write the response the user is waiting for. Do not restate the "
@@ -559,61 +609,137 @@ def higher_self_rule_enabled() -> bool:
         return False
 
 
-def inject_higher_self_rule(request: dict, session_id: str = "") -> bool:
-    """RIDER 22 (Goran-direct): stamped-delivery + once-per-context seam.
+def _suppress_rule_delivery(rule_id: str, rule_text: Any, stampable: bool) -> None:
+    """Fail-loud log for a suppressed platform-rule append. Never raises."""
+    try:
+        logging.getLogger("hermes_router.frames").error(
+            "rule_delivery_suppressed rule_id=%s rule_text=%r stampable=%s",
+            rule_id, str(rule_text)[:120], bool(stampable))
+    except Exception:  # noqa: BLE001 — logging must never raise
+        pass
 
-    Delivery-boundary contract: the integration rule NEVER leaves this
-    append path without its provenance stamp — the appended system message
-    content carries BOTH the rule heading (HIGHER_SELF_RULE_MARKER) and the
-    platform provenance stamp (HS_SEAM_MARKER). If a stamped text cannot be
-    produced (empty/non-str rule text or stamping failure), the append is
-    SUPPRESSED entirely: fail-quiet for the rule text, fail-loud in the log
-    (rule_delivery_suppressed). Dedupe is two-layer:
-      (a) marker scan of the request's own messages (in-context dedupe),
-      (b) process latch keyed on session_id (or a hash of the context's
-          first message when no session id is available) + the injected
-          rule TEXT — a turn gets at most one seam append, and the previous
-          turn's append is never duplicated even when the gateway does not
-          persist the injected system message across turns.
-    Marked-turn deliveries (orientation/reflection envelopes) are NOT this
-    path and flow unchanged. Returns True when a message was appended.
-    Never raises."""
+
+def _legacy_rule_present(messages: Any, markers: tuple) -> bool:
+    """True when a pre-R41 carrier (rule text without the per-rule marker
+    line) is already in the list, ANY role. Keeps a legacy/replayed copy from
+    being duplicated by the newly marked append path. Never raises."""
+    try:
+        for m in (messages or []):
+            if not isinstance(m, dict):
+                continue
+            content = str(m.get("content") or "")
+            if content and any(mk in content for mk in (markers or ())):
+                return True
+    except Exception:  # noqa: BLE001 — dedupe must never break routing
+        return False
+    return False
+
+
+def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
+                         session_id: str = "", header_prefix: str = "",
+                         required_markers: tuple = (),
+                         legacy_markers: tuple = (),
+                         role: str = "system") -> bool:
+    """THE platform-rule delivery boundary (R41).
+
+    One rule id, one marked append, at most once:
+
+      MARKING — the appended content always starts with the generic seam
+      header (when `header_prefix` is given) followed by the per-rule marker
+      line (`platform_rule_marker(rule_id)`), so replay can attribute every
+      injected instruction to the platform AND to a named rule without
+      knowing its wording. The marker is role-independent: a platform rule
+      carried under a user or assistant role is still identified as platform.
+
+      ONCE — two layers, both keyed on rule id:
+        (a) `platform_rule_present` scans the whole message list, ANY role,
+            so a rule already in context is never appended a second time
+            (the live duplicate: the same rule replayed under a user-role
+            carrier missed a system-only marker scan and got re-injected);
+        (b) a process latch keyed on (context key, rule id, injected text)
+            suppresses the previous turn's append when the gateway rebuilds
+            the request without persisting it.
+
+    If a marked text cannot be produced (empty/non-str rule text, or a
+    required marker missing), the append is SUPPRESSED entirely — fail-quiet
+    for the rule text, fail-loud in the log (rule_delivery_suppressed).
+    Returns True when a message was appended. Never raises."""
     try:
         msgs = (request or {}).get("messages")
         if not isinstance(msgs, list):
             return False
-        for m in msgs:
-            if (isinstance(m, dict) and m.get("role") == "system"
-                    and HIGHER_SELF_RULE_MARKER in str(m.get("content") or "")):
-                return False  # (a) already carried in-context
-        rule_text = higher_self_rule()
-        stamped = (HS_SEAM_MARKER + "\n" + rule_text) if (
-            isinstance(rule_text, str) and rule_text.strip()) else ""
-        if not stamped or HIGHER_SELF_RULE_MARKER not in stamped \
-                or HS_SEAM_MARKER not in stamped:
-            # (2) unmarkable rule text at the delivery boundary -> suppress
-            # the append entirely; fail-loud in the log, never break routing.
-            try:
-                logging.getLogger("hermes_router.frames").error(
-                    "rule_delivery_suppressed rule_text=%r stampable=%s",
-                    str(rule_text)[:120], bool(stamped))
-            except Exception:  # noqa: BLE001 — logging must never raise
-                pass
+        if platform_rule_present(msgs, rule_id):
+            return False  # (a) already carried in-context (any role)
+        if _legacy_rule_present(msgs, legacy_markers):
+            return False  # (a') pre-R41 carrier in context — never duplicate
+        if not isinstance(rule_text, str) or not rule_text.strip():
+            _suppress_rule_delivery(rule_id, rule_text, False)
+            return False
+        stamped = mark_platform_rule(rule_id, rule_text)
+        if header_prefix:
+            stamped = header_prefix + "\n" + stamped
+        if not stamped.strip() or platform_rule_marker(rule_id) not in stamped \
+                or any(m not in stamped for m in required_markers):
+            _suppress_rule_delivery(rule_id, rule_text, False)
             return False
         key = _rule_context_key(msgs, session_id)
-        if key and _rule_already_delivered(key, stamped):
+        latch_key = ("%s|rule:%s" % (key, rule_id)) if key else ""
+        if latch_key and _rule_already_delivered(latch_key, stamped):
             return False  # (b) previous-turn append not duplicated
-        msgs.append({"role": "system", "content": stamped})
-        if key:
-            _rule_latch_store(key, stamped)
+        msgs.append({"role": role, "content": stamped})
+        if latch_key:
+            _rule_latch_store(latch_key, stamped)
         return True
     except Exception:  # noqa: BLE001 — identity frame must never break routing
         try:
             logging.getLogger("hermes_router.frames").exception(
-                "rule_delivery_suppressed reason=exception")
+                "rule_delivery_suppressed rule_id=%s reason=exception", rule_id)
         except Exception:  # noqa: BLE001
             pass
         return False
+
+
+def append_platform_rule(msgs: list, rule_id: str, text: Any,
+                         role: str = "user") -> bool:
+    """Marked, once-only append into a caller-owned message list (the
+    orchestration seam instruction path). Returns True when appended."""
+    try:
+        if not isinstance(msgs, list) or platform_rule_present(msgs, rule_id):
+            return False
+        body = mark_platform_rule(rule_id, text)
+        if not body.strip():
+            _suppress_rule_delivery(rule_id, text, False)
+            return False
+        msgs.append({"role": role, "content": body})
+        return True
+    except Exception:  # noqa: BLE001 — delivery must never break the turn
+        return False
+
+
+def inject_higher_self_rule(request: dict, session_id: str = "") -> bool:
+    """RIDER 22 + R41: stamped, per-rule-marked, once-per-context delivery of
+    the higher-self integration rule.
+
+    The rule text NEVER leaves this append path without BOTH the seam stamp
+    (HS_SEAM_MARKER) and the per-rule marker
+    (`[PLATFORM RULE: higher_self_integration_rule | PLATFORM-INTERNAL |
+    PROVENANCE-LOGGED]`), so compliance replay can attribute it to the
+    platform and to this specific rule rather than guessing from wording.
+    Dedupe and suppression live in `inject_platform_rule`:
+      (a) the rule id marker is scanned across ALL roles — a copy already in
+          context (including one replayed under a user-role carrier) is not
+          duplicated;
+      (b) the process latch is keyed on (context, rule id, text), so the
+          previous turn's append is never re-delivered when the gateway
+          rebuilds the request without persisting it.
+    Marked-turn deliveries (orientation/reflection envelopes) are NOT this
+    path and flow unchanged. Returns True when a message was appended.
+    Never raises."""
+    return inject_platform_rule(
+        request, HS_RULE_ID, higher_self_rule(), session_id=session_id,
+        header_prefix=HS_SEAM_MARKER,
+        required_markers=(HIGHER_SELF_RULE_MARKER, HS_SEAM_MARKER),
+        legacy_markers=(HIGHER_SELF_RULE_MARKER,))
 
 
 # --- rider 22: once-per-context latch (cross-turn dedupe) -------------------
