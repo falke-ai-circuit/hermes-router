@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from . import anchor_chain
@@ -1167,6 +1168,154 @@ def build_orientation_frame(ask: str, self_reflect_block: str = "",
         return ORIENTATION_FRAME_PREAMBLE + str(ask or "")
 
 
+# ---------------------------------------------------------------------------
+# R52 — MINDSET MODULATION (delivered block only; never in the stored body)
+# ---------------------------------------------------------------------------
+
+_MINDSET_HIST_TTL = 1800.0
+_MINDSET_HIST_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_MINDSET_HIST_LOCK = threading.Lock()
+_MINDSET_HIST_SESSIONS = 200
+
+
+def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, Any]:
+    """Raw drive scores over the profile's own last 200 sessions (read-only).
+
+    R52 calibration needs the profile's own distribution: a percentile rank
+    only means something against that profile's behaviour. The state.db is
+    opened read-only with a short timeout; ANY failure returns {} — which
+    makes every drive UNKNOWN rather than silently defaulting to a floor.
+
+    Cached per db path for the process (the build is ~1s on a 1200-session
+    profile; the consult hook must not pay that per turn).
+    """
+    try:
+        import sqlite3
+
+        db = ""
+        try:
+            import hermes_constants
+
+            db = str(hermes_constants.get_hermes_home() / "state.db")
+        except Exception:  # noqa: BLE001 — no constants module => use the env
+            _home = (os.environ.get("HERMES_HOME")
+                     or os.environ.get("HERMES_PROFILE_HOME") or "")
+            if _home:
+                db = os.path.join(_home, "state.db")
+        if not db:
+            return {}
+    except Exception:  # noqa: BLE001 — no profile db => no history, not a crash
+        return {}
+    now = time.time()
+    with _MINDSET_HIST_LOCK:
+        hit = _MINDSET_HIST_CACHE.get(db)
+        if hit and hit[0] > now:
+            return hit[1]
+    out: Dict[str, Any] = {}
+    try:
+        from . import mindset
+
+        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
+        try:
+            sids = [r[0] for r in conn.execute(
+                "SELECT session_id FROM messages WHERE tool_name IS NOT NULL "
+                "AND tool_name != '' GROUP BY session_id "
+                "HAVING count(*) >= 3 ORDER BY max(id) DESC LIMIT ?",
+                (int(max_sessions),))]
+            if sids:
+                q = ",".join("?" * len(sids))
+                rows = conn.execute(
+                    "SELECT session_id, role, tool_name, "
+                    "substr(coalesce(content,''), 1, 3000) FROM messages "
+                    "WHERE session_id IN (%s) AND role IN ('tool','assistant') "
+                    "ORDER BY id" % q, sids).fetchall()
+            else:
+                rows = []
+        finally:
+            conn.close()
+        by_sid: Dict[str, list] = {}
+        for sid, role, tool, content in rows:
+            by_sid.setdefault(sid, []).append((role, tool, content))
+        raws: Dict[str, list] = {d: [] for d in ("scope", "rigour")}
+        for sid, trace in by_sid.items():
+            raw, readable = mindset.raw_trace_scores(trace)
+            for d in raws:
+                if readable.get(d) and raw.get(d) is not None:
+                    raws[d].append(raw[d])
+        out = raws
+    except Exception:  # noqa: BLE001 — observability input, never lane-breaking
+        out = {}
+    with _MINDSET_HIST_LOCK:
+        _MINDSET_HIST_CACHE[db] = (now + _MINDSET_HIST_TTL, out)
+    return out
+
+
+def _mindset_modulation(session_id: str, advisory_text: str,
+                        messages: Any) -> str:
+    """The MINDSET MODULATION block for the delivered advisory, or ''.
+
+    Failure isolation is a hard contract: any exception from mindset.py is
+    swallowed and logged as mindset_modulation_skipped, and the consult
+    proceeds exactly as if this unit did not exist.
+    """
+    band = 0.5
+    try:
+        from . import mindset
+        from .core.telemetry import log_route as _lrx
+
+        band = float(getattr(mindset, "BAND", 0.5))
+        hist = _mindset_history()
+        trace = mindset.trace_from_messages(messages)
+        # TWO LAYERS, ON PURPOSE (R51 common-scale fix):
+        #  1. the calibrated readers decide READABILITY — a drive is UNKNOWN
+        #     (None) when the trace carries no signal or the profile has too
+        #     little history. Absence never becomes the -1 floor.
+        #  2. the delta itself is z-scored on the RAW feature values against
+        #     the SAME reference distribution on both sides, because a
+        #     percentile map saturates at the 10th/90th and two saturated
+        #     values subtract to a fake zero.
+        used_cal = mindset.read_trace_vectors(trace, hist)
+        target_cal = mindset.projection_vector(advisory_text, hist)
+        raw_used, _r_used = mindset.raw_trace_scores(trace)
+        raw_target, _r_target = mindset.raw_projection_scores(advisory_text)
+        used = {d: (raw_used.get(d) if used_cal.get(d) is not None else None)
+                for d in mindset.DRIVES}
+        target = {d: (raw_target.get(d) if target_cal.get(d) is not None else None)
+                  for d in mindset.DRIVES}
+        delta = mindset.delta_vector(target, used,
+                                     ref_target=hist, ref_used=hist)
+        block = mindset.modulation_block(delta, band=band)
+        emitted = block.count("\n") if block else 0
+        try:
+            _lrx("PRE", event_detail="mindset_modulation", emitted=emitted,
+                 scope=delta.get("scope"), rigour=delta.get("rigour"),
+                 band=band, session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
+        # Hard cap: 2 lines, 220 chars of body. Never a bare header.
+        if not block:
+            return ""
+        body = block.split("\n", 1)[1] if "\n" in block else ""
+        if not body.strip():
+            return ""
+        lines = [x for x in body.split("\n") if x.strip()][:2]
+        if sum(len(x) for x in lines) + max(0, len(lines) - 1) > 220:
+            lines = lines[:1]
+        if not lines:
+            return ""
+        return mindset.MINDSET_HEADER + "\n" + "\n".join(lines)
+    except Exception as exc:  # noqa: BLE001 — mindset never breaks the consult
+        try:
+            from .core.telemetry import log_route as _lrx
+
+            _lrx("PRE", event_detail="mindset_modulation_skipped",
+                 reason=type(exc).__name__,
+                 session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
+        return ""
+
+
 def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                            ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """The llm_execution middleware entry point for the complexity lane.
@@ -1602,6 +1751,28 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             envelope["cost"] = float(real_cost if real_cost else 0.0)
         except Exception:  # noqa: BLE001 — stamps never break the consult
             pass
+        # R52: MINDSET MODULATION — the two drives that predict behaviour get a
+        # bounded stance block on the DELIVERED advisory. Appended here, after
+        # the R34-7 truncation and AFTER the persisted body was written, so the
+        # block can never leak into state.db's stored PRE text (T8) and can
+        # never be truncated away. Failure isolated inside the helper.
+        try:
+            _mindset_block = _mindset_modulation(
+                session_id, str(content or ""), api_kwargs.get("messages"))
+            if _mindset_block:
+                _answer = str(envelope.get("answer") or "").rstrip()
+                envelope["answer"] = (_answer + "\n\n" + _mindset_block
+                                      if _answer else _mindset_block)
+                envelope["mindset_modulation"] = True
+        except Exception as _ms_exc:  # noqa: BLE001 — never breaks the consult
+            try:
+                from .core.telemetry import log_route as _lrx
+
+                _lrx("PRE", event_detail="mindset_modulation_skipped",
+                     reason=type(_ms_exc).__name__,
+                     session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         router_core.store_consult_result(decision_like.route_id or "anon", envelope)
         return ("done", envelope)
     except Exception as exc:  # noqa: BLE001

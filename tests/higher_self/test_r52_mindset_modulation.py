@@ -1,0 +1,261 @@
+"""R52 — MINDSET MODULATION pins (T1-T8).
+
+The measured basis (R47/R48, n=135 paired PRE/trace sessions) keeps exactly
+two drives: scope (r=+0.291, p=0%) and rigour (r=+0.232, p=1%). resolve and
+tempo do not predict behaviour and are dropped from PRE (T6).
+
+Contracts pinned here:
+  T1 unreadable trace -> None for that drive, and NO stance line from it
+  T2 |delta| inside band -> zero lines (silence)
+  T3 |delta| outside band -> exactly one line for that drive, <=110 chars
+  T4 both out of band -> exactly two lines, total <=220 chars
+  T5 exception inside mindset.py -> consult returns its advisory unchanged and
+     `mindset_modulation_skipped` is logged
+  T6 tempo/resolve are NOT emitted anywhere
+  T7 the stance lines carry no task-specific advice (no file names, no commands)
+  T8 the advisory body persisted to state.db does not contain the block
+
+All pins are mocked: zero network, zero live LLM calls.
+"""
+import os
+import re
+import sys
+
+PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PARENT_DIR = os.path.dirname(PLUGIN_DIR)
+for _p in (PLUGIN_DIR, PARENT_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import pytest  # noqa: E402
+
+from hermes_router import anchor_chain, anchor_exec, mindset, router_core  # noqa: E402
+from hermes_router import state  # noqa: E402
+from hermes_router.core import telemetry  # noqa: E402
+
+SID = "s-r52-mindset"
+ASK = "make the change"
+ADVISORY = "PLAN\n1. read the target and widen to its callers\n2. verify each claim"
+
+
+def _history(n=40):
+    """Plain prior raw scores: 0..n-1 for both drives (>= MIN_HISTORY)."""
+    return {"scope": [float(i) for i in range(n)],
+            "rigour": [float(i) for i in range(n)]}
+
+
+def _trace(n_tool=6, files=3, checks=2):
+    """A readable synthetic (role, tool_name, content) trace."""
+    rows = [("user", None, ASK)]
+    for i in range(n_tool):
+        if i < files:
+            rows.append(("tool", "read_file", "opened pkg/mod_%d.py for review" % i))
+        elif i < files + checks:
+            rows.append(("tool", "terminal", "pytest -q -> 12 passed"))
+        else:
+            rows.append(("tool", "terminal", "git status --short -> clean"))
+    rows.append(("assistant", None, "done"))
+    return rows
+
+
+@pytest.fixture(autouse=True)
+def _isolate(monkeypatch):
+    """No live state.db history, no live pairing state."""
+    state.clear_pre_advisory(SID)
+    monkeypatch.setattr(anchor_exec, "_mindset_history", lambda *a, **k: _history())
+    yield
+    state.clear_pre_advisory(SID)
+
+
+# ----------------------------------------------------------------- T1 --------
+
+def test_t1_unreadable_trace_is_none_never_the_floor():
+    got = mindset.read_trace_vectors([], _history())
+    assert got == {"scope": None, "rigour": None}
+    # a trace with no tool calls carries no signal at all
+    got2 = mindset.read_trace_vectors([("user", None, ASK)], _history())
+    assert got2["scope"] is None and got2["rigour"] is None
+    # and nothing is emitted from an unreadable drive
+    assert mindset.stance_lines({"scope": None, "rigour": None}) == []
+    # None propagates through the delta when either side is unreadable
+    d = mindset.delta_vector({"scope": 0.9, "rigour": 0.9},
+                             {"scope": None, "rigour": 0.1})
+    assert d["scope"] is None
+    # ... and NO stance line is emitted from the unreadable drive
+    lines = mindset.stance_lines(d)
+    assert all("scope" not in ln.lower() for ln in lines)
+    assert mindset.stance_lines({"scope": None, "rigour": None}) == []
+
+
+def test_t1_short_history_is_none():
+    """< 20 sessions of the profile's own history -> uncalibrated -> None."""
+    for hist in (None, {}, {"scope": [1.0] * 5, "rigour": [1.0] * 5}):
+        got = mindset.read_trace_vectors(_trace(), hist)
+        assert got == {"scope": None, "rigour": None}
+    # constant history cannot rank anything either (no variance -> unknown)
+    flat = {"scope": [0.0] * 40, "rigour": [0.0] * 40}
+    assert mindset.read_trace_vectors(_trace(), flat) == {"scope": None, "rigour": None}
+
+
+# ----------------------------------------------------------------- T2 --------
+
+def test_t2_inside_band_is_silent():
+    assert mindset.stance_lines({"scope": 0.1, "rigour": -0.2}) == []
+    assert mindset.stance_lines({"scope": 0.5, "rigour": -0.5}) == []  # band is exclusive
+    assert mindset.stance_lines({}) == []
+
+
+# ----------------------------------------------------------------- T3 --------
+
+def test_t3_one_line_only_for_the_drive_out_of_band():
+    lines = mindset.stance_lines({"scope": 0.9, "rigour": 0.1})
+    assert len(lines) == 1
+    assert "scope" in lines[0].lower()
+    assert len(lines[0]) <= 110
+    lines = mindset.stance_lines({"scope": 0.1, "rigour": -0.9})
+    assert len(lines) == 1
+    assert "rigour" in lines[0].lower()
+    assert len(lines[0]) <= 110
+
+
+def test_t3_direction_selects_the_opposite_stance():
+    wide = mindset.stance_lines({"scope": 0.9, "rigour": None})[0]
+    narrow = mindset.stance_lines({"scope": -0.9, "rigour": None})[0]
+    assert wide != narrow
+    more = mindset.stance_lines({"scope": None, "rigour": 0.9})[0]
+    less = mindset.stance_lines({"scope": None, "rigour": -0.9})[0]
+    assert more != less
+
+
+# ----------------------------------------------------------------- T4 --------
+
+def test_t4_both_out_of_band_is_two_lines_within_budget():
+    lines = mindset.stance_lines({"scope": 0.9, "rigour": -0.9})
+    assert len(lines) == 2
+    assert all(len(x) <= 110 for x in lines)
+    assert sum(len(x) for x in lines) + 1 <= 220
+
+
+# ----------------------------------------------------------------- T5 --------
+
+def _pre_run(monkeypatch, content=ADVISORY, orientation=True):
+    """Drive the PRE orientation branch; return (result, events)."""
+    rec = {
+        "task_id": "t-r52",
+        "mode": router_core.MODE_CONSULT,
+        "endpoint": anchor_chain.parse_anchor_uri("openrouter://test/model-a",
+                                                  "primary"),
+        "route_id": "r-r52",
+        "orientation": orientation,
+        "reason": "complexity_orientation",
+    }
+    events = []
+    orig = telemetry.patchpoints.log_route_override
+    telemetry.patchpoints.log_route_override = lambda event, **f: events.append(
+        dict(f, _event=event))
+
+    def _call(endpoint, api_kwargs):
+        return (content, 0.0, 10, 5)
+
+    monkeypatch.setattr(router_core, "pending_model_swap", lambda sid: rec)
+    monkeypatch.setattr(router_core, "clear_anchor_backoff", lambda *a, **k: None)
+    monkeypatch.setattr(anchor_exec, "_retry_anchored_async", lambda *a, **k: None)
+    monkeypatch.setattr(anchor_exec, "anchored_call", _call)
+    monkeypatch.setattr(anchor_chain, "record_spend", lambda *a, **k: None)
+    api = {"messages": [{"role": "user", "content": ASK}]}
+    try:
+        result = anchor_exec.maybe_execute_anchored(SID, api)
+    finally:
+        telemetry.patchpoints.log_route_override = orig
+    return result, events
+
+
+def _skipped(events):
+    return [e for e in events
+            if str(e.get("event_detail") or "") == "mindset_modulation_skipped"]
+
+
+def _emitted(events):
+    return [e for e in events
+            if str(e.get("event_detail") or "") == "mindset_modulation"]
+
+
+def test_t5_exception_inside_mindset_leaves_the_consult_unchanged(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("mindset exploded")
+
+    monkeypatch.setattr(mindset, "stance_lines", _boom)
+    result, events = _pre_run(monkeypatch)
+    assert result is not None and result[0] == "done"
+    env = result[1]
+    assert "MINDSET MODULATION" not in str(env.get("answer") or "")
+    assert str(env.get("answer") or "").startswith(ADVISORY[:20])
+    sk = _skipped(events)
+    assert len(sk) == 1
+    assert sk[0].get("reason") == "RuntimeError"
+
+
+# ----------------------------------------------------------------- T6 --------
+
+def test_t6_tempo_and_resolve_are_never_emitted():
+    assert mindset.DRIVES == ("scope", "rigour")
+    lines = mindset.stance_lines({"scope": 0.9, "rigour": 0.9,
+                                  "resolve": 0.9, "tempo": -0.9})
+    assert len(lines) == 2
+    for ln in lines:
+        assert "tempo" not in ln.lower()
+        assert "resolve" not in ln.lower()
+
+
+# ----------------------------------------------------------------- T7 --------
+
+def test_t7_stance_lines_carry_no_task_specific_advice():
+    file_ext = re.compile(r"\.(py|md|go|ts|js|sh|yaml|yml|json)\b", re.I)
+    command = re.compile(r"\b(git|pytest|sed|grep|awk|curl|npm|go test|"
+                         r"rm|mv|cp|chmod|systemctl)\b", re.I)
+    for s in (-1, 1):
+        for r in (-1, 1):
+            lines = mindset.stance_lines({"scope": float(s), "rigour": float(r)})
+            assert len(lines) == 2
+            for ln in lines:
+                assert not file_ext.search(ln), ln
+                assert not command.search(ln), ln
+                assert "/" not in ln, ln
+
+
+# ----------------------------------------------------------------- T8 --------
+
+def test_t8_persisted_body_does_not_contain_the_block(monkeypatch):
+    """The delivered envelope carries the block; state.db's stored PRE text does not."""
+    monkeypatch.setattr(mindset, "raw_projection_scores",
+                        lambda *a, **k: ({"scope": 400.0, "rigour": 40.0},
+                                         {"scope": True, "rigour": True}))
+    monkeypatch.setattr(mindset, "raw_trace_scores",
+                        lambda *a, **k: ({"scope": 0.0, "rigour": 0.0},
+                                         {"scope": True, "rigour": True}))
+    result, events = _pre_run(monkeypatch)
+    assert result is not None and result[0] == "done"
+    env = result[1]
+    answer = str(env.get("answer") or "")
+    assert "MINDSET MODULATION" in answer
+    assert answer.count("MINDSET MODULATION") == 1
+    stored = state.pre_advisory(SID)
+    assert stored is not None
+    assert "MINDSET MODULATION" not in str(stored.get("text") or "")
+    assert str(stored.get("text") or "") == ADVISORY
+
+
+def test_t8_silence_appends_nothing_at_all(monkeypatch):
+    """In band -> no header, no blank spacer, no event with emitted>0."""
+    monkeypatch.setattr(mindset, "raw_projection_scores",
+                        lambda *a, **k: ({"scope": 7.0, "rigour": 3.0},
+                                         {"scope": True, "rigour": True}))
+    monkeypatch.setattr(mindset, "raw_trace_scores",
+                        lambda *a, **k: ({"scope": 7.0, "rigour": 3.0},
+                                         {"scope": True, "rigour": True}))
+    result, events = _pre_run(monkeypatch)
+    env = result[1]
+    assert str(env.get("answer") or "") == ADVISORY
+    em = _emitted(events)
+    assert len(em) == 1
+    assert int(em[0].get("emitted") or 0) == 0

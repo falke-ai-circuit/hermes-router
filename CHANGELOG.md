@@ -1,3 +1,39 @@
+## 5.18.0 — 2026-10-24 (R52 — MINDSET MODULATION: two drives on the delivered PRE)
+
+Measured basis (R47/R48, 3052 sessions, 135 paired PRE/trace sessions):
+scope PRE-predicts behaviour r=+0.291 shuffle p=0%; rigour r=+0.232 p=1%.
+resolve r=+0.013 p=91% and tempo r=+0.010 p=94% do NOT predict behaviour.
+The POV panel's `operator` duplicated `reader` (r=0.963 on scope) and is cut.
+Only the two predictive drives reach the prompt.
+
+- R52-1 (`mindset.py`, pure functions, no I/O): `read_trace_vectors(trace,
+  history)` ports `raw_and_readable` from trace_reader_v2 — a trace is an
+  already-fetched list of `(role, tool_name, content)`; the DB fetch stays in
+  the caller. Unreadable -> None, never the -1 floor; a history under 20
+  sessions, or one with no variance, is UNKNOWN rather than a default.
+- R52-2: `delta_vector` z-scores both sides against the SAME reference
+  distribution before subtracting (the R51 common-scale fix), so the delta is
+  in standard deviations of the profile's own behaviour. Percentiles are used
+  for readability, not for the subtraction: the map saturates at the
+  10th/90th and two saturated values would subtract to a fake zero.
+- R52-3: `stance_lines` emits AT MOST one bounded (<=110 char) line per drive,
+  only when |delta| > band (0.5). Silence is a valid output; in band appends
+  nothing at all — no header, no spacer.
+- R52-4 (wiring, `anchor_exec.maybe_execute_anchored`): a distinct
+  `MINDSET MODULATION` block (<=2 lines, <=220 chars) is appended to the
+  DELIVERED envelope answer after the R34-7 truncation and after the PRE body
+  was persisted, so the block can never enter state.db's stored PRE text and
+  can never be truncated away. Any exception in mindset.py is swallowed and
+  logged `mindset_modulation_skipped reason=<exc class>`; the consult proceeds
+  unchanged. One `mindset_modulation emitted=<n> scope=<delta|None>
+  rigour=<delta|None> band=<x>` event per consult.
+- R52-5: the profile's own history (last 200 sessions, read-only state.db) is
+  built once per process and cached for 30 min — ~1.4s cold on a
+  1200-session profile, ~0 warm. Failure to read it yields UNKNOWN drives,
+  never defaults.
+- Pins: 11 tests in `tests/higher_self/test_r52_mindset_modulation.py`
+  (T1-T8), all mocked.
+
 ## 5.17.0 — 2026-10-24 (R42 — POST decoupled from PRE, both triggers retuned)
 
 Measured motivation: fleet-wide, 569 sessions with >=50 tool calls, only 44 (7.7%)
