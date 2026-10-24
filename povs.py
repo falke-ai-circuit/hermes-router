@@ -264,11 +264,19 @@ _DELTA_LABEL = {
 DELTA_BAND = 0.35
 
 
-def delta_labels(target: Mapping[str, Optional[float]],
-                 observed: Mapping[str, Optional[float]],
+def delta_labels(target: Optional[Mapping[str, Optional[float]]],
+                 observed: Optional[Mapping[str, Optional[float]]],
                  band: float = DELTA_BAND) -> Dict[str, float]:
-    """Signed correction per drive. Only drives with BOTH readings are scored."""
+    """Signed correction per drive. Only drives with BOTH readings are scored.
+
+    A missing side (no PRE projection this turn) yields NO delta rather than a
+    comparison against an assumed baseline -- an invented target would turn
+    "we never measured this" into "the agent was wrong", which is the exact
+    class of false finding this instrument was built to avoid.
+    """
     out: Dict[str, float] = {}
+    if not target or not observed:
+        return out
     for d in ("scope", "rigour"):
         t, o = target.get(d), observed.get(d)
         if t is None or o is None:
@@ -279,8 +287,8 @@ def delta_labels(target: Mapping[str, Optional[float]],
     return out
 
 
-def reflection_lines(target: Mapping[str, Optional[float]],
-                     observed: Mapping[str, Optional[float]],
+def reflection_lines(target: Optional[Mapping[str, Optional[float]]],
+                     observed: Optional[Mapping[str, Optional[float]]],
                      band: float = DELTA_BAND) -> List[str]:
     """POST self-reflection, in words, before the final response."""
     lines: List[str] = []
@@ -436,6 +444,51 @@ def gate_lines(gates: Mapping[str, bool], phase: str = "pre") -> List[str]:
     return out
 
 
+def claim_instruction() -> str:
+    """The instruction appended to a PRE/POST consult frame (R57 wiring)."""
+    return _CLAIM_INSTRUCTION
+
+
+def split_projection(text: Optional[str]):
+    """(dials, cleaned, meta) — parse AND strip the projection channel.
+
+    Handles the R57 claim format and, as a fallback, the legacy R53
+    `MINDSET_TARGET {...}` line so a consult that answers in the old shape is
+    not silently scored as "no target". Never raises.
+    """
+    meta: Dict[str, object] = {"format": "none", "claims": {}, "gates": {}}
+    if not text:
+        return None, text, meta
+    p = parse_claims(text)
+    claims = p["claims"]  # type: ignore[assignment]
+    if claims:
+        dials = dials_from_claims(claims)  # type: ignore[arg-type]
+        if dials.get("scope") is None:
+            return None, text, meta
+        meta = {"format": "pov", "claims": claims, "gates": p["gates"],
+                "notes": p["notes"], "win": winning_voice(claims)}  # type: ignore[arg-type]
+        return dials, block_text(text), meta
+    # legacy shape
+    try:
+        from . import mindset as _ms  # type: ignore
+
+        target, cleaned = _ms.split_target_block(text)
+        if target:
+            meta = {"format": "legacy", "claims": {}, "gates": {}}
+            return target, cleaned, meta
+        # A machine channel must NEVER ship even when it is unparseable.
+        # The old parser stripped on every path; dropping that guarantee would
+        # leak `MINDSET_TARGET {...}` into a delivered advisory, which is the
+        # exact failure the strip exists to prevent.
+        _stripped = "\n".join(
+            ln for ln in str(text).splitlines()
+            if not ln.strip().lstrip("*` ").startswith(_ms.MINDSET_TARGET_TAG))
+        return None, _stripped, meta
+    except Exception:  # noqa: BLE001 — legacy path is best-effort
+        pass
+    return None, text, meta
+
+
 def block_text(text: Optional[str]) -> str:
     """Strip the machine-parsed claim lines from a projection before delivery."""
     if not text:
@@ -457,3 +510,45 @@ def coverage() -> Dict[str, str]:
             "rigorous" if p.rigour_dir > 0 else "relaxed")
         out[key] = p.name
     return out
+
+
+# ---------------------------------------------------------------------------
+# PRE -> POST carry (one-shot per session)
+# ---------------------------------------------------------------------------
+#
+# POST needs the PRE target to difference against. Mirrors the banner park/
+# consume pattern that is already proven in this plugin: bounded dict, one-shot
+# read, never raises. A missing target is not an error -- it means this turn had
+# no PRE projection (no consult, or an unclaimed ask), and POST then reports the
+# observed stance with no delta rather than inventing a comparison.
+
+_PRE_TARGETS: Dict[str, Dict[str, object]] = {}
+_PRE_TARGETS_MAX = 64
+
+
+def park_target(session_id: str, dials: Mapping[str, Optional[float]],
+                meta: Optional[Mapping[str, object]] = None) -> None:
+    """Remember this turn's PRE target so POST can difference against it."""
+    try:
+        sid = str(session_id or "")
+        if not sid or dials.get("scope") is None:
+            return
+        if len(_PRE_TARGETS) >= _PRE_TARGETS_MAX:
+            for k in list(_PRE_TARGETS)[: _PRE_TARGETS_MAX // 2]:
+                _PRE_TARGETS.pop(k, None)
+        _PRE_TARGETS[sid] = {"dials": dict(dials), "meta": dict(meta or {})}
+    except Exception:  # noqa: BLE001 — carry is best-effort
+        pass
+
+
+def consume_target(session_id: str) -> Optional[Dict[str, object]]:
+    """Pop the parked PRE target. None when this turn had no PRE projection."""
+    try:
+        return _PRE_TARGETS.pop(str(session_id or ""), None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def reset_targets() -> None:
+    """Test isolation."""
+    _PRE_TARGETS.clear()

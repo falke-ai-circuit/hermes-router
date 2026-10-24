@@ -156,3 +156,72 @@ def test_all_four_corners_are_reachable_from_claims():
         d = povs.dials_from_claims({p.name: 1.0})
         seen.add(povs.corner_of(d["scope"], d["rigour"]))
     assert seen == {"wide+relaxed", "narrow+rigorous", "wide+rigorous", "narrow+relaxed"}
+
+
+# --- wiring (R57 live path) -------------------------------------------------
+
+def test_split_projection_handles_pov_format():
+    text = ("explorer: 0.9 | sweep\nverifier: 0.1 | n/a\n"
+            "skeptic: 0.3 | n/a\noperator: 0.1 | n/a\n"
+            "gates: precedent=0 consequence=0\nThe plan: sweep first.")
+    dials, clean, meta = povs.split_projection(text)
+    assert meta["format"] == "pov"
+    assert meta["win"] == "explorer"
+    assert dials["scope"] > 0 and dials["rigour"] < 0
+    assert "explorer:" not in clean and "The plan" in clean
+
+
+def test_split_projection_falls_back_to_legacy():
+    text = 'MINDSET_TARGET {"scope": 0.5, "rigour": -0.5}\nPLAN here'
+    dials, clean, meta = povs.split_projection(text)
+    assert meta["format"] == "legacy"
+    assert dials == {"scope": 0.5, "rigour": -0.5}
+    assert "MINDSET_TARGET" not in clean
+
+
+def test_unparseable_machine_channel_never_ships():
+    # the strip guarantee must survive a body that cannot be scored
+    dials, clean, meta = povs.split_projection(
+        'PLAN\nMINDSET_TARGET {"scope": 3.4, "rigour": 0.2}')
+    assert dials is None
+    assert "MINDSET_TARGET" not in clean
+    assert "PLAN" in clean
+
+
+def test_split_projection_on_empty():
+    assert povs.split_projection(None)[0] is None
+    assert povs.split_projection("")[0] is None
+
+
+def test_park_consume_is_one_shot_and_skips_unclaimed():
+    povs.reset_targets()
+    povs.park_target("s", {"scope": 0.8, "rigour": -0.5}, {"win": "explorer"})
+    assert povs.consume_target("s")["meta"]["win"] == "explorer"
+    assert povs.consume_target("s") is None
+    povs.park_target("u", {"scope": None, "rigour": None})
+    assert povs.consume_target("u") is None, "an unclaimed ask parks nothing"
+
+
+def test_park_is_bounded():
+    povs.reset_targets()
+    for i in range(povs._PRE_TARGETS_MAX + 20):
+        povs.park_target("s%d" % i, {"scope": 0.5, "rigour": 0.5})
+    assert len(povs._PRE_TARGETS) <= povs._PRE_TARGETS_MAX
+
+
+def test_post_payload_carries_the_same_voices_as_pre():
+    from hermes_router import completion_audit
+
+    msgs = completion_audit._audit_payload("ask", "work", "resp", 4000)
+    body = msgs[1]["content"]
+    for v in povs.VOICES:
+        assert v + ":" in body, f"{v} missing from the POST payload"
+    assert "gates:" in body
+
+
+def test_reflection_only_when_target_exists():
+    # no PRE target -> no invented comparison
+    assert povs.reflection_lines(None, {"scope": 0.9, "rigour": 0.9}) == []
+    # both present and far apart -> a correction
+    assert povs.reflection_lines({"scope": 0.9, "rigour": 0.9},
+                                 {"scope": -0.8, "rigour": -0.8})

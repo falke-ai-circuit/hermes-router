@@ -1881,6 +1881,16 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
         # 200-char margin: _payload_body joins sections with headers, so its
         # own cap is not the length of the message it produces.
         _user_cap = max(1200, total_cap - len(_sys) - 200)
+    # R57: POST speaks through the SAME four voices as PRE, retroactively.
+    # The claim block rides this same call (no extra billing) and is stripped
+    # before delivery; the observed dials are differenced against the PRE
+    # target so the agent gets a signed correction, in words, before she ships.
+    try:
+        from . import povs as _povs_post
+
+        parts.append(_povs_post.claim_instruction())
+    except Exception:  # noqa: BLE001 — the audit must still run
+        pass
     _user = _payload_body(parts, _user_cap)
     if total_cap and total_cap > 0 and len(_user) > _user_cap:
         _user = _user[:_user_cap]
@@ -2490,6 +2500,36 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # (fail-open: absent field = backcompat, lane continues).
         _sc = _parse_sense_check(verdict_text)
         _povs = _parse_povs(verdict_text)
+        # R57: strip the POST projection channel and turn it into a SIGNED
+        # CORRECTION against the PRE target ("should have been more careful").
+        # Emitted here, before the response ships, so the agent can still act.
+        # Failure isolated: a broken projection leaves the verdict untouched.
+        _pov_reflection = ""
+        try:
+            from . import povs as _povs_mod
+
+            _post_dials, _post_clean, _post_meta = _povs_mod.split_projection(
+                verdict_text)
+            if _post_meta.get("format") == "pov":
+                verdict_text = _post_clean
+                _parked = _povs_mod.consume_target(session_id)
+                _prev = (_parked or {}).get("dials") if _parked else None
+                _lines = (_povs_mod.reflection_lines(_prev, _post_dials)
+                          if _prev else [])
+                _pov_reflection = "\n".join(_lines)
+                _log("post_pov_projection",
+                     format="pov",
+                     win=_post_meta.get("win"),
+                     observed_scope=_post_dials.get("scope"),
+                     observed_rigour=_post_dials.get("rigour"),
+                     target_scope=(_prev or {}).get("scope"),
+                     target_rigour=(_prev or {}).get("rigour"),
+                     gates=[g for g in (_post_meta.get("gates") or {})
+                            if (_post_meta.get("gates") or {}).get(g)],
+                     deltas=bool(_lines),
+                     session_id=session_id)
+        except Exception:  # noqa: BLE001 — never breaks delivery
+            _pov_reflection = ""
         # R19.21: per-vantage segments ALSO render as compact labeled
         # lines in the delivered note ("<stance>: <note[:120]>", one line
         # per vantage) — reviewer F-E3: 0 lines found, the parse was
@@ -2631,10 +2671,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
                 "the user's answer, applying whatever the message flagged. "
                 "Do not restate the audit, do not ask permission to continue, "
-                "and do not output any marked text to the user.\\n%s%s"
+                "and do not output any marked text to the user.\\n%s%s%s"
                 % (_NOTE_MARKER + _NOTE_PREFIX,
                    verdict_text,
-                   ("\n" + _pov_lines) if locals().get("_pov_lines") else ""))
+                   ("\n" + _pov_lines) if locals().get("_pov_lines") else "",
+                   # R57: the signed PRE->POST correction rides the SAME note,
+                   # in words the agent can act on before she ships.
+                   ("\n\nSTANCE CORRECTION: " + _pov_reflection)
+                   if locals().get("_pov_reflection") else ""))
         if banner_park:
             stash_verdict(session_id, note)
         _log("completion_audit_done chars=%d" % len(verdict_text), session_id=session_id)

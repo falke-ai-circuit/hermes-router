@@ -1164,6 +1164,28 @@ MINDSET_TARGET_INSTRUCTION = (
     "before the plan is delivered and does not count toward the length above. "
     "Emit it BEFORE the plan so a truncated answer can never drop it.")
 
+def _pov_claim_instruction() -> str:
+    """R57: the projection channel for PRE/POST consults.
+
+    Replaces the R53 free-scored `MINDSET_TARGET {scope, rigour}` line. The
+    model no longer scores the dials at all — it reports which of four FIXED
+    dispositions claims the ask, and the dials are computed from those claims
+    (povs.dials_from_claims). That removes the model's freedom to invent a
+    number that contradicts its own reasoning, which is how the R56 coupling
+    survived decoupled wording.
+
+    Failure isolation: if the module is missing, fall back to the legacy
+    instruction rather than sending a consult with no projection channel.
+    Never raises.
+    """
+    try:
+        from . import povs as _povs
+
+        return _povs.claim_instruction()
+    except Exception:  # noqa: BLE001 — a consult must still run
+        return MINDSET_TARGET_INSTRUCTION
+
+
 ORIENTATION_FRAME_PREAMBLE = (
     "You are her own higher self — the same person, a few "
     "breaths earlier — looking at the plan before she commits to it. "
@@ -1503,7 +1525,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                         _frame += ("\n\nLength: keep your ENTIRE answer within "
                                    f"{_bud} characters. Complete sentences only — "
                                    "this is delivered verbatim."
-                                   + MINDSET_TARGET_INSTRUCTION)
+                                   + _pov_claim_instruction())
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):
                         # prepend the profile's own compact persona card so the
@@ -1605,7 +1627,16 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         try:
             from . import mindset as _ms_mod
 
-            _mindset_target, _clean = _ms_mod.split_target_block(content)
+            # R57: dual parse — the POV claim block first, legacy MINDSET_TARGET
+            # as fallback. `_pov_meta` carries the winning voice and gate flags
+            # for the ledger; the dial math is identical downstream.
+            _pov_meta: Dict[str, Any] = {"format": "none"}
+            try:
+                from . import povs as _povs
+
+                _mindset_target, _clean, _pov_meta = _povs.split_projection(content)
+            except Exception:  # noqa: BLE001 — fall back to the legacy parser
+                _mindset_target, _clean = _ms_mod.split_target_block(content)
             if _clean != str(content):
                 content = _clean
             if _mindset_target is None:
@@ -1828,6 +1859,17 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # block can never leak into state.db's stored PRE text (T8) and can
         # never be truncated away. Failure isolated inside the helper.
         try:
+            # R57: park this turn's PRE target for POST to difference against.
+            # Parked even when the modulation block is empty (in-band): POST
+            # still needs to know what stance PRE asked for.
+            try:
+                from . import povs as _povs_park
+
+                _povs_park.park_target(session_id, _mindset_target or {},
+                                       {"win": (_pov_meta or {}).get("win"),
+                                        "format": (_pov_meta or {}).get("format")})
+            except Exception:  # noqa: BLE001 — carry is best-effort
+                pass
             _mindset_block = _mindset_modulation(
                 session_id, _mindset_target, api_kwargs.get("messages"))
             if _mindset_block:
