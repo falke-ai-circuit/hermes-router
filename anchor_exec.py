@@ -1138,14 +1138,31 @@ MINDSET_TARGET_INSTRUCTION = (
     # first thing lost to a token cap (finish_reason=length), degrading
     # silently into `mindset_target_missing` on exactly the expensive consults
     # where the stance matters most. Machine-parsed output is never the tail.
+    # R56 DECOUPLING (Goran 2026-10-24): scope and rigour are INDEPENDENT
+    # lenses. The old wording bundled them ("+1 = widen/verify hard") and
+    # taught the model the very correlation we then measured (+0.60). The
+    # exploration quadrant — wide surface, relaxed checking — was therefore
+    # unreachable: 0 of 21 scored asks landed there. Score each axis on its
+    # own and never derive one from the other.
     "\n\nFIRST, on its OWN line BEFORE any plan text, emit exactly this block "
     "and nothing else on that line:\n"
     'MINDSET_TARGET {"scope": <float -1..1>, "rigour": <float -1..1>}\n'
-    "Numbers only inside the braces. scope and rigour are the stance this "
-    "turn needs: +1 = widen/verify hard, -1 = narrow/stop re-checking. This "
-    "line is machine-parsed and removed before the plan is delivered and does "
-    "not count toward the length above. Emit it BEFORE the plan so a "
-    "truncated answer can never drop it.")
+    "Two INDEPENDENT axes. Score each on its own evidence; never infer one "
+    "from the other.\n"
+    "scope = how much SURFACE this asks you to look at. +1 = explore broadly: "
+    "many files, many possibilities, unknown territory. -1 = one point of "
+    "focus.\n"
+    "rigour = how much you CHECK before acting. +1 = surgical: act only on "
+    "what you have verified. -1 = relaxed: try things that may fail, no "
+    "pre-checking.\n"
+    "They move independently. A broad search runs HIGH scope with LOW rigour "
+    "(explore first, filter later). Editing one verified line runs LOW scope "
+    "with HIGH rigour. Debugging an unknown fault runs HIGH scope with HIGH "
+    "rigour. Do NOT raise rigour merely because scope is high: a wide survey "
+    "that checks nothing yet is legitimate and common.\n"
+    "Numbers only inside the braces. This line is machine-parsed and removed "
+    "before the plan is delivered and does not count toward the length above. "
+    "Emit it BEFORE the plan so a truncated answer can never drop it.")
 
 ORIENTATION_FRAME_PREAMBLE = (
     "You are her own higher self — the same person, a few "
