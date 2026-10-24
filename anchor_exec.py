@@ -1639,6 +1639,23 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 _mindset_target, _clean = _ms_mod.split_target_block(content)
             if _clean != str(content):
                 content = _clean
+            # R57 observability: record WHICH projection channel answered and
+            # what it scored. Without this, "a target parsed" cannot be
+            # distinguished from a legacy-shaped body, and the POV wiring is
+            # unprovable from the logs.
+            try:
+                from .core.telemetry import log_route as _lrx2
+
+                _lrx2("PRE", event_detail="pre_pov_projection",
+                      format=str((_pov_meta or {}).get("format") or "none"),
+                      win=str((_pov_meta or {}).get("win") or ""),
+                      scope=(_mindset_target or {}).get("scope"),
+                      rigour=(_mindset_target or {}).get("rigour"),
+                      gates=",".join(g for g in ((_pov_meta or {}).get("gates") or {})
+                                     if ((_pov_meta or {}).get("gates") or {}).get(g)),
+                      session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
             if _mindset_target is None:
                 try:
                     from .core.telemetry import log_route as _lrx
