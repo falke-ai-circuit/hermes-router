@@ -1134,13 +1134,18 @@ def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
 # the SAME single call — never as prose the agent then has to guess at. The
 # line is stripped before the advisory is used or stored.
 MINDSET_TARGET_INSTRUCTION = (
-    "\n\nThen, on its OWN final line after the plan, emit exactly this block "
+    # R53b: the block goes FIRST, not last. Placed after the plan it was the
+    # first thing lost to a token cap (finish_reason=length), degrading
+    # silently into `mindset_target_missing` on exactly the expensive consults
+    # where the stance matters most. Machine-parsed output is never the tail.
+    "\n\nFIRST, on its OWN line BEFORE any plan text, emit exactly this block "
     "and nothing else on that line:\n"
     'MINDSET_TARGET {"scope": <float -1..1>, "rigour": <float -1..1>}\n'
     "Numbers only inside the braces. scope and rigour are the stance this "
     "turn needs: +1 = widen/verify hard, -1 = narrow/stop re-checking. This "
-    "line is machine-parsed and removed before the plan is delivered; it "
-    "does not count toward the length above.")
+    "line is machine-parsed and removed before the plan is delivered and does "
+    "not count toward the length above. Emit it BEFORE the plan so a "
+    "truncated answer can never drop it.")
 
 ORIENTATION_FRAME_PREAMBLE = (
     "You are her own higher self — the same person, a few "
