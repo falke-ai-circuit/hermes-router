@@ -1,3 +1,57 @@
+## 5.19.0 — 2026-10-24 (R53 — structured mindset targets; midturn signed params)
+
+Two units. Unit 1 is a regression fix on R52's own output; Unit 2 extends the
+midturn decision lane WITHOUT adding a single API call.
+
+- R53-1 (regression): `mindset.raw_projection_scores()` is DELETED. It
+  regex-counted file paths and check/verify vocabulary out of the advisory
+  PROSE and fed that into `projection_vector()`. That is a text proxy: the
+  validated figures (scope r=+0.291 p=0%, rigour r=+0.232 p=1%, n=135) were
+  measured on a structured {scope, rigour} float vector, and a keyword counter
+  wearing those numbers is worse than no modulation at all.
+  `projection_vector(target, history)` now accepts structured floats ONLY —
+  no regex, no text parsing; a drive missing, None, non-numeric or outside
+  [-1, 1] is UNREADABLE (None), never zero and never the floor.
+- R53-2: the PRE consult EMITS that vector in the SAME single call, as a
+  strict final line `MINDSET_TARGET {"scope": <f>, "rigour": <f>}`.
+  `mindset.split_target_block()` parses AND strips it in one helper, so the
+  line can never reach the caller or the persisted PRE body — including when
+  the payload does not parse (a malformed machine line is still dropped).
+  Missing/unparseable -> target None -> no modulation, `mindset_target_missing`
+  logged, advisory untouched. Fail-open, never raises.
+- R53-3 (delta scale): with the target now on the common [-1, 1] stance scale,
+  `_mindset_modulation` subtracts stance from calibrated stance (identity
+  z-score). Keeping the old raw-vs-count-history standardisation would
+  z-score a stance against a count distribution — the R51 scale artifact in a
+  new costume.
+- R53-4 (midturn, envelope): `decision.build_envelope()` carries
+  `mindset: {scope, rigour}` read from the CURRENT session trace via
+  `mindset.read_trace_vectors()`. Mid-session partial trace is correct here;
+  an unreadable drive is null, never invented. Labelled DATA, same convention
+  as the causal frame.
+- R53-5: the typed question now requires `"mindset": {"scope": <-1..1>,
+  "rigour": <-1..1>}` in the SAME verdict JSON — ADJUSTMENTS relative to the
+  stance in the envelope (+ increases, - decreases, 0 = no change).
+- R53-6 (`validate_verdict`): "mindset" added to `allowed`, validated strict:
+  dict-or-malformed, keys ⊆ {scope, rigour} (unknown drive names rejected),
+  each value int/float in [-1, 1] (bool and out-of-range malformed), absent or
+  all-null valid with no adjustment, stand_down with a non-empty mindset
+  malformed. The verdict keeps its pre-R53 key set when there is nothing to
+  adjust, so every existing caller is byte-identical. FAIL-OPEN preserved.
+- R53-7 (delivery): out-of-band adjustments render through
+  `mindset.stance_lines()` — the SAME `_STANCE` vocabulary PRE speaks — capped
+  at 2 lines / 220 chars, appended to the existing pending advisory. Silence
+  when the verdict has no adjustment, when the drive is unreadable, or when
+  |adjust| <= BAND. One event: `midturn_mindset emitted=<n> scope=<> rigour=<>`.
+- R53-8 (hard constraint): ZERO new API calls at midturn. No frontier or
+  anchor_chain call is added anywhere on that path; the backend, model,
+  endpoint and trigger behaviour of the decision lane are unchanged, and the
+  midturn seam and its fire conditions are untouched. Pinned by M10, which
+  asserts on the mocks.
+- Tests: T7/T8/T9 in `tests/higher_self/test_r52_mindset_modulation.py`
+  (absent target, parsed-and-stripped target, dict-only projection vector) and
+  M1–M11 in the new `tests/decision_lane/test_r53_midturn_mindset.py`.
+
 ## 5.18.0 — 2026-10-24 (R52 — MINDSET MODULATION: two drives on the delivered PRE)
 
 Measured basis (R47/R48, 3052 sessions, 135 paired PRE/trace sessions):

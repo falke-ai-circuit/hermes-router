@@ -863,6 +863,15 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
              sig=sig, mode=mode, tool=tool_name, seam=seam, ledger_id=rid,
              backend=str(cfg.get("backend") or ""))
         adv = _render_midturn_advisory(verdict, envelope, meta, rid=rid)
+        # R53: signed mindset params ride the SAME verdict — no frontier call,
+        # no new backend call. Appended to the existing pending advisory; when
+        # there are no out-of-band adjustments nothing is appended at all.
+        try:
+            _mb = _midturn_mindset_block(verdict, envelope, session_id)
+            if _mb:
+                adv = (adv + "\n" + _mb) if adv else _mb
+        except Exception:  # noqa: BLE001 — never blocks delivery
+            pass
         if adv:
             with _LOCK:
                 # max 1 pending, latest-wins
@@ -1138,6 +1147,62 @@ def _render_collapsed_route(verdict: Dict[str, Any],
         return "%s take %s (advisory only — never a command)." % (
             ADVISORY_HEADER, label)
     except Exception:  # noqa: BLE001
+        return ""
+
+
+def _midturn_mindset_block(verdict: Dict[str, Any],
+                           envelope: Dict[str, Any],
+                           session_id: str = "") -> str:
+    """R53: signed stance ADJUSTMENTS from the verdict, as stance lines.
+
+    Three gates, all required, per drive: the verdict is not stand_down (the
+    caller already returned for that), the drive is READABLE in the envelope
+    (a null stance cannot be adjusted from), and |adjust| > BAND. Silence is
+    the common, valid outcome — zero lines appends nothing at all.
+
+    Vocabulary is mindset._STANCE via stance_lines(), so PRE and midturn say
+    the same thing about the same drive. Never raises; never calls a backend.
+    """
+    try:
+        from . import mindset
+
+        adj_raw = verdict.get("mindset") or {}
+        if not isinstance(adj_raw, dict) or not adj_raw:
+            _log(session_id, "midturn_mindset", emitted=0, scope=None,
+                 rigour=None, verdict=str(verdict.get("choice") or ""))
+            return ""
+        stance = envelope.get("mindset")
+        stance = stance if isinstance(stance, dict) else {}
+        band = float(getattr(mindset, "BAND", 0.5))
+        adj: Dict[str, Any] = {}
+        for d in ("scope", "rigour"):
+            v = adj_raw.get(d)
+            if v is None:
+                continue
+            if stance.get(d) is None:  # unreadable stance => no adjustment
+                continue
+            try:
+                fv = float(v)
+            except Exception:  # noqa: BLE001 — non-numeric is a miss
+                continue
+            if abs(fv) <= band:
+                continue
+            adj[d] = fv
+        lines = mindset.stance_lines(adj, band=band)[:2]
+        cap = int(getattr(mindset, "MAX_BLOCK_CHARS", 220))
+        kept: List[str] = []
+        total = 0
+        for ln in lines:
+            add = len(ln) + (1 if kept else 0)
+            if total + add > cap:
+                break
+            kept.append(ln)
+            total += add
+        _log(session_id, "midturn_mindset", emitted=len(kept),
+             scope=adj.get("scope"), rigour=adj.get("rigour"),
+             verdict=str(verdict.get("choice") or ""))
+        return "\n".join(kept)
+    except Exception:  # noqa: BLE001 — mindset never breaks the lane
         return ""
 
 

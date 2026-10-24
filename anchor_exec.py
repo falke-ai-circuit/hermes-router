@@ -1130,6 +1130,18 @@ def _execution_directive(api_kwargs: Dict[str, Any]) -> bool:
 # commentary the agent could not act on yet (only 20.9% ever acted on).
 # The frame therefore asks for PLAN-LEVEL deltas only — and forbids the
 # answer-shape vocabulary outright, naming POST as its home.
+# R53: the PRE consult must EMIT its stance target as structured floats, in
+# the SAME single call — never as prose the agent then has to guess at. The
+# line is stripped before the advisory is used or stored.
+MINDSET_TARGET_INSTRUCTION = (
+    "\n\nThen, on its OWN final line after the plan, emit exactly this block "
+    "and nothing else on that line:\n"
+    'MINDSET_TARGET {"scope": <float -1..1>, "rigour": <float -1..1>}\n'
+    "Numbers only inside the braces. scope and rigour are the stance this "
+    "turn needs: +1 = widen/verify hard, -1 = narrow/stop re-checking. This "
+    "line is machine-parsed and removed before the plan is delivered; it "
+    "does not count toward the length above.")
+
 ORIENTATION_FRAME_PREAMBLE = (
     "You are her own higher self — the same person, a few "
     "breaths earlier — looking at the plan before she commits to it. "
@@ -1250,7 +1262,7 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, An
     return out
 
 
-def _mindset_modulation(session_id: str, advisory_text: str,
+def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
                         messages: Any) -> str:
     """The MINDSET MODULATION block for the delivered advisory, or ''.
 
@@ -1264,6 +1276,12 @@ def _mindset_modulation(session_id: str, advisory_text: str,
         from .core.telemetry import log_route as _lrx
 
         band = float(getattr(mindset, "BAND", 0.5))
+        if not target_map:
+            # R53: no structured target => nothing to modulate against. Say
+            # nothing and log nothing here; the caller already logged
+            # `mindset_target_missing`, and a zero-emission event without a
+            # target would read like a measured in-band result.
+            return ""
         hist = _mindset_history()
         trace = mindset.trace_from_messages(messages)
         # TWO LAYERS, ON PURPOSE (R51 common-scale fix):
@@ -1275,15 +1293,24 @@ def _mindset_modulation(session_id: str, advisory_text: str,
         #     percentile map saturates at the 10th/90th and two saturated
         #     values subtract to a fake zero.
         used_cal = mindset.read_trace_vectors(trace, hist)
-        target_cal = mindset.projection_vector(advisory_text, hist)
-        raw_used, _r_used = mindset.raw_trace_scores(trace)
-        raw_target, _r_target = mindset.raw_projection_scores(advisory_text)
-        used = {d: (raw_used.get(d) if used_cal.get(d) is not None else None)
-                for d in mindset.DRIVES}
-        target = {d: (raw_target.get(d) if target_cal.get(d) is not None else None)
+        # R53: the target is the STRUCTURED vector the consult emitted, on the
+        # same [-1, 1] scale as the used side's reference — no prose, no regex.
+        target_cal = mindset.projection_vector(target_map, hist)
+
+        # R53 SCALE NOTE: the target is no longer a raw count lifted off prose
+        # — it is the consult's own stance, already on the common [-1, 1]
+        # scale. So BOTH sides are calibrated stances now and the delta is a
+        # plain stance difference (ref=None => z() is the identity). Keeping
+        # the old raw-vs-history z-score here would z-score a [-1, 1] number
+        # against a count distribution and reintroduce a scale artifact.
+        used = {d: used_cal.get(d) for d in mindset.DRIVES}
+        target = {d: (float(target_map.get(d))
+                      if (target_cal.get(d) is not None
+                          and isinstance(target_map, dict)
+                          and isinstance(target_map.get(d), (int, float)))
+                      else None)
                   for d in mindset.DRIVES}
-        delta = mindset.delta_vector(target, used,
-                                     ref_target=hist, ref_used=hist)
+        delta = mindset.delta_vector(target, used)
         block = mindset.modulation_block(delta, band=band)
         emitted = block.count("\n") if block else 0
         try:
@@ -1453,7 +1480,8 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                         _bud = advisory_char_budget()
                         _frame += ("\n\nLength: keep your ENTIRE answer within "
                                    f"{_bud} characters. Complete sentences only — "
-                                   "this is delivered verbatim.")
+                                   "this is delivered verbatim."
+                                   + MINDSET_TARGET_INSTRUCTION)
                         _msgs[_last_user] = {**_msgs[_last_user], "content": _frame}
                         # Agent-tailored frontier consults (Goran 2026-09-10):
                         # prepend the profile's own compact persona card so the
@@ -1547,6 +1575,27 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
             except Exception:  # noqa: BLE001 — ledger never breaks the lane
                 pass
             return None
+        # R53: the stance target rides THIS SAME consult call. Parse it and
+        # strip the line BEFORE anything downstream reads or stores the body:
+        # the block is machine channel, not part of the advisory. Missing or
+        # unparseable -> target None -> no modulation, logged, never raised.
+        _mindset_target: Optional[Dict[str, float]] = None
+        try:
+            from . import mindset as _ms_mod
+
+            _mindset_target, _clean = _ms_mod.split_target_block(content)
+            if _clean != str(content):
+                content = _clean
+            if _mindset_target is None:
+                try:
+                    from .core.telemetry import log_route as _lrx
+
+                    _lrx("PRE", event_detail="mindset_target_missing",
+                         session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+        except Exception:  # noqa: BLE001 — parsing never breaks the consult
+            _mindset_target = None
         # R19.13 B+ 5b/5e: parse the adversarial block from the PRE verdict
         # (nullable, fail-open) and write the p_failure ledger row for
         # materialization labeling. The seed TEXT rides the brief as-is.
@@ -1758,7 +1807,7 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # never be truncated away. Failure isolated inside the helper.
         try:
             _mindset_block = _mindset_modulation(
-                session_id, str(content or ""), api_kwargs.get("messages"))
+                session_id, _mindset_target, api_kwargs.get("messages"))
             if _mindset_block:
                 _answer = str(envelope.get("answer") or "").rstrip()
                 envelope["answer"] = (_answer + "\n\n" + _mindset_block

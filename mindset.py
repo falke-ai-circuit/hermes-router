@@ -42,17 +42,19 @@ Pure functions only: no I/O, no config reads, no network, no state. The
 caller owns the fetches (the trace, and the profile's history). That keeps
 every pin in this unit testable with plain literals.
 
-The projection side is a TEXT PROXY: the PRE advisory is prose, so its demand
-is measured with the same two raw features applied to the plan text (paths it
-names = scope demand, check/verify vocabulary = rigour demand) and calibrated
-against the same behavioural history. It is a proxy for the model's emitted
-demand vector, and it is named as one — not presented as that vector.
+The projection side is STRUCTURED, NOT PROSE (R53). The PRE consult emits its
+own {scope, rigour} target on a strict `MINDSET_TARGET {...}` line; that vector
+is parsed, the line is stripped, and only floats reach projection_vector. The
+earlier keyword counter over the advisory prose was deleted: those r/p figures
+were measured on a numeric vector, and a regex score wearing them is a false
+assurance — worse than no modulation at all.
 """
 from __future__ import annotations
 
 import re
 import statistics as _st
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import (Any, Dict, Iterable, List, Mapping, Optional, Sequence,
+                    Tuple)
 
 # The two drives that survived the predictive test. resolve and tempo are
 # deliberately absent: they are dropped drives and must never be emitted.
@@ -157,20 +159,77 @@ def raw_trace_scores(session_trace: Sequence[TraceRow]
     return raw, readable
 
 
-def raw_projection_scores(projection_text: Optional[str]
-                          ) -> Tuple[Dict[str, Optional[float]], Dict[str, bool]]:
-    """(raw, readable) for the PRE projection, in the SAME raw units.
+#: The PRE consult emits its stance target as a strict final line. Structured
+#: floats only — the drive model was measured on a {scope, rigour} vector, and
+#: a keyword count over prose does NOT inherit those numbers (R53).
+MINDSET_TARGET_TAG = "MINDSET_TARGET"
 
-    Text proxy (see module docstring): paths named in the plan are the scope
-    demand, check/verify vocabulary is the rigour demand.
+
+def _target_floats(text: str) -> Optional[Dict[str, float]]:
+    """Parse the braces of a MINDSET_TARGET line; None when not strict.
+
+    Numbers only: every value must be a bare numeric literal in [-1, 1] and
+    the keys must be real drives. Anything else -> None (fail-open upstream).
     """
-    text = str(projection_text or "")
-    if not text.strip():
-        return {"scope": None, "rigour": None}, {"scope": False, "rigour": False}
-    files = {m for m in _PATH_RE.findall(text) if len(m) < 80}
-    checks = len(_CHECK_RE.findall(text))
-    return ({"scope": float(len(files)), "rigour": float(checks)},
-            {"scope": True, "rigour": True})
+    import json as _json
+
+    body = str(text or "").strip()
+    if not (body.startswith("{") and body.endswith("}")):
+        return None
+    try:
+        data = _json.loads(body)
+    except Exception:  # noqa: BLE001 — unparseable is a miss, not a crash
+        return None
+    if not isinstance(data, dict) or not data:
+        return None
+    out: Dict[str, float] = {}
+    for k, v in data.items():
+        if k not in DRIVES:
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        fv = float(v)
+        if fv < -1.0 or fv > 1.0:
+            return None
+        out[str(k)] = fv
+    return out
+
+
+def split_target_block(text: Optional[str]
+                       ) -> Tuple[Optional[Dict[str, float]], str]:
+    """(target, cleaned_text) — parse AND strip the MINDSET_TARGET line.
+
+    One helper on purpose: "the block never reaches the caller or the stored
+    body" is then structurally true instead of true by two independent edits.
+    The line is removed wherever it sits (last line is the contract, a stray
+    earlier line is still not allowed to leak). Missing / unparseable -> the
+    text comes back UNCHANGED and target is None. Never raises.
+    """
+    raw = str(text or "")
+    if not raw:
+        return None, raw
+    target: Optional[Dict[str, float]] = None
+    kept: List[str] = []
+    saw_tag = False
+    try:
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(MINDSET_TARGET_TAG):
+                # The tag is machine channel: it is dropped from the delivered
+                # text even when its payload does not parse (a malformed line
+                # must never reach a human as if it meant something).
+                saw_tag = True
+                parsed = _target_floats(
+                    stripped[len(MINDSET_TARGET_TAG):].strip())
+                if parsed is not None and target is None:
+                    target = parsed
+                continue
+            kept.append(line)
+        if not saw_tag:
+            return None, raw
+        return target, "\n".join(kept).rstrip()
+    except Exception:  # noqa: BLE001 — never raise on the advisory path
+        return None, raw
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +306,34 @@ def read_trace_vectors(session_trace: Sequence[TraceRow],
     return _calibrated(raw, readable, history)
 
 
-def projection_vector(projection_text: Optional[str],
+def projection_vector(target: Optional[Mapping[str, float]],
                       history: Any = None) -> Dict[str, Optional[float]]:
-    """Calibrated drive vector for the PRE projection (text proxy)."""
-    raw, readable = raw_projection_scores(projection_text)
+    """Calibrated drive vector for the PRE projection.
+
+    STRUCTURED FLOATS ONLY. `target` is the {scope, rigour} vector the consult
+    emitted — there is no prose path here on purpose (R53): the validated
+    r=+0.291 / r=+0.232 figures were measured on a numeric vector, so a
+    keyword counter wearing them would be a false assurance.
+
+    A drive that is missing, None, non-numeric, boolean, or out of [-1, 1] is
+    UNREADABLE (None) — never zero, never the floor.
+    """
+    raw: Dict[str, Optional[float]] = {}
+    readable: Dict[str, bool] = {}
+    mapping: Any = target if isinstance(target, Mapping) else None
+    for d in DRIVES:
+        v = mapping.get(d) if mapping is not None else None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raw[d] = None
+            readable[d] = False
+            continue
+        fv = float(v)
+        if fv < -1.0 or fv > 1.0:
+            raw[d] = None
+            readable[d] = False
+            continue
+        raw[d] = fv
+        readable[d] = True
     return _calibrated(raw, readable, history)
 
 

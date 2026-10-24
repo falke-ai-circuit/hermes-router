@@ -1053,6 +1053,10 @@ REASON_NO_OPTIONS = "no_options"
 REASON_MANUAL_VERBATIM = "manual_verbatim_passthrough"
 REASON_POST_GATE = "post_gate_insufficient_structure"
 REASON_MALFORMED = "malformed"
+
+#: R53: the only drives a verdict may adjust. Same two the PRE modulation
+#: carries — resolve/tempo were dropped as non-predictive.
+_MINDSET_DRIVES = frozenset({"scope", "rigour"})
 REASON_BACKEND_ERROR = "backend_error"
 REASON_UNKNOWN_BACKEND = "unknown_backend"
 # R19.1 LEG 1: platform-provenance skip (orchestrator/coder dispatch
@@ -2049,6 +2053,60 @@ def _impulse_weighting(ask: str, ids: List[str], framed: List[Dict[str, Any]],
         return {}
 
 
+def _session_trace_rows(session_id: str, limit: int = 80) -> List[Any]:
+    """(role, tool_name, content) rows for the CURRENT session, oldest last.
+
+    Mid-session partial trace is correct here: the point is where the agent
+    stands NOW, not how the session ended. Read-only, bounded, fail-open -> [].
+    """
+    try:
+        import sqlite3
+
+        path = _db_path()
+        sid = str(session_id or "").strip()
+        if not path or not sid:
+            return []
+        conn = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=1.0)
+        try:
+            rows = conn.execute(
+                "SELECT role, tool_name, substr(coalesce(content,''), 1, 3000)"
+                " FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (sid, int(limit))).fetchall()
+        finally:
+            conn.close()
+        return [tuple(r) for r in reversed(rows)]
+    except Exception:  # noqa: BLE001 — an unreadable trace is not a crash
+        return []
+
+
+def _current_mindset(session_id: str) -> Dict[str, Optional[float]]:
+    """Where the agent currently stands on the two drives (R53, midturn).
+
+    The verdict's mindset values are ADJUSTMENTS relative to this stance, so
+    the envelope has to carry it. Labelled DATA (same convention as the
+    causal frame), never an instruction. An unreadable drive is null — a value
+    is never invented, and an absent history means no stance, not a floor.
+    """
+    blank: Dict[str, Optional[float]] = {d: None for d in ("scope", "rigour")}
+    try:
+        from . import mindset
+
+        rows = _session_trace_rows(session_id)
+        if not rows:
+            return blank
+        hist: Any = {}
+        try:
+            from . import anchor_exec as _ax  # lazy: anchor_exec imports this
+
+            hist = _ax._mindset_history()
+        except Exception:  # noqa: BLE001 — no history => drives UNKNOWN
+            hist = {}
+        vec = mindset.read_trace_vectors(rows, hist)
+        return {d: vec.get(d) for d in ("scope", "rigour")}
+    except Exception:  # noqa: BLE001 — stance never breaks the envelope
+        return blank
+
+
 def build_envelope(session_id: str, ask: str, options: List[str],
                    trigger: str, cfg: Optional[Dict[str, Any]] = None,
                    surrounding_context: str = "") -> Dict[str, Any]:
@@ -2101,17 +2159,25 @@ def build_envelope(session_id: str, ask: str, options: List[str],
             # SPEC-impulse-lane-v1.md §3: weighting block — weights per
             # option (normalized), band, evidence[] (<=3), basis.
             "weighting": _impulse_weighting(ask, ids, framed, fc),
+            # R53: the current stance rides the envelope so the verdict can
+            # express an ADJUSTMENT rather than absolute numbers.
+            "mindset": _current_mindset(session_id),
             "question": {
                 "type": "choose_one_with_confidence",
                 "text": ("Choose exactly one option id. Respond with ONLY JSON: "
                          '{"choice": "<option id>" | "stand_down", '
                          '"confidence": <0..1>, '
-                         '"alternatives": [<runner-up option ids>]}. '
+                         '"alternatives": [<runner-up option ids>], '
+                         '"mindset": {"scope": <-1..1>, "rigour": <-1..1>}}. '
                          'If no decision is actually requested by this fork, '
                          'respond {"choice": "stand_down", "confidence": 0, '
                          '"alternatives": []}. '
                          "Alternatives must be option ids other than the choice "
-                         "(why-not runner-up ordering); use [] when none apply."),
+                         "(why-not runner-up ordering); use [] when none apply. "
+                         "mindset values are ADJUSTMENTS relative to the stance "
+                         "given in this envelope: + increases, - decreases, 0 "
+                         "means no change needed; each bounded to [-1, 1]. Omit "
+                         "mindset (or send nulls) when no change is needed."),
             },
             "slice": [],
             "trigger": str(trigger or "pre"),
@@ -2346,9 +2412,31 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
             return None, REASON_PARSE_FAIL
         if not isinstance(data, dict):
             return None, REASON_PARSE_FAIL
-        allowed = {"choice", "confidence", "alternatives"}
+        allowed = {"choice", "confidence", "alternatives", "mindset"}
         if set(data.keys()) - allowed:
             return None, REASON_MALFORMED  # strict schema: unknown keys rejected
+        # R53: mindset = ADJUSTMENTS relative to the envelope's stance.
+        # Strict like everything else: unknown drive names are rejected, not
+        # coerced; out-of-range is malformed, not clamped. Absent or all-null
+        # is VALID and means "no adjustment" ({}).
+        adjustments: Dict[str, float] = {}
+        if "mindset" in data:
+            ms = data.get("mindset")
+            if ms is None:
+                ms = {}
+            if not isinstance(ms, dict):
+                return None, REASON_MALFORMED
+            for k, v in ms.items():
+                if k not in _MINDSET_DRIVES:
+                    return None, REASON_MALFORMED  # unknown drive name
+                if v is None:
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    return None, REASON_MALFORMED
+                fv = float(v)
+                if fv < -1.0 or fv > 1.0:
+                    return None, REASON_MALFORMED
+                adjustments[str(k)] = fv
         ids = [o["id"] for o in envelope.get("options", [])]
         if not ids:
             return None, REASON_NO_OPTIONS
@@ -2358,6 +2446,10 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
         if choice == STAND_DOWN_CHOICE:
             alts = data.get("alternatives", [])
             if alts not in (None, []):
+                return None, REASON_MALFORMED
+            # R53: standing down means no posture to adjust — same contract
+            # alternatives already carry.
+            if adjustments:
                 return None, REASON_MALFORMED
             return {"choice": STAND_DOWN_CHOICE, "confidence": 0.0,
                     "alternatives": []}, "ok"
@@ -2397,8 +2489,14 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
                 or any(not isinstance(a, str) or a not in ids or a == choice
                        for a in alts_raw):
             return None, REASON_MALFORMED
-        return {"choice": choice, "confidence": conf,
-                "alternatives": [str(a) for a in alts_raw]}, "ok"
+        verdict: Dict[str, Any] = {"choice": choice, "confidence": conf,
+                                   "alternatives": [str(a) for a in alts_raw]}
+        # R53: attached only when there IS an adjustment, so the verdict shape
+        # for every pre-existing caller is byte-identical (no new key, no
+        # behaviour change); consumers read verdict.get("mindset") or {}.
+        if adjustments:
+            verdict["mindset"] = adjustments
+        return verdict, "ok"
     except Exception:  # noqa: BLE001
         return None, REASON_PARSE_FAIL
 

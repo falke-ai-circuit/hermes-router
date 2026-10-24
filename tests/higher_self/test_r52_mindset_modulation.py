@@ -185,7 +185,11 @@ def test_t5_exception_inside_mindset_leaves_the_consult_unchanged(monkeypatch):
         raise RuntimeError("mindset exploded")
 
     monkeypatch.setattr(mindset, "stance_lines", _boom)
-    result, events = _pre_run(monkeypatch)
+    # R53: the modulation path only runs when a structured target exists
+    _used_zero(monkeypatch)
+    result, events = _pre_run(
+        monkeypatch,
+        content=ADVISORY + '\nMINDSET_TARGET {"scope": 0.9, "rigour": 0.9}')
     assert result is not None and result[0] == "done"
     env = result[1]
     assert "MINDSET MODULATION" not in str(env.get("answer") or "")
@@ -225,15 +229,18 @@ def test_t7_stance_lines_carry_no_task_specific_advice():
 
 # ----------------------------------------------------------------- T8 --------
 
-def test_t8_persisted_body_does_not_contain_the_block(monkeypatch):
-    """The delivered envelope carries the block; state.db's stored PRE text does not."""
-    monkeypatch.setattr(mindset, "raw_projection_scores",
-                        lambda *a, **k: ({"scope": 400.0, "rigour": 40.0},
-                                         {"scope": True, "rigour": True}))
+def _used_zero(monkeypatch):
+    """A readable trace scoring 0/0, so the calibrated stance saturates low."""
     monkeypatch.setattr(mindset, "raw_trace_scores",
                         lambda *a, **k: ({"scope": 0.0, "rigour": 0.0},
                                          {"scope": True, "rigour": True}))
-    result, events = _pre_run(monkeypatch)
+
+
+def test_t8_persisted_body_does_not_contain_the_block(monkeypatch):
+    """The delivered envelope carries the block; state.db's stored PRE text does not."""
+    _used_zero(monkeypatch)
+    content = ADVISORY + '\nMINDSET_TARGET {"scope": 0.9, "rigour": 0.9}'
+    result, events = _pre_run(monkeypatch, content=content)
     assert result is not None and result[0] == "done"
     env = result[1]
     answer = str(env.get("answer") or "")
@@ -247,15 +254,72 @@ def test_t8_persisted_body_does_not_contain_the_block(monkeypatch):
 
 def test_t8_silence_appends_nothing_at_all(monkeypatch):
     """In band -> no header, no blank spacer, no event with emitted>0."""
-    monkeypatch.setattr(mindset, "raw_projection_scores",
-                        lambda *a, **k: ({"scope": 7.0, "rigour": 3.0},
-                                         {"scope": True, "rigour": True}))
-    monkeypatch.setattr(mindset, "raw_trace_scores",
-                        lambda *a, **k: ({"scope": 7.0, "rigour": 3.0},
-                                         {"scope": True, "rigour": True}))
-    result, events = _pre_run(monkeypatch)
+    _used_zero(monkeypatch)
+    # target == the agent's current calibrated stance => delta 0 => silence
+    content = ADVISORY + '\nMINDSET_TARGET {"scope": -1.0, "rigour": -1.0}'
+    result, events = _pre_run(monkeypatch, content=content)
     env = result[1]
     assert str(env.get("answer") or "") == ADVISORY
     em = _emitted(events)
     assert len(em) == 1
     assert int(em[0].get("emitted") or 0) == 0
+
+
+# ----------------------------------------------------------------- R53 -------
+# T7/T8/T9 (R53): the target is a STRUCTURED block, never prose scored by
+# regex. The R52 keyword counter is deleted; a text proxy wearing the
+# validated r/p figures is worse than no modulation.
+
+def test_r53_t7_target_absent_means_no_modulation_and_is_logged(monkeypatch):
+    _used_zero(monkeypatch)
+    result, events = _pre_run(monkeypatch, content=ADVISORY)
+    env = result[1]
+    assert str(env.get("answer") or "") == ADVISORY
+    assert env.get("mindset_modulation") is None
+    missed = [e for e in events
+              if str(e.get("event_detail") or "") == "mindset_target_missing"]
+    assert len(missed) == 1
+    assert _emitted(events) == []
+
+
+def test_r53_t8_target_is_parsed_and_the_line_never_survives(monkeypatch):
+    _used_zero(monkeypatch)
+    block = 'MINDSET_TARGET {"scope": 0.9, "rigour": -0.9}'
+    result, events = _pre_run(monkeypatch,
+                              content="PLAN\n1. do it\n" + block + "\n")
+    env = result[1]
+    answer = str(env.get("answer") or "")
+    assert "MINDSET_TARGET" not in answer
+    assert "MINDSET MODULATION" in answer
+    stored = state.pre_advisory(SID)
+    assert "MINDSET_TARGET" not in str(stored.get("text") or "")
+    assert str(stored.get("text") or "").strip() == "PLAN\n1. do it"
+    # the parsed vector is what fed the delta: +scope widening, -rigour
+    assert any(e.get("event_detail") == "mindset_modulation" for e in events)
+
+
+def test_r53_t8_unparseable_target_is_a_miss_not_a_crash(monkeypatch):
+    _used_zero(monkeypatch)
+    bad = 'MINDSET_TARGET {"scope": 3.4, "rigour": 0.2}'
+    result, events = _pre_run(monkeypatch, content=ADVISORY + "\n" + bad)
+    env = result[1]
+    assert str(env.get("answer") or "") == ADVISORY
+    assert len([e for e in events if e.get("event_detail")
+                == "mindset_target_missing"]) == 1
+
+
+def test_r53_t9_projection_vector_is_dict_only_no_text_path():
+    import inspect as _inspect
+
+    assert not hasattr(mindset, "raw_projection_scores")
+    src = _inspect.getsource(mindset.projection_vector)
+    for banned in ("re.", "findall", "search(", "_PATH_RE", "_CHECK_RE"):
+        assert banned not in src, banned
+    got = mindset.projection_vector({"scope": 0.5, "rigour": -0.5}, _history())
+    assert got["scope"] is not None and got["rigour"] is not None
+    # structured floats ONLY: prose, missing and out-of-range are UNKNOWN
+    assert mindset.projection_vector("widen this", _history()) == {
+        "scope": None, "rigour": None}
+    assert mindset.projection_vector({"scope": 0.4}, _history())["rigour"] is None
+    assert mindset.projection_vector({"scope": 1.4, "rigour": 0.0},
+                                     _history())["scope"] is None
