@@ -1458,6 +1458,40 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         route_complex = False
                 except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                     _obs_warn('complexity_pre_suppressed', _obs_exc)  # rider 19 item 1
+            if (route_complex and override != "anchor"
+                    and _manual_stack.get("hit") is None):
+                # R42 Unit 2 (Goran-direct): PRE stays ask-side and becomes
+                # IMPACT-GATED. Measured at L2 over 3336 sessions: the
+                # clear_complex gate fires on 40% of sessions (recall 53%,
+                # precision 27%); requiring consequence > 0 gives 28% fire
+                # (recall 42%, precision 31%). PRE optimises PRECISION — a
+                # useless consult at plan time is pure cost — while POST
+                # guarantees COVERAGE on realised work. Recall is deliberately
+                # NOT chased here: the work-mass gate catches heavy work after
+                # the fact. Manual/declared triggers never reach this branch.
+                try:
+                    from . import complexity as _cx_imp
+
+                    _imp_sig = meta.get("signals")
+                    if not isinstance(_imp_sig, dict):
+                        _imp_sig = None
+                    _imp_ok, _imp_why = _cx_imp.pre_impact_gate(
+                        user_text, _imp_sig)
+                except Exception:  # noqa: BLE001 — fail-open (keep PRE)
+                    _imp_ok, _imp_why = True, "impact_unknown"
+                if not _imp_ok:
+                    try:
+                        from .core.telemetry import log_route as _lr_imp  # P1
+
+                        _lr_imp("PRE", session_id=session_id,
+                                event_detail="complexity_skip",
+                                reason="pre_no_impact",
+                                stage1=str(meta.get("stage1") or ""),
+                                score=_skip_score, task_id=task_id,
+                                level=level)
+                    except Exception as _obs_exc:  # noqa: BLE001
+                        _obs_warn('complexity_skip', _obs_exc)
+                    route_complex = False
             if route_complex:
                 # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no
                 # longer plans the task — it delivers an ORIENTATION BRIEF:
@@ -1499,6 +1533,17 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
                     return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
                                 "consult_no_frontier_config")
+                # R42: coverage countable from the ledger without log parsing.
+                try:
+                    from .core.telemetry import log_route as _lr_pref  # P1
+
+                    _lr_pref("PRE", session_id=session_id,
+                             event_detail="pre_orientation_fired",
+                             trigger=str(locals().get("_imp_why") or "impact"),
+                             stage1=str(meta.get("stage1") or ""),
+                             score=_skip_score, task_id=task_id, level=level)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
                 return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
                             "complexity_orientation",
                             orientation=True)

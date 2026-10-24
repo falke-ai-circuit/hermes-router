@@ -128,7 +128,10 @@ def _patch_post(monkeypatch, note="CONFIRMED. the fix holds."):
     return seen
 
 
-def test_paired_post_fires_with_audit_mode_off_and_never_twice(monkeypatch):
+def test_paired_post_cannot_override_audit_mode_off(monkeypatch):
+    """R42: pairing is CONTEXT, not a confirmation contract — a PRE on record
+    no longer buys a POST through the master switch. The would-fire decision
+    is still on record (work_mass_gate), which is the measurable path."""
     seen = _patch_post(monkeypatch)
     monkeypatch.setattr(ca, "audit_enabled", lambda: False)   # audit_mode: off
     monkeypatch.setattr(ca, "audit_mode", lambda: "off")
@@ -136,19 +139,15 @@ def test_paired_post_fires_with_audit_mode_off_and_never_twice(monkeypatch):
                             "PRE BRIEF: keep it terse", ask=SHORT_ASK)
 
     out = ca.audit_gate(SID, RESP, ask_override=SHORT_ASK)
-    assert seen["calls"] == 1, "the paired POST must fire exactly once"
-    assert out is not None, "the revised/delivered response comes back"
-    assert seen["kwargs"].get("pre_brief") == "PRE BRIEF: keep it terse"
-    assert seen["kwargs"].get("pre_trigger") == "complexity_orientation"
-    pairs = [kw for ev, kw in seen["events"] if ev == "higher_self_pair"]
-    assert any(kw.get("stage") == "post" and kw.get("paired") is True
-               and kw.get("pre_trigger") == "complexity_orientation"
-               for kw in pairs), pairs
+    assert out is None, "billing blocked must mean no consult"
+    assert seen["calls"] == 0, "a PRE must not buy a POST through mode=off"
+    gates = [ev for ev, _ in seen["events"] if str(ev).startswith("work_mass_gate")]
+    assert gates, "the would-fire decision must still be logged"
 
-    # second call on the same turn: record consumed, mode off -> silence
+    # second call: still silent, never a cascade
     out2 = ca.audit_gate(SID, RESP, ask_override=SHORT_ASK)
     assert out2 is None
-    assert seen["calls"] == 1, "no reloop, no cascade"
+    assert seen["calls"] == 0, "no reloop, no cascade"
 
 
 def test_unpaired_post_logs_paired_false_no_pre(monkeypatch):
@@ -188,9 +187,12 @@ def test_pre_brief_is_bounded_by_the_payload_cap():
 # ------------------------------------------------------- (e) NO-FINDINGS -----
 
 def test_no_findings_path_returns_and_logs_pairing(monkeypatch):
+    # R42: the firing decision is WORK MASS (supplied by the directory
+    # fixture); a NO-FINDINGS verdict on a fired turn must still return and
+    # still log the pairing so coverage is countable.
     seen = _patch_post(monkeypatch, note="NO-FINDINGS")
-    monkeypatch.setattr(ca, "audit_enabled", lambda: False)
-    monkeypatch.setattr(ca, "audit_mode", lambda: "off")
+    monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+    monkeypatch.setattr(ca, "audit_mode", lambda: "complex")
     state.mark_pre_advisory(SID, "complexity_orientation", "PRE BRIEF",
                             ask=SHORT_ASK)
     out = ca.audit_gate(SID, RESP, ask_override=SHORT_ASK)

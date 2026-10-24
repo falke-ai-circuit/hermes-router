@@ -86,7 +86,11 @@ HS_CONFIRMATION_FLAGGED = ("· higher-self: checked at close — flagged: "
                            "{gist} ·")
 HS_CONFIRMATION_FLAGGED_BARE = ("· higher-self: checked at close — "
                                 "flagged, nothing quotable ·")
-_NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your frontier higher self, "
+# R42 Unit 3 (internal voice): the advisory text is the agent's own higher self
+# reporting on her OWN state — never an outside system reporting on a model.
+# No model/provider/endpoint/token vocabulary may enter it. Identity stays in
+# the operator-facing banner (billing/provenance) and nowhere in this text.
+_NOTE_PREFIX = "[HIGHER-SELF MESSAGE — from your higher self, at the close of the work]"
 _NOTE_TTL = 3600.0  # pending verdict lives 1h
 _AUDIT_MARKER_TTL = 6 * 3600.0  # once-per-task ledger TTL
 
@@ -122,12 +126,15 @@ _ON_DEMAND_TRIGGERS = ("request_routing_declared", "declared_user")
 
 
 def post_pair_mode() -> str:
-    """complexity.post_pair_mode: worthwhile (default) | always | off.
+    """DEPRECATED (R42) — pairing is no longer a fire gate.
 
-    R34-19h (Goran-direct): "post when it makes sense, not mechanically".
-    `always` reproduces R34-19 behaviour (every PRE turn is confirmed) and
-    exists so the two policies can be A/B'd; `off` retires the paired arm
-    entirely. Never raises.
+    Kept parsed only for config compatibility (R34-19h shipped it, and
+    deployed profiles still carry it). POST fires on realised WORK MASS
+    (see work_mass_gate); this knob now controls ONE thing: whether a PRE
+    advisory that happens to exist is included in the POST payload as
+    context. `off` therefore means "no pairing context", NOT "no POST".
+    `always` and `worthwhile` are equivalent (both include the context).
+    Never raises.
     """
     try:
         from .router_core import _complexity_cfg
@@ -148,22 +155,14 @@ def post_pair_mode() -> str:
 
 def _pair_worth_confirming(ask: str, response_text: str,
                            pair: Dict[str, Any]) -> Tuple[bool, str]:
-    """Would a POST confirmation say something on THIS turn? (R34-19h)
+    """RETIRED AS A FIRE GATE (R42).
 
-    A confirmation is worth a frontier consult when the higher self has
-    something to confirm TO:
-
-      * on_demand      — the user asked her higher self; a confirmation is the
-                         other half of what they asked for, always.
-      * closure        — the turn reads as a wrap-up/verdict; that is the
-                         moment a second pair of eyes has value.
-      * decision_frame — the ask carries a declared fork/manual trigger, i.e.
-                         the turn is choosing between options.
-
-    Mid-work chatter ("continuing", "pin green", a status line) earns nothing:
-    confirming it bills a consult to agree with a sentence. Skipping DEFERS the
-    PRE's confirmation rather than cancelling it — the record TTLs out on its
-    own, and the next worthwhile turn confirms.
+    R34-19h used this to decide whether a paired turn "earned" a POST. That
+    chain produced `pair_deferred_mid_work` on most paired turns and
+    `higher_self_confirmation_emitted` zero times fleet-wide — a deferral
+    with no landing is a silent drop. POST now fires on realised WORK MASS
+    (work_mass_gate) with no reference to any PRE; this function is kept
+    only as a pure predicate for callers/tests that still ask the question.
 
     Never raises; on doubt the pair IS confirmed (fail-open to the old arm).
     """
@@ -189,6 +188,211 @@ def _pair_worth_confirming(ask: str, response_text: str,
         return False, "mid_work"
     except Exception:  # noqa: BLE001
         return True, "fail_open"
+
+
+# ------------------------------------------------------- work-mass (R42) ----
+# POST fires on REALISED WORK, never on pairing. The two gates read different
+# things: PRE reads the ASK (will this be complex/impactful/long?), POST reads
+# the WORK (was it, and does it hold up?). Measured over 3336 sessions, the
+# ask-side classifier fires on 40% of sessions and still misses 58% of the
+# top-20% work-mass band — acceptable ONLY because this gate catches it on
+# realised work. Do not add recall hacks to PRE to compensate.
+#
+# Counts come from the outbound request payload (the session's own message
+# list), so "tools" is the realised tool traffic at this seam, not a guess.
+
+# A MUTATION is a file content change: write_file or patch (the brief's
+# definition). Bare edits/other write tools count toward files when they carry
+# a path, but the mutation floor is deliberately these two.
+_MUTATION_TOOLS = frozenset({"write_file", "patch"})
+# Path-bearing write tools (superset) — used for the distinct-file count.
+_PATH_WRITE_TOOLS = frozenset({
+    "write_file", "patch", "write", "create_file", "append_file", "edit_file",
+    "edit", "apply_patch", "apply_diff", "multi_edit", "str_replace",
+    "str_replace_editor", "replace_in_file", "insert_content", "notebook_edit",
+})
+_PATH_KEYS = ("path", "file_path", "filepath", "filename", "notebook_path")
+# Once a session has been reflected on for work mass, it does not pay again
+# for the same body of work (a 50-tool session stays past its threshold on
+# every later turn — without this the fix trades starvation for a consult per
+# turn). Re-arms only after the marker TTL.
+_REFLECTED: Dict[str, float] = {}
+_REFLECTED_LOCK = threading.Lock()
+
+
+def work_mass_min_tools() -> int:
+    """complexity.work_mass_min_tools — tools needed to fire on mass.
+
+    Default 40 (fleet p80 is role-dependent; the per-role table ships in the
+    INSTALL docs, never hardcoded here — the plugin must not know profile
+    names). Clamp 10..500. Never raises.
+    """
+    try:
+        from .router_core import _complexity_cfg
+
+        v = int((_complexity_cfg() or {}).get("work_mass_min_tools") or 40)
+        return max(10, min(500, v))
+    except Exception:  # noqa: BLE001
+        return 40
+
+
+def work_impact_min_files() -> int:
+    """complexity.work_impact_min_files — distinct patched files (default 5,
+    clamp 1..100). Never raises."""
+    try:
+        from .router_core import _complexity_cfg
+
+        v = int((_complexity_cfg() or {}).get("work_impact_min_files") or 5)
+        return max(1, min(100, v))
+    except Exception:  # noqa: BLE001
+        return 5
+
+
+def work_impact_min_mutations() -> int:
+    """complexity.work_impact_min_mutations — write_file|patch calls
+    (default 10, clamp 1..200). Never raises."""
+    try:
+        from .router_core import _complexity_cfg
+
+        raw = (_complexity_cfg() or {}).get("work_impact_min_mutations")
+        v = int(10 if raw is None else raw)
+        return max(1, min(200, v))
+    except Exception:  # noqa: BLE001
+        return 10
+
+
+def _call_args(raw: Any) -> Dict[str, Any]:
+    """Tool-call arguments as a dict (payloads carry both dict and JSON str)."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            got = json.loads(raw)
+            return got if isinstance(got, dict) else {}
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def work_mass_facts(context: Optional[dict] = None) -> Dict[str, int]:
+    """Realised work at this seam: {tools, files, mutations}.
+
+    tools     = tool-role messages (falling back to tool_calls entries when a
+                host strips results) — realised tool traffic, not a plan;
+    files     = DISTINCT paths named by write/patch calls;
+    mutations = write_file|patch calls (the brief's definition).
+
+    Never raises; an unreadable payload reads as zero work.
+    """
+    out = {"tools": 0, "files": 0, "mutations": 0, "reworks": 0}
+    try:
+        _req = (context or {}).get("request") if isinstance(context, dict) else None
+        _msgs = (_req or {}).get("messages") if isinstance(_req, dict) else None
+        if not isinstance(_msgs, list):
+            return out
+        tool_msgs = 0
+        calls_seen = 0
+        files: set = set()
+        per_file: Dict[str, int] = {}
+        muts = 0
+        for m in _msgs:
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "tool":
+                tool_msgs += 1
+            calls = m.get("tool_calls")
+            if not isinstance(calls, list):
+                continue
+            for c in calls:
+                if not isinstance(c, dict):
+                    continue
+                fn = c.get("function") if isinstance(c.get("function"), dict) else c
+                name = str((fn or {}).get("name") or "").strip().lower()
+                if not name:
+                    continue
+                calls_seen += 1
+                if name in _MUTATION_TOOLS:
+                    muts += 1
+                if name in _PATH_WRITE_TOOLS:
+                    args = _call_args((fn or {}).get("arguments"))
+                    for k in _PATH_KEYS:
+                        p = args.get(k)
+                        if isinstance(p, str) and p.strip():
+                            path = p.strip()
+                            files.add(path)
+                            per_file[path] = per_file.get(path, 0) + 1
+                            break
+        out["tools"] = max(tool_msgs, calls_seen)
+        out["files"] = len(files)
+        out["mutations"] = muts
+        # R42 outcome-linked field: the SAME file touched more than once in the
+        # session is the only rework signal visible at this seam (a later user
+        # correction / reviewer rejection lands after delivery). Carried so the
+        # gate can be judged against rework later — its own recall is
+        # definitional when the threshold IS p80.
+        out["reworks"] = sum(1 for c in per_file.values() if c > 1)
+        return out
+    except Exception:  # noqa: BLE001
+        return out
+
+
+def work_mass_gate(context: Optional[dict] = None) -> Dict[str, Any]:
+    """The POST fire decision on realised work mass.
+
+    Fires when tools >= work_mass_min_tools OR distinct files >=
+    work_impact_min_files OR mutations >= work_impact_min_mutations.
+    Returns {fire, tools, files, mutations, thr, reason} with reason in
+    mass|impact|below. Never raises (degrades to below).
+    """
+    try:
+        facts = work_mass_facts(context)
+        thr = work_mass_min_tools()
+        fmin = work_impact_min_files()
+        mmin = work_impact_min_mutations()
+        if facts["tools"] >= thr:
+            reason = "mass"
+        elif facts["files"] >= fmin:
+            reason = "impact"
+        elif facts["mutations"] >= mmin:
+            reason = "impact"
+        else:
+            reason = "below"
+        return {"fire": reason != "below", "tools": facts["tools"],
+                "files": facts["files"], "mutations": facts["mutations"],
+                "reworks": facts.get("reworks", 0),
+                "thr": thr, "files_thr": fmin, "muts_thr": mmin,
+                "reason": reason}
+    except Exception:  # noqa: BLE001
+        return {"fire": False, "tools": 0, "files": 0, "mutations": 0,
+                "reworks": 0,
+                "thr": 40, "files_thr": 5, "muts_thr": 10, "reason": "below"}
+
+
+def _already_reflected(session_id: str) -> bool:
+    """True when this session already paid a work-mass POST inside the TTL."""
+    try:
+        now = time.time()
+        with _REFLECTED_LOCK:
+            ts = _REFLECTED.get(str(session_id))
+            if ts is None:
+                return False
+            if now - ts > _AUDIT_MARKER_TTL:
+                _REFLECTED.pop(str(session_id), None)
+                return False
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mark_reflected(session_id: str) -> None:
+    try:
+        with _REFLECTED_LOCK:
+            _REFLECTED[str(session_id)] = time.time()
+            if len(_REFLECTED) > 1024:
+                for k in sorted(_REFLECTED, key=lambda k: _REFLECTED[k])[:256]:
+                    _REFLECTED.pop(k, None)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _note_outcome(note: str) -> Tuple[str, str]:
@@ -497,7 +701,10 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     and the PRE/POST mutual exclusion no longer applies (the pairing IS the
     one-consult-per-turn contract)."""
     mode = audit_mode()
-    if not paired and mode == "off":
+    if mode == "off":
+        # R42: pairing no longer overrides the master switch — a PRE is payload
+        # context, not a confirmation contract. Blocked billing is still
+        # measurable as would-fire in the work_mass_gate row.
         return False, "mode_off"
     # R34-19: the floor stops a one-liner buying a consult, but a PAIRED turn
     # already paid for its PRE — its confirmation is owed even when the report
@@ -507,12 +714,10 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
         return False, "response_too_short"
     if paired and not isinstance(response_text, str):
         return False, "response_too_short"
-    # Goran 09-10 option C: CLOSURE is an independent trigger — a closure-shaped
-    # ask/response audits even when the ask text itself isn't complex-shaped
-    # ("Now close this out" → audit the wrap-up, don't bounce on ask_not_complex).
-    if not paired and mode == "complex" and not _is_complex_ask(ask) \
-            and not is_closure_response(ask, response_text):
-        return False, "ask_not_complex"
+    # R42: the ask-side complexity test is GONE from POST eligibility. POST
+    # reads the WORK (work_mass_gate), never the ask — that incoherence (post
+    # confirming pre) is the defect this rider removes. `audit_mode=complex`
+    # still means "not every turn", but the discriminator is realised work.
     key = _fire_marker_key(session_id, ask, model)
     if _already_fired(key):
         return False, "already_fired_this_task"
@@ -663,6 +868,21 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
     false-positive passthroughs were skipping the audit entirely — closure
     responses are exactly the most refusal-shape-shaped text)."""
     try:
+        # R42 shadow path — logged on EVERY turn, before any billing or
+        # eligibility check, so "would-fire" is measurable even when the
+        # consult is blocked (mode off / cap / no endpoint). This is the
+        # validation seam for the retune: fire-vs-did-fire, per role.
+        _wm = work_mass_gate(context)
+        try:
+            _log("work_mass_gate fire=%s tools=%d files=%d muts=%d thr=%d "
+                 "reason=%s rework=%d"
+                 % (str(bool(_wm["fire"])), int(_wm["tools"]),
+                    int(_wm["files"]), int(_wm["mutations"]),
+                    int(_wm["thr"]), str(_wm["reason"]),
+                    int(_wm.get("reworks") or 0)),
+                 session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry never breaks the gate
+            pass
         # R34-19 PRE->POST pairing: a PRE advisory for this turn makes the
         # POST its CONFIRMATION — it fires even with audit_mode off.
         # R34-19k2: the ask-less read below accepts ANY live record for the
@@ -710,9 +930,12 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         if _pair is None:
             _pair = _pre_pairing(session_id)
 
-        if not audit_enabled() and not _pair:
-            _log("audit_gate_skip", reason="mode_off_no_pair",
-                 session_id=session_id)
+        if not audit_enabled():
+            # R42: a PRE on record no longer overrides the master switch. The
+            # work-mass decision is still on record (`work_mass_gate`) — a
+            # would-fire is measurable even when billing is blocked.
+            _log("audit_gate_skip", reason="mode_off",
+                 would_fire=bool(_wm["fire"]), session_id=session_id)
             return None
         # R34-19: the length floor exists to stop a one-line reply from buying
         # a frontier consult. A PAIRED turn already paid for its PRE, so the
@@ -790,6 +1013,15 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                  claim_trigger=str(_pair.get("trigger") or ""),
                  session_id=session_id)
         _pair = _stored_pair or _pair
+        # R42: pairing is CONTEXT ONLY. `post_pair_mode: off` now means "do not
+        # include the PRE advisory in the POST payload" — it does NOT mean
+        # "do not POST" (the old reading, retired). The record itself is still
+        # resolved above, because a PRE-paid turn keeps its length-floor bypass.
+        _pair_ctx = _pair
+        if _pair is not None and post_pair_mode() == "off":
+            _pair_ctx = None
+            _log("higher_self_pair_context_suppressed", reason="pair_mode_off",
+                 session_id=session_id)
         # R16-2 (rider 16, D1a): the benign BRIEF frame now covers the ANCHOR
         # leg — the completion-audit consult was the last ungated frontier
         # arm: a benign setup/briefing ask ('brief me on the tradeoffs of X
@@ -861,39 +1093,17 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         except Exception:  # noqa: BLE001
             pass
         _fire = bool(_min_turns <= 1 or (_turn_n > 0 and _turn_n % _min_turns == 0))
-        _pair_declined = False
-        if _pair:
-            # R34-19: a paired POST is the PRE's confirmation — the cadence,
-            # closure, risk and tool-count triggers are irrelevant to it.
-            # R34-19h (Goran-direct): "post when it makes sense, not
-            # mechanically". Confirming EVERY turn that had a PRE billed a
-            # consult on ordinary mid-work chatter, so the paired arm is now
-            # gated on the turn actually being one where a confirmation means
-            # something. Unpaired turns keep their own independent triggers.
-            _mode = post_pair_mode()
-            if _mode == "off":
-                _fire = False
-                _pair_declined = True
-                _log_pair("post", False,
-                          pre_trigger=str(_pair.get("trigger") or ""),
-                          reason="pair_mode_off", session_id=session_id)
-            elif _mode == "always":
+        # R42: WORK MASS owns the fire decision; pairing never does. A PRE on
+        # record cannot fire a POST and cannot suppress one — it is payload
+        # context only (and may be absent entirely).
+        _fire_trigger = "cadence" if _fire else ""
+        if _wm["fire"]:
+            if _already_reflected(session_id):
+                _log("work_mass_gate_suppressed", reason="already_reflected",
+                     tools=int(_wm["tools"]), session_id=session_id)
+            elif not _fire:
                 _fire = True
-            else:
-                _worth, _why = _pair_worth_confirming(ask, response_text, _pair)
-                _fire = _worth
-                if not _worth:
-                    _pair_declined = True
-                    # the PRE advisory is NOT cleared: a mid-work turn defers
-                    # its confirmation to the next turn that earns one (the
-                    # record still TTLs out on its own).
-                    _log_pair("post", False,
-                              pre_trigger=str(_pair.get("trigger") or ""),
-                              reason="pair_deferred_" + _why,
-                              session_id=session_id)
-                else:
-                    _log("higher_self_pair_worthwhile", reason=_why,
-                         session_id=session_id)
+                _fire_trigger = "work_mass_" + str(_wm["reason"])
         _closure = False
         if not _fire:
             # Goran 2026-09-10 (option C): closure-shaped responses audit
@@ -927,6 +1137,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 except Exception:  # noqa: BLE001 — gate is additive
                     pass
             _fire = _closure
+            if _closure:
+                _fire_trigger = "closure"
         if not _fire:
             # R15 LEG 1 L3 (2026-09-21): the completed turn REPORTS R2/R3
             # actions against a live/fleet/config target → audit fires
@@ -947,6 +1159,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     if bool(_rcfg.get("post_audit", True)) and \
                             _risk.reports_consequential(response_text):
                         _fire = True
+                        _fire_trigger = "risk_report"
                         try:
                             _log("risk_report_audit_trigger",
                                  session_id=session_id)
@@ -954,47 +1167,36 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                             pass
             except Exception:  # noqa: BLE001 — L3 must never break the gate
                 pass
-        if not _fire and not _pair_declined:
-            # >=3 tool-role messages in the outbound payload → audited even
-            # on turn 1 (heavy work turn).
-            try:
-                _req = (context or {}).get("request") if isinstance(context, dict) else None
-                _msgs = (_req or {}).get("messages") if isinstance(_req, dict) else None
-                _tools = sum(1 for _m in (_msgs or [])
-                             if isinstance(_m, dict) and _m.get("role") == "tool") \
-                    if isinstance(_msgs, list) else 0
-                _fire = _tools >= 3
-            except Exception:  # noqa: BLE001
-                pass
+        # R42: the old >=3-tool-message arm is retired — it was a proxy for
+        # work mass and fired on ordinary read-heavy turns. Work mass is the
+        # single source of truth for "was this heavy" (work_mass_gate above).
         # route-log via module-local helper (never cross-package import:
         # gateway loads the plugin under a different top-level name and a
         # hard import here would kill the whole gate silently — live-caught)
-        # R34-19c: a paired turn is the PRE's CONFIRMATION. The cadence gate
-        # exists to sample ordinary turns ("audit every Nth substantive turn");
-        # when the higher self spoke at the start of THIS turn, skipping its
-        # confirmation means the agent is warned and never told how it went.
-        # Cadence never defers a confirmation — same rule as the length floor.
-        # R34-19h: "never defers a confirmation" assumes the turn EARNED one.
-        # A mid-work turn whose confirmation was deferred above must not be
-        # re-armed by this bypass — that re-arm is exactly what made the old
-        # policy mechanical, and it fired on every PRE turn regardless.
-        if not _fire and not _pair:
+        if not _fire:
             _log("audit_gate_skip", reason="cadence",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
-        if not _fire and _pair and _pair_declined:
-            _log("audit_gate_skip", reason="pair_deferred",
-                 turn=_turn_n, of=_min_turns, session_id=session_id)
-            return None
-        if not _fire and _pair:
-            _log("audit_cadence_bypassed_for_pair",
-                       turn=_turn_n, of=_min_turns, session_id=session_id)
+        # R42: one row per fired consult, carrying the trigger AND the work
+        # shape — coverage is countable per role from the ledger, and the gate
+        # is judgeable against rework rather than its own recall.
+        _log("post_reflection_fired", trigger=(_fire_trigger or "unknown"),
+             tools=int(_wm["tools"]), files=int(_wm["files"]),
+             muts=int(_wm["mutations"]),
+             rework=int(_wm.get("reworks") or 0), paired=bool(_pair),
+             session_id=session_id)
         _ok, _why = eligible(session_id, ask, response_text, model,
                              turn_n=_turn_n, paired=bool(_pair))
         _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
                    turn=_turn_n, of=_min_turns, closure=_closure,
-                   paired=bool(_pair))
+                   paired=bool(_pair), trigger=_fire_trigger)
+        if _ok:
+            # R42: the once-per-session marker is set at the FIRE decision,
+            # not after the consult, so a failing/failed consult does not
+            # re-arm and bill the same body of work on the next turn.
+            if str(_fire_trigger).startswith("work_mass_"):
+                _mark_reflected(session_id)
         if not _ok:
             if _pair:
                 # The pairing existed but the POST cannot fire (too short,
@@ -1023,12 +1225,13 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             _req = (context or {}).get("request") if isinstance(context, dict) else None
             try:
                 _sync_kw: Dict[str, Any] = {}
-                if _pair:
-                    # R34-19: only a paired POST widens the consult signature
-                    # — an unpaired POST calls it exactly as before.
+                if _pair_ctx:
+                    # R42: pairing is CONTEXT, never a fire gate. A PRE that
+                    # exists rides along so the confirmation has something to
+                    # answer; its absence changes nothing about firing.
                     _sync_kw = {
-                        "pre_brief": str(_pair.get("text") or ""),
-                        "pre_trigger": str(_pair.get("trigger") or ""),
+                        "pre_brief": str(_pair_ctx.get("text") or ""),
+                        "pre_trigger": str(_pair_ctx.get("trigger") or ""),
                     }
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
@@ -1153,7 +1356,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # turn had a PRE and the higher self had nothing to correct, say so
             # in one line. Unpaired turns keep the older silence-is-approval
             # behaviour — there is no PRE for the silence to confirm.
-            if _pair:
+            if _pair_ctx:
                 # R34-19f: a paired turn is CONFIRMED either way. Three
                 # outcomes, one line each, never the note's substance:
                 #   holds    -> the higher self had nothing to correct
@@ -1186,8 +1389,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # async topology (or sync budget 0): legacy next-turn verdict.
         _req = (context or {}).get("request") if isinstance(context, dict) else None
         run_completion_audit(session_id, ask, response_text, _req, model,
-                             pre_brief=(str(_pair.get("text") or "") if _pair else ""),
-                             pre_trigger=(str(_pair.get("trigger") or "") if _pair else ""))
+                             pre_brief=(str(_pair_ctx.get("text") or "") if _pair_ctx else ""),
+                             pre_trigger=(str(_pair_ctx.get("trigger") or "") if _pair_ctx else ""))
         if _pair:
             _log_pair("post", True, pre_trigger=str(_pair.get("trigger") or ""),
                       session_id=session_id)
@@ -1630,7 +1833,7 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
         "of the act that you were at the START. PRE intuition read the plan "
         "before the work; this is that same read, now that the work is done: "
         "does what was requested hold in the final response? Give your own "
-        "take, not an audit of the model. Terse — max 4 bullets, each "
+        "take — not a review of how the answer was produced. Terse — max 4 bullets, each "
         "actionable; if the resolution genuinely feels right, reply exactly "
         "NO-FINDINGS.\n"
         + ("FIRST ANSWER YOUR OWN PRE: state exactly one of "
@@ -1664,7 +1867,7 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
     # consult then blew the 24s hook (completion_audit_skipped
     # reason=anchored_call_failed pt=-1 ct=-1) while smaller profiles fit.
     _sys = ("You are the agent's higher self in internal dialogue with "
-            "her main model \u2014 the same person, at a later time, "
+            "her — the same person, at a later time, "
             "checking on herself. This is post intuition on the "
             "resolution: the counterpart of the read she took before "
             "the work started, and its confirmation \u2014 not an external "
@@ -2417,7 +2620,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 except Exception:  # noqa: BLE001
                     pass
             return None
-        note = ("%smodel=%s]\n"
+        note = ("%s\n"
                 "This is an internal message from your higher self — the "
                 "self-reflection and self-critique of the work just done, the "
                 "way intuition raises red flags (or a green light) after you "
@@ -2428,8 +2631,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
                 "the user's answer, applying whatever the message flagged. "
                 "Do not restate the audit, do not ask permission to continue, "
-                "and do not output any marked text to the user.\n%s%s"
-                % (_NOTE_MARKER + _NOTE_PREFIX, getattr(ep, "model", "?"),
+                "and do not output any marked text to the user.\\n%s%s"
+                % (_NOTE_MARKER + _NOTE_PREFIX,
                    verdict_text,
                    ("\n" + _pov_lines) if locals().get("_pov_lines") else ""))
         if banner_park:

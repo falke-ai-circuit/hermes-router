@@ -126,9 +126,10 @@ def test_a_mid_work_paired_turn_costs_nothing(monkeypatch):
     out = ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
     assert out is None, "a confirmation was bought for a status line"
     assert ran == [], "the consult ran anyway"
-    assert any(e == "higher_self_pair" and k.get("reason") ==
-               "pair_deferred_mid_work" for e, k in events), events
-    # deferred, not cancelled: the PRE record survives for the next turn
+    # R42: no deferral state exists any more — the turn simply does not fire
+    # on work mass, and the PRE record survives as context for a later turn.
+    assert not any("pair_deferred" in str(k.get("reason") or "")
+                   for e, k in events), events
     assert state.pre_advisory(sid, 300, ask=WORK_ASK) is not None
 
 
@@ -143,7 +144,10 @@ def test_a_closure_paired_turn_is_still_confirmed(monkeypatch):
     assert out is not None
 
 
-def test_on_demand_confirmations_survive_the_gate(monkeypatch):
+def test_on_demand_does_not_buy_a_post_by_itself(monkeypatch):
+    """R42: POST fires on realised work, never on the ask or the pair. A
+    request to the higher self is PRE-side business; the POST follows only
+    when the turn actually did heavy work."""
     sid = _sid()
     ran = []
     _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
@@ -151,17 +155,17 @@ def test_on_demand_confirmations_survive_the_gate(monkeypatch):
                             ask="ask your higher self: is this right?")
     out = ca.audit_gate(sid, "It is right, and here is why.",
                         ask_override="ask your higher self: is this right?")
-    assert ran, "on-demand must always be confirmed"
-    assert out is not None
+    assert out is None
+    assert ran == [], "pairing must not fire a POST on its own"
 
 
-def test_pair_mode_always_reproduces_the_old_behaviour(monkeypatch):
+def test_pair_mode_always_no_longer_fires_without_work_mass(monkeypatch):
     sid = _sid()
     ran = []
     _wire(monkeypatch, mode="always", closure=False, consult_ran=ran)
     state.mark_pre_advisory(sid, "complexity_orientation", "PRE", ask=WORK_ASK)
     ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
-    assert ran, "pair_mode=always must consult on every paired turn"
+    assert ran == [], "post_pair_mode is a no-op knob since R42"
 
 
 def test_pair_mode_off_retires_the_paired_arm(monkeypatch):
@@ -202,12 +206,10 @@ def test_post_pair_mode_defaults_to_worthwhile(monkeypatch):
 # R34-19k: the CLAIM is pairing evidence when the stored text is missing
 # --------------------------------------------------------------------------
 
-def test_a_higher_pre_claim_confirms_even_without_a_stored_advisory(
+def test_a_higher_pre_claim_is_context_not_a_fire_trigger(
         monkeypatch):
-    """Live: recovery's PRE consult billed and bannered but never landed a
-    record, so the gate stood down with `turn_claimed` and the on-demand ask —
-    the one case where the user explicitly asked her higher self — got a
-    warning and no confirmation."""
+    """R42: a claim still resolves pairing CONTEXT (so the payload can carry
+    the earlier read), but it cannot fire a POST — work mass does that."""
     sid = _sid()
     ran = []
     events = _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
@@ -215,7 +217,7 @@ def test_a_higher_pre_claim_confirms_even_without_a_stored_advisory(
     monkeypatch.setattr(rg, "claim_state", lambda *a, **k: {
         "lane": "higher-pre", "source": "declared_user"}, raising=False)
     ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
-    assert ran, "a higher-pre claim must pair the turn's confirmation"
+    assert ran == [], "a claim must not buy a POST by itself"
     assert any(k.get("claim_lane") == "higher-pre" for e, k in events
                if e == "higher_self_pair_derived_from_claim"), events
 
@@ -233,9 +235,9 @@ def test_a_non_pre_claim_still_stands_the_gate_down(monkeypatch):
 
 
 def test_a_stale_advisory_cannot_relabel_an_on_demand_turn(monkeypatch):
-    """R34-19k2: a stored record from a DIFFERENT ask is accepted leniently, and
-    its PRE trigger used to overwrite the claim's — deferring an on-demand turn
-    as mid-work and costing the confirmation the user explicitly asked for."""
+    """R34-19k2 still holds: the claim decides WHY the turn's pairing context
+    exists; the stored record is only cargo. R42 adds that none of this fires
+    a POST — the turn still reflects only on work mass."""
     sid = _sid()
     ran = []
     events = _wire(monkeypatch, mode="worthwhile", closure=False, consult_ran=ran)
@@ -246,5 +248,5 @@ def test_a_stale_advisory_cannot_relabel_an_on_demand_turn(monkeypatch):
     state.mark_pre_advisory(sid, "complexity_orientation", "OLD PRE",
                             ask="something else entirely")
     ca.audit_gate(sid, WORK_RESP, ask_override=WORK_ASK)
-    assert ran, "an on-demand claim must confirm even with a stale advisory"
+    assert ran == [], "pairing context must not fire a POST"
     assert any(e == "higher_self_pair_trigger_from_claim" for e, _ in events), events

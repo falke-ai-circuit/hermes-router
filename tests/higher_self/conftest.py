@@ -1,28 +1,38 @@
 """Fixture for the higher-self lane tests.
 
-R34-19h split two concerns that used to be one:
-  * WHEN a paired POST fires (the worthwhileness policy — `post_pair_mode`), and
-  * WHETHER the confirmation mechanic works once it does fire.
+Two concerns are deliberately kept apart:
+
+  * WHEN a POST fires — the FIRE POLICY. Since R42 that policy is realised
+    WORK MASS (`completion_audit.work_mass_gate`); before R42 it was the
+    pairing policy (`post_pair_mode`).
+  * WHETHER the confirmation mechanic works once it fires.
 
 Every pin in this directory except `test_r34_19h_post_when_it_makes_sense.py`
-belongs to the second concern. Their asks and responses are ordinary mid-work
-text, so under the live default ("worthwhile") the gate now correctly DEFERS the
-confirmation and the mechanic under test is never reached — which produced a wall
-of failures that had nothing to do with the code being wrong.
+and `test_r42_decouple_post_from_pre.py` belongs to the second concern. Their
+asks and responses are ordinary text with no tool payload, so under the live
+gate they would not fire and the mechanic under test would never be reached —
+a wall of failures that had nothing to do with the code being wrong.
 
-This fixture pins the fire policy to `always` (the pre-R34-19h behaviour) for
-this directory; the policy tests override it explicitly.
+This fixture therefore SUPPLIES a fired work-mass decision for this directory.
+The policy files override it explicitly (r34_19h pins the retired pairing
+policy, r42 pins the work-mass gate itself, including its would-fire logging).
 """
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _pair_confirmation_mechanics(monkeypatch, request):
-    # the fire-policy file owns that policy and sets it per test
-    if "r34_19h" in request.node.nodeid:
+    nodeid = request.node.nodeid
+    if "r34_19h" in nodeid or "r42_" in nodeid:
         yield
         return
     from hermes_router import completion_audit as ca
 
-    monkeypatch.setattr(ca, "post_pair_mode", lambda: "always")
+    def _fired(_context=None):
+        return {"fire": True, "tools": 50, "files": 5, "mutations": 10,
+                "thr": 40, "files_thr": 5, "muts_thr": 10, "reason": "mass"}
+
+    monkeypatch.setattr(ca, "work_mass_gate", _fired, raising=False)
+    monkeypatch.setattr(ca, "_already_reflected", lambda sid: False,
+                        raising=False)
     yield

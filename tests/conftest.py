@@ -80,6 +80,33 @@ def _two_vote_gate_bypass():
 
 
 @pytest.fixture(autouse=True)
+def _pre_impact_gate_open(monkeypatch, request):
+    """R42 Unit 2 made PRE impact-gated: `route_complex` alone no longer fires
+    the orientation consult — the ask must also carry consequence signals or
+    be explicitly multi-step. Most routing/decision-lane tests are about
+    cooldown, precedence and one-consult-per-turn mechanics, and their fixture
+    asks are deliberately plain; without this they would all go red for a
+    reason unrelated to the code under test.
+
+    The gate itself is pinned by tests/higher_self/test_r42_decouple_post_from_pre.py
+    and any test named for it, which opt out here.
+    """
+    nodeid = request.node.nodeid
+    if "r42" in nodeid or "impact_gate" in nodeid:
+        yield
+        return
+    try:
+        from hermes_router import complexity as _cx
+
+        monkeypatch.setattr(_cx, "pre_impact_gate",
+                            lambda text, signals=None: (True, "fixture"),
+                            raising=False)
+    except Exception:  # noqa: BLE001 — fixture must never fail a test
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _zero_network_guard(monkeypatch):
     """v3.6.0 zero-network suite guard (Goran-direct stress phase, 2026-09-07):
     NO test may make an outbound network call. Two layers:

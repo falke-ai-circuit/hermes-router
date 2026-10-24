@@ -362,6 +362,39 @@ def stage2_classify(task_text: str) -> Optional[str]:
         return None
 
 
+def pre_impact_gate(text: str, signals: Optional[Dict[str, int]] = None
+                    ) -> Tuple[bool, str]:
+    """R42 Unit 2: does this ASK carry impact, not merely complexity?
+
+    Measured over 3336 sessions at L2 (first user message, stage1_verdict):
+    the clear_complex gate fires on 40% of sessions with recall 53% /
+    precision 27%; requiring consequence > 0 gives 28% fire, 42% recall,
+    31% precision. PRE should optimise PRECISION — a useless consult at plan
+    time is pure cost — and POST guarantees COVERAGE on realised work. So:
+    PRE fires on complexity that ALSO carries consequence signals, or on an
+    explicitly multi-step brief (>=3 numbered parts / 3+ paragraph blocks).
+    Recall is NOT chased here; missing heavy work at ask time is acceptable
+    because the POST work-mass gate catches it after the fact.
+
+    Returns (ok, reason) with reason in consequence|multistep|no_impact.
+    On any error: fail-open True ("impact_unknown") — a broken detector must
+    never silently retire PRE.
+    """
+    try:
+        sig = signals if isinstance(signals, dict) and signals else None
+        if sig is None:
+            sig = stage1_signals(text or "")
+        if int(sig.get("consequence") or 0) > 0:
+            return True, "consequence"
+        if int(sig.get("consequence_high") or 0) > 0:
+            return True, "consequence"
+        if int(sig.get("multiparts") or 0) > 0:
+            return True, "multistep"
+        return False, "no_impact"
+    except Exception:  # noqa: BLE001 — additive gate, fail-open
+        return True, "impact_unknown"
+
+
 def classify(text: str, level: int) -> Tuple[bool, Dict]:
     """Full complexity classification: stage-1 always, stage-2 on borderline.
 

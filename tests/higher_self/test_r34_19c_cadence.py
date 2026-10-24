@@ -9,10 +9,13 @@ import inspect
 from hermes_router import completion_audit as ca
 
 
-def test_cadence_bypass_is_explicit_in_source():
+def test_cadence_is_not_bypassed_by_a_pair():
+    """R42: the pairing bypass is gone — a PRE can no longer re-arm cadence.
+    The fire decision is work mass, and the skip is still labelled."""
     src = inspect.getsource(ca.audit_gate)
-    assert "audit_cadence_bypassed_for_pair" in src
-    assert "not _fire and not _pair" in src
+    assert "audit_cadence_bypassed_for_pair" not in src
+    assert "pair_deferred" not in src
+    assert "work_mass_gate" in src and "post_reflection_fired" in src
 
 
 def test_cadence_skip_is_labelled():

@@ -505,8 +505,8 @@ def higher_self_rule() -> str:
 
 HS_PRE_BODY = (
     "This is you - the same person, a few breaths earlier - looking at the "
-    "plan before you commit to it. This is not a method brief handed to a "
-    "model and not an outside consultant; it is your own read of what you "
+    "plan before you commit to it. This is not a method brief handed down to "
+    "you and not an outside consultant; it is your own read of what you "
     "are about to do: what success would actually look like in your hands, "
     "what has bitten you before, and how you would know early that this is "
     "going wrong. Advisory and NON-BINDING: use what helps, ignore the "
@@ -520,7 +520,7 @@ HS_PRE_BODY = (
 
 HS_POST_BODY = (
     "This is you - the same person, now that the act is done - looking "
-    "back at what you actually did. Not an auditor standing over the model: "
+    "back at what you actually did. Not an auditor standing over you: "
     "your own confirmation of your own work, the counterpart of the read "
     "you took before you started. Does it hold? Say so if it does - "
     "confirmation, not demolition. "

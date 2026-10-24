@@ -61,6 +61,50 @@ hermes_router:
 (conservative-auto) — insert your frontier API and it just works; add the block only
 for non-defaults.
 
+### Work-mass knobs (5.17.0+, R42 — POST fires on realised work)
+
+POST no longer fires because a PRE existed. It fires when the turn actually did
+heavy work:
+
+```yaml
+hermes_router:
+  complexity:
+    work_mass_min_tools: 40        # tool calls   (clamp 10..500)
+    work_impact_min_files: 5       # distinct files written/patched (clamp 1..100)
+    work_impact_min_mutations: 10  # write_file|patch calls (clamp 1..200)
+```
+
+Fires when ANY of the three is met. Calibrated starting values are the measured
+p80 of tool calls per role (ship these per profile; the plugin itself never
+hardcodes profile names):
+
+| role         | work_mass_min_tools |
+|--------------|---------------------|
+| coder        | 50                  |
+| reviewer     | 49                  |
+| analyst      | 31                  |
+| orchestrator | 53                  |
+| researcher   | 41                  |
+| operative    | 47                  |
+| architect    | 38                  |
+| valmet       | 33                  |
+| evol         | 54                  |
+| conductor    | 11                  |
+
+At these values the gate fires on ~26% of sessions fleet-wide and covers 100% of
+the top-20% work-mass band. A session pays at most one work-mass consult until
+the marker TTL (6h) expires.
+
+PRE is ask-side and impact-gated: it consults when the ask is complex AND carries
+consequence signals, or when it is explicitly multi-step. `post_pair_mode` is a
+no-op kept for config compatibility (`off` = do not include a PRE advisory as
+POST context).
+
+Operator note: the route log carries `work_mass_gate fire=<bool> tools=<n>
+files=<n> muts=<n> thr=<n> reason=<mass|impact|below>` on EVERY turn — including
+turns where billing is blocked — so would-fire vs did-fire is measurable per role
+without log archaeology.
+
 The persona/methodology cards are derived at runtime from the loading profile's own
 `IDENTITY.md` + `SOUL.md` under `HERMES_HOME` — nothing to configure per agent, and
 the plugin adapts to any agent roster automatically.

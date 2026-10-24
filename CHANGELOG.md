@@ -1,3 +1,49 @@
+## 5.17.0 — 2026-10-24 (R42 — POST decoupled from PRE, both triggers retuned)
+
+Measured motivation: fleet-wide, 569 sessions with >=50 tool calls, only 44 (7.7%)
+ever got a POST (architect 0/23, researcher 1/38, operative 1/34). The dominant
+skip reason was `pair_deferred_mid_work`, and `higher_self_confirmation_emitted`
+had ZERO occurrences — a deferral with no landing is a silent drop.
+
+- R42-1 (POST = WORK MASS, NEVER PAIRING): the POST fire decision is realised
+  work from the outbound payload — `tools >= complexity.work_mass_min_tools`
+  (default 40, clamp 10..500) OR distinct files written/patched >=
+  `work_impact_min_files` (5, clamp 1..100) OR `write_file|patch` calls >=
+  `work_impact_min_mutations` (10, clamp 1..200). `_pair_worth_confirming()` is
+  retired as a fire gate; `pair_deferred_mid_work`, `pair_declined` and the
+  `>=3 tool messages` arm are gone, as is the ask-side complexity test inside
+  POST eligibility (POST reads the WORK, not the ask). `_pre_pairing` survives
+  ONLY as payload context. A session pays at most ONE work-mass consult until
+  the 6h marker TTL expires — otherwise crossing the threshold once would bill
+  a consult on every later turn.
+- R42-2 (post_pair_mode DEPRECATED): still parsed for config compatibility, but
+  a no-op for firing. `off` now means "no pairing context", NOT "no POST".
+- R42-3 (PRE IMPACT-GATED, PRECISION-FIRST): `complexity.pre_impact_gate()` —
+  PRE fires only when the ask is complex AND carries consequence signals, or is
+  explicitly multi-step (>=3 numbered parts / 3+ paragraph blocks). Measured at
+  L2 over 3336 sessions: clear_complex fires on 40% of sessions (recall 53%,
+  precision 27%); consequence>0 fires 28% (recall 42%, precision 31%). PRE
+  optimises precision; POST guarantees coverage. Recall is deliberately NOT
+  chased at the ask side. `level`, `pre_mode`, manual override and declared
+  triggers are unchanged.
+- R42-4 (MEASUREMENT): every turn logs `work_mass_gate fire=<bool> tools=<n>
+  files=<n> muts=<n> thr=<n> reason=<mass|impact|below>` before any billing or
+  eligibility check (so would-fire survives a blocked cap), plus
+  `post_reflection_fired trigger=<work_mass_mass|work_mass_impact|cadence>`
+  and `pre_orientation_fired trigger=<consequence|multistep|...>`. Caveat:
+  "fires on the top-20% band" is near-tautological when the threshold IS p80 —
+  the fire row carries the work shape (tools/files/muts) so the gate can be
+  judged against later rework signals, not its own recall.
+- R42-5 (INTERNAL VOICE, SUBSTRATE-FREE): the advisory text delivered to the
+  agent no longer names a model, provider, endpoint, token, API or LLM. The
+  note header dropped `model=`, `_NOTE_PREFIX` no longer says "frontier", the
+  consult prompts no longer say "the model"/"her main model", and the shared
+  PRE/POST frame bodies no longer describe the reader as a model. Model identity
+  stays in the operator-facing banner (billing/provenance). A pin fails the
+  suite if substrate vocabulary leaks back in.
+- Version pin in `tests/routing/test_r10_catalog_resolution.py` bumped in
+  lockstep.
+
 ## 5.5.0 — 2026-10-21 (R34-19 — the higher self is one person at two times)
 
 - R34-19-1 (FRAMING): PRE and POST now read as the SAME PERSON checking on
