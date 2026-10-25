@@ -931,7 +931,12 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # eligibility check, so "would-fire" is measurable even when the
         # consult is blocked (mode off / cap / no endpoint). This is the
         # validation seam for the retune: fire-vs-did-fire, per role.
-        _wm = work_mass_gate(context)
+        # session_id is a positional arg of audit_gate, so it is NOT inside
+        # context -- the transcript fallback needs it explicitly, or it reads
+        # no messages and reports zero work no matter how much happened.
+        _wm_ctx = dict(context or {})
+        _wm_ctx.setdefault("session_id", session_id)
+        _wm = work_mass_gate(_wm_ctx)
         try:
             _log("work_mass_gate fire=%s tools=%d files=%d muts=%d thr=%d "
                  "reason=%s rework=%d"
