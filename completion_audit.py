@@ -1703,6 +1703,28 @@ def pov_mode() -> str:
         return "always"
 
 
+def _post_required_instruction() -> str:
+    """Ask the POST consult for the stance the ASK required, not just the one
+    the work showed.
+
+    Without it the reflection has no baseline unless a PRE park happens to
+    exist in the same session, so it stays silent on exactly the standalone
+    turns it exists for. The required reading comes from the SAME call, so this
+    costs no extra consult.
+    """
+    return (
+        "\n\nREPORT TWO STANCES. Before the four voice weights, add a "
+        "matching group prefixed with the word 'required' that reports the "
+        "stance the ASK ITSELF demanded (what this work had to be), then the "
+        "unprefixed group for the work as actually performed:\n"
+        "required explorer: <0..1> | <what scanning this ask needed>\n"
+        "required verifier: <0..1> | <what correctness this ask needed>\n"
+        "required skeptic: <0..1> | <what doubt this ask needed>\n"
+        "required operator: <0..1> | <how directly this ask wanted action>\n"
+        "These lines are machine-parsed and stripped before delivery."
+    )
+
+
 def _pov_active(ask: str) -> bool:
     """Multi-POV gate for THIS consult. off -> False; always -> True;
     auto -> heavy consults only (_is_complex_ask = the complexity gate).
@@ -1923,6 +1945,9 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
             if _ask_declared_adversarial(ask) else ""))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
         # R37-1: the folded revision ask rides LAST — payload trimming keeps
         # the tail, so the output contract can never be trimmed away.
+        # POST-only: the baseline the reflection diffs against. Rides before
+        # the tail so payload trimming can never remove the output contract.
+        + _post_required_instruction()
         + (_fold_revision_instruction(fold_char_cap) if fold_revision else "")
     )
     # R34-19i: total_cap must bound the WHOLE payload, not just the user part.
