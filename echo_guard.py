@@ -64,9 +64,93 @@ _POV_SCORE_LINE = re.compile(
     r"(?:explorer|verifier|skeptic|operator|practitioner|outsider)"
     r"\s*:\s*-?\d*\.?\d+", re.I)
 _ROUTER_TAIL = "· router ·"
-# Work evidence: a delivered engineering report carries at least one of these.
-# A body that ends with the router banner and carries NONE of them is a
-# banner-only delivery (no work product).
+#: A LEADING run of voice:score lines is the projection itself, not an answer.
+#: The tail strip cannot reach it: on an isolated install the delivered body
+#: opened with "explorer: 0.6 | ... verifier: 0.8 | ... operator: 0.9 | ..."
+#: then "gates: precedent=0 consequence=0", the JSON tail after it was cut, and
+#: the projection prose survived as if it were the agent's own report.
+_POV_HEAD_SCAN = 5
+
+#: Lines the projection emits around its voice block; router-authored, so the
+#: head cut takes them with the scores rather than leaving them stranded.
+_GATE_LINE_RE = re.compile(r"^\s*gates\s*:", re.I)
+
+
+def _scored_voice_line(line: str) -> bool:
+    return bool(_POV_SCORE_LINE.search(line or ""))
+
+
+def is_projection_head(text: str) -> bool:
+    """True when the body OPENS with the router's own voice-score projection.
+
+    Counts scored voice lines among the first few non-empty lines rather than
+    requiring them to be strictly contiguous, because a long voice line wraps and
+    a wrap is not the end of the block. Two scores is the floor: a real answer
+    that names one voice once is not a projection.
+    """
+    try:
+        lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+        if not lines:
+            return False
+        scored = sum(1 for ln in lines[:_POV_HEAD_SCAN] if _scored_voice_line(ln))
+        return scored >= 2 and _scored_voice_line(lines[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def cut_projection_head(text: str) -> "tuple[str, int]":
+    """Remove a leading projection block, returning (rest, chars_removed).
+
+    Cuts to the END OF THE LAST voice-score line in the opening window, so a
+    voice line that WRAPS is removed whole instead of leaving its continuation
+    stranded as if it were the agent's answer. Everything the cut keeps is
+    returned untouched.
+    """
+    raw = str(text or "")
+    try:
+        window = raw[:800]
+        hits = list(_POV_SCORE_LINE.finditer(window))
+        # The projection opens the body: if the first score is not near the top,
+        # this is prose that happens to cite voices, not a head block.
+        if len(hits) < 2 or hits[0].start() > 40:
+            return raw, 0
+        nl = raw.find("\n", hits[-1].end())
+        cut_at = len(raw) if nl < 0 else nl + 1
+        rest = raw[cut_at:]
+        # The projection's own trailer: `gates:` plus the blanks around it.
+        rest = re.sub(r"^\s*(?:gates\s*:[^\n]*\n)?\s*", "", rest, count=1, flags=re.I)
+        rest = rest.strip()
+        if len(rest) >= len(raw):
+            return raw, 0
+        return rest, len(raw) - len(rest)
+    except Exception:  # noqa: BLE001
+        return raw, 0
+
+
+#: Markers that identify text the ROUTER wrote, not the agent. Used only to
+#: decide whether what survived a projection cut is a deliverable or more note.
+_ROUTER_TEXT_MARKERS = (
+    "gates: precedent", "gates: consequence", "next steps, in order",
+    "verdict_of_record", "brief_bullets", "povs", "synthesis",
+)
+
+
+def _is_router_text(text: str) -> bool:
+    """True when the body is still the router's own note. Never raises."""
+    try:
+        low = str(text or "").lower().strip()
+        if not low:
+            return True
+        if any(m in low for m in _ROUTER_TEXT_MARKERS):
+            return True
+        # an opening directive line is the advisory's own next-steps shape
+        first = low.splitlines()[0]
+        return bool(re.match(r"^\s*(?:\d+[.)]|[-*])\s+(?:next|first|then)\b",
+                             first))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 _WORK_MARKERS = (
     "pytest", "passed", "failed", "commit", "committed", "git ",
     "def ", "class ", "file", "line ", "test", "build", "diff",
@@ -112,6 +196,11 @@ def detect_envelope_echo_families(text: str) -> List[str]:
                    for m in _POV_SCORE_LINE.finditer(raw)}
         if len(_voices) >= 2:
             out.append("pov_projection")
+        # Separate family for the LINE-PER-VOICE head block: it can match while
+        # the JSON tail family also matches, and it is the one the strip must
+        # cut from the END the tail cuts never reach.
+        if is_projection_head(raw) and "pov_projection_head" not in out:
+            out.append("pov_projection_head")
         if _router_tail_without_work(raw):
             out.append("router_tail_no_work")
         return out
@@ -152,6 +241,16 @@ WITHHELD_TEXT = (
     "says nothing about whether work ran — see the route log "
     "(advisory_echo_withheld, reason=strip_failed). Re-send the ask if you "
     "need the report."
+)
+
+# R62b: the projection-is-the-body case is not a work-report problem -- the turn
+# produced no answer at all, only the router's own note. Saying "the work report
+# could not be separated" would imply work existed. The notice may only assert
+# what was checked.
+NO_ANSWER_TEXT = (
+    "[router] no answer was delivered for this turn: the body was the router's "
+    "own internal note, not the agent's reply, so it was withheld rather than "
+    "shown as the answer. Re-send the ask to get a reply."
 )
 
 # A stripped remainder must still look like a report; below this many
@@ -445,6 +544,13 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
             del lines[_fence_idx[-1]]
             out = "\n".join(lines)
         out = re.sub(r"\n{3,}", "\n\n", out).strip()
+        # --- the projection HEAD is an echo too ---------------------------
+        # Cutting is safe: the projection is the router's note. The guard then
+        # re-checks what survived and withholds when nothing but the note was
+        # there, rather than handing the note back as a report.
+        out, _head_removed = cut_projection_head(out)
+        if _head_removed:
+            out = out.strip()
         if _banner_tail:
             out = (out + "\n\n" + _banner_tail.strip()).strip()
         # --- the invariant: a detected family must yield a real removal ---
@@ -533,6 +639,23 @@ def enforce_execution_echo(text: str, session_id: str = "",
                 _reg = str(_dmt._frame_register() or "").strip().lower()
         except Exception:  # noqa: BLE001 — unresolved frame = not execution
             _reg = ""
+        # --- the projection-head boundary (R62b) -------------------------
+        # A body that OPENS with the voice-score projection is not an answer with
+        # an advisory tail: the router's own note became the delivered text. On an
+        # isolated install that whole turn WAS the note -- voices, then
+        # "gates: precedent=0 consequence=0", then the note's own "Next steps, in
+        # order:" directive. Cutting the head alone still delivers router prose,
+        # so the boundary is evaluated before the frame branch: cut, then decide
+        # on what actually survived.
+        if is_projection_head(text):
+            _rest, _cut = cut_projection_head(text)
+            if len(_rest.strip()) < MIN_REPORT_CHARS or _is_router_text(_rest):
+                _route(log_route, EVENT_WITHHELD, action="withhold_echo",
+                       reason="projection_is_the_body", frame=_reg,
+                       chars=int(_cut), session_id=str(session_id or ""))
+                return EchoResult("withhold_echo", NO_ANSWER_TEXT,
+                                  ["pov_projection_head"], _cut,
+                                  {"reason": "projection_is_the_body"})
         _families_pre = detect_envelope_echo_families(text)
         if _reg != "execution":
             # R34-19f: a NON-execution frame is never handed back and never
