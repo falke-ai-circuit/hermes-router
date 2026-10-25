@@ -113,6 +113,26 @@ _VERB_RULES: Tuple[Tuple[str, str], ...] = (
 # live: it made opt-1 and opt-2 both match and forced a spurious abstention.
 _PATH_RE = re.compile(r"(/opt/[A-Za-z0-9_./-]{2,}|~/[A-Za-z0-9_./-]{2,}"
                       r"|[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+\.(?:py|md|yaml|yml|json|sh|go|ts|tsx))")
+# A BARE filename ("edit routes.py" vs "edit test_names.py") is often the ONLY
+# thing that tells two options apart, and the path regex above drops it because
+# it wants a directory component. Excluding it made the commonest fleet fork
+# indistinguishable -- 1,324 option sets, 57% abstaining on tokens the options
+# clearly carried. Basenames are captured separately so a name shared by every
+# option can be discounted at match time (see resolve) instead of at extract
+# time, where discounting destroys the only discriminator there is.
+#: Words that say what KIND of action it is, never WHICH route was taken.
+_GENERIC_WORDS = frozenset("""
+edit write read update create add remove delete patch revert build deploy run
+test check verify inspect review look keep leave wait defer hold stop start
+change fix move rename copy show list find search open close save load
+option options choice choose route path way step next first then instead
+skill skills file files doc docs code repo branch commit push pull merge
+""".split())
+
+_BARE_FILE_RE = re.compile(
+    r"\b([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|md|rst|ya?ml|json|toml|ini|cfg|sh|bash|go|"
+    r"ts|tsx|js|jsx|sql|html|css|rs|java|rb|c|cc|cpp|h|hpp|txt|service|conf))\b",
+    re.I)
 _TOOL_TOKEN_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in ALL_TOOLS) + r")\b")
 _SKILL_RE = re.compile(r"\b([a-z0-9][a-z0-9-]{4,})\b")
 
@@ -175,11 +195,61 @@ def option_signature(label: str, cause_effect: str = "",
         terms = [w for w in re.findall(r"[a-z]{5,}", low)
                  if w not in _STOPWORDS and w not in ALL_TOOLS][:6]
 
+        # NAMES: a short label is a route NAME ("redis", "memcached",
+        # "utils_v2.py"), and a name is observable in the transcript even when
+        # no file or tool is spelled out -- a later command says `docker run
+        # redis`. Long labels are narrative; harvesting "names" from them is how
+        # the prose fallback manufactured six pseudo-options, so length bounds it.
+        names: List[str] = []
+        _words = [w.strip("`'\"()[].,:;") for w in re.split(r"\s+", str(label or ""))]
+        _words = [w for w in _words if w]
+        if 1 <= len(_words) <= 6:
+            for w in _words:
+                lw = w.lower()
+                if (len(lw) < 4 or lw in _STOPWORDS or lw in ALL_TOOLS
+                        or lw in _GENERIC_WORDS):
+                    continue
+                if re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", lw) and lw not in names:
+                    names.append(lw)
+
+        files: List[str] = []
+        for p in paths:
+            base = p.rsplit("/", 1)[-1]
+            if base and base not in files:
+                files.append(base)
+        for m in _BARE_FILE_RE.finditer(text):
+            b = m.group(1)
+            if b not in files:
+                files.append(b)
+
         return {"label": str(label or "")[:400], "tools": tools, "paths": paths,
-                "effects": effects, "verbs": verbs, "terms": terms}
+                "files": files, "names": names, "effects": effects,
+                "verbs": verbs, "terms": terms}
     except Exception:  # noqa: BLE001
         return {"label": str(label or "")[:400], "tools": [], "paths": [],
-                "effects": [], "verbs": [], "terms": []}
+                "files": [], "names": [], "effects": [], "verbs": [], "terms": []}
+
+
+def observable(sig: Dict[str, Any]) -> bool:
+    """Does this route carry ANYTHING that could be seen in a transcript?"""
+    try:
+        return bool((sig.get("tools") or []) or (sig.get("paths") or [])
+                    or (sig.get("files") or []) or (sig.get("names") or []))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def fork_observable(sigs: Iterable[Dict[str, Any]]) -> bool:
+    """True when at least TWO routes carry an observable.
+
+    One observable route and one blind one is not measurable either: the blind
+    side can never be recognised, so any resolution would be one-sided by
+    construction and would read as adoption whenever the observable side won.
+    """
+    try:
+        return sum(1 for s in sigs if observable(s)) >= 2
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def signature_key(sig: Dict[str, Any]) -> str:
@@ -187,6 +257,8 @@ def signature_key(sig: Dict[str, Any]) -> str:
     try:
         return json.dumps({"t": sorted(sig.get("tools") or []),
                            "p": sorted(sig.get("paths") or []),
+                           "f": sorted(sig.get("files") or []),
+                           "n": sorted(sig.get("names") or []),
                            "e": sorted(sig.get("effects") or [])},
                           sort_keys=True)
     except Exception:  # noqa: BLE001
@@ -208,9 +280,10 @@ def diagnosticity(sigs: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             return {"separable": False, "reason": "fewer_than_two_options",
                     "distinct": len(set(keys)), "options": n}
         # an option with NO observables cannot be detected at all
-        blind = sum(1 for k in keys if json.loads(k) == {"e": [], "p": [], "t": []})
-        distinct = len({k for k in keys if k not in (
-            json.dumps({"e": [], "p": [], "t": []}, sort_keys=True))})
+        _EMPTY = json.dumps({"e": [], "p": [], "t": [], "f": [], "n": []},
+                            sort_keys=True)
+        blind = sum(1 for k in keys if json.loads(k) == json.loads(_EMPTY))
+        distinct = len({k for k in keys if k != _EMPTY})
         pairs = n * (n - 1) / 2
         collisions = pairs - distinct * (distinct - 1) / 2 if distinct else pairs
         return {"separable": distinct >= 2 and blind < n,
@@ -272,13 +345,25 @@ def evidence_from_messages(rows: Iterable[Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """POSITIVE matches only (rule 1), with effect compatibility (rule 3)."""
+def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
+          ignore: "set[str] | frozenset[str]" = frozenset()) -> List[Dict[str, Any]]:
+    """POSITIVE matches only (rule 1), with effect compatibility (rule 3).
+
+    `ignore` holds tokens every option shares: they can identify the FORK but
+    never which side of it was taken, so counting them would match all options
+    and abstain on a fork that is in fact resolvable.
+    """
     hits: List[Dict[str, Any]] = []
     try:
         want_effects = set(sig.get("effects") or [])
-        want_tools = set(sig.get("tools") or [])
-        want_paths = [p for p in (sig.get("paths") or []) if p]
+        want_tools = {t for t in (sig.get("tools") or []) if t not in ignore}
+        want_paths = [p for p in (sig.get("paths") or [])
+                      if p and p not in ignore and p.rsplit("/", 1)[-1] not in ignore]
+        want_files = [f for f in (sig.get("files") or [])
+                      if f and f not in ignore
+                      and not any(f == p.rsplit("/", 1)[-1] for p in want_paths)]
+        want_names = [n for n in (sig.get("names") or [])
+                      if n not in ignore and n not in want_files]
         # "do nothing" is a real option and is satisfied by absence of action —
         # handled by the resolver, never here.
         if "noop" in want_effects:
@@ -300,6 +385,22 @@ def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]]) -> List[Dict[str,
                 # path evidence only counts if the effect class agrees
                 if not want_effects or eff in want_effects:
                     matched, why = True, f"path:{next(p for p in want_paths if p in text)}"
+            elif want_names and any(re.search(r"(?<![a-z0-9_])" + re.escape(n)
+                                               + r"(?![a-z0-9_])", text)
+                                    for n in want_names):
+                # a route NAME counts when it appears as a whole word in what
+                # was actually invoked -- and only inside the option's own
+                # effect class, so a `read redis docs` cannot satisfy a write.
+                if not want_effects or eff in want_effects:
+                    matched, why = True, "name:%s" % next(
+                        n for n in want_names
+                        if re.search(r"(?<![a-z0-9_])" + re.escape(n) + r"(?![a-z0-9_])", text))
+            elif want_files and any(f in text for f in want_files):
+                # a bare filename counts only when it is the option's OWN name
+                # AND the effect class agrees -- `patch test_names.py` is
+                # evidence for that option and not for `patch routes.py`.
+                if not want_effects or eff in want_effects:
+                    matched, why = True, f"file:{next(f for f in want_files if f in text)}"
             if matched:
                 hits.append({"why": why, "tool": tool, "effect": eff})
                 if len(hits) >= 5:
@@ -327,9 +428,17 @@ def resolve(choice: str, sigs: List[Dict[str, Any]],
                     "abstain_reason": str(diag.get("reason") or "indistinguishable"),
                     "rule": RESOLVER_RULE_VERSION}
 
+        # tokens carried by EVERY option discriminate nothing about the side
+        # taken -- discard them at match time only (extraction keeps them).
+        _all_tokens = [{t for t in (s.get("tools") or [])}
+                       | {p for p in (s.get("paths") or [])}
+                       | {f for f in (s.get("files") or [])}
+                       | {n for n in (s.get("names") or [])} for s in sigs]
+        _shared = set.intersection(*_all_tokens) if _all_tokens else set()
+
         per_option: Dict[str, List[Dict[str, Any]]] = {}
         for opt, sig in zip(ids, sigs):
-            h = _hits(sig, evidence)
+            h = _hits(sig, evidence, ignore=_shared)
             if h:
                 per_option[opt] = h
 

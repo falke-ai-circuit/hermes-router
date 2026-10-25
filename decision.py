@@ -1784,6 +1784,20 @@ def detect_v3(text: str, level: Optional[int] = None,
         opts = extract_options(text)
         if not opts:
             return None
+        # R63 MEASUREMENT ADMISSION: a fork whose routes carry no observable --
+        # no tool, no path, no filename, no route name -- cannot be resolved
+        # afterwards, so consulting on it buys an advisory nobody can ever score
+        # and writes a ledger row that will abstain forever. 852 of 1,329
+        # historical option sets were exactly that. Declared forks are exempt
+        # (the user authored the routes); derived prose sets must name their
+        # routes or stay silent.
+        if not has_declared_fork_structure(text):
+            try:
+                from . import decision_signatures as _dsg
+                if not _dsg.fork_observable([_dsg.option_signature(o) for o in opts]):
+                    return None
+            except Exception:  # noqa: BLE001 — admission must never raise
+                pass
         # R9-6 (rider 9): tighten the consult gate on NON-FORK prose. T1 D2a
         # (NEW regression): a context-only replay-setup turn with NO declared
         # fork structure consulted 3-4x at conf 0.51-0.66, all billed —
@@ -4252,23 +4266,48 @@ def capture_outcome(session_id: str, db_path: str = "",
         if conn is None:
             return None
         row = conn.execute(
-            "SELECT id, ts, choice, trigger, trigger_kind, signatures_json"
-            " FROM decision_ledger"
+            "SELECT id, ts, choice, trigger, trigger_kind, signatures_json,"
+            " options_json FROM decision_ledger"
             " WHERE session_id = ? AND resolved_action = ''"
-            " AND signatures_json != '' AND outcome_label = ''"
+            " AND (signatures_json != '' OR options_json != '')"
+            " AND outcome_label = ''"
             " ORDER BY id DESC LIMIT 1",
             (str(session_id or ""),),
         ).fetchone()
         if not row:
             return None
 
-        rid, ts, choice, trigger, kind, sigs_json = (
+        rid, ts, choice, trigger, kind, sigs_json, opts_json = (
             int(row[0]), float(row[1] or 0.0), str(row[2] or ""),
-            str(row[3] or ""), str(row[4] or ""), str(row[5] or ""))
+            str(row[3] or ""), str(row[4] or ""), str(row[5] or ""),
+            str(row[6] or ""))
+        # Rebuild from the stored option TEXT, do not trust the cached
+        # signatures. The cache is written by whatever extractor was deployed
+        # that day; rows written before the file/name extractor carry signatures
+        # with no observable at all and can never match. The labels are the
+        # durable record and derivation is deterministic, so rebuilding is
+        # re-running the same function over the same input -- and it upgrades
+        # the cache so the next pass is consistent.
         try:
-            sigs = json.loads(sigs_json or "[]")
+            _opts = json.loads(opts_json or "[]")
         except Exception:  # noqa: BLE001
-            sigs = []
+            _opts = []
+        sigs = []
+        if isinstance(_opts, list) and len(_opts) >= 2:
+            for _o in _opts:
+                _lb = (_o.get("label") if isinstance(_o, dict) else str(_o or "")) or ""
+                sigs.append(_ds.option_signature(str(_lb)))
+            try:
+                conn.execute("UPDATE decision_ledger SET signatures_json = ?"
+                             " WHERE id = ?",
+                             (json.dumps(sigs)[:4000], rid))
+            except Exception:  # noqa: BLE001
+                pass
+        if len(sigs) < 2:
+            try:
+                sigs = json.loads(sigs_json or "[]")
+            except Exception:  # noqa: BLE001
+                sigs = []
         if not isinstance(sigs, list) or len(sigs) < 2:
             return None
 
