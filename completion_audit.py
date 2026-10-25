@@ -2894,8 +2894,16 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 if _cl:
                     _revised_body = _cl
                     _revised_reason = "closure_pass"
-                    _log("closure_pass_applied in_chars=%d out_chars=%d"
-                         % (len(response_text), len(_cl)), session_id=session_id)
+                    # A1 vs A2 IN THE SAME TURN: the only honest way to show
+                    # the pass changed the closure, since two separate runs of
+                    # the same ask differ on their own.
+                    _a1 = str(response_text or "")
+                    _fd = next((i for i in range(min(len(_a1), len(_cl)))
+                                if _a1[i] != _cl[i]), -1)
+                    _log("closure_pass_applied in_chars=%d out_chars=%d "
+                         "changed=%d first_diff=%d a1=%r a2=%r"
+                         % (len(_a1), len(_cl), int(_a1.strip() != _cl.strip()),
+                            _fd, _a1[:110], _cl[:110]), session_id=session_id)
                 else:
                     _revised_reason = ("closure_pass_none:"
                                        + (getattr(_cp, "last_reason", "") or "?"))

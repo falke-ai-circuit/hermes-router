@@ -208,6 +208,24 @@ def _text_anthropic(payload: Any) -> Optional[str]:
     return "".join(parts)
 
 
+def enabled() -> bool:
+    """Kill switch: hermes_router.closure_pass.enabled (default true).
+
+    Being able to turn the pass off is what makes its effect measurable: the
+    same ask can be run with and without it and the delivered bodies compared.
+    A feature that cannot be disabled cannot be A/B tested.
+    """
+    try:
+        from .core import config_access
+
+        block = config_access.sub_block("closure_pass")
+        if isinstance(block, dict) and "enabled" in block:
+            return bool(block.get("enabled"))
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def revise(ask: str, answer: str, note: str,
            budget_s: float = 25.0) -> Optional[str]:
     """The agent's closing message, revised under the higher-self note.
@@ -218,6 +236,9 @@ def revise(ask: str, answer: str, note: str,
     try:
         global last_reason
         last_reason = ""
+        if not enabled():
+            last_reason = "disabled"
+            return None
         if not str(answer or "").strip():
             last_reason = "empty_answer"
             return None
