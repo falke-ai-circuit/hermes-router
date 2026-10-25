@@ -3617,8 +3617,12 @@ def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
     """
     try:
         ms = (verdict or {}).get("mindset") or {}
+        # NOTE: `trigger` is INJECTED by core.telemetry.log_route from lane
+        # context. Passing it again raised TypeError into the call site's
+        # isolation, so this event silently never appeared — five deploy cycles
+        # spent looking for it. Emit the seam under a name we own.
         log_route("decision_mindset_scores",
-                  trigger=str(ids.get("trigger", "pre")),
+                  seam_trigger=str(ids.get("trigger", "pre")),
                   backend=str(cfg.get("backend") or ""),
                   present=bool(ms),
                   scope=ms.get("scope"), rigour=ms.get("rigour"),
