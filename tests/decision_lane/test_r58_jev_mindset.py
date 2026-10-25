@@ -253,3 +253,29 @@ def test_real_backend_answer_shape_maps_correctly():
     assert v["choice"] == "opt-2"
     assert v["mindset"]["scope"] == pytest.approx(-0.72, abs=1e-6)
     assert v["mindset"]["rigour"] == pytest.approx(-0.095, abs=1e-6)
+
+
+def test_band_state_is_computed_at_the_source_not_inferred():
+    """A reader must not have to infer banding from a missing field.
+
+    An earlier census did exactly that and reported deltas as out-of-band when
+    the plugin had written no band field at all -- a category the code never
+    produced. The plugin now states it.
+    """
+    seen = []
+
+    def _log_route(event, **fields):
+        seen.append(fields)
+
+    def emit(ms):
+        seen.clear()
+        D._log_mindset_scores({"mindset": ms} if ms else {},
+                              {"seam_trigger": "midturn", "session_id": "S"},
+                              {"backend": "jev_native"}, _log_route)
+        return seen[0]
+
+    assert emit({"scope": 0.34, "rigour": 0.215})["band_state"] == "in"
+    assert emit({"scope": 0.9})["band_state"] == "out"
+    assert emit({"scope": -1.0})["band_state"] == "out", (
+        "banding is on magnitude, so a large negative must read out")
+    assert emit({})["band_state"] == "none"

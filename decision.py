@@ -3625,6 +3625,19 @@ def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
     """
     try:
         ms = (verdict or {}).get("mindset") or {}
+        # band_state is computed HERE because only this layer knows the deltas
+        # before the emitter bands them. Without it a reader has to infer
+        # banding from a missing field, which manufactures a category the
+        # plugin never wrote.
+        try:
+            _band = float(getattr(__import__(
+                "hermes_router.mindset", fromlist=["BAND"]), "BAND", 0.5))
+        except Exception:  # noqa: BLE001
+            _band = 0.5
+        _mag = [abs(float(v)) for v in ms.values()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        _band_state = ("none" if not _mag
+                       else ("out" if max(_mag) > _band else "in"))
         # NOTE: `trigger` is INJECTED by core.telemetry.log_route from lane
         # context. Passing it again raised TypeError into the call site's
         # isolation, so this event silently never appeared — five deploy cycles
@@ -3634,6 +3647,7 @@ def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
                   backend=str(cfg.get("backend") or ""),
                   present=bool(ms),
                   scope=ms.get("scope"), rigour=ms.get("rigour"),
+                  band_state=_band_state,
                   saw_scores=str(sorted((getattr(MINDSET_DIAG, "last", {})
                                          or {}).get("saw", {}))),
                   stance_unreadable=str((getattr(MINDSET_DIAG, "last", {})
