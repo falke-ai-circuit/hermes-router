@@ -1297,9 +1297,17 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                         "pre_brief": str(_pair_ctx.get("text") or ""),
                         "pre_trigger": str(_pair_ctx.get("trigger") or ""),
                     }
+                # fold_revision=False BY DESIGN: the folded revision is the
+                # only path by which the frontier could author the delivered
+                # body. The main agent owns its response -- the higher self
+                # enriches it with POVs and a mindset delta and lets the agent
+                # decide what to change. It has never fired in 141 consults
+                # (reason=needs_tool_work every time), so removing the request
+                # costs nothing and makes the boundary structural instead of
+                # statistical.
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
-                    timeout_s=_sync_budget, fold_revision=True, **_sync_kw)
+                    timeout_s=_sync_budget, fold_revision=False, **_sync_kw)
             except Exception:  # noqa: BLE001
                 _meta = None
             if not (_meta and isinstance(_meta, dict)):

@@ -302,3 +302,16 @@ def test_post_renders_at_the_band_that_produced_its_deltas():
                      band=P.DELTA_BAND)
     assert default_band == "", "default 0.5 band drops it (the bug)"
     assert aligned != "", "rendering at DELTA_BAND must speak"
+
+
+def test_frontier_can_never_author_the_delivered_body():
+    """The folded revision is the only path from frontier text to the body.
+
+    The main agent owns its response; the higher self enriches and advises.
+    If this assertion ever fails, frontier has regained the ability to write in
+    the agent's voice.
+    """
+    src = (REPO / "completion_audit.py").read_text()
+    assert "timeout_s=_sync_budget, fold_revision=True" not in src, (
+        "fold_revision=True lets the consult return a revised_response, which "
+        "replaces the agent's answer -- that is override, not complement")
