@@ -2897,7 +2897,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                     _log("closure_pass_applied in_chars=%d out_chars=%d"
                          % (len(response_text), len(_cl)), session_id=session_id)
                 else:
-                    _revised_reason = "closure_pass_none"
+                    _revised_reason = ("closure_pass_none:"
+                                       + (getattr(_cp, "last_reason", "") or "?"))
             except Exception as _cpe:  # noqa: BLE001 — never break delivery
                 _revised_reason = "closure_pass_error"
                 logger.warning("closure_pass raised: %.200s", str(_cpe))

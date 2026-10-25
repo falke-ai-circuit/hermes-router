@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 #: summarised turn is worse than an unrevised one.
 MIN_LEN_RATIO = 0.5
 
+#: Why the last revise() gave up. Every early return sets this, so a skip is
+#: never a bare None in the log -- the whole point is that "closure_pass_none"
+#: must say WHY.
+last_reason = ""
+
 _INSTRUCTION = (
     "You just finished this work and were about to send the answer below.\n\n"
     "A higher-self review of that work is attached as context: it names your "
@@ -208,10 +213,17 @@ def revise(ask: str, answer: str, note: str,
     empty or collapsed body. The caller then delivers the original.
     """
     try:
-        if not str(answer or "").strip() or not str(note or "").strip():
+        global last_reason
+        last_reason = ""
+        if not str(answer or "").strip():
+            last_reason = "empty_answer"
+            return None
+        if not str(note or "").strip():
+            last_reason = "empty_note"
             return None
         tgt = _target()
         if not tgt:
+            last_reason = "no_target"
             return None
         msgs = [
             {"role": "system", "content": _INSTRUCTION},
@@ -227,16 +239,20 @@ def revise(ask: str, answer: str, note: str,
         mt = min(8000, max(1500, len(answer) // 2 + 400))
         out = _call(tgt, msgs, mt, float(budget_s))
         if out is None:
+            last_reason = last_reason or "empty_completion"
             return None
         out = out.strip()
         if not out:
+            last_reason = "empty_completion"
             return None
         if len(out) < int(len(str(answer)) * MIN_LEN_RATIO):
+            last_reason = "collapsed"
             logger.warning(
                 "closure_pass: collapsed body rejected (%d < %d)",
                 len(out), int(len(str(answer)) * MIN_LEN_RATIO))
             return None
         return out
     except Exception as exc:  # noqa: BLE001 — never break delivery
+        last_reason = "error:%s" % type(exc).__name__
         logger.warning("closure_pass skipped: %s: %s", type(exc).__name__, exc)
         return None
