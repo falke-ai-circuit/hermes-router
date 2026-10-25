@@ -442,6 +442,33 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  signal=str(_inj_sig), tool=str(tool_name or ""), seam=seam)
             text = _strip_injection_clause(text)
             opts = _dec.extract_options(text)
+        # R60: a fork the WORK reveals. The declared/text forks above only fire
+        # on enumeration the user already wrote down -- the case an agent least
+        # needs advice for. Measured live: D2's repo holds utils_v1.py and
+        # utils_v2.py with app.py importing v2, the lane logged seven
+        # midturn_suppressed reason=no_declared_structure, and fired nothing.
+        # Detection is deterministic here; the verdict still costs a call only
+        # when a real rival pair exists.
+        _src_fork = None
+        if not opts or not _dec.has_declared_fork_structure(text):
+            try:
+                from . import fork_sources as _fs
+
+                _src_fork = _fs.rival_targets(_state(str(session_id)), text)
+            except Exception:  # noqa: BLE001
+                _src_fork = None
+            if _src_fork:
+                _synth = _fs.render_options(_src_fork)
+                if len(_synth) >= 2:
+                    opts = _synth
+                    text = (text or "") + "\n" + "\n".join(
+                        "Option %d: %s" % (i + 1, o)
+                        for i, o in enumerate(_synth))
+                    _log(session_id, "midturn_fork_source",
+                         source=str(_src_fork.get("source")),
+                         family=str(_src_fork.get("family")),
+                         options=len(_synth), tool=str(tool_name or ""),
+                         seam=seam, why=str(_src_fork.get("why") or "")[:120])
         if not opts:
             if _inj_sig:
                 _log(session_id, "injection_flagged_fork_suppressed",
