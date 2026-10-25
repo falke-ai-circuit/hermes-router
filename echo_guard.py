@@ -51,7 +51,18 @@ _STRUCTURAL = (
     ("synthesis_key", re.compile(r'"synthesis"\s*:', re.I)),
     ("brief_bullets", re.compile(r'"brief_bullets"\s*:', re.I)),
 )
-_POV_LABELS = ("practitioner:", "outsider:", "skeptic:")
+# The voices the code ACTUALLY emits (R57 four-voice set) plus the legacy names,
+# because a guard that keys on a retired vocabulary cannot see the projection it
+# is supposed to catch: on an isolated install the delivered body opened with
+# "explorer: 0.6 | ... verifier: 0.70 | ..." and every family check missed it.
+_POV_LABELS = ("explorer:", "verifier:", "skeptic:", "operator:",
+               "practitioner:", "outsider:")
+#: Two or more voice names carrying a numeric score is the projection's own
+#: shape, header or no header -- the model strips the bracketed header when it
+#: restates the note, which is exactly when the shape check matters.
+_POV_SCORE_LINE = re.compile(
+    r"(?:explorer|verifier|skeptic|operator|practitioner|outsider)"
+    r"\s*:\s*-?\d*\.?\d+", re.I)
 _ROUTER_TAIL = "· router ·"
 # Work evidence: a delivered engineering report carries at least one of these.
 # A body that ends with the router banner and carries NONE of them is a
@@ -95,8 +106,12 @@ def detect_envelope_echo_families(text: str) -> List[str]:
         for family, rx in _STRUCTURAL:
             if rx.search(raw):
                 out.append(family)
-        if all(lbl in low for lbl in _POV_LABELS):
+        if all(lbl in low for lbl in ("practitioner:", "outsider:", "skeptic:")):
             out.append("pov_triplet")
+        _voices = {m.group(0).split(":")[0].strip().lower()
+                   for m in _POV_SCORE_LINE.finditer(raw)}
+        if len(_voices) >= 2:
+            out.append("pov_projection")
         if _router_tail_without_work(raw):
             out.append("router_tail_no_work")
         return out
@@ -538,10 +553,24 @@ def enforce_execution_echo(text: str, session_id: str = "",
                        session_id=str(session_id or ""))
                 return EchoResult("strip_keep_work", stripped, _families_pre,
                                   removed, {})
-            # Nothing removable: leave the body exactly as written (log-only,
-            # as before) and say so, so an unstrippable echo is visible.
+            # A matched family with nothing removable means the body IS the
+            # router's own text -- not an answer with an advisory tail. Live
+            # specimen on an isolated install: the whole delivered turn was
+            # "explorer: 0.3 | ... verifier: 0.8 | ...", the guard matched, the
+            # strip left too little to keep, and the log-only path shipped it.
+            # The delivery boundary is the point: the router's internal note is
+            # never the user's answer, whatever the frame. Withholding claims
+            # nothing about work having run.
+            if _families_pre:
+                _route(log_route, EVENT_WITHHELD, action="withhold_echo",
+                       reason="body_is_advisory", frame=_reg,
+                       families="|".join(_families_pre),
+                       session_id=str(session_id or ""))
+                return EchoResult("withhold_echo", WITHHELD_TEXT, _families_pre,
+                                  removed, {"reason": "body_is_advisory"})
+            # Clean body and nothing removable: leave it exactly as written.
             _route(log_route, "advisory_tail_unstrippable", action="log_only",
-                   frame=_reg, families="|".join(_families_pre) or "none",
+                   frame=_reg, families="none",
                    session_id=str(session_id or ""))
             return None
         families = _families_pre

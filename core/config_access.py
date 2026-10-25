@@ -31,6 +31,7 @@
 # mtime-caches internally).
 #
 # Never raises. Returns {} on total miss — every caller already handles {}.
+import os
 from typing import Any, Dict, Optional
 
 _SECTION_KEYS = ("hermes_router",)
@@ -39,10 +40,21 @@ _cache: Dict[str, Any] = {"mtime": None, "path": None, "section": None}
 
 
 def config_path() -> str:
-    """Path of the ACTIVE profile config.yaml. Resolves via hermes_cli.config
-    (profile-scoped, R23 leg 2: the ONLY sanctioned hermes_cli touchpoint for
-    the writer surface — GATE-D). Falls back to the co-located profile yaml,
-    then hermes_constants/HERMES_HOME. Never raises."""
+    """Path of the ACTIVE profile config.yaml.
+
+    Order: the profile this plugin instance physically lives inside first (by
+    construction that IS the active profile), then hermes_cli's resolved path,
+    then hermes_constants/HERMES_HOME. Never raises.
+
+    Co-located first is a portability requirement, not a preference: on a
+    standard multi-profile install HERMES_HOME sits at the ROOT and hermes_cli
+    resolves the root config, so a plugin that trusts it reads a file that says
+    nothing about the profile it is running inside. Every lane key then reads as
+    missing and the lanes stay silently off.
+    """
+    co = _coLocatedPath()
+    if co:
+        return co
     try:
         from hermes_cli.config import CONFIG_PATH  # preferred: resolved path
 
@@ -92,10 +104,33 @@ def _coLocatedPath() -> Optional[str]:
     try:
         import os
 
-        here = os.path.dirname(os.path.abspath(__file__))
-        # <profile>/plugins/hermes_router/config_access.py → <profile>/config.yaml
-        profile_root = os.path.dirname(os.path.dirname(here))
-        return os.path.join(profile_root, "config.yaml")
+        # Walk up to the directory NAMED "plugins" -- its parent is the profile
+        # root. Counting dirname() calls was wrong: this module lives in
+        # <profile>/plugins/hermes_router/core/, so two dirnames landed on
+        # <profile>/plugins and the co-located rescue resolved a path that never
+        # exists. It was dead code on every install, unnoticed while load_config
+        # happened to answer the right profile -- and on a standard
+        # multi-profile install load_config answers the ROOT config, so every
+        # lane key read as missing and the lanes stayed silently off.
+        here = os.path.abspath(__file__)
+        profile_root = None
+        while True:
+            parent = os.path.dirname(here)
+            if parent == here:
+                break
+            here = parent
+            if os.path.basename(here) == "plugins":
+                profile_root = os.path.dirname(here)
+                break
+        if profile_root is None:
+            return None
+        cand = os.path.join(profile_root, "config.yaml")
+        # Only accept it when it EXISTS. A plugin checked out into a shared
+        # plugins/ directory otherwise resolves the config to that shared parent
+        # -- a path that is not a profile at all. Returning a path that cannot be
+        # read made every read silently empty and looked, from the outside, like a
+        # profile with no configuration.
+        return cand if os.path.isfile(cand) else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -287,6 +322,13 @@ def _walk(section: Dict[str, Any], path: str) -> Any:
 
 
 def _type_ok(value: Any, expected: Any) -> bool:
+    # A tuple means "either of these". Used where the code genuinely supports
+    # both shapes -- debug_banner takes a legacy bool OR a 0-3 int level, and the
+    # validator was calling the int form a type mismatch while the reader handled
+    # it happily. A foreign install setting the documented int got a warning
+    # telling it the value was wrong.
+    if isinstance(expected, tuple):
+        return any(_type_ok(value, e) for e in expected)
     if expected is bool:
         return isinstance(value, bool)
     if expected is int:
@@ -341,8 +383,11 @@ def get(path: str, default: Any = None) -> Any:
         if value is None and k.nullable:
             return None
         if not _type_ok(value, k.type):
+            _exp = (k.type if isinstance(k.type, tuple)
+                    else (k.type,))
             telemetry.log_route("config_key_type_mismatch", path=path,
-                                type=_type_name(value), expected=k.type.__name__)
+                                type=_type_name(value),
+                                expected="/".join(t.__name__ for t in _exp))
             return default if default is not None else k.default
         return value
     except Exception:  # noqa: BLE001 — config read must never raise

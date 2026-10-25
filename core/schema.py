@@ -49,7 +49,9 @@ SCHEMA: Tuple[Key, ...] = (
     _k("log_max_bytes", int, 10485760),
     _k("substance_frame", str, ""),
     _k("render_method_spec", str, ""),
-    _k("debug_banner", bool, False),
+    # bool OR int 0-3: the legacy flag and the current verbosity level are both
+    # valid inputs and debug_banner_level() accepts either.
+    _k("debug_banner", (bool, int), False),
     # --- chain (LANE-1 chain spec, list of endpoint dicts) ---
     _k("chain", list, [], nullable=True),
     # --- dispatcher_knobs / code-read finer knobs (top level) ---
@@ -180,7 +182,7 @@ SCHEMA: Tuple[Key, ...] = (
     _k("risk.on_demand", bool, False),
     _k("reflex.pov_mode", str, "auto"),
     _k("frontier.banner_capture_fallback_wait", int, 45),
-    _k("frontier.debug_banner", bool, False),
+    _k("frontier.debug_banner", (bool, int), False),
 )
 
 _BY_PATH = {k.path: k for k in SCHEMA}
