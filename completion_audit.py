@@ -1345,7 +1345,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             _revised_reason = str(_meta.get("revised_reason") or "not_requested")
             if isinstance(_revised, str) and _revised.strip():
                 _delivered = _revised.strip()
-                _revised_source = "folded"
+                # label by WHO authored it: the agent's own closure pass, not
+                # the frontier's folded rewrite (that path is closed).
+                _revised_source = str(_meta.get("revised_source") or "closure_pass")
                 _revised_reason = str(_meta.get("revised_reason") or "folded")
                 # persisted == delivered (R34-19L): turn_finalizer persisted the
                 # ENTRY text before this hook fired, so the SWAPPED body has to
@@ -2879,6 +2881,26 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _initiator = _rg.initiator_for_task(str(key or ""))
         except Exception:  # noqa: BLE001
             _initiator = "auto"
+        # CLOSURE PASS: the AGENT writes the closing message with the
+        # higher-self note in its context. Frontier supplies context only --
+        # authorship never moves (fold_revision is off by design), so this
+        # replaces the old "frontier rewrites the body" path with "the agent
+        # reconsiders its own body". Fail-open: None delivers the original.
+        if not _revised_body:
+            try:
+                from . import closure_pass as _cp
+
+                _cl = _cp.revise(ask, response_text, note)
+                if _cl:
+                    _revised_body = _cl
+                    _revised_reason = "closure_pass"
+                    _log("closure_pass_applied in_chars=%d out_chars=%d"
+                         % (len(response_text), len(_cl)), session_id=session_id)
+                else:
+                    _revised_reason = "closure_pass_none"
+            except Exception as _cpe:  # noqa: BLE001 — never break delivery
+                _revised_reason = "closure_pass_error"
+                logger.warning("closure_pass raised: %.200s", str(_cpe))
         return {"note": note,
                 "model": str(getattr(ep, "model", "") or ""),
                 "endpoint": _base.split("://", 1)[-1].split("/", 1)[0] if _base else "",
@@ -2891,7 +2913,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 # then delivers the original and stashes the verdict exactly as
                 # the pre-R37 lane did.
                 "revised_response": _revised_body,
-                "revised_source": ("folded" if _revised_body else "none"),
+                "revised_source": ("closure_pass" if _revised_body else "none"),
                 "revised_reason": _revised_reason,
                 "tokens_in": pt, "tokens_out": ct, "cost": cost}
     except Exception as exc:  # noqa: BLE001 — audit must never break delivery
