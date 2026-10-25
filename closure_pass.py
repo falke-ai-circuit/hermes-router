@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
@@ -110,9 +111,66 @@ def _target() -> Optional[Dict[str, str]]:
             pass
     if not base or not key:
         return None
-    # a custom:<name> provider passes the bare model name through
-    name = model.split("/", 1)[1] if "/" in model else model
-    return {"base": base, "key": key, "model": name}
+    # pass the model id EXACTLY as configured: custom providers expect the
+    # full slug ("deepseek/deepseek-v4.1-flash-1017"); stripping the prefix
+    # gets a 404 from the endpoint.
+    return {"base": base, "key": key, "model": model}
+
+
+def _call(tgt: Dict[str, str], msgs: list, max_tokens: int,
+          budget_s: float) -> Optional[str]:
+    """One completion, in whichever dialect this endpoint actually speaks.
+
+    The nous endpoint serves Anthropic-style /v1/messages and 404s on
+    /v1/chat/completions, while other Hermes installs point at an
+    OpenAI-compatible base. Try OpenAI shape first, fall back to Anthropic --
+    the plugin must not assume one provider's dialect.
+    """
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + tgt["key"]}
+    openai_body = json.dumps({"model": tgt["model"], "messages": msgs,
+                              "temperature": 0.3,
+                              "max_tokens": max_tokens}).encode("utf-8")
+    try:
+        req = urllib.request.Request(tgt["base"] + "/chat/completions",
+                                     data=openai_body, headers=headers)
+        with urllib.request.urlopen(req, timeout=budget_s) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        return _text_openai(payload)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (404, 405):
+            raise
+    # Anthropic dialect: system is a top-level field, not a message role.
+    sys_txt = "\n\n".join(m["content"] for m in msgs
+                            if m.get("role") == "system")
+    turns = [m for m in msgs if m.get("role") != "system"]
+    anth_body = json.dumps({"model": tgt["model"], "system": sys_txt,
+                            "messages": turns,
+                            "temperature": 0.3,
+                            "max_tokens": max_tokens}).encode("utf-8")
+    req = urllib.request.Request(tgt["base"] + "/messages", data=anth_body,
+                                 headers=headers)
+    with urllib.request.urlopen(req, timeout=budget_s) as resp:
+        payload = json.loads(resp.read().decode("utf-8", "replace"))
+    return _text_anthropic(payload)
+
+
+def _text_openai(payload: Any) -> Optional[str]:
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return None
+    msg = (choices[0] or {}).get("message") or {}
+    return str(msg.get("content") or "")
+
+
+def _text_anthropic(payload: Any) -> Optional[str]:
+    blocks = payload.get("content") if isinstance(payload, dict) else None
+    if not isinstance(blocks, list):
+        return None
+    # text blocks only: 'thinking' blocks are reasoning, not the message.
+    parts = [str(b.get("text") or "") for b in blocks
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "".join(parts)
 
 
 def revise(ask: str, answer: str, note: str,
@@ -135,23 +193,15 @@ def revise(ask: str, answer: str, note: str,
             {"role": "assistant", "content": str(note)[:4000]},
             {"role": "user", "content": "Return your closing message."},
         ]
-        body = json.dumps({
-            "model": tgt["model"],
-            "messages": msgs,
-            "temperature": 0.3,
-            "max_tokens": min(4000, max(256, len(answer) // 3)),
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            tgt["base"] + "/chat/completions", data=body,
-            headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + tgt["key"]})
-        with urllib.request.urlopen(req, timeout=float(budget_s)) as resp:
-            payload = json.loads(resp.read().decode("utf-8", "replace"))
-        choices = payload.get("choices") if isinstance(payload, dict) else None
-        if not isinstance(choices, list) or not choices:
+        # A thinking model spends output tokens on a reasoning block BEFORE
+        # emitting text. A small budget yields a valid response with a
+        # 'thinking' block and NO text block -- which reads as an empty
+        # completion and silently skips the closure. Budget for both.
+        mt = min(8000, max(1500, len(answer) // 2 + 400))
+        out = _call(tgt, msgs, mt, float(budget_s))
+        if out is None:
             return None
-        msg = (choices[0] or {}).get("message") or {}
-        out = str(msg.get("content") or "").strip()
+        out = out.strip()
         if not out:
             return None
         if len(out) < int(len(str(answer)) * MIN_LEN_RATIO):
