@@ -195,3 +195,61 @@ def test_verdict_shape_passes_validation():
     cleaned, reason = D.validate_verdict(json.dumps(v), ENV)
     assert cleaned is not None, f"verdict rejected: {reason}"
     assert "mindset" in cleaned
+
+
+# --- regression pins for the two defects this cost --------------------------
+
+def test_telemetry_injected_trigger_does_not_collide():
+    """core.telemetry.log_route injects `trigger` from lane context.
+
+    Passing trigger= in the fields raises TypeError("got multiple values for
+    keyword argument 'trigger'"), which the call site's isolation swallows --
+    the event then never appears in the router log at all. That hid the whole
+    feature for five deploy cycles, so simulate the injected kwarg here.
+    """
+    seen = []
+
+    def _log_route(event, trigger=None, **fields):  # noqa: ARG001 - injection
+        seen.append((event, dict(fields, trigger=trigger)))
+
+    D._log_mindset_scores({"mindset": {"scope": 0.7}},
+                          {"seam_trigger": "midturn", "session_id": "S"},
+                          {"backend": "jev_native"}, _log_route)
+    assert seen, "the event never reached the logger"
+    ev, fields = seen[0]
+    assert ev == "decision_mindset_scores"
+    assert fields["present"] is True
+    assert fields["scope"] == 0.7
+    assert "seam_trigger" in fields, "the seam must ride a field we own"
+
+
+def test_diagnostics_distinguish_no_scores_from_unreadable_stance():
+    # scores present but stance unreadable -> named cause, not a bare zero
+    env = {"mindset": {"scope": None, "rigour": None}, "options": [{"id": "o"}]}
+    data = {"answers": {"choice": {"choice": "o", "confidence": 0.9},
+                        "scope": {"type": "score", "score": 4.0}}}
+    D._systemone_verdict_content(data, env)
+    diag = getattr(D.MINDSET_DIAG, "last", {})
+    assert diag.get("saw") == {"scope": 4.0}, "the score WAS seen"
+    assert "scope" in (diag.get("unreadable") or []), (
+        "the skip reason must be recorded, not inferred later")
+
+    # genuinely absent scores -> nothing seen at all
+    D._systemone_verdict_content(
+        {"answers": {"choice": {"choice": "o", "confidence": 0.9}}},
+        {"mindset": {"scope": 0.0}, "options": [{"id": "o"}]})
+    assert (getattr(D.MINDSET_DIAG, "last", {}) or {}).get("saw") == {}
+
+
+def test_real_backend_answer_shape_maps_correctly():
+    """Exactly what api.typesafe.ai returned for choice+scope+rigour."""
+    answers = {"choice": {"type": "choice", "choice": "opt-2",
+                          "confidence": 0.48,
+                          "probabilities": {"opt-1": 0.26, "opt-2": 0.74}},
+               "scope": {"type": "score", "score": 0.56, "confidence": 0.53},
+               "rigour": {"type": "score", "score": 1.81, "confidence": 0.01}}
+    env = {"mindset": {"scope": 0.0, "rigour": 0.0}, "options": [{"id": "opt-2"}]}
+    v = json.loads(D._systemone_verdict_content({"answers": answers}, env))
+    assert v["choice"] == "opt-2"
+    assert v["mindset"]["scope"] == pytest.approx(-0.72, abs=1e-6)
+    assert v["mindset"]["rigour"] == pytest.approx(-0.095, abs=1e-6)
