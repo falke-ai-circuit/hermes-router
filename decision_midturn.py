@@ -479,6 +479,32 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  reason=_dec.REASON_NO_OPTIONS, mode=mode,
                  tool=str(tool_name or ""), seam=seam)
             return
+        # R60b: PRECISION of the presented set. Measured on seeded forks: option
+        # sets derived structurally scored precision 1.00 (D4: "edit names.py" /
+        # "edit tests/test_names.py", advice correct 3/3), while sets produced by
+        # the prose fallback scored 0.00-0.33 -- six "options" that were narrative
+        # sentences harvested from unrelated text ("one-or-two-sentence user
+        # complaint with no repo path ..."). That is not an option set, and a
+        # decision made over invented options is worse than no decision: the
+        # D3 run carrying six such options fell into the trap.
+        #
+        # A real fork route is a NAME ("redis", "utils_v2.py", "revert the doc").
+        # Narrative is a tell, so bound the label length. Structural and declared
+        # sets are exempt -- they are authored, not harvested.
+        _struct_src = bool(_src_fork)
+        if opts and not _struct_src and not _dec.has_declared_fork_structure(text):
+            _kept = [o for o in opts if len(str(o).strip()) <= 60]
+            if len(_kept) < len(opts):
+                _log(session_id, "midturn_options_pruned",
+                     kept=len(_kept), dropped=len(opts) - len(_kept),
+                     tool=str(tool_name or ""), seam=seam)
+            opts = _kept
+            if len(opts) < 2:
+                _log(session_id, "midturn_suppressed",
+                     reason="proxy_options_rejected", mode=mode,
+                     tool=str(tool_name or ""), seam=seam)
+                return
+
         if not _dec.has_declared_fork_structure(text):
             if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
                 return

@@ -62,3 +62,36 @@ def test_unrelated_siblings_do_not_fire():
 def test_never_raises_on_junk():
     for junk in (None, "", 0, object(), "....", "/" * 500):
         fs.rival_targets({}, junk)  # must not raise
+
+
+def test_narrative_sentences_are_not_options():
+    """The precision failure measured on seeded forks: the prose fallback
+    harvested narrative sentences as 'options' (D3: six of them, precision 0.00)
+    and that run fell into the trap. A route is a NAME, not a paragraph."""
+    from hermes_router import decision
+
+    junk = ('one-or-two-sentence user complaint with no repo path ("the daily export says '
+            'it is wrong")\nfix gets designed against the wrong contract: the module\'s own '
+            'comment reads\n')
+    opts = decision.extract_options(junk)
+    kept = [o for o in opts if len(str(o).strip()) <= 60]
+    assert len(kept) < max(2, len(opts)), "the filter must actually drop narrative"
+
+
+def test_short_routes_survive_the_filter():
+    """The filter must not eat real prose forks -- redis/memcached is the shape
+    thirteen existing lane tests depend on."""
+    from hermes_router import decision
+
+    opts = decision.extract_options(
+        "which one should we pick: redis or memcached? weigh the tradeoffs")
+    kept = [o for o in opts if len(str(o).strip()) <= 60]
+    assert len(kept) >= 2
+
+
+def test_filter_is_wired_into_the_midturn_gate():
+    src = open('/opt/data/plugins/hermes_router/decision_midturn.py').read()
+    assert 'proxy_options_rejected' in src
+    assert 'len(str(o).strip()) <= 60' in src
+    # structural sets must be exempt: they are authored, not harvested
+    assert '_struct_src = bool(_src_fork)' in src
