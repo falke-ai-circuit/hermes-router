@@ -3549,17 +3549,62 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
         logger.debug("decision _invoke error", exc_info=True)
 
 
+def seam_mode(cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Which trigger points the decision lane is allowed to fire from.
+
+    "legacy" (code default): pre + midturn + post, unchanged. This stays the
+    default because 34 existing lane tests encode the pre-path contract; a seam
+    change belongs in configuration, where it is visible and reversible, not
+    baked into a constant that silently reddens the fleet's contract tests.
+
+    "midturn_prellm": midturn only, and it lands pre-call. Automatic PRE-time
+    detection and the POST turn-close scan stand down. An explicitly asked
+    on-demand decision is NOT a firing point -- it is a request -- so it survives.
+    Never raises.
+    """
+    try:
+        cfg = cfg if isinstance(cfg, dict) else _cfg()
+        mode = str(cfg.get("seam") or "legacy").strip().lower()
+        return "midturn_prellm" if mode == "midturn_prellm" else "legacy"
+    except Exception:  # noqa: BLE001
+        return "legacy"
+
+
+def _seam_allows(trigger: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """True when this trigger point may consult under the active seam mode."""
+    try:
+        if seam_mode(cfg) == "legacy":
+            return True
+        return str(trigger or "") not in ("pre", "post")
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                        model: str = "",
                        log_route: Optional[Any] = None,
                        cfg: Optional[Dict[str, Any]] = None,
-                       initiator: str = "user") -> None:
+                       initiator: str = "user",
+                       trigger: str = "pre") -> None:
     """v3 lane entry (PRE heuristic + manual on-demand + midturn declared
     claim all land here). Shadow-only: detect, call, log, park an advisory
     — NEVER replaces the turn. Ledger row per attempt (§5.7). Caps, forked
     breaker, strict verdict validation, fail-open everywhere. Never raises."""
     try:
         cfg = cfg or _cfg()
+        # R59k: seam consolidation. Under midturn_prellm the decision lane has
+        # exactly one firing point and it lands before the call, so the PRE-time
+        # detect and the POST turn-close scan both stand down. An on-demand ask
+        # is a request rather than a firing point and is never gated here.
+        if not _seam_allows(trigger, cfg):
+            try:
+                if log_route is not None:
+                    log_route("decision_suppressed", lane="decision",
+                              reason="seam_midturn_only", trigger=trigger,
+                              task_id=task_id, session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
         # R14-1 (rider 14): the v3 consult entry is the LAST un-wired
         # injection seam — flag_prompt_injection ran on the midturn seams
         # and the risk leg only, so an exfiltration clause bundled into a
@@ -4033,6 +4078,15 @@ def post_fork_scan(session_id: str, response_text: str, model: str = "",
     only; no slice-namespace writes. Never raises."""
     try:
         cfg = cfg or _cfg()
+        if not _seam_allows("post", cfg):
+            try:
+                if log_route is not None:
+                    log_route("decision_suppressed", lane="decision",
+                              reason="seam_midturn_only", trigger="post",
+                              session_id=session_id)
+            except Exception:  # noqa: BLE001
+                pass
+            return
         if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
             return
         # R35: structural outcome capture FIRST — resolve from what the agent

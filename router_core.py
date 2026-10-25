@@ -1160,7 +1160,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             _dm.handle_decision_v3(
                 session_id=session_id, task_id=task_id,
                 task_text=_stack_text, model=str(model or ""),
-                log_route=_lr, initiator="user")
+                log_route=_lr, initiator="user", trigger="on_demand")
             try:
                 _lr("PRE", session_id=session_id,
                     event_detail="decision_compound_stack",

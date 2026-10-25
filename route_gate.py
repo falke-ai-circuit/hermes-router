@@ -1717,7 +1717,8 @@ def _decision_lane_claim(content: str, session_id: str, model: str) -> None:
         _dm.handle_decision_v3(
             session_id=session_id, task_id=task_id, task_text=content,
             model=str(model or ""),
-            log_route=_pkg_fn("_log_route"), initiator="agent")
+            log_route=_pkg_fn("_log_route"), initiator="agent",
+            trigger="pre")
     except Exception:  # noqa: BLE001 — the gate NEVER raises into a turn
         logger.debug("decision lane claim error", exc_info=True)
 
@@ -1810,7 +1811,8 @@ def claim_pass(content: str, session_id: str, model: str,
                     _dm.handle_decision_v3(
                         session_id=session_id, task_id=_task_d,
                         task_text=content, model=str(model or ""),
-                        log_route=_pkg_fn("_log_route"), initiator=_init)
+                        log_route=_pkg_fn("_log_route"), initiator=_init,
+                        trigger="on_demand")
                     # 2. re-point the turn's declared claim at the frontier
                     #    lane and route it on THIS turn.
                     register_declared(session_id, LANE_HIGHER_PRE,
@@ -1874,7 +1876,8 @@ def claim_pass(content: str, session_id: str, model: str,
                 _dm2.handle_decision_v3(
                     session_id=session_id, task_id=_task_d,
                     task_text=content, model=str(model or ""),
-                    log_route=_pkg_fn("_log_route"), initiator=_init)
+                    log_route=_pkg_fn("_log_route"), initiator=_init,
+                    trigger="on_demand")
                 _pkg_fn("_log_route")(
                     "PRE", event_detail="declared_decision_stacked",
                     lane=LANE_HIGHER_PRE, source=str(decision.source or ""),
