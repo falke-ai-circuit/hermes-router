@@ -530,6 +530,22 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                      tool=str(tool_name or ""), seam=seam)
                 return
 
+        # R63 MEASUREMENT ADMISSION (midturn leg): the same rule the pre leg
+        # applies -- if fewer than two routes carry an observable, nothing later
+        # can say which one was taken, so the consult buys an unscoreable
+        # advisory and writes a row that abstains forever. Derived sets only;
+        # declared structure and structural sources are authored, not harvested.
+        if opts and not _struct_src and not _dec.has_declared_fork_structure(text):
+            try:
+                from . import decision_signatures as _dsig
+                if not _dsig.fork_observable([_dsig.option_signature(o) for o in opts]):
+                    _log(session_id, "midturn_suppressed",
+                         reason="options_unobservable", mode=mode,
+                         tool=str(tool_name or ""), seam=seam)
+                    return
+            except Exception:  # noqa: BLE001 — admission must never raise
+                pass
+
         if not _dec.has_declared_fork_structure(text):
             if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
                 return
