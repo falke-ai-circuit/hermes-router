@@ -2578,6 +2578,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 verdict_text = _post_clean
                 _parked = _povs_mod.consume_target(session_id)
                 _prev = (_parked or {}).get("dials") if _parked else None
+                if not _prev:
+                    # No PRE park this session: use the stance the ASK required,
+                    # reported by this same consult. Without it the reflection
+                    # is silent on standalone turns, and silence reads as
+                    # "nothing to correct" rather than "never compared".
+                    _prev = _post_meta.get("required") or None
                 # R58k: POST speaks through the same renderer as PRE and
                 # midturn. It used to emit its own "_DELTA_LABEL" prose, so
                 # the same dial was worded differently depending on which
@@ -2746,9 +2752,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 % (_NOTE_MARKER + _NOTE_PREFIX,
                    verdict_text,
                    ("\n" + _pov_lines) if locals().get("_pov_lines") else "",
-                   # R57: the signed PRE->POST correction rides the SAME note,
-                   # in words the agent can act on before she ships.
-                   ("\n\nSTANCE CORRECTION: " + _pov_reflection)
+                   # R57: the signed correction rides the SAME note, in words
+                   # the agent can act on before she ships. No second label:
+                   # the note already opens by saying it is a state readout and
+                   # not a request, and stacking "STANCE CORRECTION:" in front
+                   # of that re-addresses it as a message to answer.
+                   ("\n\n" + _pov_reflection)
                    if locals().get("_pov_reflection") else ""))
         if banner_park:
             stash_verdict(session_id, note)

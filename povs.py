@@ -187,6 +187,8 @@ _CLAIM_INSTRUCTION = (
     "machine-parsed and stripped before delivery."
 )
 
+_REQUIRED_RE = re.compile(r"^required\s+(explorer|verifier|skeptic|operator)\s*:\s*([0-9.]+)")
+
 _PRE_ASK = (
     "Read the ask below as the four voices. Report which of them this ask "
     "belongs to, and what each would watch for.\n\nASK:\n{ask}"
@@ -196,7 +198,17 @@ _POST_ASK = (
     "The work below is FINISHED. Look back at it as the four voices and say "
     "what each one sees NOW that the work is done -- was it too broad, too "
     "narrow, checked enough, acted enough. Be specific about what you see, not "
-    "about what you would have done.\n\nWORK:\n{work}"
+    "about what you would have done.\n\n"
+    "REPORT TWO STANCES, not one. First the stance the ASK required (what this "
+    "work had to be), then the stance the WORK actually shows (what it was). "
+    "Use the same four-voice claim shape for both, prefixing the first group "
+    "with the word 'required':\n"
+    "required explorer: <0..1> | <what this ask needed scanned>\n"
+    "required verifier: <0..1> | <what correctness this ask needed>\n"
+    "required skeptic: <0..1> | <what doubt this ask needed>\n"
+    "required operator: <0..1> | <how directly this ask wanted action>\n"
+    "Then the unprefixed group, as usual, for the work as performed.\n\n"
+    "ASK:\n{ask}\n\nWORK:\n{work}"
 )
 
 
@@ -230,10 +242,35 @@ def build_pre_prompt(ask: str, agent: str = "agent", role: str = "",
     return system, [{"role": "user", "content": body + _CLAIM_INSTRUCTION}]
 
 
-def build_post_prompt(work: str, agent: str = "agent", role: str = "",
-                      context: str = "") -> Tuple[str, List[Dict[str, str]]]:
+def build_post_prompt(work: str, ask: str = "", agent: str = "agent",
+                      role: str = "", context: str = "") -> Tuple[str, List[Dict[str, str]]]:
+    """POST consult: the stance the ASK required AND the stance the WORK shows.
+
+    The required stance is reported by the same consult rather than inherited
+    from a PRE park. That park only exists when PRE happened to fire earlier in
+    the same session, so gating reflection on it made POST silent on exactly
+    the standalone turns it was built for -- and silent is indistinguishable
+    from "nothing to correct".
+    """
     system, _ = build_pre_prompt("", agent=agent, role=role, context=context)
-    return system, [{"role": "user", "content": _POST_ASK.format(work=work.strip()) + _CLAIM_INSTRUCTION}]
+    body = _POST_ASK.format(ask=str(ask or "").strip() or "(ask not captured)",
+                            work=work.strip())
+    return system, [{"role": "user", "content": body + _CLAIM_INSTRUCTION}]
+
+
+def parse_required(text: Optional[str]) -> Dict[str, float]:
+    """The 'required <voice>: <0..1> | note' group, if the consult sent one."""
+    out: Dict[str, float] = {}
+    for line in str(text or "").splitlines():
+        m = _REQUIRED_RE.match(line.strip())
+        if not m:
+            continue
+        try:
+            v = float(m.group(2))
+        except Exception:  # noqa: BLE001
+            continue
+        out[m.group(1).lower()] = max(0.0, min(1.0, v))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +502,15 @@ def split_projection(text: Optional[str]):
         dials = dials_from_claims(claims)  # type: ignore[arg-type]
         if dials.get("scope") is None:
             return None, text, meta
+        _req_claims = parse_required(text)
+        _req = dials_from_claims(_req_claims) if _req_claims else None
         meta = {"format": "pov", "claims": claims, "gates": p["gates"],
-                "notes": p["notes"], "win": winning_voice(claims)}  # type: ignore[arg-type]
-        return dials, block_text(text), meta
+                "notes": p["notes"], "win": winning_voice(claims),
+                "required": _req}  # type: ignore[arg-type]
+        # the required lines are a machine channel too: never ship them
+        _clean = "\n".join(ln for ln in block_text(text).splitlines()
+                            if not _REQUIRED_RE.match(ln.strip()))
+        return dials, _clean, meta
     # legacy shape
     try:
         from . import mindset as _ms  # type: ignore

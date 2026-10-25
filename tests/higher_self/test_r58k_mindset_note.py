@@ -211,3 +211,50 @@ def test_failed_build_does_not_cache_for_the_long_ttl():
         "an empty build cached for the full TTL turns one timeout into a "
         "half-hour outage that reads as 'unreadable', not 'failed'")
     assert AX._MINDSET_HIST_FAIL_TTL < AX._MINDSET_HIST_TTL
+
+
+# --- POST must reflect without needing a PRE park -------------------------
+
+def test_post_required_block_parses_into_its_own_dials():
+    from hermes_router import povs as P
+
+    text = (
+        "required explorer: 0.9 | survey the callers\n"
+        "required verifier: 0.8 | pin each claim\n"
+        "required skeptic: 0.2 | little to distrust\n"
+        "required operator: 0.1 | do not rush\n"
+        "explorer: 0.2 | stayed local\n"
+        "verifier: 0.1 | shipped unchecked\n"
+        "skeptic: 0.1 | accepted the framing\n"
+        "operator: 0.9 | acted immediately\n"
+        "gates: precedent=0 consequence=0\n")
+    dials, clean, meta = P.split_projection(text)
+
+    assert meta["format"] == "pov"
+    req = meta.get("required")
+    assert req and req.get("scope") is not None, (
+        "the ask-required stance must be parsed, or POST has no baseline")
+    assert "required explorer" not in clean, (
+        "the required block is a machine channel and must never ship")
+
+
+def test_post_reflects_against_the_ask_when_no_pre_park_exists():
+    """Standalone POST: observed vs required still yields a correction."""
+    from hermes_router import povs as P
+
+    required = {"scope": -1.0, "rigour": 1.0}
+    observed = {"scope": 1.0, "rigour": -1.0}
+    deltas = P.delta_labels(required, observed)
+    assert set(deltas) == {"scope", "rigour"}
+    note = N.note(deltas, source="post")
+    assert N.NOTE_HEADER in note
+    assert "scope:" in note and "rigour:" in note
+
+
+def test_no_baseline_at_all_stays_silent_not_invented():
+    """Neither a park nor a required block: say nothing, never assume neutral."""
+    from hermes_router import povs as P
+
+    assert P.delta_labels(None, {"scope": 0.5, "rigour": 0.5}) == {}
+    assert P.delta_labels({}, {"scope": 0.5}) == {}
+    assert N.note(P.delta_labels(None, {"scope": 9.0}), source="post") == ""
