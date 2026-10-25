@@ -108,6 +108,207 @@ def _stems_relate(a: str, b: str) -> bool:
     return sa in sb or sb in sa
 
 
+
+# ---------------------------------------------------------------------------
+# Domain-general fork detection
+# ---------------------------------------------------------------------------
+# The file rules above only see engineering repos. The fleet is not only
+# engineers: an analyst weighs two root causes, a researcher two sources, a
+# valmet engineer two protocol readings, an operative two hosts. A decision lane
+# that only recognises file pairs recognises a minority of the fleet's real
+# forks, so the generic layer reads the TEXT -- any text, any domain -- for the
+# shapes in which a fork is actually voiced.
+
+
+_STOP = frozenset((
+    "it", "this", "that", "the", "a", "an", "them", "these", "those", "one",
+    "other", "both", "either", "neither", "same", "different", "thing", "way",
+))
+
+
+#: Leading verbs and connectors that leak into a span ("Reconnect to prod-db-02",
+#: "We should revert the doc"). Stripped once, and only from the front: the route
+#: is the object, not the sentence that introduced it.
+_SPAN_CUES = re.compile(
+    r"^(?:we\s+(?:should|could|can|might|may)|i\s+(?:would|should)|let'?s|"
+    r"(?:re)?connect\s+to|switch\s+to|move\s+to|revert\s+to|go\s+with|"
+    r"prefer|pick|choose|use|try|take)\s+", re.I)
+
+
+#: A span is an option only if it is a phrase a human would read as one. Real
+#: traffic (sampled from 48 live fires) produced JSON fragments, markdown table
+#: rows and mid-sentence cuts; those are not routes, they are debris. Judged on
+#: the sample, roughly 40% of otherwise-genuine forks carried span damage.
+_SPAN_JUNK = re.compile(r"[|`{}\[\]\"\\]|\t")
+
+#: A pronoun-only span ("it does not", "they are") is a sentence fragment, not a
+#: route -- and "either it compiles or it does not" is not a fork at all.
+#: Pronoun + auxiliary only ("it does not", "they are"). A route like "we keep
+#: the ledger" must survive -- the rejection is about grammatical fragments, not
+#: about first person.
+_FRAGMENT = re.compile(
+    r"^(?:it|they|this|that|there)\b"
+    r"(?:\s+(?:does|do|did|is|was|were|will|would|can|could|should|might|has|have)\b.*)?$",
+    re.I)
+
+
+def _trim_span(s: str) -> str:
+    t = " ".join((s or "").split())
+    if ":" in t:
+        head, tail = t.split(":", 1)
+        if tail.strip():
+            t = tail.strip()
+    prev = None
+    while prev != t:
+        prev, t = t, _SPAN_CUES.sub("", t).strip()
+    # trailing clause is commentary, not part of the route
+    t = re.split(r"\s+(?:before|after|while|because|so\s+that|in\s+order\s+to|"
+                 r"when|until|unless)\s+", t, maxsplit=1)[0].strip()
+    return t
+
+
+def _span_ok(s: str) -> bool:
+    """A route is a name, not a paragraph -- same guard the midturn path applies.
+
+    Kept here so every domain inherits it: "one-or-two-sentence user complaint
+    with no repo path" is not an option in any domain.
+    """
+    t = (s or "").strip(" \t\n,;:.\"'()[]")
+    if not (2 <= len(t) <= 60):
+        return False
+    if t.lower() in _STOP:
+        return False
+    if not re.search(r"[^\W_]", t):
+        return False
+    if _SPAN_JUNK.search(t):
+        return False
+    if _FRAGMENT.match(t):
+        return False
+    if t.count(",") > 2:
+        return False
+    return True
+
+
+#: connectives that voice a fork in prose. Deliberately domain-free: the same
+#: four shapes carry an analyst's hypotheses, a researcher's sources, a valmet
+#: engineer's protocol readings and an operative's hosts.
+_FORK_CONNECTIVES = (
+    r"either\s+(?P<a>[^.;\n]{2,60}?)\s+or\s+(?P<b>[^.;\n]{2,60})",
+    r"(?P<a>[^.;\n]{2,60}?)\s+(?:vs\.?|versus)\s+(?P<b>[^.;\n]{2,60})",
+    r"(?P<a>[^.;\n]{2,60}?)\s+(?:rather than|instead of)\s+(?P<b>[^.;\n]{2,60})",
+    r"between\s+(?P<a>[^.;\n]{2,60}?)\s+and\s+(?P<b>[^.;\n]{2,60})",
+    r"(?P<a>[^.;\n]{2,60}?)\s+could\s+be\s+(?:the\s+)?(?:cause|problem|issue|fault)\s*[,;]?\s*(?:or|and)\s+(?P<b>[^.;\n]{2,60})",
+    # cue-anchored inline choice ("Two options: refund the order or reship it").
+    # The cue word is what keeps this tight -- a bare "X or Y" is far too common in
+    # ordinary prose and would make the lane trigger-happy.
+    r"(?:options?|alternatives?|choices?|candidates?)\s*:\s*(?P<a>[^.;\n]{2,60}?)\s+or\s+(?P<b>[^.;\n]{2,60})",
+)
+# Compiled separately, not as one alternation: Python forbids reusing a named
+# group across alts in a single pattern, and each connective is tried in order.
+_CONNECTIVE_RES = tuple(re.compile(c, re.I) for c in _FORK_CONNECTIVES)
+
+#: a list introduced by a domain-free cue word. Covers "Possible causes:",
+#: "Candidates:", "Options:", "Hypotheses:" -- used by every role in practice.
+_LIST_CUE = re.compile(
+    r"(?im)^[ \t]*(?:possible[ \t]+)?(?:candidates?|options?|alternatives?|"
+    r"hypothes[ie]s|suspects?|possible[ \t]+causes?|root[ \t]+causes?|"
+    r"approaches?|readings?|explanations?)[ \t]*:?[ \t]*$")
+_LIST_ITEM = re.compile(r"(?m)^[ \t]*(?:\(?\d+[.)]|[-*\u2022])[ \t]+(.{3,60})$")
+
+
+#: Cheap substring prefilter. The connective regexes cost ~12 ms on a 3 kB text
+#: and scale with size; the lane runs on EVERY tool result, so paying that on
+#: text that cannot possibly hold a fork is not affordable. A plain `in` test is
+#: ~1000x cheaper and rejects the overwhelming majority of payloads.
+_CUE_WORDS = (
+    "either", " versus", " vs.", " vs ", "rather than", "instead of", "between",
+    "could be", "option", "alternative", "choice", "candidate", "hypothes",
+    "suspect", "possible cause", "root cause", "approach", "reading", "explanation",
+)
+
+#: Beyond this, a payload is data rather than deliberation. Bounded so one huge
+#: tool result cannot stall a turn.
+_SCAN_CAP = 20000
+
+
+def _might_hold_fork(text: str) -> bool:
+    tl = text.lower()
+    return any(w in tl for w in _CUE_WORDS)
+
+
+def _det_either_or(store, text):
+    """Two routes voiced with a connective -- no enumeration, no repo, no files."""
+    if not text or not _might_hold_fork(text):
+        return None
+    text = text[:_SCAN_CAP]
+    m = None
+    for rx in _CONNECTIVE_RES:
+        m = rx.search(text)
+        if m:
+            break
+    if not m:
+        return None
+    a, b = _trim_span(m.group("a")), _trim_span(m.group("b"))
+    if not (_span_ok(a) and _span_ok(b)):
+        return None
+    if a.lower() == b.lower():
+        return None
+    key = "either_or:%s|%s" % (re.sub(r"\W+", "", a.lower())[:40],
+                               re.sub(r"\W+", "", b.lower())[:40])
+    return {"family": key, "options": [a, b],
+            "why": "two routes voiced with a connective; the text does not pick one"}
+
+
+def _det_listed_candidates(store, text):
+    """A cue word followed by 2+ list items -- the shape every role uses to
+    present candidates it has not chosen between."""
+    if not text or not _might_hold_fork(text):
+        return None
+    text = text[:_SCAN_CAP]
+    m = _LIST_CUE.search(text)
+    if not m:
+        return None
+    tail = text[m.end():m.end() + 2000]
+    items = [i.strip() for i in _LIST_ITEM.findall(tail) if _span_ok(i)]
+    if len(items) < 2:
+        return None
+    key = "listed:%s" % re.sub(r"\W+", "", items[0].lower())[:40]
+    return {"family": key, "options": items[:4],
+            "why": "a candidate list the text never resolved to one choice"}
+
+
+#: registry. Adding a source = appending here; the lane, its guards and its
+#: one-fire-per-family discipline are inherited, never re-implemented.
+GENERIC_DETECTORS = (
+    ("either_or", _det_either_or),
+    ("listed_candidates", _det_listed_candidates),
+)
+
+
+def enabled_sources() -> Tuple[str, ...]:
+    """Which sources may fire. Portable default: all of them.
+
+    Read through the sanctioned config seam and fail open -- a router that stops
+    recognising forks because a config key is missing is worse than one that
+    looks in too many places, and the precision guards bound the cost.
+    """
+    names = tuple(n for n, _ in GENERIC_DETECTORS) + (
+        "sibling_files", "test_vs_source", "doc_vs_code", "cfg_vs_consumer")
+    try:
+        from .core.config_access import read_config  # type: ignore
+
+        cfg = read_config() or {}
+        fs_cfg = ((cfg.get("hermes_router") or {}).get("decision") or {}).get(
+            "fork_sources")
+        if isinstance(fs_cfg, dict):
+            allow = fs_cfg.get("enabled")
+            if isinstance(allow, list) and allow:
+                return tuple(n for n in names if n in allow)
+    except Exception:  # noqa: BLE001
+        pass
+    return names
+
+
 def note_seen(store: Dict[str, Any], text: str) -> List[str]:
     """Accumulate every path this session has surfaced. Bounded."""
     paths = _paths(text)
@@ -130,12 +331,31 @@ def rival_targets(store: Dict[str, Any], text: str
     """
     try:
         seen = note_seen(store, text)
+        st = store.setdefault("fork_src", {})
+        fired = st.setdefault("fired", [])
+        on = enabled_sources()
+
+        # Generic detectors first: they read a single text and need no
+        # accumulated path set, so a non-engineering agent gets recognition on
+        # its very first substantive message instead of never.
+        for _name, _fn in GENERIC_DETECTORS:
+            if _name not in on:
+                continue
+            hit = _fn(store, text)
+            if not hit:
+                continue
+            if hit["family"] in fired:
+                continue
+            fired.append(hit["family"])
+            del fired[:-40]
+            return {"source": _name, "family": hit["family"],
+                    "options": hit["options"], "why": hit.get("why", "")}
+
         if len(seen) < 2:
             return None
-        st = store.setdefault("fork_src", {})
-        fired: List[str] = st.setdefault("fired", [])
 
         # --- sibling family: same dir, stems equal after version stripping
+        # ---- engineering sources: need two surfaced paths ----
         fams: Dict[Tuple[str, str], List[str]] = {}
         for p in seen:
             fams.setdefault((_dir(p), _norm_stem(p)), []).append(p)
