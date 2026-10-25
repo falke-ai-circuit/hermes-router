@@ -59,27 +59,14 @@ def _config() -> Dict[str, Any]:
     depend on a host install rather than on the plugin's portability layer.
     Never raises.
     """
-    try:
-        from .core import config_access
-
-        cfg = config_access.load_full_config()
-        if isinstance(cfg, dict):
-            return cfg
-    except Exception:  # noqa: BLE001 — fall through to the plugin-local file
-        pass
-    # No hermes_cli on this install: find config.yaml by POSITION, trying the
-    # profile root the host advertises before the plugin's own location. A
-    # deployed copy sits at <profile>/plugins/hermes_router/, but the dev tree
-    # does not, so neither path alone is reliable.
+    # ORDER MATTERS: the plugin's own location is authoritative for WHICH
+    # PROFILE this is. load_config() resolves a profile from ambient state, and
+    # with none set it happily returns another profile's config -- which would
+    # make this pass speak as the wrong agent. Ask the file first, then the
+    # host API.
     import os
 
     candidates = []
-    for env in ("HERMES_HOME", "HERMES_PROFILE_HOME"):
-        home = os.environ.get(env)
-        if home:
-            candidates.append(os.path.join(home, "config.yaml"))
-            candidates.append(os.path.join(os.path.dirname(home),
-                                           "config.yaml"))
     try:
         from .core import config_access
 
@@ -88,6 +75,12 @@ def _config() -> Dict[str, Any]:
             candidates.append(located)
     except Exception:  # noqa: BLE001
         pass
+    for env in ("HERMES_HOME", "HERMES_PROFILE_HOME"):
+        home = os.environ.get(env)
+        if home:
+            candidates.append(os.path.join(home, "config.yaml"))
+            candidates.append(os.path.join(os.path.dirname(home),
+                                           "config.yaml"))
     for path in candidates:
         try:
             if path and os.path.isfile(path):
@@ -99,6 +92,14 @@ def _config() -> Dict[str, Any]:
                     return got
         except Exception:  # noqa: BLE001
             continue
+    try:
+        from .core import config_access
+
+        cfg = config_access.load_full_config()
+        if isinstance(cfg, dict):
+            return cfg
+    except Exception:  # noqa: BLE001
+        pass
     return {}
 
 
@@ -122,7 +123,9 @@ def _target() -> Optional[Dict[str, str]]:
     if not isinstance(entry, dict):
         return None
     base = str(entry.get("base_url") or "").rstrip("/")
-    key_env = str(entry.get("key_env") or "")
+    # provider blocks spell this either way; reading only one of them makes
+    # the pass silently skip on every install that uses the other.
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "")
     key = os.environ.get(key_env, "") if key_env else ""
     if not key:
         try:  # profile dotenv, without importing the platform's loader
