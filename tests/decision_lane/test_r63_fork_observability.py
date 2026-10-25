@@ -125,3 +125,26 @@ def test_the_trigger_path_refuses_an_unobservable_fork():
     out = dec.detect_v3(text, 3)
     assert out is None or out.get("options") is None or \
         ds.fork_observable([ds.option_signature(o) for o in out["options"]])
+
+
+def test_midturn_row_takes_its_options_from_the_envelope():
+    """A fire whose local option list was thinner than the envelope's wrote NO
+    option set at all (live: ledger 5286, choice=opt-1, options_json=''), which
+    makes the row permanently unmeasurable. The row must carry the set the
+    verdict was made over."""
+    import inspect
+
+    from hermes_router import decision_midturn as dm
+    src = inspect.getsource(dm._ledger_base)
+    assert "options_json" in src
+    body = inspect.getsource(dm)
+    assert '_env_opts = envelope.get("options")' in body
+    assert "opts=_row_opts" in body
+    assert "midturn_row_without_options" in body
+
+
+def test_a_fire_with_no_option_set_is_reported_not_silent():
+    import inspect
+
+    from hermes_router import decision_midturn as dm
+    assert "midturn_row_without_options" in inspect.getsource(dm)

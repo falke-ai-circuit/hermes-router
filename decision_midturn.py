@@ -845,9 +845,27 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                  tool=tool_name, seam=seam)
             return
         content, meta, reason = _dec.call_backend(envelope, cfg)
+        # R63c: the row must carry THE OPTIONS THE VERDICT WAS MADE OVER, not the
+        # local pre-envelope list. build_envelope can rebuild or extend the set
+        # (structural sources, declared markers), and when the local list held
+        # fewer than two labels the row was written with NO option set at all --
+        # choice=opt-1, confidence=1.0, options_json='' -- a fire nobody can ever
+        # resolve. Live specimen: ledger id 5286, session api_1792966643_e62c72d0.
+        _row_opts = opts
+        try:
+            _env_opts = envelope.get("options") if isinstance(envelope, dict) else None
+            if isinstance(_env_opts, list) and len(_env_opts) >= 2:
+                _row_opts = _env_opts
+        except Exception:  # noqa: BLE001 — never block the write
+            _row_opts = opts
         base = _ledger_base(session_id, cfg, sig=sig, mode=mode,
                             fork_cls=fork_cls, tool_name=tool_name,
-                            seam=seam, opts=opts)
+                            seam=seam, opts=_row_opts)
+        if not base.get("options_json"):
+            # A fire with no option set is unmeasurable by construction. Say so
+            # loudly instead of letting it look like an empty measurement.
+            _log(session_id, "midturn_row_without_options", mode=mode,
+                 tool=str(tool_name or ""), seam=seam)
         base["envelope_hash"] = _dec.envelope_hash(envelope)
         base["model"] = str(meta.get("model") or cfg.get("model") or "")
         base["model_version"] = str(meta.get("model") or "")
