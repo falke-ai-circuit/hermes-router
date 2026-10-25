@@ -998,6 +998,18 @@ def pending_workers() -> int:
 REASON_SKIP = "skip_decision"
 STAND_DOWN_CHOICE = "stand_down"  # §7(d): lane-injected escape option
 TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
+                 # R59L: the frontier lane shares THIS table, and until now its
+                 # rows fell through to the ``pre_fork`` default -- so every
+                 # metric counting decision pre-fires was partly counting the
+                 # frontier lane. Proven live: one midturn-only turn under
+                 # seam=midturn_prellm wrote 3 ``pre_fork`` rows whose fork_class
+                 # was frontier_consult / frontier_post / frontier_adversarial_
+                 # parse_fail, i.e. the seam gate had held perfectly and the
+                 # ledger still reported pre-fires. Name them for what they are.
+                 "frontier_consult": "frontier_consult",
+                 "frontier_post": "frontier_post",
+                 "frontier_adversarial_parse_fail": "frontier_adversarial_parse_fail",
+                 "pre_cooldown": "pre_cooldown",
                  "manual": "on_demand", "midturn": "on_demand",
                  # R19.2: the midturn HOOK (on_llm_execution seam) gets its
                  # own ledger trigger kind — distinct from the declared
