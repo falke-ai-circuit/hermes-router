@@ -1946,10 +1946,11 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
             if _ask_declared_adversarial(ask) else ""))  # B+ 5c/5e: skeptic vantage IS the attack when pov on
         # R37-1: the folded revision ask rides LAST — payload trimming keeps
         # the tail, so the output contract can never be trimmed away.
-        # POST-only: the baseline the reflection diffs against. Rides before
-        # the tail so payload trimming can never remove the output contract.
-        + _post_required_instruction()
         + (_fold_revision_instruction(fold_char_cap) if fold_revision else "")
+        # POST-only baseline, at the ABSOLUTE tail: payload trimming keeps the
+        # tail, so anything asked mid-prompt is the first thing lost -- which is
+        # exactly what a silent `baseline=none` looks like.
+        + _post_required_instruction()
     )
     # R34-19i: total_cap must bound the WHOLE payload, not just the user part.
     # The system block (instructions + persona card) is ~2.5-3k on its own, so a
@@ -2639,6 +2640,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                      # this, deltas=False cannot be told apart from "the
                      # required block never parsed", and those need opposite
                      # fixes.
+                     req_in_text=int("required_stance" in str(verdict_text)),
                      baseline=("pre_park" if _parked else
                                "ask_required" if (_post_meta.get("required"))
                                else "none"),
