@@ -919,6 +919,27 @@ def flush(session_id: str) -> List[str]:
         return []
 
 
+def requeue(session_id: str, advisories: Any) -> None:
+    """Put advisories back on the pending queue (max 1, latest-wins).
+
+    flush() clears the queue before the caller knows whether the advisory can
+    actually ride this request. When a PRE swap is pending the request is
+    replaced wholesale, so the advisory must go back rather than be lost.
+    Never raises.
+    """
+    try:
+        items = [str(a) for a in (advisories or []) if a]
+        if not items:
+            return
+        key = _sanitize_session_key(session_id) or "active-session"
+        with _LOCK:
+            st = _RUNS.get(key)
+            if st is not None:
+                st["pending"] = [items[-1]]
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _sanitize_session_key(raw: Any) -> str:
     """v4.11.4 FIX 3: accept only keys matching the platform session-id
     shape (non-empty, bounded, no whitespace/control chars — a stale or

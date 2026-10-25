@@ -2054,12 +2054,44 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 modified = _hub().copy.deepcopy(request)
                 msgs = modified.get("messages")
                 if isinstance(msgs, list):
+                    _n = 0
                     for _adv in _mt_advisories:
                         if _adv:
                             msgs.append({"role": "assistant",
                                          "content": str(_adv)})
+                            _n += 1
+                    # Delivery was previously invisible: flush() had already
+                    # cleared the queue, so an advisory that never got appended
+                    # left no trace anywhere and the lane looked like it had
+                    # simply chosen silence.
+                    try:
+                        _hub()._log_route(
+                            "PRE", event_detail="midturn_advisory_injected",
+                            count=_n,
+                            chars=sum(len(str(a)) for a in _mt_advisories if a),
+                            has_note=int(any("internal state readout" in str(a)
+                                             for a in _mt_advisories if a)),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — telemetry only
+                        pass
                     return next_call(modified)
             return next_call(request)
+        if _mt_advisories:
+            # A PRE swap is pending, so this request is about to be replaced by
+            # a render. flush() has ALREADY cleared the queue -- dropping them
+            # here loses the advisory for good. Put them back so the next turn
+            # delivers them instead of the note vanishing into a swap.
+            try:
+                from .. import decision_midturn as _dmt2
+
+                _dmt2.requeue(session_id, _mt_advisories)
+                _hub()._log_route("PRE",
+                                  event_detail="midturn_advisory_requeued",
+                                  count=len(_mt_advisories),
+                                  reason="pending_swap",
+                                  session_id=session_id)
+            except Exception:  # noqa: BLE001 — never break the call
+                pass
 
         # Consume the staged swap now — exactly-once semantics.
         outcome = _hub().anchor_exec.maybe_execute_anchored(session_id, request)
