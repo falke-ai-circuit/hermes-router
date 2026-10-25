@@ -3606,6 +3606,28 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
         logger.debug("handle_decision_v3 error", exc_info=True)
 
 
+def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
+                        cfg: Dict[str, Any], log_route: Any) -> None:
+    """R58: record the mindset deltas the SAME fork request returned.
+
+    There are three validate sites (the v3 worker's first parse, its manual
+    retry, and the main path). Instrumenting only one of them made a real
+    backend call invisible -- a fork was built and suppressed at not_separable
+    with no score line at all. One helper, called from every site. Never raises.
+    """
+    try:
+        ms = (verdict or {}).get("mindset") or {}
+        log_route("decision_mindset_scores",
+                  trigger=str(ids.get("trigger", "pre")),
+                  backend=str(cfg.get("backend") or ""),
+                  present=bool(ms),
+                  scope=ms.get("scope"), rigour=ms.get("rigour"),
+                  reason=("scored" if ms else "no_scores"),
+                  session_id=str(ids.get("session_id") or ""))
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
+
+
 def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                cfg: Dict[str, Any], log_route: Any) -> None:
     try:
@@ -3613,6 +3635,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         verdict, vreason = None, ""
         if content is not None:
             verdict, vreason = validate_verdict(content, envelope)
+            _log_mindset_scores(verdict, ids, cfg, log_route)
         # R19.13 FIX 2 (reviewer audit fix-first 4): residual parse_fail on
         # manual verdicts gets ONE bounded worker retry before fail-open —
         # same hardening family as the v4.11.11 Jev strict-retry (live:
@@ -3631,6 +3654,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             content, meta, reason = call_backend(envelope, cfg)
             verdict, vreason = ((None, "") if content is None
                                 else validate_verdict(content, envelope))
+            if verdict is not None:
+                _log_mindset_scores(verdict, ids, cfg, log_route)
         base_row = {
             "session_id": ids.get("session_id", ""),
             "task_id": ids.get("task_id", ""),
@@ -3692,21 +3717,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             ledger_write(dict(base_row, fail_open_reason=str(reason)))
             return
         verdict, vreason = validate_verdict(content, envelope)
-        # R58 observability: the mindset scores ride the SAME request, so
-        # without this line "the backend returned no scores" and "the scores
-        # were never asked for" look identical. Log the delivered deltas at
-        # every seam (pre/midturn/post), not just the midturn emitter.
-        try:
-            _ms_log = (verdict or {}).get("mindset") or {}
-            log_route("decision_mindset_scores",
-                      trigger=str(ids.get("trigger", "pre")),
-                      backend=str(meta.get("backend") or cfg.get("backend") or ""),
-                      present=bool(_ms_log),
-                      scope=_ms_log.get("scope"), rigour=_ms_log.get("rigour"),
-                      reason=("scored" if _ms_log else "no_scores"),
-                      session_id=str(rec.get("session_id") or ids.get("session_id") or ""))
-        except Exception:  # noqa: BLE001 — telemetry only
-            pass
+        _log_mindset_scores(verdict, ids, cfg, log_route)
         if verdict is None:
             bump_counter("malformed")
             _record_failure(cfg)
