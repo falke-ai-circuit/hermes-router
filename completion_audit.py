@@ -2601,6 +2601,18 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                      observed_rigour=_post_dials.get("rigour"),
                      target_scope=(_prev or {}).get("scope"),
                      target_rigour=(_prev or {}).get("rigour"),
+                     # Which baseline answered: a PRE park (truest), the
+                     # ask-required stance from this consult, or none. Without
+                     # this, deltas=False cannot be told apart from "the
+                     # required block never parsed", and those need opposite
+                     # fixes.
+                     baseline=("pre_park" if _parked else
+                               "ask_required" if (_post_meta.get("required"))
+                               else "none"),
+                     required_scope=((_post_meta.get("required") or {})
+                                     .get("scope")),
+                     required_rigour=((_post_meta.get("required") or {})
+                                      .get("rigour")),
                      gates=[g for g in (_post_meta.get("gates") or {})
                             if (_post_meta.get("gates") or {}).get(g)],
                      deltas=bool(_lines),
