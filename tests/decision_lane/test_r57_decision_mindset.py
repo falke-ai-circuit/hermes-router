@@ -40,6 +40,7 @@ from __future__ import annotations
 import inspect
 
 import pytest
+from hermes_router import mindset_note
 
 
 # --------------------------------------------------------------------------
@@ -298,13 +299,25 @@ def test_06_block_cap_is_enforced():
                    {"mindset": {"scope": -1.0, "rigour": -1.0}})
 
     assert block.strip() != "", "both dials at max delta emitted nothing at all"
+    # R58k: the governing bound is the renderer's own, not mindset's legacy
+    # 220 -- delivery no longer passes through modulation_block, so that
+    # constant no longer caps what the agent reads.
+    max_chars = mindset_note.MAX_NOTE_CHARS
     assert len(block) <= max_chars, (
         f"block exceeds MAX_BLOCK_CHARS: len={len(block)} > {max_chars}"
     )
-    lines = [ln for ln in block.splitlines() if ln.strip()]
-    assert len(lines) <= 2, (
-        f"block exceeds 2 line cap: {len(lines)} lines -> {block!r}"
+    # The cap is on DRIVE lines. The note additionally carries a fixed
+    # non-answerable header and a one-line provenance tag; counting those
+    # against the drive budget would have kept the cap at 2 total only by
+    # dropping the framing that makes the note absorbable rather than
+    # answerable -- which is the defect being fixed.
+    drive_lines = [ln for ln in block.splitlines()
+                   if ln.startswith(("scope:", "rigour:"))]
+    assert len(drive_lines) <= 2, (
+        f"block exceeds 2 drive lines: {len(drive_lines)} -> {block!r}"
     )
+    assert len({ln.split(":")[0] for ln in drive_lines}) == len(drive_lines), (
+        "a drive must never speak twice in one note")
 
 
 # --------------------------------------------------------------------------

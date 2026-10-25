@@ -168,7 +168,10 @@ def test_large_delta_emits_a_stance_block():
                   "rigour": {"type": "score", "score": 4.0}}, env)
     block = dm._midturn_mindset_block(v, env, "test-r58")
     assert "widen" in block.lower(), f"expected a widening line, got {block!r}"
-    assert "verify" in block.lower(), f"expected a rigour line, got {block!r}"
+    assert "rigour:" in block.lower(), f"expected a rigour line, got {block!r}"
+    assert ("evidence" in block.lower()
+            or "check" in block.lower()), (
+        "the rigour line must name the correction, not merely the drive")
 
 
 def test_inverse_delta_emits_the_opposite_lines():

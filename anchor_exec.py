@@ -1307,7 +1307,7 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, An
 
 
 def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
-                        messages: Any) -> str:
+                        messages: Any, source: str = "pre") -> str:
     """The MINDSET MODULATION block for the delivered advisory, or ''.
 
     Failure isolation is a hard contract: any exception from mindset.py is
@@ -1355,26 +1355,21 @@ def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
                       else None)
                   for d in mindset.DRIVES}
         delta = mindset.delta_vector(target, used)
-        block = mindset.modulation_block(delta, band=band)
-        emitted = block.count("\n") if block else 0
+        # R58k: ONE renderer for every source. The old path built its own
+        # block here and sliced the body by hand, which duplicated the
+        # vocabulary and the caps in two places and let them drift.
+        from . import mindset_note as _mn
+        block = _mn.note(delta, source=source, band=band)
+        emitted = block.count("\n") - 1 if block else 0
         try:
             _lrx("PRE", event_detail="mindset_modulation", emitted=emitted,
                  scope=delta.get("scope"), rigour=delta.get("rigour"),
                  band=band, session_id=str(session_id or ""))
         except Exception:  # noqa: BLE001 — telemetry only
             pass
-        # Hard cap: 2 lines, 220 chars of body. Never a bare header.
-        if not block:
-            return ""
-        body = block.split("\n", 1)[1] if "\n" in block else ""
-        if not body.strip():
-            return ""
-        lines = [x for x in body.split("\n") if x.strip()][:2]
-        if sum(len(x) for x in lines) + max(0, len(lines) - 1) > 220:
-            lines = lines[:1]
-        if not lines:
-            return ""
-        return mindset.MINDSET_HEADER + "\n" + "\n".join(lines)
+        # The note is bounded by construction inside mindset_note; no slicing
+        # here, or two cap regimes disagree and the shorter one wins by luck.
+        return block
     except Exception as exc:  # noqa: BLE001 — mindset never breaks the consult
         try:
             from .core.telemetry import log_route as _lrx
@@ -1887,8 +1882,19 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                                         "format": (_pov_meta or {}).get("format")})
             except Exception:  # noqa: BLE001 — carry is best-effort
                 pass
+            # Provenance comes from _initiator, which the gate already
+            # resolved (declared_user->user, declared_agent->agent,
+            # auto/legacy->auto). An earlier version of this line referenced
+            # _swap/_on_demand, which do not exist in this scope: the
+            # NameError would have been swallowed by the fail-open except and
+            # reported as mindset_modulation_skipped, silently disabling the
+            # feature while the logs looked healthy.
+            _ms_source = ("on_demand"
+                          if str(locals().get("_initiator") or "") == "user"
+                          else "pre")
             _mindset_block = _mindset_modulation(
-                session_id, _mindset_target, api_kwargs.get("messages"))
+                session_id, _mindset_target, api_kwargs.get("messages"),
+                source=_ms_source)
             if _mindset_block:
                 _answer = str(envelope.get("answer") or "").rstrip()
                 envelope["answer"] = (_answer + "\n\n" + _mindset_block

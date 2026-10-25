@@ -15,6 +15,7 @@ import json
 import sqlite3
 
 import pytest
+from hermes_router import mindset_note
 
 from hermes_router import (anchor_exec, decision, decision_midturn as dmt,
                            mindset)
@@ -212,20 +213,27 @@ def test_m8_one_drive_out_of_band_is_one_stance_line():
     v = {"choice": "opt-1", "confidence": 0.8, "alternatives": [],
          "mindset": {"scope": 0.9, "rigour": 0.1}}
     out = dmt._midturn_mindset_block(v, _stance_env(), SID)
-    assert out.count("\n") == 0 and out
-    assert len(out) <= 110
-    assert out in mindset._STANCE.values()
+    # R58k: the note now carries a header and a provenance tag, so "no
+    # newlines" is the wrong shape assertion. What must hold is that exactly
+    # ONE drive speaks, that it stays within the per-line cap, and that the
+    # block declares itself non-answerable.
+    assert out.startswith(mindset_note.NOTE_HEADER)
+    drive_lines = [ln for ln in out.split("\n")
+                   if ln.startswith(("scope:", "rigour:"))]
+    assert len(drive_lines) == 1, drive_lines
+    assert len(drive_lines[0]) <= mindset_note.MAX_LINE_CHARS
 
 
 def test_m9_both_out_of_band_is_two_lines_within_cap():
     v = {"choice": "opt-1", "confidence": 0.8, "alternatives": [],
          "mindset": {"scope": 0.9, "rigour": -0.9}}
     out = dmt._midturn_mindset_block(v, _stance_env(), SID)
-    lines = out.split("\n")
-    assert len(lines) == 2
-    assert all(len(x) <= 110 for x in lines)
-    assert sum(len(x) for x in lines) + 1 <= 220
-    assert all(x in mindset._STANCE.values() for x in lines)
+    lines = [ln for ln in out.split("\n") if ln.startswith(("scope:", "rigour:"))]
+    assert len(lines) == 2, lines
+    assert all(len(x) <= mindset_note.MAX_LINE_CHARS for x in lines)
+    assert len(out) <= mindset_note.MAX_NOTE_CHARS
+    # one line per drive, never two lines for the same drive
+    assert {ln.split(":")[0] for ln in lines} == {"scope", "rigour"}
 
 
 def test_m9_sign_selects_the_opposite_stance():
@@ -236,8 +244,7 @@ def test_m9_sign_selects_the_opposite_stance():
         {"choice": "opt-1", "confidence": 0.8, "alternatives": [],
          "mindset": {"scope": -0.9}}, _stance_env(), SID)
     assert up != down
-    assert up == mindset._STANCE[("scope", 1)]
-    assert down == mindset._STANCE[("scope", -1)]
+    assert "widen" in up and "narrow" in down
 
 
 # ---------------------------------------------------------------- M10 -------
@@ -270,7 +277,10 @@ def test_m10_midturn_path_makes_no_frontier_call(_env, monkeypatch):
     pending = dmt.flush(SID)
     assert frontier == []
     assert len(calls) == 1  # exactly the one jev call the lane already made
-    assert pending and any(x in pending[0] for x in mindset._STANCE.values())
+    # R58k: the advisory must carry the shared note, identified by its
+    # sentinel rather than by a verbatim copy of the old _STANCE wording.
+    assert pending and mindset_note.NOTE_HEADER in pending[0]
+    assert "scope:" in pending[0]
 
 
 def test_m10_no_stance_line_when_backend_says_nothing(_env, monkeypatch):

@@ -2514,9 +2514,16 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 verdict_text = _post_clean
                 _parked = _povs_mod.consume_target(session_id)
                 _prev = (_parked or {}).get("dials") if _parked else None
-                _lines = (_povs_mod.reflection_lines(_prev, _post_dials)
-                          if _prev else [])
-                _pov_reflection = "\n".join(_lines)
+                # R58k: POST speaks through the same renderer as PRE and
+                # midturn. It used to emit its own "_DELTA_LABEL" prose, so
+                # the same dial was worded differently depending on which
+                # seam happened to notice it.
+                from . import mindset_note as _mn
+                _deltas = (_povs_mod.delta_labels(_prev, _post_dials)
+                           if _prev else {})
+                _pov_reflection = _mn.note(_deltas, source="post")
+                _lines = [ln for ln in _pov_reflection.split("\n")
+                          if ln and not ln.startswith("[")]
                 _log("post_pov_projection",
                      format="pov",
                      win=_post_meta.get("win"),

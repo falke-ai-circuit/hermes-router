@@ -1191,11 +1191,18 @@ def _midturn_mindset_block(verdict: Dict[str, Any],
         stance = stance if isinstance(stance, dict) else {}
         band = float(getattr(mindset, "BAND", 0.5))
         adj: Dict[str, Any] = {}
+        _unreadable: List[str] = []
         for d in ("scope", "rigour"):
             v = adj_raw.get(d)
             if v is None:
                 continue
             if stance.get(d) is None:  # unreadable stance => no adjustment
+                # Remember it: "no note because nothing is out of band" and
+                # "no note because the current stance was never measured" are
+                # different facts, and the census reads this reason. Reporting
+                # both as in_band turns an absence of measurement into a
+                # measured null.
+                _unreadable.append(d)
                 continue
             try:
                 fv = float(v)
@@ -1204,22 +1211,22 @@ def _midturn_mindset_block(verdict: Dict[str, Any],
             if abs(fv) <= band:
                 continue
             adj[d] = fv
-        lines = mindset.stance_lines(adj, band=band)[:2]
-        cap = int(getattr(mindset, "MAX_BLOCK_CHARS", 220))
-        kept: List[str] = []
-        total = 0
-        for ln in lines:
-            add = len(ln) + (1 if kept else 0)
-            if total + add > cap:
-                break
-            kept.append(ln)
-            total += add
-        _log(session_id, "midturn_mindset", emitted=len(kept),
+        # R58k: same renderer as PRE/POST/on-demand -- one voice, one shape.
+        # The note is bounded inside mindset_note by construction, so the old
+        # hand-rolled char cap is gone: two cap regimes disagree and the
+        # shorter one wins by luck.
+        from . import mindset_note as _mn
+
+        _note = _mn.note(adj, source="midturn", band=band)
+        _emitted = sum(1 for d in ("scope", "rigour") if adj.get(d) is not None)
+        _log(session_id, "midturn_mindset", emitted=_emitted if _note else 0,
              scope=adj.get("scope"), rigour=adj.get("rigour"),
              verdict=str(verdict.get("choice") or ""),
              raw_scope=adj_raw.get("scope"), raw_rigour=adj_raw.get("rigour"),
-             reason=("emitted" if kept else "in_band"))
-        return "\n".join(kept)
+             reason=("emitted" if _note
+                     else "scores_but_stance_unreadable" if _unreadable
+                     else "in_band"))
+        return _note
     except Exception:  # noqa: BLE001 — mindset never breaks the lane
         return ""
 

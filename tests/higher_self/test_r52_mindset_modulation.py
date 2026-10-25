@@ -30,6 +30,7 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
 import pytest  # noqa: E402
 
 from hermes_router import anchor_chain, anchor_exec, mindset, router_core  # noqa: E402
+from hermes_router import mindset_note  # noqa: E402
 from hermes_router import state  # noqa: E402
 from hermes_router.core import telemetry  # noqa: E402
 
@@ -184,7 +185,10 @@ def test_t5_exception_inside_mindset_leaves_the_consult_unchanged(monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("mindset exploded")
 
-    monkeypatch.setattr(mindset, "stance_lines", _boom)
+    # R58k: the delivery path renders through mindset_note, so the
+    # failure-isolation contract has to be probed there; monkeypatching
+    # a function that is no longer called proves nothing.
+    monkeypatch.setattr(mindset_note, "note", _boom)
     # R53: the modulation path only runs when a structured target exists
     _used_zero(monkeypatch)
     result, events = _pre_run(
@@ -192,7 +196,7 @@ def test_t5_exception_inside_mindset_leaves_the_consult_unchanged(monkeypatch):
         content=ADVISORY + '\nMINDSET_TARGET {"scope": 0.9, "rigour": 0.9}')
     assert result is not None and result[0] == "done"
     env = result[1]
-    assert "MINDSET MODULATION" not in str(env.get("answer") or "")
+    assert mindset_note.NOTE_HEADER not in str(env.get("answer") or "")
     assert str(env.get("answer") or "").startswith(ADVISORY[:20])
     sk = _skipped(events)
     assert len(sk) == 1
@@ -244,11 +248,11 @@ def test_t8_persisted_body_does_not_contain_the_block(monkeypatch):
     assert result is not None and result[0] == "done"
     env = result[1]
     answer = str(env.get("answer") or "")
-    assert "MINDSET MODULATION" in answer
-    assert answer.count("MINDSET MODULATION") == 1
+    assert mindset_note.NOTE_HEADER in answer
+    assert answer.count(mindset_note.NOTE_HEADER) == 1
     stored = state.pre_advisory(SID)
     assert stored is not None
-    assert "MINDSET MODULATION" not in str(stored.get("text") or "")
+    assert mindset_note.NOTE_HEADER not in str(stored.get("text") or "")
     assert str(stored.get("text") or "") == ADVISORY
 
 
@@ -290,7 +294,7 @@ def test_r53_t8_target_is_parsed_and_the_line_never_survives(monkeypatch):
     env = result[1]
     answer = str(env.get("answer") or "")
     assert "MINDSET_TARGET" not in answer
-    assert "MINDSET MODULATION" in answer
+    assert mindset_note.NOTE_HEADER in answer
     stored = state.pre_advisory(SID)
     assert "MINDSET_TARGET" not in str(stored.get("text") or "")
     assert str(stored.get("text") or "").strip() == "PLAN\n1. do it"

@@ -159,7 +159,12 @@ _POV_SECTION_RE = re.compile(
 _SYNTH_RE = re.compile(r"(?im)^[ \t>*\-]*synthesis\b")
 _POV_LABEL_RE = re.compile(r"(?im)^[ \t>*\-]*(?:practitioner|outsider|skeptic)\s*:")
 _HEADER_MARKERS = ("[router advisory", "router advisory \u2014 decision lane",
-                   "[router fork note")
+                   "[router fork note",
+                   # R58k: the mindset note is delivered beside advisories and
+                   # tool output. If an agent echoes it, the guard must strip
+                   # it -- an echoed note is the exact failure mindset_note
+                   # exists to prevent, and it would otherwise read as work.
+                   "[internal state readout")
 # R58j bounds for the header skip: how many advisory lines may be dropped after
 # the header before the guard must assume it has reached the agent's report.
 HEADER_SKIP_MAX = 6
