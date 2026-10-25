@@ -466,7 +466,14 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
             try:
                 from . import fork_sources as _fs
 
-                _src_fork = _fs.rival_targets(_state(str(session_id)), "")
+                # Pass the TEXT, not "": the generic detectors (either_or,
+                # listed_candidates) read a single text and need no accumulated
+                # path set, so calling with "" made them unreachable from this
+                # leg -- the commonest real fork on the fleet ("Either delete
+                # .../probe_a.py or delete .../probe_b.py") produced
+                # midturn_suppressed reason=no_options. note_seen above is
+                # idempotent for paths already recorded.
+                _src_fork = _fs.rival_targets(_state(str(session_id)), text)
             except Exception as _e:  # noqa: BLE001
                 _src_fork = None
                 _log(session_id, "midturn_fork_source_error",

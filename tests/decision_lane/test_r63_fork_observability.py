@@ -148,3 +148,30 @@ def test_a_fire_with_no_option_set_is_reported_not_silent():
 
     from hermes_router import decision_midturn as dm
     assert "midturn_row_without_options" in inspect.getsource(dm)
+
+
+# --- R63d: the generic detectors must be reachable from the midturn leg ------
+
+def test_a_dotted_filename_does_not_break_the_connective_span():
+    """`probe_a.py` carries a dot. The span class used to forbid dots as
+    sentence ends, so the commonest real fork on the fleet matched nothing."""
+    from hermes_router import fork_sources as fs
+    hit = fs._det_either_or(None, "Either delete /opt/data/tmp/probe_a.py or "
+                                  "delete /opt/data/tmp/probe_b.py. Pick one.")
+    assert hit and hit["options"] == ["delete /opt/data/tmp/probe_a.py",
+                                      "delete /opt/data/tmp/probe_b.py"]
+
+
+def test_plain_prose_is_still_not_a_fork():
+    from hermes_router import fork_sources as fs
+    assert fs._det_either_or(None, "The run finished. Either way we are done.") is None
+
+
+def test_the_midturn_leg_passes_text_to_the_fork_source():
+    """`rival_targets(state, "")` made every generic detector unreachable from
+    the midturn leg, so a fork in the tool result produced reason=no_options."""
+    import inspect
+
+    from hermes_router import decision_midturn as dm
+    src = inspect.getsource(dm)
+    assert 'rival_targets(_state(str(session_id)), text)' in src

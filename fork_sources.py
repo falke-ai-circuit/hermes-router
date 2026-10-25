@@ -174,7 +174,7 @@ def _span_ok(s: str) -> bool:
     with no repo path" is not an option in any domain.
     """
     t = (s or "").strip(" \t\n,;:.\"'()[]")
-    if not (2 <= len(t) <= 60):
+    if not (2 <= len(t) <= 90):
         return False
     if t.lower() in _STOP:
         return False
@@ -192,16 +192,23 @@ def _span_ok(s: str) -> bool:
 #: connectives that voice a fork in prose. Deliberately domain-free: the same
 #: four shapes carry an analyst's hypotheses, a researcher's sources, a valmet
 #: engineer's protocol readings and an operative's hosts.
+#: One span of prose. A dot is allowed when it is part of a token
+#: (`probe_a.py`, `config.yaml`, `v1.2`) and forbidden as a sentence end --
+#: without that lookahead the commonest real fork on the fleet
+#: ("Either delete /opt/tmp/probe_a.py or delete /opt/tmp/probe_b.py") matched
+#: nothing, because both routes carry a dot inside a FILENAME.
+_SPAN = r"(?:[^.;\n]|\.(?=\S))"
+
 _FORK_CONNECTIVES = (
-    r"either\s+(?P<a>[^.;\n]{2,60}?)\s+or\s+(?P<b>[^.;\n]{2,60})",
-    r"(?P<a>[^.;\n]{2,60}?)\s+(?:vs\.?|versus)\s+(?P<b>[^.;\n]{2,60})",
-    r"(?P<a>[^.;\n]{2,60}?)\s+(?:rather than|instead of)\s+(?P<b>[^.;\n]{2,60})",
-    r"between\s+(?P<a>[^.;\n]{2,60}?)\s+and\s+(?P<b>[^.;\n]{2,60})",
-    r"(?P<a>[^.;\n]{2,60}?)\s+could\s+be\s+(?:the\s+)?(?:cause|problem|issue|fault)\s*[,;]?\s*(?:or|and)\s+(?P<b>[^.;\n]{2,60})",
+    r"either\s+(?P<a>" + _SPAN + r"{2,80}?)\s+or\s+(?P<b>" + _SPAN + r"{2,80})",
+    r"(?P<a>" + _SPAN + r"{2,80}?)\s+(?:vs\.?|versus)\s+(?P<b>" + _SPAN + r"{2,80})",
+    r"(?P<a>" + _SPAN + r"{2,80}?)\s+(?:rather than|instead of)\s+(?P<b>" + _SPAN + r"{2,80})",
+    r"between\s+(?P<a>" + _SPAN + r"{2,80}?)\s+and\s+(?P<b>" + _SPAN + r"{2,80})",
+    r"(?P<a>" + _SPAN + r"{2,80}?)\s+could\s+be\s+(?:the\s+)?(?:cause|problem|issue|fault)\s*[,;]?\s*(?:or|and)\s+(?P<b>" + _SPAN + r"{2,80})",
     # cue-anchored inline choice ("Two options: refund the order or reship it").
     # The cue word is what keeps this tight -- a bare "X or Y" is far too common in
     # ordinary prose and would make the lane trigger-happy.
-    r"(?:options?|alternatives?|choices?|candidates?)\s*:\s*(?P<a>[^.;\n]{2,60}?)\s+or\s+(?P<b>[^.;\n]{2,60})",
+    r"(?:options?|alternatives?|choices?|candidates?)\s*:\s*(?P<a>" + _SPAN + r"{2,80}?)\s+or\s+(?P<b>" + _SPAN + r"{2,80})",
 )
 # Compiled separately, not as one alternation: Python forbids reusing a named
 # group across alts in a single pattern, and each connective is tried in order.
