@@ -2625,7 +2625,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 # than the ask demanded would be told to narrow further. Flip
                 # once, here, where both conventions are visible.
                 _adj = {d: -float(v) for d, v in _deltas.items()}
-                _pov_reflection = _mn.note(_adj, source="post")
+                # Render at the SAME band that produced the deltas. The
+                # renderer defaults to 0.5 while delta_labels uses 0.35, so a
+                # delta that legitimately qualified (|d| = 0.448) was then
+                # dropped by the other constant -- two bands disagreeing and
+                # the stricter one winning by accident.
+                _pov_reflection = _mn.note(
+                    _adj, source="post",
+                    band=float(getattr(_povs_mod, "DELTA_BAND", 0.35)))
                 _lines = [ln for ln in _pov_reflection.split("\n")
                           if ln and not ln.startswith("[")]
                 _log("post_pov_projection",

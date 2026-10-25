@@ -281,3 +281,24 @@ def test_post_delta_direction_is_an_adjustment_not_an_observation():
 
     assert "narrow" in wrong.split("\n")[1], "unflipped says narrow (the bug)"
     assert "widen" in right.split("\n")[1], "flipped says widen (correct)"
+
+
+def test_post_renders_at_the_band_that_produced_its_deltas():
+    """Two bands disagreeing drops qualified corrections by accident.
+
+    delta_labels qualifies at povs.DELTA_BAND (0.35); the renderer defaults to
+    0.5. A 0.448 delta passed the first and was silently killed by the second,
+    which looks identical to 'the readings agree'.
+    """
+    from hermes_router import povs as P
+
+    required = {"rigour": 0.6}
+    observed = {"rigour": 0.152}
+    deltas = P.delta_labels(required, observed)
+    assert deltas, "the delta must qualify at DELTA_BAND"
+
+    default_band = N.note({d: -v for d, v in deltas.items()}, source="post")
+    aligned = N.note({d: -v for d, v in deltas.items()}, source="post",
+                     band=P.DELTA_BAND)
+    assert default_band == "", "default 0.5 band drops it (the bug)"
+    assert aligned != "", "rendering at DELTA_BAND must speak"
