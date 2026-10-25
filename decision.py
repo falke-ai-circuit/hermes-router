@@ -2631,6 +2631,9 @@ def _mindset_score_questions() -> Dict[str, Any]:
         return {}
 
 
+MINDSET_DIAG = threading.local()
+
+
 def _systemone_mindset_delta(answers: Any,
                              envelope: Dict[str, Any]) -> Dict[str, float]:
     """Scores -> signed dial ADJUSTMENTS relative to the envelope's stance.
@@ -2647,6 +2650,7 @@ def _systemone_mindset_delta(answers: Any,
         cur = envelope.get("mindset")
         cur = cur if isinstance(cur, dict) else {}
         out: Dict[str, float] = {}
+        diag: Dict[str, Any] = {"saw": {}}
         for drive, levels in (("scope", MINDSET_SCORE_LEVELS),
                               ("rigour", MINDSET_RIGOUR_LEVELS)):
             a = answers.get(drive)
@@ -2663,12 +2667,16 @@ def _systemone_mindset_delta(answers: Any,
             if top <= 0:
                 continue
             optimal = max(-1.0, min(1.0, (raw / top) * 2.0 - 1.0))
+            diag["saw"][drive] = raw
             base = cur.get(drive)
             if isinstance(base, bool) or not isinstance(base, (int, float)):
+                diag.setdefault("unreadable", []).append(drive)
                 continue  # unreadable stance => no adjustment (same rule as
                           # _midturn_mindset_block)
             delta = max(-1.0, min(1.0, optimal - float(base)))
             out[drive] = round(delta, 4)
+        diag["adjusted"] = sorted(out)
+        MINDSET_DIAG.last = diag
         return out
     except Exception:  # noqa: BLE001
         return {}
@@ -3626,7 +3634,14 @@ def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
                   backend=str(cfg.get("backend") or ""),
                   present=bool(ms),
                   scope=ms.get("scope"), rigour=ms.get("rigour"),
-                  reason=("scored" if ms else "no_scores"),
+                  saw_scores=str(sorted((getattr(MINDSET_DIAG, "last", {})
+                                         or {}).get("saw", {}))),
+                  stance_unreadable=str((getattr(MINDSET_DIAG, "last", {})
+                                         or {}).get("unreadable", [])),
+                  reason=("scored" if ms else
+                          ("scores_but_stance_unreadable"
+                           if getattr(MINDSET_DIAG, "last", {}).get("unreadable")
+                           else "no_scores")),
                   session_id=str(ids.get("session_id") or ""))
     except Exception:  # noqa: BLE001 — telemetry only
         pass
