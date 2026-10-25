@@ -1297,7 +1297,10 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS,
     try:
         from . import mindset
 
-        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=2.0)
+        # Off the request path since R58L, so a long budget costs nothing: the
+        # build may take seconds on a 200-session scan and it must not be
+        # killed by a timeout chosen when it ran inline and had to be cheap.
+        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=30.0)
         try:
             sids = [r[0] for r in conn.execute(
                 "SELECT session_id FROM messages WHERE tool_name IS NOT NULL "
@@ -1328,6 +1331,16 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS,
     except Exception:  # noqa: BLE001 — observability input, never lane-breaking
         out = {}
     good = any(bool(v) for v in out.values())
+    # Never silent: an empty build is the failure mode that hid this feature
+    # for weeks, so it gets a line of its own at the same sink as the lanes.
+    try:
+        from .core.telemetry import log_route as _lrh
+
+        _lrh("PRE", event_detail="mindset_hist_built", ok=good,
+             drives={k: len(v) for k, v in out.items()},
+             ms=int((time.time() - now) * 1000), db=os.path.basename(db))
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
     ttl = _MINDSET_HIST_TTL if good else _MINDSET_HIST_FAIL_TTL
     with _MINDSET_HIST_LOCK:
         _MINDSET_HIST_CACHE[db] = (time.time() + ttl, out)
