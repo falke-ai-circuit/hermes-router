@@ -2583,6 +2583,97 @@ def _robust_json_content(content: str) -> str:
         return ""
 
 
+# R58 (Goran 2026-10-24): the mindset adjust rides the SAME fork request as
+# the choice — same envelope, same call, no extra spend. Typesafe's native
+# schema supports a `score` question: ordered rubric levels whose POSITION is
+# the score, answered as a probability-weighted average, so the answer is
+# fractional and we get real resolution rather than a coarse bucket.
+#
+# Five levels per dial maps linearly onto the plugin's [-1, +1] dial:
+# score 0 -> -1, score 2 -> 0, score 4 -> +1 (fractional in between).
+# The question asks where THIS WORK sits given the agent card and the current
+# situation, which is exactly what the envelope's `state` already carries.
+MINDSET_SCORE_LEVELS = (
+    "as narrow as possible - one identified target and nothing else",
+    "mostly narrow - the target plus what it directly touches",
+    "balanced - the target and its immediate dependents",
+    "mostly wide - callers, configs and docs as well",
+    "as wide as possible - every surface that could possibly matter",
+)
+MINDSET_RIGOUR_LEVELS = (
+    "act now - try it and see, no pre-checking at all",
+    "mostly act - verify only whatever breaks",
+    "balanced - check the risky parts, move on the rest",
+    "mostly verify - read and confirm before writing",
+    "surgical - verify everything before a single change",
+)
+_MINDSET_SCORE_US = (
+    "Where on this scale does the work described in the state actually sit "
+    "right now? Rate THIS work against the agent frame and situation above, "
+    "not the wording of the original ask."
+)
+
+
+def _mindset_score_questions() -> Dict[str, Any]:
+    """The two score questions that ride the fork request. Never raises."""
+    try:
+        return {
+            "scope": {"type": "score",
+                      "instructions": _MINDSET_SCORE_US + " Scale: how much "
+                                      "SURFACE this work needs to look at.",
+                      "criteria": list(MINDSET_SCORE_LEVELS)},
+            "rigour": {"type": "score",
+                       "instructions": _MINDSET_SCORE_US + " Scale: how much "
+                                       "CHECKING this work needs before acting.",
+                       "criteria": list(MINDSET_RIGOUR_LEVELS)},
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _systemone_mindset_delta(answers: Any,
+                             envelope: Dict[str, Any]) -> Dict[str, float]:
+    """Scores -> signed dial ADJUSTMENTS relative to the envelope's stance.
+
+    The verdict contract (decision.py question text) says mindset values are
+    ADJUSTMENTS, so the absolute optimum read off the rubric is differenced
+    against the current stance. A drive whose current stance is unreadable is
+    SKIPPED, not defaulted: a delta from an unknown baseline is not a
+    measurement. Never raises.
+    """
+    try:
+        if not isinstance(answers, dict):
+            return {}
+        cur = envelope.get("mindset")
+        cur = cur if isinstance(cur, dict) else {}
+        out: Dict[str, float] = {}
+        for drive, levels in (("scope", MINDSET_SCORE_LEVELS),
+                              ("rigour", MINDSET_RIGOUR_LEVELS)):
+            a = answers.get(drive)
+            if not isinstance(a, dict):
+                continue
+            _sc = a.get("score")
+            if isinstance(_sc, bool) or _sc is None:
+                continue  # bool coerces to 1.0; a True is not a rating
+            try:
+                raw = float(_sc)
+            except (TypeError, ValueError):
+                continue
+            top = float(len(levels) - 1)
+            if top <= 0:
+                continue
+            optimal = max(-1.0, min(1.0, (raw / top) * 2.0 - 1.0))
+            base = cur.get(drive)
+            if isinstance(base, bool) or not isinstance(base, (int, float)):
+                continue  # unreadable stance => no adjustment (same rule as
+                          # _midturn_mindset_block)
+            delta = max(-1.0, min(1.0, optimal - float(base)))
+            out[drive] = round(delta, 4)
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _systemone_native_payload(envelope: Dict[str, Any],
                               cfg: Dict[str, Any]) -> Dict[str, Any]:
     """D3 (v4.13.2): map the decision envelope onto the systemone schema
@@ -2621,14 +2712,14 @@ def _systemone_native_payload(envelope: Dict[str, Any],
             "model": str(cfg.get("jev_native_model")
                          or DEFAULTS["jev_native_model"]),
             "state": state,
-            "questions": {
+            "questions": dict({
                 "choice": {
                     "type": "choice",
                     "instructions": ("choose the option that best fits the "
                                      "framed fork; stand_down only if no "
                                      "decision is actually requested"),
                     "criteria": criteria,
-                }},
+                }}, **_mindset_score_questions()),
         }
     except Exception:  # noqa: BLE001 — fail-open
         return {}
@@ -2669,9 +2760,16 @@ def _systemone_verdict_content(data: Any, envelope: Dict[str, Any]) -> str:
             ranked = sorted(((str(k), _pval(v)) for k, v in probs.items()),
                             key=lambda kv: kv[1], reverse=True)
             alts = [k for k, _ in ranked if k in ids and k != ch]
-        return json.dumps({"choice": ch,
-                           "confidence": max(0.0, min(1.0, conf)),
-                           "alternatives": alts})
+        out: Dict[str, Any] = {"choice": ch,
+                               "confidence": max(0.0, min(1.0, conf)),
+                               "alternatives": alts}
+        # R58: the mindset answers arrive in the SAME response under the names
+        # we asked for. Absent/unreadable => no key at all, so the lane behaves
+        # exactly as before rather than emitting a zero it did not measure.
+        _ms = _systemone_mindset_delta(answers, envelope)
+        if _ms:
+            out["mindset"] = _ms
+        return json.dumps(out)
     except Exception:  # noqa: BLE001 — fail-open
         return ""
 

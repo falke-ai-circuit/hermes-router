@@ -1169,7 +1169,8 @@ def _midturn_mindset_block(verdict: Dict[str, Any],
         adj_raw = verdict.get("mindset") or {}
         if not isinstance(adj_raw, dict) or not adj_raw:
             _log(session_id, "midturn_mindset", emitted=0, scope=None,
-                 rigour=None, verdict=str(verdict.get("choice") or ""))
+                 rigour=None, verdict=str(verdict.get("choice") or ""),
+                 reason="no_mindset_in_verdict")
             return ""
         stance = envelope.get("mindset")
         stance = stance if isinstance(stance, dict) else {}
@@ -1200,7 +1201,9 @@ def _midturn_mindset_block(verdict: Dict[str, Any],
             total += add
         _log(session_id, "midturn_mindset", emitted=len(kept),
              scope=adj.get("scope"), rigour=adj.get("rigour"),
-             verdict=str(verdict.get("choice") or ""))
+             verdict=str(verdict.get("choice") or ""),
+             raw_scope=adj_raw.get("scope"), raw_rigour=adj_raw.get("rigour"),
+             reason=("emitted" if kept else "in_band"))
         return "\n".join(kept)
     except Exception:  # noqa: BLE001 — mindset never breaks the lane
         return ""
