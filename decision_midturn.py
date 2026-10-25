@@ -450,11 +450,23 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         # Detection is deterministic here; the verdict still costs a call only
         # when a real rival pair exists.
         _src_fork = None
+        # Accumulate the session's surfaced paths on EVERY tool result, before any
+        # gate. Recognition previously depended on one single result carrying both
+        # rival paths, so a run whose reads arrived separately saw nothing and the
+        # lane stayed silent -- measured: D4 fired 3/3 with the source in place and
+        # then 0/2 once the same fixtures were re-run. Noticing is cumulative or it
+        # is luck.
+        try:
+            from . import fork_sources as _fs0
+
+            _fs0.note_seen(_state(str(session_id)), text)
+        except Exception:  # noqa: BLE001
+            pass
         if not opts or not _dec.has_declared_fork_structure(text):
             try:
                 from . import fork_sources as _fs
 
-                _src_fork = _fs.rival_targets(_state(str(session_id)), text)
+                _src_fork = _fs.rival_targets(_state(str(session_id)), "")
             except Exception:  # noqa: BLE001
                 _src_fork = None
             if _src_fork:
