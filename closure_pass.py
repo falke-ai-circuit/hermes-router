@@ -46,27 +46,54 @@ _INSTRUCTION = (
 
 
 def _config() -> Dict[str, Any]:
-    try:
-        from hermes_cli.config import load_config  # type: ignore
+    """Whole config through the plugin's OWN reader.
 
-        cfg = load_config()
+    core.config_access is the plugin's single sanctioned config seam: it uses
+    hermes_cli.config when importable and falls back to the resolved path when
+    it is not. Reaching for hermes_cli directly here would make this module
+    depend on a host install rather than on the plugin's portability layer.
+    Never raises.
+    """
+    try:
+        from .core import config_access
+
+        cfg = config_access.load_full_config()
         if isinstance(cfg, dict):
             return cfg
-    except Exception:  # noqa: BLE001 — fall through to the profile file
+    except Exception:  # noqa: BLE001 — fall through to the plugin-local file
         pass
-    try:
-        import yaml  # type: ignore
+    # No hermes_cli on this install: find config.yaml by POSITION, trying the
+    # profile root the host advertises before the plugin's own location. A
+    # deployed copy sits at <profile>/plugins/hermes_router/, but the dev tree
+    # does not, so neither path alone is reliable.
+    import os
 
-        home = (os.environ.get("HERMES_HOME")
-                or os.environ.get("HERMES_PROFILE_HOME") or "")
-        path = os.path.join(home, "config.yaml") if home else ""
-        if path and os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as fh:
-                got = yaml.safe_load(fh)
-            if isinstance(got, dict):
-                return got
+    candidates = []
+    for env in ("HERMES_HOME", "HERMES_PROFILE_HOME"):
+        home = os.environ.get(env)
+        if home:
+            candidates.append(os.path.join(home, "config.yaml"))
+            candidates.append(os.path.join(os.path.dirname(home),
+                                           "config.yaml"))
+    try:
+        from .core import config_access
+
+        located = config_access._coLocatedPath()
+        if located:
+            candidates.append(located)
     except Exception:  # noqa: BLE001
         pass
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                import yaml  # type: ignore
+
+                with open(path, "r", encoding="utf-8") as fh:
+                    got = yaml.safe_load(fh)
+                if isinstance(got, dict):
+                    return got
+        except Exception:  # noqa: BLE001
+            continue
     return {}
 
 
