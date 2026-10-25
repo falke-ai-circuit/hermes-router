@@ -1713,15 +1713,16 @@ def _post_required_instruction() -> str:
     costs no extra consult.
     """
     return (
-        "\n\nREPORT TWO STANCES. Before the four voice weights, add a "
-        "matching group prefixed with the word 'required' that reports the "
-        "stance the ASK ITSELF demanded (what this work had to be), then the "
-        "unprefixed group for the work as actually performed:\n"
-        "required explorer: <0..1> | <what scanning this ask needed>\n"
-        "required verifier: <0..1> | <what correctness this ask needed>\n"
-        "required skeptic: <0..1> | <what doubt this ask needed>\n"
-        "required operator: <0..1> | <how directly this ask wanted action>\n"
-        "These lines are machine-parsed and stripped before delivery."
+        "\n\nREPORT THE STANCE THE ASK REQUIRED, as a field in the SAME JSON "
+        "object you already end with (prose lines are not enough -- this must "
+        "travel in the machine contract):\n"
+        '{"sense_check": {...}, "required_stance": {"scope": <-1..1>, '
+        '"rigour": <-1..1>}}\n'
+        "required_stance = what THIS ASK demanded of the work, judged from the "
+        "ask alone: scope -1 = the ask wanted one local thing, +1 = it wanted "
+        "the whole surface swept; rigour -1 = act now on what is settled, "
+        "+1 = verify every claim before shipping. Judge the ASK, not the work "
+        "-- the work's own stance is already reported by the voices above."
     )
 
 
@@ -2616,7 +2617,14 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 from . import mindset_note as _mn
                 _deltas = (_povs_mod.delta_labels(_prev, _post_dials)
                            if _prev else {})
-                _pov_reflection = _mn.note(_deltas, source="post")
+                # SIGN CONVENTION: delta_labels is (observed - required) -- a
+                # description of what happened. mindset_note reads a delta as
+                # an ADJUSTMENT (what to do next). Feeding one to the other
+                # unchanged inverts the advice: a work that came out narrower
+                # than the ask demanded would be told to narrow further. Flip
+                # once, here, where both conventions are visible.
+                _adj = {d: -float(v) for d, v in _deltas.items()}
+                _pov_reflection = _mn.note(_adj, source="post")
                 _lines = [ln for ln in _pov_reflection.split("\n")
                           if ln and not ln.startswith("[")]
                 _log("post_pov_projection",

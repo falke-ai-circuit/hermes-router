@@ -23,6 +23,7 @@ POST = self-reflection: by each voice's lights, what did the work actually do.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple
@@ -256,6 +257,37 @@ def build_post_prompt(work: str, ask: str = "", agent: str = "agent",
     body = _POST_ASK.format(ask=str(ask or "").strip() or "(ask not captured)",
                             work=work.strip())
     return system, [{"role": "user", "content": body + _CLAIM_INSTRUCTION}]
+
+
+def _required_from_json(text: Optional[str]) -> Optional[Dict[str, float]]:
+    """required_stance from the consult's terminating JSON object, if present.
+
+    -1..1 per drive, matching the scale of the observed dials so the two are
+    directly comparable. Any miss returns None: a reflection with no baseline
+    stays silent rather than diffing against an invented neutral.
+    """
+    try:
+        m = re.search(r"\{.*\}", str(text or ""), re.DOTALL)
+        if not m:
+            return None
+        data = json.loads(m.group(0))
+        if not isinstance(data, dict):
+            return None
+        req = data.get("required_stance")
+        if not isinstance(req, dict):
+            return None
+        out: Dict[str, float] = {}
+        for d in ("scope", "rigour"):
+            v = req.get(d)
+            if v is None:
+                continue
+            try:
+                out[d] = max(-1.0, min(1.0, float(v)))
+            except Exception:  # noqa: BLE001 — non-numeric is a miss
+                continue
+        return out or None
+    except Exception:  # noqa: BLE001 — never break parsing
+        return None
 
 
 def parse_required(text: Optional[str]) -> Dict[str, float]:
@@ -504,6 +536,10 @@ def split_projection(text: Optional[str]):
             return None, text, meta
         _req_claims = parse_required(text)
         _req = dials_from_claims(_req_claims) if _req_claims else None
+        if not _req:
+            # The consult states its REQUIRED stance in the JSON contract, not
+            # in prose lines: the prose group is only a fallback.
+            _req = _required_from_json(text)
         meta = {"format": "pov", "claims": claims, "gates": p["gates"],
                 "notes": p["notes"], "win": winning_voice(claims),
                 "required": _req}  # type: ignore[arg-type]

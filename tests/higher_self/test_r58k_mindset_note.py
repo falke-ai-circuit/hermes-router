@@ -258,3 +258,26 @@ def test_no_baseline_at_all_stays_silent_not_invented():
     assert P.delta_labels(None, {"scope": 0.5, "rigour": 0.5}) == {}
     assert P.delta_labels({}, {"scope": 0.5}) == {}
     assert N.note(P.delta_labels(None, {"scope": 9.0}), source="post") == ""
+
+
+# --- POST sign convention ------------------------------------------------
+
+def test_post_delta_direction_is_an_adjustment_not_an_observation():
+    """observed<required must WIDEN, not narrow.
+
+    delta_labels is (observed - required); mindset_note reads an adjustment.
+    Passing one into the other unchanged inverts the advice, which is worse
+    than silence: the agent is told to do the wrong thing.
+    """
+    from hermes_router import povs as P
+
+    required = {"scope": 0.9}          # the ask wanted the whole surface
+    observed = {"scope": -0.9}         # the work stayed local
+    deltas = P.delta_labels(required, observed)
+    assert deltas["scope"] < 0, "observed came out narrower than required"
+
+    wrong = N.note(deltas, source="post")
+    right = N.note({d: -v for d, v in deltas.items()}, source="post")
+
+    assert "narrow" in wrong.split("\n")[1], "unflipped says narrow (the bug)"
+    assert "widen" in right.split("\n")[1], "flipped says widen (correct)"
