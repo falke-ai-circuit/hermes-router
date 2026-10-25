@@ -87,3 +87,42 @@ def test_router_tail_with_work_product_is_not_a_family():
 def test_pov_triplet_requires_all_three_stances():
     two = "practitioner: do it\noutsider: it reads as broken\n"
     assert "pov_triplet" not in echo_guard.detect_envelope_echo_families(two)
+
+
+# --- R58j: the header skip is BOUNDED ---------------------------------------
+
+def test_header_skip_cannot_eat_the_agents_report():
+    """A guard may remove the advisory and nothing else.
+
+    Live defect: the agent's echo ran straight into its report with no blank
+    line, and the header skip — which ran until a blank line — consumed the
+    whole 628-char turn. strip_advisory_echo returned 0 chars, enforcement saw
+    strip_failed, and the guard replaced real work with the withheld notice.
+    """
+    from hermes_router import echo_guard as E
+
+    body = ("[ROUTER ADVISORY \u2014 decision lane]\n"
+            "Picked: opt-1. Mindset: narrow.\n"
+            "Both files are one line each: f1.py prints, f2.py prints.\n"
+            "Option A. Nothing imports them, so a main guard has no benefit.\n"
+            "Ran pytest: 0 tests, nothing to break.\n")
+    stripped, removed = E.strip_advisory_echo(body)
+
+    assert removed > 0, "the advisory header must still be removed"
+    assert len(stripped.strip()) >= E.MIN_REPORT_CHARS, (
+        "the agent's report must survive the header skip")
+    assert "Ran pytest" in stripped, "the work evidence must not be eaten"
+    assert "ROUTER ADVISORY" not in stripped, "the header itself must go"
+
+
+def test_header_skip_is_bounded_by_line_count():
+    """Advisory lines keep going, but not forever."""
+    from hermes_router import echo_guard as E
+
+    body = ("[ROUTER ADVISORY \u2014 decision lane]\n"
+            + "".join("note line %d\n" % i for i in range(20))
+            + "Ran pytest: 3 passed, and that line is the report.\n")
+    stripped, removed = E.strip_advisory_echo(body)
+    assert removed > 0
+    assert "Ran pytest" in stripped, (
+        "an unbounded skip would run past the report and lose it")

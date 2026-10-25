@@ -160,6 +160,10 @@ _SYNTH_RE = re.compile(r"(?im)^[ \t>*\-]*synthesis\b")
 _POV_LABEL_RE = re.compile(r"(?im)^[ \t>*\-]*(?:practitioner|outsider|skeptic)\s*:")
 _HEADER_MARKERS = ("[router advisory", "router advisory \u2014 decision lane",
                    "[router fork note")
+# R58j bounds for the header skip: how many advisory lines may be dropped after
+# the header before the guard must assume it has reached the agent's report.
+HEADER_SKIP_MAX = 6
+HEADER_SKIP_STOP_CHARS = 60
 
 # R34-18 residual 1 — the shape the live echo ACTUALLY takes: a fenced JSON
 # block whose top level is the agent's own report object with the advisory
@@ -380,14 +384,32 @@ def strip_advisory_echo(text: str) -> "tuple[str, int]":
         # drop standalone POV label lines and advisory header blocks
         keep = []
         skipping_header = False
+        skipped = 0
+        # R58j: the header block is a BOUNDED run, not "everything until a
+        # blank line". Live, the agent's echo ran straight into its report with
+        # no gap, so the skip consumed the whole 628-char turn and the guard
+        # withheld it as `strip_failed` -- the guard destroyed the work it
+        # exists to protect. A guard may remove the advisory and nothing else,
+        # so the skip stops at the first line that looks like the agent's own
+        # report: a work marker, a substantive-length line, or after
+        # HEADER_SKIP_MAX lines.
         for line in body.splitlines():
             low = line.strip().lower()
             if any(mk in low for mk in _HEADER_MARKERS):
                 skipping_header = True
+                skipped = 0
                 continue
             if skipping_header:
                 if not low:
                     skipping_header = False
+                    continue
+                if (any(tok in low for tok in _WORK_MARKERS)
+                        or len(line.strip()) >= HEADER_SKIP_STOP_CHARS
+                        or skipped >= HEADER_SKIP_MAX):
+                    skipping_header = False
+                    keep.append(line)
+                    continue
+                skipped += 1
                 continue
             if _POV_LABEL_RE.match(line):
                 continue
