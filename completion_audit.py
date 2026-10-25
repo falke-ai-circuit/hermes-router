@@ -274,6 +274,56 @@ def _call_args(raw: Any) -> Dict[str, Any]:
     return {}
 
 
+def _work_mass_messages_from_db(context: Optional[dict],
+                                limit: int = 400) -> list:
+    """This session's recent messages, shaped for work_mass_facts.
+
+    Read-only, bounded, fail-open to [] — a POST gate that cannot read the
+    transcript must fall through to the other POST triggers, never raise.
+    """
+    try:
+        import sqlite3
+
+        sid = str((context or {}).get("session_id") or "").strip()
+        if not sid:
+            return []
+        try:
+            import hermes_constants
+
+            db = str(hermes_constants.get_hermes_home() / "state.db")
+        except Exception:  # noqa: BLE001
+            return []
+        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=5.0)
+        try:
+            rows = conn.execute(
+                "SELECT role, tool_name, coalesce(tool_calls,''),"
+                " coalesce(content,'') FROM messages"
+                " WHERE session_id=? ORDER BY id DESC LIMIT ?",
+                (sid, int(limit))).fetchall()
+        finally:
+            conn.close()
+        out: list = []
+        for role, tool_name, calls_json, content in reversed(rows):
+            m: Dict[str, Any] = {"role": str(role or "")}
+            if calls_json:
+                try:
+                    got = (json.loads(calls_json)
+                           if isinstance(calls_json, str) else calls_json)
+                    if isinstance(got, list):
+                        m["tool_calls"] = got
+                except Exception:  # noqa: BLE001
+                    pass
+            if role == "tool" and tool_name:
+                # A tool result carries no tool_calls of its own; synthesise the
+                # single call so the counter sees the call and its arguments.
+                m["tool_calls"] = [{"function": {"name": str(tool_name),
+                                                 "arguments": content}}]
+            out.append(m)
+        return out
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def work_mass_facts(context: Optional[dict] = None) -> Dict[str, int]:
     """Realised work at this seam: {tools, files, mutations}.
 
@@ -285,11 +335,19 @@ def work_mass_facts(context: Optional[dict] = None) -> Dict[str, int]:
     Never raises; an unreadable payload reads as zero work.
     """
     out = {"tools": 0, "files": 0, "mutations": 0, "reworks": 0}
+    _src = "request"
     try:
         _req = (context or {}).get("request") if isinstance(context, dict) else None
         _msgs = (_req or {}).get("messages") if isinstance(_req, dict) else None
         if not isinstance(_msgs, list):
-            return out
+            # The host invokes transform_llm_output with response_text,
+            # session_id, model and platform ONLY -- it never passes the
+            # request, so "work mass" read from context is always zero and the
+            # POST seam could never fire on real work (it was dead, not
+            # strict). At this seam the turn's tool rows are already persisted,
+            # so the session's own transcript is the truthful source.
+            _msgs = _work_mass_messages_from_db(context)
+            _src = "db"
         tool_msgs = 0
         calls_seen = 0
         files: set = set()
@@ -331,6 +389,7 @@ def work_mass_facts(context: Optional[dict] = None) -> Dict[str, int]:
         # gate can be judged against rework later — its own recall is
         # definitional when the threshold IS p80.
         out["reworks"] = sum(1 for c in per_file.values() if c > 1)
+        out["_src"] = _src  # type: ignore[assignment]
         return out
     except Exception:  # noqa: BLE001
         return out
