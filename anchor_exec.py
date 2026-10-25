@@ -1229,12 +1229,20 @@ def build_orientation_frame(ask: str, self_reflect_block: str = "",
 # ---------------------------------------------------------------------------
 
 _MINDSET_HIST_TTL = 1800.0
+# A build that found nothing is NOT the same as a good build. Caching an empty
+# result for the full 30 minutes meant one transient sqlite timeout under load
+# (the build needs ~1.5s against a 2.0s budget) silently disabled every
+# downstream drive for half an hour, with logs reading "unreadable" rather than
+# "failed". Retry a failed build quickly; keep a good one for the long TTL.
+_MINDSET_HIST_FAIL_TTL = 60.0
 _MINDSET_HIST_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_MINDSET_HIST_WARMING: Dict[str, float] = {}
 _MINDSET_HIST_LOCK = threading.Lock()
 _MINDSET_HIST_SESSIONS = 200
 
 
-def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, Any]:
+def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS,
+                     allow_build: bool = False) -> Dict[str, Any]:
     """Raw drive scores over the profile's own last 200 sessions (read-only).
 
     R52 calibration needs the profile's own distribution: a percentile rank
@@ -1267,6 +1275,24 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, An
         hit = _MINDSET_HIST_CACHE.get(db)
         if hit and hit[0] > now:
             return hit[1]
+        warming = _MINDSET_HIST_WARMING.get(db, 0.0) > now
+    if not allow_build:
+        # NEVER build on the request path. The build is ~1.5s against a 2.0s
+        # sqlite budget on an idle box, so under gateway load it times out and
+        # every drive degrades to "unreadable" -- which is indistinguishable
+        # from a genuinely unmeasurable session, and is how the decision lane
+        # came to emit nothing in production while looking healthy.
+        if not warming:
+            with _MINDSET_HIST_LOCK:
+                _MINDSET_HIST_WARMING[db] = now + _MINDSET_HIST_FAIL_TTL
+            try:
+                threading.Thread(target=_mindset_history,
+                                 args=(max_sessions, True),
+                                 name="mindset-hist-warm",
+                                 daemon=True).start()
+            except Exception:  # noqa: BLE001 — a cold stance is survivable
+                pass
+        return {}
     out: Dict[str, Any] = {}
     try:
         from . import mindset
@@ -1301,8 +1327,11 @@ def _mindset_history(max_sessions: int = _MINDSET_HIST_SESSIONS) -> Dict[str, An
         out = raws
     except Exception:  # noqa: BLE001 — observability input, never lane-breaking
         out = {}
+    good = any(bool(v) for v in out.values())
+    ttl = _MINDSET_HIST_TTL if good else _MINDSET_HIST_FAIL_TTL
     with _MINDSET_HIST_LOCK:
-        _MINDSET_HIST_CACHE[db] = (now + _MINDSET_HIST_TTL, out)
+        _MINDSET_HIST_CACHE[db] = (time.time() + ttl, out)
+        _MINDSET_HIST_WARMING.pop(db, None)
     return out
 
 

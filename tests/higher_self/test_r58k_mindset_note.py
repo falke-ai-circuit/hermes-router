@@ -171,3 +171,43 @@ def test_no_delivery_site_still_calls_the_old_prose_renderers():
     mid = (REPO / "decision_midturn.py").read_text()
     assert "mindset.stance_lines(" not in mid, (
         "midturn must render through mindset_note for the same reason")
+
+
+# --- the calibration base must never be built on the request path ---------
+
+def test_history_build_is_off_the_request_path(monkeypatch):
+    """A 1.5s build inside a 2.0s sqlite budget fails under load.
+
+    When it failed it returned {}, every drive became UNKNOWN, and the note
+    was never generated -- so the lane reported "unreadable" while looking
+    perfectly healthy. The request path must return immediately and warm in
+    the background instead.
+    """
+    from hermes_router import anchor_exec as AX
+
+    monkeypatch.setattr(AX, "_MINDSET_HIST_CACHE", {})
+    monkeypatch.setattr(AX, "_MINDSET_HIST_WARMING", {})
+    started = []
+    monkeypatch.setattr(AX.threading, "Thread",
+                        lambda **kw: started.append(kw) or type(
+                            "T", (), {"start": lambda self: None})())
+
+    import time as _t
+    t0 = _t.time()
+    out = AX._mindset_history()
+    elapsed = _t.time() - t0
+
+    assert out == {}, "a cold cache must not block the turn to build"
+    assert elapsed < 0.10, f"request path took {elapsed:.2f}s; must be non-blocking"
+    assert started, "a cold cache must kick a background warm, not stay cold forever"
+
+
+def test_failed_build_does_not_cache_for_the_long_ttl():
+    """A transient timeout must expire fast, not poison 30 minutes."""
+    assert N  # renderer imported
+    from hermes_router import anchor_exec as AX
+
+    assert AX._MINDSET_HIST_FAIL_TTL <= 120, (
+        "an empty build cached for the full TTL turns one timeout into a "
+        "half-hour outage that reads as 'unreadable', not 'failed'")
+    assert AX._MINDSET_HIST_FAIL_TTL < AX._MINDSET_HIST_TTL
