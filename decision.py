@@ -2079,6 +2079,25 @@ def _session_trace_rows(session_id: str, limit: int = 80) -> List[Any]:
         return []
 
 
+def _note_unreadable(session_id: str, why: str, rows: Any, hist: Any,
+                     extra: str = "") -> None:
+    """One line, only when a stance could not be read — and it names the db.
+
+    Without this the only symptom is a lane that quietly emits nothing, which
+    cost several deploy cycles of guessing at timeouts when the real question
+    was "which database did you look in".
+    """
+    try:
+        from .core.telemetry import log_route as _lru
+
+        _lru("PRE", event_detail="mindset_stance_unreadable", reason=why,
+             db=_db_path(), rows=len(rows or ()),
+             hist={k: len(v) for k, v in (hist or {}).items()},
+             session_id=str(session_id or ""), extra=extra)
+    except Exception:  # noqa: BLE001 — diagnostics only
+        pass
+
+
 def _current_mindset(session_id: str) -> Dict[str, Optional[float]]:
     """Where the agent currently stands on the two drives (R53, midturn).
 
@@ -2088,22 +2107,33 @@ def _current_mindset(session_id: str) -> Dict[str, Optional[float]]:
     is never invented, and an absent history means no stance, not a floor.
     """
     blank: Dict[str, Optional[float]] = {d: None for d in ("scope", "rigour")}
+    _why = ""
+    _rows: Any = []
+    _hist: Any = {}
     try:
         from . import mindset
 
-        rows = _session_trace_rows(session_id)
-        if not rows:
+        _rows = _session_trace_rows(session_id)
+        if not _rows:
+            # The stance cannot be read if the session's own messages are not
+            # visible, and that failure is indistinguishable from "this session
+            # has no measurable stance". Say WHICH db was consulted, once, at
+            # the point of failure — this is the only place that knows.
+            _note_unreadable(session_id, "no_rows", _rows, _hist, "")
             return blank
-        hist: Any = {}
         try:
             from . import anchor_exec as _ax  # lazy: anchor_exec imports this
 
-            hist = _ax._mindset_history()
+            _hist = _ax._mindset_history()
         except Exception:  # noqa: BLE001 — no history => drives UNKNOWN
-            hist = {}
-        vec = mindset.read_trace_vectors(rows, hist)
-        return {d: vec.get(d) for d in ("scope", "rigour")}
-    except Exception:  # noqa: BLE001 — stance never breaks the envelope
+            _hist = {}
+        vec = mindset.read_trace_vectors(_rows, _hist)
+        out = {d: vec.get(d) for d in ("scope", "rigour")}
+        if out.get("scope") is None or out.get("rigour") is None:
+            _note_unreadable(session_id, "vectors_null", _rows, _hist, "")
+        return out
+    except Exception as _e:  # noqa: BLE001 — stance never breaks the envelope
+        _note_unreadable(session_id, type(_e).__name__, _rows, _hist, "")
         return blank
 
 
