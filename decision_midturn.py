@@ -771,7 +771,12 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _dec._log_mindset_scores(
                 verdict,
                 {"trigger": "midturn", "session_id": session_id},
-                cfg, lambda ev, **kw: _log(session_id, ev, **kw))
+                # drop the kwarg: _log takes session_id POSITIONALLY, and
+                # passing both raised TypeError into a swallowed except —
+                # which is why the first two versions logged nothing at all.
+                cfg, lambda ev, **kw: _log(
+                    session_id, ev,
+                    **{k: v for k, v in kw.items() if k != "session_id"}))
         except Exception:  # noqa: BLE001 — telemetry only
             pass
         if verdict is None:
