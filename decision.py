@@ -3692,6 +3692,21 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             ledger_write(dict(base_row, fail_open_reason=str(reason)))
             return
         verdict, vreason = validate_verdict(content, envelope)
+        # R58 observability: the mindset scores ride the SAME request, so
+        # without this line "the backend returned no scores" and "the scores
+        # were never asked for" look identical. Log the delivered deltas at
+        # every seam (pre/midturn/post), not just the midturn emitter.
+        try:
+            _ms_log = (verdict or {}).get("mindset") or {}
+            log_route("decision_mindset_scores",
+                      trigger=str(ids.get("trigger", "pre")),
+                      backend=str(meta.get("backend") or cfg.get("backend") or ""),
+                      present=bool(_ms_log),
+                      scope=_ms_log.get("scope"), rigour=_ms_log.get("rigour"),
+                      reason=("scored" if _ms_log else "no_scores"),
+                      session_id=str(rec.get("session_id") or ids.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         if verdict is None:
             bump_counter("malformed")
             _record_failure(cfg)
