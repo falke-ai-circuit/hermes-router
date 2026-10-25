@@ -467,8 +467,21 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                 from . import fork_sources as _fs
 
                 _src_fork = _fs.rival_targets(_state(str(session_id)), "")
-            except Exception:  # noqa: BLE001
+            except Exception as _e:  # noqa: BLE001
                 _src_fork = None
+                _log(session_id, "midturn_fork_source_error",
+                     err=type(_e).__name__, seam=seam)
+            # Recognition is the axis the user called critical and the one that
+            # kept failing silently: zero fires looked identical whether the lane
+            # had seen no rival pair or had crashed inside the source. Record the
+            # decision itself, not just its absence.
+            try:
+                _nn = len((_state(str(session_id)).get("fork_src") or {}).get("paths") or [])
+            except Exception:  # noqa: BLE001
+                _nn = -1
+            _log(session_id, "midturn_fork_source_eval",
+                 paths=_nn, found=str(_src_fork.get("source")) if _src_fork else "none",
+                 tool=str(tool_name or ""), seam=seam)
             if _src_fork:
                 _synth = _fs.render_options(_src_fork)
                 if len(_synth) >= 2:
