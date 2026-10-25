@@ -3756,6 +3756,32 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                 [{"id": o.get("id", ""), "label": o.get("label", "")}
                  for o in _opts if isinstance(o, dict)], default=str)[:8000]
             base_row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
+            # R59j: SAY WHETHER THE FORK WAS EVER REPRESENTABLE.
+            #
+            # Measured: coder/reviewer/valmet consult on 62%/86%/97% of fires
+            # whose ask yielded no extractable option set. Those forks are real
+            # ("redis or memcached? weigh the tradeoffs") -- prose is how humans
+            # ask -- so suppressing the consult would throw away the advice. The
+            # defect is downstream: with no option labels nothing can ever be
+            # scored, so those rows sit looking "pending" forever and the lane
+            # reports a fill rate that is really a representation gap. Label the
+            # row instead of guessing at it.
+            _nlab = len([o for o in _opts
+                         if isinstance(o, dict) and str(o.get("label") or "").strip()])
+            _src = "ask" if _nlab >= 2 else ("ask_single" if _nlab == 1 else "none")
+            try:
+                _ev = json.loads(base_row.get("evidence_json") or "{}")
+            except Exception:                                      # noqa: BLE001
+                _ev = {}
+            if not isinstance(_ev, dict):
+                _ev = {}
+            _ev["options_source"] = _src
+            _ev["options_labelled"] = _nlab
+            base_row["evidence_json"] = json.dumps(_ev, default=str)[:4000]
+            if _nlab < 2 and not str(base_row.get("outcome_label") or "").strip():
+                # terminal, not pending: no option set means no score is possible
+                base_row["outcome_label"] = "unscorable_no_options"
+                base_row["resolved_action"] = ""
             _diag = _ds.diagnosticity(_sigs)
             base_row["diagnosticity_json"] = json.dumps(_diag, default=str)[:600]
             # An abstention is a RESULT, not an absence. A blank label made
