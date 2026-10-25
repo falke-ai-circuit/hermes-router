@@ -1360,9 +1360,16 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     from .core import canonical as _can_fold
                     _fold_ok = _can_fold.rewrite_persisted_turn(
                         session_id, response_text, _delivered)
+                    _match = ""
+                    try:
+                        from .core import canonical as _can_m
+
+                        _match = _can_m.last_match_strategy(session_id)
+                    except Exception:  # noqa: BLE001
+                        _match = "?"
                     _log("persisted_body_reconciled" if _fold_ok
                          else "persisted_body_reconcile_failed",
-                         reason="folded_swap",
+                         reason="folded_swap", match=(_match or "none"),
                          chars_from=len(response_text or ""),
                          chars_to=len(_delivered or ""),
                          session_id=session_id)

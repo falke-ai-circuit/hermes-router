@@ -68,6 +68,17 @@ _seen_content: Set[Tuple[str, str]] = set()  # (session_id, content_hash)
 # rewrote into the persisted transcript (cascade anchor for multi-banner
 # turns — see rewrite_persisted_turn). In-process, best-effort only.
 _LAST_REWRITE: Dict[str, str] = {}
+#: Which match strategy landed the last rewrite, per session. A stale row
+#: is a wrong number for any audit reading state.db instead of the
+#: delivered body, so the strategy is never implicit.
+_LAST_MATCH: Dict[str, str] = {}
+
+
+def last_match_strategy(session_id: str) -> str:
+    """Strategy that matched the last rewrite for this session (or "")."""
+    return _LAST_MATCH.get(str(session_id or ""), "")
+
+
 _loaded = False
 
 
@@ -421,6 +432,80 @@ def _refuse_empty_body(session_id: str, refused_for: str) -> None:
                        session_id)
 
 
+class _CountedCur:
+    """rowcount carrier for the paths that write by explicit id."""
+
+    def __init__(self, n: int) -> None:
+        self.rowcount = int(n)
+
+
+def _match_and_write(conn, session_id: str, refusal_text: str,
+                     delivered_text: str):
+    """Rewrite the persisted row this router is substituting, named by strategy.
+
+    R59g: exact equality missed on live traffic while the delivered body was
+    correct (arm B: chars_from=2709 chars_to=1815, reconcile_failed) -- the
+    persisted entry and the text handed to the hook can differ in trailing
+    whitespace, or the row may already carry a banner. One shot at exact
+    equality turned that into a silent stale row, which is a wrong number for
+    any audit that trusts state.db over the delivered body.
+
+    Ladder, narrowest first, each still scoped to ONE row of this session:
+      exact      -- byte equality (historical behaviour)
+      cascade    -- the last text this router itself delivered (R16-2b)
+      normalized -- whitespace-normalized equality
+      prefix     -- newest row that STARTS with the pre-pass text (banner or
+                    trailing append already on the row); needs a long shared
+                    prefix so a different turn can never match
+    Returns the cursor; sets _LAST_MATCH. Never matches arbitrary agent text.
+    """
+    _sql = ("UPDATE messages SET content = ?, api_content = NULL"
+            " WHERE id = (SELECT id FROM messages"
+            "            WHERE session_id = ? AND role = 'assistant'"
+            "              AND content = ?"
+            "            ORDER BY id DESC LIMIT 1)")
+    cur = conn.execute(_sql, (str(delivered_text), str(session_id),
+                              str(refusal_text)))
+    if cur.rowcount:
+        _LAST_MATCH[str(session_id)] = "exact"
+        return cur
+
+    _last = _LAST_REWRITE.get(str(session_id) or "")
+    if _last:
+        cur = conn.execute(_sql, (str(delivered_text), str(session_id),
+                                  str(_last)))
+        if cur.rowcount:
+            _LAST_MATCH[str(session_id)] = "cascade"
+            return cur
+
+    try:
+        _want = " ".join(str(refusal_text).split())
+        rows = conn.execute(
+            "SELECT id, content FROM messages"
+            " WHERE session_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 20", (str(session_id),)).fetchall()
+    except Exception:  # noqa: BLE001
+        return cur
+    for _rid, _content in rows:
+        if " ".join(str(_content or "").split()) == _want and _want:
+            conn.execute("UPDATE messages SET content = ?, api_content = NULL"
+                         " WHERE id = ?", (str(delivered_text), _rid))
+            _LAST_MATCH[str(session_id)] = "normalized"
+            return _CountedCur(1)
+    # prefix: the row starts with what the hook was given (a trailing banner
+    # or append already landed on it). A meaningful prefix only.
+    _head = str(refusal_text or "")
+    if len(_head.strip()) >= 240:
+        _head = _head.strip()[:240]
+        for _rid, _content in rows:
+            if str(_content or "").strip().startswith(_head):
+                conn.execute("UPDATE messages SET content = ?, api_content = NULL"
+                             " WHERE id = ?", (str(delivered_text), _rid))
+                _LAST_MATCH[str(session_id)] = "prefix"
+                return _CountedCur(1)
+    return cur
+
+
 def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
                   delivered_text: str, allow_empty_match: bool) -> bool:
     """One rewrite attempt (lock-retry body of rewrite_persisted_turn).
@@ -443,30 +528,8 @@ def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
     conn = sqlite3.connect(db_path, timeout=2.0)
     try:
         if refusal_text:
-            cur = conn.execute(
-                "UPDATE messages SET content = ?, api_content = NULL"
-                " WHERE id = (SELECT id FROM messages"
-                "            WHERE session_id = ? AND role = 'assistant'"
-                "              AND content = ?"
-                "            ORDER BY id DESC LIMIT 1)",
-                (str(delivered_text), str(session_id), str(refusal_text)),
-            )
-            # R16-2b cascade: exact match missed — try the last text
-            # this router delivered for this session (the previous
-            # rewrite's output). Guarded to content this router itself
-            # wrote, never an arbitrary row.
-            if not cur.rowcount:
-                _last = _LAST_REWRITE.get(str(session_id) or "")
-                if _last:
-                    cur = conn.execute(
-                        "UPDATE messages SET content = ?, api_content = NULL"
-                        " WHERE id = (SELECT id FROM messages"
-                        "            WHERE session_id = ? AND role = 'assistant'"
-                        "              AND content = ?"
-                        "            ORDER BY id DESC LIMIT 1)",
-                        (str(delivered_text), str(session_id),
-                         str(_last)),
-                    )
+            cur = _match_and_write(conn, session_id, refusal_text,
+                                   delivered_text)
         else:
             cur = conn.execute(
                 "UPDATE messages SET content = ?, api_content = NULL"
