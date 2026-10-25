@@ -94,6 +94,20 @@ def _norm_stem(p: str) -> str:
     return s.lower()
 
 
+def _stems_relate(a: str, b: str) -> bool:
+    """True when two file names plausibly describe the same subject.
+
+    routes.py and ROUTES.md relate; README.md and router_core.py do not. Keeps
+    doc-vs-code from pairing a repository's front page with a random module.
+    """
+    sa, sb = _norm_stem(a), _norm_stem(b)
+    if not sa or not sb:
+        return False
+    if len(sa) < 4 or len(sb) < 4:
+        return False
+    return sa in sb or sb in sa
+
+
 def note_seen(store: Dict[str, Any], text: str) -> List[str]:
     """Accumulate every path this session has surfaced. Bounded."""
     paths = _paths(text)
@@ -147,6 +161,15 @@ def rival_targets(store: Dict[str, Any], text: str
         # route) and picking wrong is the whole test.
         docs = [p for p in seen if _DOC_HINT.search(p)]
         code = [p for p in seen if _CODE_HINT.search(p) and p not in docs]
+        # Ambiguity guard. Evaluated over the session's whole path list, a doc
+        # plus any code file is "a fork" -- a root README beside three source
+        # files would manufacture one out of nothing, which is the same
+        # random-fork class that scored precision 0.00 on the prose path. So name
+        # a rival only when the pairing is unambiguous: either the stems relate,
+        # or the session has surfaced exactly one doc and one code file.
+        if len(code) > 1 and not _stems_relate(docs[0] if docs else "",
+                                              code[0] if code else ""):
+            code = code[:1] if len(code) == 1 else []
         if docs and code:
             key = "doc_vs_code:%s|%s" % (docs[0], code[0])
             if key not in fired:
@@ -162,6 +185,10 @@ def rival_targets(store: Dict[str, Any], text: str
         # the value and changing the reader are different fixes.
         cfgs = [p for p in seen if _CFG_HINT.search(p)]
         consumers = [p for p in seen if _CODE_HINT.search(p) and p not in cfgs]
+        # Same ambiguity guard: naming one of five source files "the consumer"
+        # is a guess dressed as a fork.
+        if len(consumers) > 1:
+            consumers = consumers[:1] if len(seen) <= 3 else []
         if cfgs and consumers:
             key = "cfg_vs_consumer:%s|%s" % (cfgs[0], consumers[0])
             if key not in fired:

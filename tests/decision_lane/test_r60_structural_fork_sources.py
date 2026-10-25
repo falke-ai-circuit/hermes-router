@@ -117,3 +117,23 @@ def test_config_and_consumer_are_rivals():
 def test_new_sources_keep_the_precision_guard():
     """A rule that fires on any two files is a rule that invents forks."""
     assert fs.rival_targets({}, "/r/a/alpha.py /r/a/beta.py") is None
+
+
+def test_doc_vs_code_needs_an_unambiguous_pair():
+    """A doc plus any code file is not a fork. Evaluated over the session's whole
+    path list, a root README beside three modules would manufacture one out of
+    nothing -- the same random-fork class that scored precision 0.00 on prose."""
+    assert fs.rival_targets({}, "/r/README.md /r/a.py /r/b.py /r/c.py") is None
+
+
+def test_doc_vs_code_still_fires_on_a_real_pair():
+    """D3: one doc, one module, stems that describe the same subject."""
+    R = "/tmp/seeded/D3/repo"
+    hit = fs.rival_targets({}, "read %s/routes.py and %s/docs/ROUTES.md" % (R, R))
+    assert hit is not None and hit["source"] == "doc_vs_code"
+
+
+def test_stems_relate_is_the_tight_gate():
+    assert fs._stems_relate("/x/ROUTES.md", "/x/routes.py")
+    assert not fs._stems_relate("/x/README.md", "/x/server.py")
+    assert not fs._stems_relate("/x/a.md", "/x/b.py"), "too short to be evidence"
