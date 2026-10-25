@@ -764,6 +764,16 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                  backend=str(cfg.get("backend") or ""))
             return
         verdict, vreason = _dec.validate_verdict(content, envelope)
+        # R58: the midturn seam validates HERE, not in decision.py's worker —
+        # a fourth call site. Adapt _log's signature (session first) and record
+        # what the same fork request returned for the mindset dials.
+        try:
+            _dec._log_mindset_scores(
+                verdict,
+                {"trigger": "midturn", "session_id": session_id},
+                cfg, lambda ev, **kw: _log(session_id, ev, **kw))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         if verdict is None:
             _dec.bump_counter("malformed")
             _dec.ledger_write(dict(base, fail_open_reason=str(vreason)))
