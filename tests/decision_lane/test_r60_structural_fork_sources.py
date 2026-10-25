@@ -95,3 +95,25 @@ def test_filter_is_wired_into_the_midturn_gate():
     assert 'len(str(o).strip()) <= 60' in src
     # structural sets must be exempt: they are authored, not harvested
     assert '_struct_src = bool(_src_fork)' in src
+
+
+def test_doc_and_code_are_rivals():
+    """D3's fork. Before this rule the lane logged nothing at all on it: the
+    documentation advertised a route the service did not serve, two remedies
+    existed, and neither was enumerated by the ask."""
+    hit = fs.rival_targets(
+        {}, "docs/ROUTES.md advertises /phantom but routes.py does not serve it")
+    assert hit is not None and hit["source"] == "doc_vs_code"
+    opts = fs.render_options(hit)
+    assert any("ROUTES.md" in o for o in opts)
+    assert any("routes.py" in o for o in opts)
+
+
+def test_config_and_consumer_are_rivals():
+    hit = fs.rival_targets({}, "config.yaml sets level 2 and router_core.py reads it")
+    assert hit is not None and hit["source"] == "cfg_vs_consumer"
+
+
+def test_new_sources_keep_the_precision_guard():
+    """A rule that fires on any two files is a rule that invents forks."""
+    assert fs.rival_targets({}, "/r/a/alpha.py /r/a/beta.py") is None

@@ -44,6 +44,9 @@ _FILE_RE = re.compile(
 #: suffixes that make two stems the "same thing, different interference"
 _VER_SUFFIX = re.compile(r"(?:[._-]?(?:v|ver|version)?\d+|\.bak|\.old|\.orig|\.copy|"
                          r"[._-]backup|~)$", re.I)
+_DOC_HINT = re.compile(r"\.(?:md|rst|adoc)$|(?:^|/)(?:docs?|readme)", re.I)
+_CODE_HINT = re.compile(r"\.(?:py|go|ts|js|rs|java|rb)$", re.I)
+_CFG_HINT = re.compile(r"\.(?:ya?ml|toml|ini|cfg|json|env)$", re.I)
 _TEST_HINT = re.compile(r"(?:^|/)(?:test_[\w]+\.py|[\w]+_test\.py|tests?/)", re.I)
 
 
@@ -134,6 +137,40 @@ def rival_targets(store: Dict[str, Any], text: str
                     "options": sorted(members)[:4],
                     "why": "two files differ only by version/backup suffix; "
                            "only one is live"}
+
+        # --- doc-vs-code: the documentation and the implementation disagree.
+        # Measured gap: D3 ("the docs advertise a route the service does not
+        # serve; make the system self-consistent") has the fork in
+        # docs/ROUTES.md vs routes.py, and neither the sibling rule nor the
+        # test-vs-source rule could see it -- the lane stayed silent on a real,
+        # consequential fork. Two remedies exist (change the doc, or build the
+        # route) and picking wrong is the whole test.
+        docs = [p for p in seen if _DOC_HINT.search(p)]
+        code = [p for p in seen if _CODE_HINT.search(p) and p not in docs]
+        if docs and code:
+            key = "doc_vs_code:%s|%s" % (docs[0], code[0])
+            if key not in fired:
+                fired.append(key)
+                del fired[:-40]
+                return {"source": "doc_vs_code", "family": key,
+                        "options": [docs[0], code[0]][:2],
+                        "why": "the doc and the code it describes disagree; "
+                               "amending the doc and building the code are "
+                               "different products"}
+
+        # --- config-vs-consumer: a setting exists, and code reads it. Changing
+        # the value and changing the reader are different fixes.
+        cfgs = [p for p in seen if _CFG_HINT.search(p)]
+        consumers = [p for p in seen if _CODE_HINT.search(p) and p not in cfgs]
+        if cfgs and consumers:
+            key = "cfg_vs_consumer:%s|%s" % (cfgs[0], consumers[0])
+            if key not in fired:
+                fired.append(key)
+                del fired[:-40]
+                return {"source": "cfg_vs_consumer", "family": key,
+                        "options": [cfgs[0], consumers[0]][:2],
+                        "why": "the setting and the code that reads it are both "
+                               "editable; they are not the same fix"}
 
         # --- test-vs-source: which of these two do I change?
         tests = [p for p in seen if _TEST_HINT.search(p)]
