@@ -1361,7 +1361,18 @@ def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
         from . import mindset
         from .core.telemetry import log_route as _lrx
 
-        band = float(getattr(mindset, "BAND", 0.5))
+        # The band is a POLICY dial, not a constant: it sets how loud an ask has to
+        # be before the agent hears anything about its own posture. It was a module
+        # constant, which meant every A/B of the PRE note had to change code -- and
+        # a note whose emission cannot be forced cannot be tested at all. Default
+        # (unset) keeps the shipped 0.5 exactly; a caller may widen or narrow it.
+        try:
+            from . import config_access as _ca
+            _raw = (_ca.router_section() or {}).get("mindset_band")
+            _band = float(_raw) if _raw is not None else float(getattr(mindset, "BAND", 0.5))
+        except Exception:  # noqa: BLE001 — a broken knob must not change behaviour
+            _band = float(getattr(mindset, "BAND", 0.5))
+        band = min(1.0, max(0.05, _band))
         if not target_map:
             # R53: no structured target => nothing to modulate against. Say
             # nothing and log nothing here; the caller already logged
@@ -1389,7 +1400,34 @@ def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
         # plain stance difference (ref=None => z() is the identity). Keeping
         # the old raw-vs-history z-score here would z-score a [-1, 1] number
         # against a count distribution and reintroduce a scale artifact.
-        used = {d: used_cal.get(d) for d in mindset.DRIVES}
+        # R59i: the used side reads THIS session's trace, and PRE fires BEFORE
+        # the work — so on a session's opening turn there are no tool rows, both
+        # raw drives are unparseable, `used` is None and the note is silent
+        # exactly where it is worth most ("here is how to approach this").
+        # When the turn carries no signal of its own, fall back to the profile's
+        # HABITUAL stance: the median of its own recent raw scores, which is 0 by
+        # construction on this scale. The delta then reads "against your usual
+        # posture, this ask needs +x" — a real quantity, not a floor.
+        # Only drives with enough history to define a median may fall back; with
+        # thin or absent history the answer stays UNKNOWN and the note stays
+        # silent (an invented baseline would turn "never measured" into "the
+        # agent was wrong").
+        hab = 0.0
+        used = {}
+        base_used = {}
+        for d in mindset.DRIVES:
+            _scene = used_cal.get(d)
+            if _scene is None:
+                _h = mindset._history_values(hist, d)
+                if len(_h) >= int(getattr(mindset, "MIN_HISTORY", 20) or 0):
+                    used[d] = hab
+                    base_used[d] = "habitual"
+                else:
+                    used[d] = None
+                    base_used[d] = "none"
+            else:
+                used[d] = _scene
+                base_used[d] = "session"
         target = {d: (float(target_map.get(d))
                       if (target_cal.get(d) is not None
                           and isinstance(target_map, dict)
@@ -1406,6 +1444,12 @@ def _mindset_modulation(session_id: str, target_map: Optional[Dict[str, float]],
         try:
             _lrx("PRE", event_detail="mindset_modulation", emitted=emitted,
                  scope=delta.get("scope"), rigour=delta.get("rigour"),
+                 # Which side answered decides how to read the number: 'session'
+                 # is this turn's own posture, 'habitual' is the profile median
+                 # standing in for a turn that has not happened yet, 'none' means
+                 # there was nothing to compare against and the silence is honest.
+                 baseline=",".join("%s=%s" % (d, base_used.get(d))
+                                   for d in mindset.DRIVES),
                  band=band, session_id=str(session_id or ""))
         except Exception:  # noqa: BLE001 — telemetry only
             pass
