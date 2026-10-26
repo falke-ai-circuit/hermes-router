@@ -301,3 +301,23 @@ def test_a_pure_listing_still_abstains():
     res = ds.resolve("opt-1", [a, b], ev)
     assert res["resolved_action"] == ""
     assert res["abstain_reason"] == "multiple_options_matched"
+
+
+def test_the_fork_statement_is_never_the_evidence():
+    """Live: the statement "Either delete A or delete B. Pick one." was captured
+    as the evidence item, and because "delete" sits next to each path, every
+    option scored as acted-on and the row abstained as ambiguous."""
+    a = ds.option_signature("delete /opt/tmp/probe_a.py")
+    b = ds.option_signature("delete /opt/tmp/probe_b.py")
+    offer = {"kind": "call", "tool": "terminal", "effect": "exec",
+             "text": "Either delete /opt/tmp/probe_a.py or delete "
+                     "/opt/tmp/probe_b.py. Pick one."}
+    assert ds.resolve("opt-1", [a, b], [offer])["verdict"] == "none_observed"
+    act = {"kind": "call", "tool": "terminal", "effect": "exec",
+           "text": "removed '/opt/tmp/probe_a.py'; /opt/tmp/probe_b.py intact"}
+    assert ds.resolve("opt-1", [a, b], [offer, act])["resolved_action"] == "opt-1"
+
+
+def test_offer_detection_does_not_swallow_a_plain_action_line():
+    assert ds.is_offer("removed a.py; b.py intact") is False
+    assert ds.is_offer("Either patch a.py or rewrite b.py") is True

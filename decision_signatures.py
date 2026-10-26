@@ -405,12 +405,33 @@ def acted_on(token: str, text: str, window: int = 90) -> bool:
         for m in re.finditer(re.escape(token), t):
             start = max(0, m.start() - window)
             head = t[start:m.start()]
-            cut = max(head.rfind(c) for c in (";", "\n", "&&", "|", "\u2022"))
+            cut = max(head.rfind(c) for c in
+                      (";", "\n", "&&", "|", "\u2022", " or ", " OR ", ", or "))
             if cut >= 0:
                 head = head[cut + 1:]
             if _MUTATION_RE.search(head):
                 return True
         return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_OFFER_RE = re.compile(
+    r"\b(?:either\b[^;\n]{0,80}\bor\b|\bvs\.?\b|\bversus\b|"
+    r"\brather than\b|\binstead of\b|candidates?\s*:|options?\s*:|"
+    r"\bchoices?\s*:|\bpick one\b|\bchoose (?:one|between)\b)", re.I)
+
+
+def is_offer(text: str) -> bool:
+    """Does this text OFFER the routes rather than report taking one?
+
+    Measured live: the fork statement itself ("Either delete A or delete B. Pick
+    one.") was captured as the evidence item, and because the word "delete" sits
+    next to each path, every option scored as acted-on. The statement that poses
+    a fork can never be the evidence that settles it.
+    """
+    try:
+        return bool(_OFFER_RE.search(str(text or "")))
     except Exception:  # noqa: BLE001
         return False
 
@@ -461,6 +482,12 @@ def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
             eff = ev.get("effect") or ""
             tool = ev.get("tool") or ""
             text = ev.get("text") or ""
+            if is_offer(text):
+                # the fork statement is not the action that settles it. Checked
+                # AFTER `text` is bound: reading it before was an UnboundLocalError
+                # swallowed by the never-raise wrapper, which silently returned
+                # zero hits -- a fault that reported as "nothing happened".
+                continue
             # A read can never stand in for a write/exec signature. Write and
             # exec ARE one class: `rm probe_b.py` is a filesystem mutation run
             # through the terminal tool, and refusing it because the signature
