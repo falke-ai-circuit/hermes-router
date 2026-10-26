@@ -416,12 +416,19 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
             return
         opts = _dec.extract_options(text)
         if not opts:
+            # R63n: NO early return here. A tool result almost never carries an
+            # enumeration, even when the work in front of the agent forks cleanly
+            # over two rival routes ("which of these two files do I edit"). This
+            # gate returned before the structural fork-source block below could
+            # run, so that block was dead code on the commonest real shape.
+            # Measured across the reviewer's seven treated cells: 17 no_options
+            # events, midturn_fork_source_eval paths=0 at every evaluable turn,
+            # and 0 consults on seven tasks that each contained a genuine fork.
+            # The instinct fire still gets its chance, and if neither the declared
+            # nor the structural source produces options, the block below logs the
+            # single suppression that this gate used to log.
             if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
                 return
-            _log(session_id, "midturn_suppressed",
-                 reason=_dec.REASON_NO_OPTIONS, mode=mode,
-                 tool=str(tool_name or ""), seam=seam)
-            return
         # FIX-FIRST rider 4 (item 4): benign prose must never reach the
         # backend consult. Only an explicitly DECLARED closed-fork
         # structure (line markers / named enum / (A)-(B) ordinals) fires;
