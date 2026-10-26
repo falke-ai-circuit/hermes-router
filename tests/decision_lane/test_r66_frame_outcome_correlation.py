@@ -54,6 +54,28 @@ def test_a_frame_touching_the_named_object_grades_exact(monkeypatch):
     assert out["tool"] == "patch"
 
 
+def test_paths_lose_sentence_punctuation():
+    """A path at the end of a sentence must not carry the full stop into the candidate label —
+    it turned perfect hits into misses and made the lane look worse than it is."""
+    from hermes_router import decision_extract as dx
+
+    got = dx.salient_paths("it failed in /opt/data/app/src/render.py. then again in cache.py,")
+    assert "/opt/data/app/src/render.py" in got
+    assert not any(p.endswith((".", ",")) for p in got)
+
+
+def test_legacy_lane_stands_down_on_the_dual_config_blocks(monkeypatch):
+    """The legacy reader looks at uncensored_router first and that block has no
+    reflex_weights, so a single-block check reported 'not armed' while the new lane fired."""
+    from hermes_router import decision_midturn as dm
+
+    dual = {"uncensored_router": {"enabled": True},
+            "hermes_router": {"reflex_weights": {"enabled": True}}}
+    assert dm._superseded_by_reflex(dual) is True
+    off = {"hermes_router": {"reflex_weights": {"enabled": False}}}
+    assert dm._superseded_by_reflex(off) is False
+
+
 def test_a_directory_target_counts_exact_when_the_model_works_inside_it(monkeypatch):
     """The pool often names the workspace, not the file. Acting inside it is hitting the pick,
     and scoring it as 'class' understates the lane in exactly the case it fires most."""

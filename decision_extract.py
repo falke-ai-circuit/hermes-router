@@ -53,7 +53,9 @@ def salient_paths(text: str, cap: int = 4) -> List[str]:
     """Paths the evidence names, most recent first. Selection only — no plausibility filter."""
     got: List[str] = []
     for m in PATH_RE.finditer(text or ""):
-        p = (m.group(1) or m.group(0)).strip().strip("\"'()")
+        # trailing sentence punctuation is part of the sentence, not of the path; leaving it in
+        # made every target end in a dot and scored perfect hits as misses
+        p = (m.group(1) or m.group(0)).strip().strip("\"'()").rstrip(".,;:!?)]}")
         if len(p) < 5:
             continue
         if p not in got:

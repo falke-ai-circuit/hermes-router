@@ -402,13 +402,27 @@ def _superseded_by_reflex(cfg: Any = None) -> bool:
     — so one of them has to be off, and the one that cannot report whether it was used is the
     one that goes.
     """
-    try:
-        c = cfg if isinstance(cfg, dict) else _cfg()
+    def _search(c: Any) -> Optional[bool]:
         if not isinstance(c, dict):
-            return False
-        hr = c.get("hermes_router") if isinstance(c.get("hermes_router"), dict) else c
-        rw = hr.get("reflex_weights") if isinstance(hr, dict) else None
-        return bool((rw or {}).get("enabled"))
+            return None
+        for block in ("hermes_router", "uncensored_router"):
+            sub = c.get(block)
+            if isinstance(sub, dict) and isinstance(sub.get("reflex_weights"), dict):
+                return bool(sub["reflex_weights"].get("enabled"))
+        rw = c.get("reflex_weights")
+        if isinstance(rw, dict):
+            return bool(rw.get("enabled"))
+        return None
+
+    try:
+        got = _search(cfg if isinstance(cfg, dict) else _cfg())
+        if got is None:
+            # Dual config blocks: the legacy reader takes uncensored_router first and that
+            # block does not carry reflex_weights, so the plain lookup said "not armed" while
+            # the lane was demonstrably firing. Ask the lane's own loader before concluding.
+            from . import reflex_lane as _rl
+            got = _search(_rl._load_cfg())
+        return bool(got)
     except Exception:  # noqa: BLE001
         return False
 
