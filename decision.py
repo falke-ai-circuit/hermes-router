@@ -2163,8 +2163,40 @@ def _current_mindset(session_id: str) -> Dict[str, Optional[float]]:
             _hist = {}
         vec = mindset.read_trace_vectors(_rows, _hist)
         out = {d: vec.get(d) for d in ("scope", "rigour")}
-        if out.get("scope") is None or out.get("rigour") is None:
-            _note_unreadable(session_id, "vectors_null", _rows, _hist, "")
+        # R59k (the midturn mirror of R59i): a fork almost always fires on the FIRST
+        # tool result of a session, where the trace carries no signal yet. The stance
+        # then reads null, the envelope tells the model the stance is unknown, and
+        # `_midturn_mindset_block` throws away whatever adjustment came back — so the
+        # lane stayed silent on the mindset channel exactly where it has most to say.
+        # Fall back to the profile's HABITUAL stance (the median of its own recent raw
+        # scores, 0.0 by construction) for any drive with enough history to define one,
+        # and record which side answered. A drive without history stays None: inventing
+        # a baseline would turn "never measured" into "the agent was wrong".
+        _base: Dict[str, str] = {}
+        for d in ("scope", "rigour"):
+            if out.get(d) is not None:
+                _base[d] = "session"
+                continue
+            try:
+                h = mindset._history_values(_hist, d)
+            except Exception:  # noqa: BLE001 — history is optional
+                h = []
+            if len(h) >= int(getattr(mindset, "MIN_HISTORY", 20) or 0):
+                out[d] = 0.0
+                _base[d] = "habitual"
+            else:
+                _base[d] = "none"
+        try:
+            from .core.telemetry import log_route as _lrx
+            _lrx("PRE", event_detail="mindset_stance_baseline",
+                 baseline=",".join("%s=%s" % (d, _base.get(d)) for d in ("scope", "rigour")),
+                 session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
+        if any(out.get(d) is None for d in ("scope", "rigour")):
+            _note_unreadable(session_id, "vectors_null", _rows, _hist,
+                             "baseline=" + ",".join("%s=%s" % (d, _base.get(d))
+                                                    for d in ("scope", "rigour")))
         return out
     except Exception as _e:  # noqa: BLE001 — stance never breaks the envelope
         _note_unreadable(session_id, type(_e).__name__, _rows, _hist, "")
