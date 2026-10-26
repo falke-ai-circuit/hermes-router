@@ -517,9 +517,9 @@ def _ledger_write(event: str, session_id: str, verdict: str = "",
     try:
         import sqlite3
 
-        from ... import decision_miner
+        from ...decision_log import plugin_db_path as _pdb
 
-        path = decision_miner.plugin_db_path()
+        path = _pdb()
         if not path:
             return
         conn = sqlite3.connect(path, timeout=5.0)

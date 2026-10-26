@@ -359,10 +359,11 @@ def next_rule_id(session_id: str) -> str:
 
 
 def _log(session_id: str, event: str, **kw: Any) -> None:
+    """Decision-lane telemetry, independent of the legacy module it used to borrow."""
     try:
-        from . import decision_midturn as _dmt
+        from .decision_log import log_event
 
-        _dmt._log(session_id, event, **kw)
+        log_event(session_id, event, **kw)
     except Exception:  # noqa: BLE001
         try:
             logger.info("reflex_lane %s %s", event, json.dumps(kw, default=str)[:300])
