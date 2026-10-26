@@ -1062,6 +1062,14 @@ def trigger_kind(trigger: str) -> str:
 REASON_ON_DEMAND_DISABLED = "on_demand_disabled"
 REASON_PRE_OFF = "pre_off"
 REASON_NO_OPTIONS = "no_options"
+# A fork needs TWO routes. An envelope carrying one label (or a set of blank
+# labels) is not a choice, and a consult on it buys an advisory nobody can score
+# and writes a row that abstains forever. Measured on the fleet (30 d): every
+# billed consult without an option set came from exactly this shape --
+# choice=opt-1, confidence=1.0, options_json='' -- because build_envelope is
+# happy to build from a single option. This is the floor, enforced at the call
+# site so no trigger, backend or seam can route around it.
+REASON_NO_OPTION_SET = "no_option_set"
 REASON_MANUAL_VERBATIM = "manual_verbatim_passthrough"
 REASON_POST_GATE = "post_gate_insufficient_structure"
 REASON_MALFORMED = "malformed"
@@ -2910,6 +2918,42 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
         return None, meta, REASON_BACKEND_ERROR
 
 
+def _envelope_labels(envelope: Any) -> List[str]:
+    """The option labels an envelope actually offers, blanks dropped.
+
+    Deliberately NOT exception-swallowing around the envelope read: a broken
+    envelope must be distinguishable from "no options", because the gate fails
+    OPEN on the former and CLOSED on the latter. Swallowing here made a broken
+    envelope look like an empty one and silently silenced a real fork.
+    """
+    opts = (envelope or {}).get("options") or []
+    out = []
+    for o in opts:
+        try:
+            lab = o.get("label", "") if isinstance(o, dict) else str(o)
+        except Exception:  # noqa: BLE001
+            lab = ""
+        lab = str(lab).strip()
+        if lab:
+            out.append(lab)
+    return out
+
+
+def consult_admissible(envelope: Any) -> Tuple[bool, str]:
+    """R63L: is there a choice to advise on at all?
+
+    Never raises, and it fails OPEN -- a fault in this check must not silence a
+    real fork. The rule is only ever "fewer than two named routes means there is
+    no fork", which is a fact about the envelope, not a judgement about the ask.
+    """
+    try:
+        if len(_envelope_labels(envelope)) >= 2:
+            return True, ""
+        return False, REASON_NO_OPTION_SET
+    except Exception:  # noqa: BLE001
+        return True, ""
+
+
 def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                  ) -> Tuple[Optional[str], Dict[str, Any], str]:
     """Run the envelope through the configured backend. Returns
@@ -2920,6 +2964,13 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                             "tokens_in": None, "tokens_out": None,
                             "latency_s": 0.0}
     try:
+        # R63L: the floor lives HERE, at the one call every seam must pass
+        # through, so no trigger or backend can route around it. A single-route
+        # envelope is not a fork: the consult is skipped and the reason is
+        # returned like any other fail-open, which the ledger records.
+        _ok, _why = consult_admissible(envelope)
+        if not _ok:
+            return None, meta, _why
         backend = str(cfg.get("backend") or "nous").strip().lower()
         timeout = float(cfg.get("backend_timeout_seconds") or 15)
         prompt = render_prompt(envelope)
