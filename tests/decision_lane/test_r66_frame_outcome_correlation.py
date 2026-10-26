@@ -105,6 +105,22 @@ def test_settle_never_raises_on_junk():
     assert rl.settle("nope", {"messages": "not-a-list"}) is None
 
 
+def test_frame_index_measures_the_transcript_not_our_own_injection(monkeypatch):
+    """The frame is never persisted, so the next request is shorter than the delivered one.
+    Anchoring on the post-injection length made every real frame look like it had no follow-up
+    — silent, and it read as 'nothing to report' rather than a bug."""
+    monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
+    rl.clear()
+    req = _req()
+    before = len(req["messages"])
+    rl.run_on_request(req, session_id="g9", cfg=ON)
+    assert len(req["messages"]) == before + 1, "the frame was injected"
+    # the host rebuilds from the transcript: same base, plus what happened next
+    nxt = {"messages": _req()["messages"] + [_call("patch", '{"path": "/opt/data/app/src/render.py"}')]}
+    out = rl.settle("g9", nxt)
+    assert out["grade"] == "exact", out
+
+
 def test_delivery_log_carries_the_block_machine_readably(monkeypatch):
     """The block must be reconstructable from the log, not truncated at the first newline."""
     import json

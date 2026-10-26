@@ -520,6 +520,8 @@ def settle(session_id: str, request: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(msgs, list):
             return None
         if len(msgs) <= fr["n_msgs"]:
+            logger.debug("reflex_lane settle: no follow-up yet (%d <= %d)", len(msgs),
+                         fr["n_msgs"])
             # nothing has happened since the frame was written; that is not a miss and not a
             # result — report it as unmeasured and do not log an outcome for it.
             return {"grade": "unscoreable", "tool": "", "paths": [],
@@ -638,15 +640,15 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             return False
         from . import frames as _fr
 
-        ok = _fr.append_platform_rule(request.get("messages"), next_rule_id(sid), block,
-                                      role="user")
+        msgs_now = request.get("messages") or []
+        n_before = len(msgs_now) if isinstance(msgs_now, list) else 0
+        ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
         if ok:
             with _LAST_BLOCK_LOCK:
                 _LAST_BLOCK[sid] = (sig, now)
                 while len(_LAST_BLOCK) > _PENDING_MAX * 2:
                     _LAST_BLOCK.pop(next(iter(_LAST_BLOCK)))
-            msgs = request.get("messages") or []
-            _remember(sid, parsed, block, len(msgs) if isinstance(msgs, list) else 0)
+            _remember(sid, parsed, block, n_before)
             _log(sid, "reflex_weights_delivered", chars=len(block),
                  weights=_weights_str(parsed), margin=_margin(parsed),
                  mindset=parsed.get("mindset"), seam="every_call",
