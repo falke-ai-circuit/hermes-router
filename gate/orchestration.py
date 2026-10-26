@@ -267,6 +267,21 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         return {}
     _hs_rule_injected = _hub()._hs_inject_pass(
         request, session_id=_hub()._session_id_from_context(**context))  # rider 22
+
+    # Reflex lane (weighted options): deliver a reading parked by the midturn seam onto the
+    # REQUEST surface — the agent sees it while composing the next step, and it is never
+    # persisted as a stored message (a stored note gets restated, not acted on). Folded into
+    # the same {"request": ...} contract as the identity rule so every early return below
+    # still propagates it.
+    try:
+        from .. import reflex_lane as _rl
+
+        _reflex_delivered = _rl.inject_pass(
+            request, session_id=_hub()._session_id_from_context(**context))
+        if _reflex_delivered:
+            _hs_rule_injected = True
+    except Exception:  # noqa: BLE001 — delivery must never break the seam
+        pass
     try:
         def _hs_pass():
             """Propagate an in-place rule injection through the framework's

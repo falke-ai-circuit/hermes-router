@@ -1766,6 +1766,17 @@ def on_post_tool_call(function_name: str = "", result: Any = None,
                 or kwargs.get("name") or "")
         _instinct_fire(key, str(tool), text,
                        {"decision": {}}, "on", "post_tool_call")
+
+        # Reflex lane (weighted options): the decision model DETECTS the fork and WEIGHTS the
+        # actions instead of a regex deciding what counts as a fork. Fires on the same seam,
+        # throttled, self-configuring, and parks a reading for the NEXT model call — never a
+        # stored message, so it cannot be restated instead of acted on.
+        try:
+            from . import reflex_lane as _rl
+
+            _rl.fire_from_hook(key, str(tool), text)
+        except Exception:  # noqa: BLE001 — the reflex never breaks the turn
+            logger.debug("decision_midturn.reflex_lane error", exc_info=True)
     except Exception:  # noqa: BLE001
         logger.debug("decision_midturn.on_post_tool_call error", exc_info=True)
 

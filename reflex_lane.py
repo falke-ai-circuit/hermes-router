@@ -1,0 +1,452 @@
+"""Reflex lane — the decision model DETECTS and WEIGHTS, the lane only carries it.
+
+The rewrite this module is:
+
+  OLD  a regex/gate decides "this is a fork" -> a binary option set is minted ->
+       Jev returns `opt-1` at ~0.32 -> the note asks the model to answer a question.
+  NEW  the candidate universe is assembled WITHOUT judging it (every action the transcript
+       makes visible), then ONE call asks the decision model three things:
+         noul  "is there a genuine fork here at all?"        <- detection is Jev's judgement
+         choice "which of these actions, and how sure"       <- framing is Jev's weights
+         score  scope/rigour adjustment for this work        <- mindset, same call
+
+So detection stops being a regex that fails LOUDLY (billing verdicts on non-forks: 62-97% of
+consulted rows carried no real option set) and becomes a calibrated yes/no that fails SOFT —
+when the model says there is no fork, nothing is emitted and nothing is billed.
+
+Why the weights matter more than the pick: 0.55/0.45 tells the main model "this is a coin
+flip, verify before you spend"; 0.90/0.10 tells it "take it and move". A binary `opt-1`
+cannot express either, which is why the live lane kept emitting confident noise.
+
+The block is a READING, never an instruction, and it is delivered on the request surface at
+the next model call (mid-turn), never persisted into the transcript — a persisted note gets
+restated instead of acted on (`advisory_echo_blocked ... reason=no_work_signal`).
+
+Everything fails open. No exception escapes. No block means the turn proceeds unchanged.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from . import reflex_weights as _rw
+
+logger = logging.getLogger("hermes_router.reflex_lane")
+
+HEADER = "[reflex: a reading of the choice in front of you, not a request]"
+VALIDATE = "Fork present"
+_PENDING_LOCK = threading.Lock()
+_PENDING: Dict[str, Dict[str, Any]] = {}
+_PENDING_MAX = 64
+_SEQ_LOCK = threading.Lock()
+_SEQ: Dict[str, int] = {}
+
+# Candidate assembly is deliberately dumb: it collects what the transcript makes visible and
+# never decides whether that constitutes a fork. Judgement belongs to the noul question.
+_PATH_RE = re.compile(r"(?:/opt|/tmp|/home|/root|/var|/etc|/srv)[\w./\-]{4,80}"
+                      r"|(?:^|[\s\"'(])((?:[\w.\-]+/){1,6}[\w.\-]+\.(?:py|js|ts|go|rs|ya?ml|"
+                      r"json|md|sh|toml|sql|css|html))")
+_CMD_RE = re.compile(r"^\s*(?:\$|#)?\s*((?:sudo\s+)?(?:git|pytest|python3?|npm|go|make|"
+                     r"docker|systemctl|curl|bash|ls|cat|grep|rg)\b[^\n]{0,70})", re.M)
+_GENERIC = ("stop and report what is known so far",
+            "ask the user which way to go",
+            "continue with the current approach unchanged")
+
+
+def enabled(cfg: Any) -> bool:
+    """Armed per profile via ``hermes_router.reflex_weights.enabled``. Default OFF."""
+    try:
+        return bool(_rw.cfg_for(cfg).get("enabled"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
+    """Actions the transcript makes visible. No filtering, no ranking, no fork judgement."""
+    seen: List[str] = []
+    try:
+        for m in _PATH_RE.finditer(text or ""):
+            p = (m.group(1) or m.group(0)).strip().strip("\"'()")
+            if len(p) < 5:
+                continue
+            for verb in ("open", "fix"):
+                cand = "%s %s" % (verb, p)
+                if cand not in seen:
+                    seen.append(cand)
+            if len(seen) >= cap:
+                break
+        if len(seen) < cap:
+            for m in list(_CMD_RE.finditer(text or ""))[:2]:
+                cand = "re-run: %s" % m.group(1).strip()[:60]
+                if cand not in seen:
+                    seen.append(cand)
+        for g in _GENERIC:
+            if len(seen) >= cap:
+                break
+            if g not in seen:
+                seen.append(g)
+    except Exception:  # noqa: BLE001
+        pass
+    # A fork needs at least two distinguishable actions; one candidate is not a choice.
+    return seen[:cap] if len(seen) >= 2 else []
+
+
+def build_state(ask: str, tool: str, text: str, extra: str = "") -> str:
+    """The evidence handed to the decision model: the ask, the last action, its result."""
+    parts = []
+    if ask:
+        parts.append("USER ASK (what this work is for):\n%s" % str(ask)[:1500])
+    if extra:
+        parts.append("SESSION STATE:\n%s" % str(extra)[:900])
+    if tool:
+        parts.append("LAST ACTION: %s" % str(tool)[:80])
+    if text:
+        parts.append("RESULT OF THAT ACTION (truncated):\n%s" % str(text)[:4000])
+    return "\n\n".join(parts)
+
+
+def payload(state: str, cands: List[str]) -> Dict[str, Any]:
+    """One request carrying all three questions. Weights, detection and mindset together."""
+    return {
+        "model": _rw.MODEL_DEFAULT if hasattr(_rw, "MODEL_DEFAULT") else "jev-latest",
+        "state": state,
+        "questions": {
+            "fork": {
+                "type": "noul",
+                "instructions": ("There is a genuine decision fork here: the next action is "
+                                 "not uniquely determined by the evidence above, and at least "
+                                 "two of the listed actions are plausible enough that a "
+                                 "competent agent could pick either. Choosing to keep going "
+                                 "the same way, when that is the only sensible option, is NOT "
+                                 "a fork."),
+                "criteria": {"true": "two or more actions are genuinely plausible",
+                             "false": "one action follows from the evidence, or the choice "
+                                      "does not change what happens next"},
+            },
+            # ONE NOUL PER CANDIDATE, never a single `choice` over the set.
+            #
+            # A choice distribution is forced to sum to 1, so the candidates compete for a
+            # fixed budget of probability: three genuinely viable actions get ~0.33 each and
+            # the block reads as "we are unsure" when the truth is "all three are live". It
+            # also lets a weak filler candidate steal mass from a strong one. Independent
+            # nouls let several candidates all score high (0.85 / 0.78 / 0.71), which is the
+            # correct shape for a discovery read and removes the normalization artifact
+            # entirely — no renormalizing, no fabricated distribution.
+            **{"c%d" % i: {
+                "type": "noul",
+                "instructions": ("Taking this action next is a sound, viable step given the "
+                                 "evidence above: it addresses what the evidence actually "
+                                 "shows and does not waste the turn: %s" % c),
+            } for i, c in enumerate(cands, start=1)},
+            "scope": {
+                "type": "score",
+                "instructions": "How much surface must be examined to get this right?",
+                "criteria": ["a single file, nothing else matters",
+                             "a single file plus its immediate caller",
+                             "a few files inside one module",
+                             "several modules have to be cross-read",
+                             "the whole tree has to be mapped before acting"],
+            },
+            "rigour": {
+                "type": "score",
+                "instructions": "How much checking must happen before acting on it?",
+                "criteria": ["none, it is obviously safe",
+                             "a glance at the result",
+                             "run the local check once",
+                             "verify each step before committing to it",
+                             "verify every step against independent evidence"],
+            },
+        },
+    }
+
+
+def _num(v: Any) -> Optional[float]:
+    try:
+        if isinstance(v, bool) or v is None:
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_answers(data: Any, cands: List[str]) -> Optional[Dict[str, Any]]:
+    """answers -> {fork, options[weighted], mindset, confidence}. None when not a fork."""
+    try:
+        answers = (data or {}).get("answers") or {}
+        fork_ans = answers.get("fork") or {}
+        p_fork = _num(fork_ans.get("noul"))
+        if p_fork is None:
+            p_fork = _num(fork_ans.get("confidence"))
+        if p_fork is None:
+            _rw._note(reason="no_fork_probability")
+            return None
+
+        # One independent viability reading per candidate. These are NOT a distribution:
+        # they are not normalized, they may all be high, and they may all be low. That is
+        # the point — three live options is a different situation from one live option, and
+        # a normalized `choice` cannot express the difference.
+        weights: List[Dict[str, Any]] = []
+        for i, name in enumerate(cands, start=1):
+            p = _num((answers.get("c%d" % i) or {}).get("noul"))
+            if p is None:
+                continue
+            weights.append({"action": name, "p": p})
+        if len(weights) < 2:
+            _rw._note(reason="no_weights", fork_p=round(p_fork, 3))
+            return None
+        weights.sort(key=lambda o: -o["p"])
+
+        mindset: Dict[str, float] = {}
+        for d in _rw.DRIVES:
+            s = _num((answers.get(d) or {}).get("score"))
+            if s is None:
+                continue
+            # 5 rubric levels -> the plugin's [-1,+1] dial (2 is neutral).
+            mindset[d] = round(max(-1.0, min(1.0, (s - 2.0) / 2.0)), 3)
+
+        viable = [o for o in weights if float(o["p"]) >= 0.5]
+        return {"p_fork": round(p_fork, 4), "options": weights,
+                "viable": len(viable),
+                "mindset": mindset,
+                # confidence is now evidence about the fork itself, not a model's self-report
+                "confidence": round(min(1.0, len(viable) / 2.0) if viable else 0.0, 3)}
+    except Exception as exc:  # noqa: BLE001
+        _rw._note(reason="parse_error", error=type(exc).__name__)
+        return None
+
+
+def render(parsed: Dict[str, Any], limit: int = 400) -> str:
+    """The block the main model reads. Short, weighted, no imperative."""
+    try:
+        opts = parsed.get("options") or []
+        if len(opts) < 2:
+            return ""
+        lines = [HEADER]
+        for o in opts[:3]:
+            # Percentages, not a normalized 0.62/0.28/0.10 split: these are independent
+            # viability readings, so 85% / 78% / 71% is a truthful "three live options".
+            lines.append("  %d%%  %s" % (round(float(o["p"]) * 100), str(o["action"])[:68]))
+        mind = parsed.get("mindset") or {}
+        bits = ["%s %+0.2f" % (d, float(mind[d])) for d in _rw.DRIVES
+                if isinstance(mind.get(d), float)]
+        if bits:
+            lines.append("  mind: " + " ".join(bits))
+        block = "\n".join(lines)
+        return block if len(block) <= limit else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _cfg(cfg: Any) -> Dict[str, Any]:
+    c = _rw.cfg_for(cfg)
+    c.setdefault("min_fork_probability", 0.5)
+    c.setdefault("min_gap", 0.0)
+    return c
+
+
+def _transport(payload_obj: Dict[str, Any], cfg: Dict[str, Any]) -> Any:
+    """Post to the decision substrate. Reuses the lane's own transport so config is one seam."""
+    try:
+        from . import decision as _dec
+
+        endpoint = str(cfg.get("typesafe_endpoint") or _dec.DEFAULTS["typesafe_endpoint"])
+        key_env = str(cfg.get("typesafe_api_key_env") or _dec.DEFAULTS["typesafe_api_key_env"])
+        key = os.environ.get(key_env, "")
+        if not key:
+            _rw._note(reason="no_key", key_env=key_env)
+            return None
+        body = dict(payload_obj)
+        body["model"] = str(cfg.get("jev_native_model") or body.get("model") or "jev-latest")
+        return _dec._http_post_json(endpoint, {"Authorization": "Bearer %s" % key}, body,
+                                    float(cfg.get("reflex_timeout_seconds") or 8))
+    except Exception as exc:  # noqa: BLE001
+        _rw._note(reason="transport_error", error=type(exc).__name__)
+        return None
+
+
+def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
+         extra: str = "") -> str:
+    """Assemble -> ask -> validate -> park. Returns the block ("" when nothing to say)."""
+    try:
+        c = _cfg(cfg)
+        if not c.get("enabled"):
+            return ""
+        if not session_id:
+            return ""
+        if len(text or "") < 60:
+            _rw._note(reason="result_too_thin")
+            return ""
+        cands = candidates(tool, text, cap=int(c.get("max_options") or 4))
+        if not cands:
+            _rw._note(reason="no_candidates")
+            return ""
+        state = build_state(ask, tool, text, extra)
+        data = _transport(payload(state, cands), c)
+        if not isinstance(data, dict):
+            return ""
+        parsed = parse_answers(data, cands)
+        if not parsed:
+            return ""
+        # THE FORK TEST IS NOW EMPIRICAL, not a model's opinion about forking: at least two
+        # candidates are independently viable. One viable action means the evidence points
+        # one way and there is nothing to steer — that case must stay silent, because a lane
+        # that speaks on non-forks is exactly the defect this rewrite exists to remove.
+        if int(parsed.get("viable") or 0) < 2:
+            _rw._note(reason="single_viable_action", fork_p=parsed["p_fork"],
+                      viable=parsed.get("viable"))
+            _log(session_id, "reflex_not_a_fork", fork_p=parsed["p_fork"],
+                 viable=parsed.get("viable"), weights=_weights_str(parsed))
+            return ""
+        block = render(parsed, int(c.get("block_chars") or 400))
+        if not block:
+            return ""
+        _park(session_id, block)
+        _log(session_id, "reflex_weights_ready",
+             fork_p=parsed["p_fork"], weights=_weights_str(parsed),
+             margin=_margin(parsed), mindset=parsed.get("mindset"),
+             chars=len(block), candidates=len(cands))
+        return block
+    except Exception:  # noqa: BLE001
+        logger.debug("reflex_lane.fire error", exc_info=True)
+        return ""
+
+
+def _weights_str(parsed: Dict[str, Any]) -> str:
+    return "/".join("%.2f" % float(o["p"]) for o in (parsed.get("options") or [])[:3])
+
+
+def _margin(parsed: Dict[str, Any]) -> float:
+    opts = parsed.get("options") or []
+    if len(opts) < 2:
+        return 0.0
+    return round(float(opts[0]["p"]) - float(opts[1]["p"]), 3)
+
+
+def _park(session_id: str, block: str) -> None:
+    with _PENDING_LOCK:
+        _PENDING[session_id] = {"block": block, "ts": time.time()}
+        while len(_PENDING) > _PENDING_MAX:
+            _PENDING.pop(next(iter(_PENDING)))
+
+
+def take(session_id: str) -> str:
+    """One-shot consume at the next model call. Empty when nothing is pending."""
+    with _PENDING_LOCK:
+        item = _PENDING.pop(session_id or "", None)
+    if not item:
+        return ""
+    if time.time() - float(item.get("ts") or 0) > 600:
+        return ""  # stale: a reading from ten minutes ago is worse than none
+    return str(item.get("block") or "")
+
+
+def next_rule_id(session_id: str) -> str:
+    with _SEQ_LOCK:
+        n = _SEQ.get(session_id, 0) + 1
+        _SEQ[session_id] = n
+        while len(_SEQ) > _PENDING_MAX:
+            _SEQ.pop(next(iter(_SEQ)))
+    return "reflex.%d" % n
+
+
+def _log(session_id: str, event: str, **kw: Any) -> None:
+    try:
+        from . import decision_midturn as _dmt
+
+        _dmt._log(session_id, event, **kw)
+    except Exception:  # noqa: BLE001
+        try:
+            logger.info("reflex_lane %s %s", event, json.dumps(kw, default=str)[:300])
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def clear(session_id: str = "") -> None:
+    """Test/reset helper: drop pending state for one session or all."""
+    with _PENDING_LOCK:
+        if session_id:
+            _PENDING.pop(session_id, None)
+        else:
+            _PENDING.clear()
+    with _SEQ_LOCK:
+        if session_id:
+            _SEQ.pop(session_id, None)
+        else:
+            _SEQ.clear()
+
+
+# ── wiring helpers ──────────────────────────────────────────────────────────────────────
+_THROTTLE_LOCK = threading.Lock()
+_LAST_FIRE: Dict[str, float] = {}
+MIN_INTERVAL_S = 12.0
+MAX_PER_SESSION = 40
+
+
+def _load_cfg() -> Dict[str, Any]:
+    """The profile's live config, through the sanctioned seam only."""
+    try:
+        from .core import config_access as _ca
+
+        full = _ca.load_full_config()
+        if isinstance(full, dict):
+            return full
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def fire_from_hook(session_id: str, tool: str, text: str) -> str:
+    """Called on the midturn seam (post_tool_call). Throttled, self-configuring."""
+    try:
+        cfg = _load_cfg()
+        if not enabled(cfg):
+            return ""
+        key = str(session_id or "")
+        if not key:
+            return ""
+        now = time.time()
+        with _THROTTLE_LOCK:
+            last = _LAST_FIRE.get(key, 0.0)
+            if now - last < MIN_INTERVAL_S:
+                return ""
+            _LAST_FIRE[key] = now
+            while len(_LAST_FIRE) > _PENDING_MAX * 2:
+                _LAST_FIRE.pop(next(iter(_LAST_FIRE)))
+        ask = ""
+        try:
+            from .core import state as _st
+
+            ask = str(_st.get_last_seen(key) or "")
+        except Exception:  # noqa: BLE001
+            pass
+        return fire(key, tool, text, cfg, ask=ask)
+    except Exception:  # noqa: BLE001
+        logger.debug("reflex_lane.fire_from_hook error", exc_info=True)
+        return ""
+
+
+def inject_pass(request: Any, session_id: str = "") -> bool:
+    """Deliver the parked reading at the NEXT model call. Never persists, never raises."""
+    try:
+        if not isinstance(request, dict) or not session_id:
+            return False
+        block = take(session_id)
+        if not block:
+            return False
+        from . import frames as _fr
+
+        msgs = request.get("messages")
+        if not isinstance(msgs, list):
+            return False
+        ok = _fr.append_platform_rule(msgs, next_rule_id(session_id), block, role="user")
+        if ok:
+            _log(session_id, "reflex_weights_delivered", chars=len(block))
+        return bool(ok)
+    except Exception:  # noqa: BLE001
+        logger.debug("reflex_lane.inject_pass error", exc_info=True)
+        return False
