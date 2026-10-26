@@ -282,44 +282,36 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         if len(text or "") < 60:
             _rw._note(reason="result_too_thin")
             return ""
-        cands = candidates(tool, text, cap=int(c.get("max_options") or 4))
+        from . import decision_extract as _dx
+
+        cands = _dx.candidate_set((text or "") + "\n" + (ask or ""),
+                                  cap=int(c.get("max_options") or 7))
         if not cands:
             _rw._note(reason="no_candidates")
             return ""
         state = build_state(ask, tool, text, extra)
-        data = _transport(payload(state, cands), c)
+        data = _transport(_dx.payload(state, cands, str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return ""
-        parsed = parse_answers(data, cands)
+        parsed = _dx.parse(data, cands)
         if not parsed:
+            _rw._note(reason="parse_empty")
             return ""
-        # THE GATE IS THE FORK QUESTION, not an absolute bar on each candidate.
-        #
-        # Calibrated live (2026-10-26): per-candidate nouls run conservative — a real fork
-        # came back 0.44 / 0.44 / 0.37 while the explicit fork question said 0.81. An
-        # absolute 0.5 floor on candidates therefore suppressed every genuine fork, which is
-        # the same silent-lane failure in a new costume. The fork question answers "is there
-        # a choice here at all"; the per-candidate numbers answer "how do they compare".
-        if float(parsed["p_fork"]) < float(c["min_fork_probability"]):
-            _rw._note(reason="not_a_fork", fork_p=parsed["p_fork"])
-            _log(session_id, "reflex_not_a_fork", fork_p=parsed["p_fork"],
-                 viable=parsed.get("viable"), weights=_weights_str(parsed))
+        ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
+                           float(c.get("min_margin") or 0.10))
+        if not ok:
+            _rw._note(reason=why, top=parsed["options"][0]["p"], margin=parsed["margin"])
+            _log(session_id, "reflex_held", reason=why,
+                 top=parsed["options"][0]["p"], margin=parsed["margin"], seam="midturn")
             return ""
-        # A single dominant candidate is not worth a block; require a second within reach.
-        opts = parsed.get("options") or []
-        if len(opts) < 2 or float(opts[1]["p"]) < 0.15:
-            _rw._note(reason="one_candidate_dominates", weights=_weights_str(parsed))
-            _log(session_id, "reflex_not_a_fork", fork_p=parsed["p_fork"],
-                 viable=parsed.get("viable"), weights=_weights_str(parsed))
-            return ""
-        block = render(parsed, int(c.get("block_chars") or 400))
+        block = _dx.render(parsed, int(c.get("block_chars") or 400))
         if not block:
             return ""
         _park(session_id, block)
-        _log(session_id, "reflex_weights_ready",
-             fork_p=parsed["p_fork"], weights=_weights_str(parsed),
-             margin=_margin(parsed), mindset=parsed.get("mindset"),
-             chars=len(block), candidates=len(cands))
+        _log(session_id, "reflex_weights_ready", top=parsed["options"][0]["p"],
+             weights=_weights_str(parsed), margin=_margin(parsed),
+             mindset=parsed.get("mindset"), chars=len(block), candidates=len(cands),
+             block=block)
         return block
     except Exception:  # noqa: BLE001
         logger.debug("reflex_lane.fire error", exc_info=True)
@@ -517,31 +509,36 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         if len(window) < 60:
             _rw._note(reason="no_work_in_request")
             return False
-        cands = candidates("", window, cap=int(c.get("max_options") or 4))
+        from . import decision_extract as _dx
+
+        cands = _dx.candidate_set(window + "\n" + ask, cap=int(c.get("max_options") or 7))
         if not cands:
             _rw._note(reason="no_candidates")
             return False
         # One reading per distinct situation: the same block twice in a row is noise, and a
         # retried request must not pay twice.
-        sig = "%s|%s" % (window[-400:], "|".join(cands))
+        sig = "%s|%s" % (window[-400:], "|".join(str(c.get("label") or c) for c in cands))
         now = time.time()
         with _LAST_BLOCK_LOCK:
             prev = _LAST_BLOCK.get(sid)
             if prev and prev[0] == sig and now - prev[1] < DEDUPE_S:
                 _rw._note(reason="duplicate_situation")
                 return False
-        data = _transport(payload(build_state(ask, "", window), cands), c)
+        data = _transport(_dx.payload(build_state(ask, "", window), cands,
+                                      str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return False
-        parsed = parse_answers(data, cands)
+        parsed = _dx.parse(data, cands)
         if not parsed:
             return False
-        if float(parsed["p_fork"]) < float(c["min_fork_probability"]):
-            _rw._note(reason="not_a_fork", fork_p=parsed["p_fork"])
-            _log(sid, "reflex_not_a_fork", fork_p=parsed["p_fork"],
-                 weights=_weights_str(parsed), seam="every_call")
+        ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
+                           float(c.get("min_margin") or 0.10))
+        if not ok:
+            _rw._note(reason=why, top=parsed["options"][0]["p"], margin=parsed["margin"])
+            _log(sid, "reflex_held", reason=why, top=parsed["options"][0]["p"],
+                 margin=parsed["margin"], seam="every_call")
             return False
-        block = render(parsed, int(c.get("block_chars") or 400))
+        block = _dx.render(parsed, int(c.get("block_chars") or 400))
         if not block:
             return False
         from . import frames as _fr
@@ -556,7 +553,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             _log(sid, "reflex_weights_delivered", chars=len(block),
                  weights=_weights_str(parsed), margin=_margin(parsed),
                  mindset=parsed.get("mindset"), seam="every_call",
-                 fork_p=parsed["p_fork"])
+                 top=parsed["options"][0]["p"], block=block)
         return bool(ok)
     except Exception:  # noqa: BLE001
         logger.debug("reflex_lane.run_on_request error", exc_info=True)
