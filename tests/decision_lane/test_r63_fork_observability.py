@@ -256,3 +256,26 @@ def test_a_json_trailer_cannot_become_a_route():
                            "total_lines": 1})
     hit = fs._det_either_or(None, wrapped)
     assert hit and all("total_lines" not in o for o in hit["options"])
+
+
+# --- R63g: labels stay routes; midturn rows can actually resolve -----------
+
+def test_render_options_does_not_prefix_a_route_with_edit():
+    """`edit delete <path>` is not a route anyone can observe later. Only a
+    BARE PATH gets the `edit ` prefix."""
+    from hermes_router import fork_sources as fs
+    got = fs.render_options({"options": ["delete ../tmp/probe_a.py", "redis"]})
+    assert got == ["delete ../tmp/probe_a.py", "redis"]
+    got = fs.render_options({"options": ["../app/utils_v2.py"]})
+    assert got == ["edit ../app/utils_v2.py"]
+
+
+def test_the_midturn_leg_settles_the_previous_fork():
+    """capture_outcome was called from the PRE and POST legs only. The fleet
+    runs seam=midturn, so every midturn row stayed resolved_action='' forever
+    and could never contribute a resolved outcome to the funnel."""
+    import inspect
+
+    from hermes_router import decision_midturn as dm
+    src = inspect.getsource(dm._handle_hit)
+    assert "capture_outcome" in src

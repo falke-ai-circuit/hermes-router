@@ -457,8 +457,22 @@ def rival_targets(store: Dict[str, Any], text: str
 
 
 def render_options(hit: Dict[str, Any]) -> List[str]:
-    """Closed option labels for the envelope, one per rival target."""
+    """Closed option labels for the envelope, one per rival target.
+
+    `edit ` is added only for a BARE PATH, which is what the structural sources
+    return (a versioned module path). The generic detectors already return a
+    full route -- "delete the first candidate", "redis", "kafka" -- and
+    prefixing those produced labels like "edit delete ...", which is not a
+    route anyone could observe in a later command.
+    """
     try:
-        return ["edit %s" % p for p in (hit.get("options") or [])][:4]
+        out = []
+        for p in (hit.get("options") or [])[:4]:
+            o = str(p or "").strip()
+            if not o:
+                continue
+            bare_path = bool(re.search(r"[./]", o)) and not re.search(r"\s", o)
+            out.append(("edit %s" % o) if bare_path else o)
+        return out
     except Exception:  # noqa: BLE001
         return []
