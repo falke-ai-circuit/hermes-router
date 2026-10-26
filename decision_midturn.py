@@ -662,6 +662,9 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
             return
+        if _superseded_by_reflex(cfg):
+            _log_superseded(str(session_id), "turn_boundary")
+            return
         # Every turn boundary is a verification point: settle whatever the
         # previous turn left open, using the transcript that now exists. Waiting
         # for the NEXT FORK to do this (the PRE leg's rule) leaves every row of
