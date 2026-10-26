@@ -244,6 +244,7 @@ def render(parsed: Dict[str, Any], limit: int = 400) -> str:
 
 def _cfg(cfg: Any) -> Dict[str, Any]:
     c = _rw.cfg_for(cfg)
+    c.setdefault("every_call", True)
     c.setdefault("min_fork_probability", 0.5)
     c.setdefault("min_gap", 0.0)
     return c
@@ -292,13 +293,22 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         parsed = parse_answers(data, cands)
         if not parsed:
             return ""
-        # THE FORK TEST IS NOW EMPIRICAL, not a model's opinion about forking: at least two
-        # candidates are independently viable. One viable action means the evidence points
-        # one way and there is nothing to steer — that case must stay silent, because a lane
-        # that speaks on non-forks is exactly the defect this rewrite exists to remove.
-        if int(parsed.get("viable") or 0) < 2:
-            _rw._note(reason="single_viable_action", fork_p=parsed["p_fork"],
-                      viable=parsed.get("viable"))
+        # THE GATE IS THE FORK QUESTION, not an absolute bar on each candidate.
+        #
+        # Calibrated live (2026-10-26): per-candidate nouls run conservative — a real fork
+        # came back 0.44 / 0.44 / 0.37 while the explicit fork question said 0.81. An
+        # absolute 0.5 floor on candidates therefore suppressed every genuine fork, which is
+        # the same silent-lane failure in a new costume. The fork question answers "is there
+        # a choice here at all"; the per-candidate numbers answer "how do they compare".
+        if float(parsed["p_fork"]) < float(c["min_fork_probability"]):
+            _rw._note(reason="not_a_fork", fork_p=parsed["p_fork"])
+            _log(session_id, "reflex_not_a_fork", fork_p=parsed["p_fork"],
+                 viable=parsed.get("viable"), weights=_weights_str(parsed))
+            return ""
+        # A single dominant candidate is not worth a block; require a second within reach.
+        opts = parsed.get("options") or []
+        if len(opts) < 2 or float(opts[1]["p"]) < 0.15:
+            _rw._note(reason="one_candidate_dominates", weights=_weights_str(parsed))
             _log(session_id, "reflex_not_a_fork", fork_p=parsed["p_fork"],
                  viable=parsed.get("viable"), weights=_weights_str(parsed))
             return ""
@@ -449,4 +459,105 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         return bool(ok)
     except Exception:  # noqa: BLE001
         logger.debug("reflex_lane.inject_pass error", exc_info=True)
+        return False
+
+
+# ── every-call mode ─────────────────────────────────────────────────────────────────────
+# Goran 2026-10-26: the reflex can run on EVERY model call, not only mid-turn. Jev is cheap
+# enough that the economics invert — a $0.0002 reading per call is cheaper than the main
+# model wandering for a thousand tokens while it re-interprets its own transcript. This is
+# also what keeps the MAIN model's context clean: the reading replaces deliberation, it does
+# not add to it.
+
+_LAST_BLOCK_LOCK = threading.Lock()
+_LAST_BLOCK: Dict[str, Tuple[str, float]] = {}
+DEDUPE_S = 45.0
+
+
+def _window_from_request(request: Any, limit: int = 6) -> Tuple[str, str]:
+    """(user ask, recent tool/assistant text) from the live request payload."""
+    ask, chunks = "", []
+    try:
+        msgs = (request or {}).get("messages") or []
+        if not isinstance(msgs, list):
+            return "", ""
+        for m in reversed(msgs):
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "")
+            content = m.get("content")
+            if isinstance(content, list):
+                content = " ".join(str(c.get("text") or "") if isinstance(c, dict) else str(c)
+                                   for c in content)
+            text = str(content or "")
+            if role == "user" and not ask:
+                ask = text[:1500]
+                continue
+            if role in ("tool", "function") or (role == "assistant" and m.get("tool_calls")):
+                if text.strip():
+                    chunks.append(text[:2500])
+            if len(chunks) >= limit:
+                break
+        chunks.reverse()
+    except Exception:  # noqa: BLE001
+        pass
+    return ask, "\n---\n".join(chunks)
+
+
+def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
+    """Every-call mode: read the live request, ask, inject. Returns True when injected."""
+    try:
+        c = _cfg(cfg if cfg is not None else _load_cfg())
+        if not c.get("enabled") or not c.get("every_call", True):
+            return False
+        if not isinstance(request, dict):
+            return False
+        sid = str(session_id or "req")
+        ask, window = _window_from_request(request)
+        if len(window) < 60:
+            _rw._note(reason="no_work_in_request")
+            return False
+        cands = candidates("", window, cap=int(c.get("max_options") or 4))
+        if not cands:
+            _rw._note(reason="no_candidates")
+            return False
+        # One reading per distinct situation: the same block twice in a row is noise, and a
+        # retried request must not pay twice.
+        sig = "%s|%s" % (window[-400:], "|".join(cands))
+        now = time.time()
+        with _LAST_BLOCK_LOCK:
+            prev = _LAST_BLOCK.get(sid)
+            if prev and prev[0] == sig and now - prev[1] < DEDUPE_S:
+                _rw._note(reason="duplicate_situation")
+                return False
+        data = _transport(payload(build_state(ask, "", window), cands), c)
+        if not isinstance(data, dict):
+            return False
+        parsed = parse_answers(data, cands)
+        if not parsed:
+            return False
+        if float(parsed["p_fork"]) < float(c["min_fork_probability"]):
+            _rw._note(reason="not_a_fork", fork_p=parsed["p_fork"])
+            _log(sid, "reflex_not_a_fork", fork_p=parsed["p_fork"],
+                 weights=_weights_str(parsed), seam="every_call")
+            return False
+        block = render(parsed, int(c.get("block_chars") or 400))
+        if not block:
+            return False
+        from . import frames as _fr
+
+        ok = _fr.append_platform_rule(request.get("messages"), next_rule_id(sid), block,
+                                      role="user")
+        if ok:
+            with _LAST_BLOCK_LOCK:
+                _LAST_BLOCK[sid] = (sig, now)
+                while len(_LAST_BLOCK) > _PENDING_MAX * 2:
+                    _LAST_BLOCK.pop(next(iter(_LAST_BLOCK)))
+            _log(sid, "reflex_weights_delivered", chars=len(block),
+                 weights=_weights_str(parsed), margin=_margin(parsed),
+                 mindset=parsed.get("mindset"), seam="every_call",
+                 fork_p=parsed["p_fork"])
+        return bool(ok)
+    except Exception:  # noqa: BLE001
+        logger.debug("reflex_lane.run_on_request error", exc_info=True)
         return False

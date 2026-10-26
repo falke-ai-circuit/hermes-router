@@ -276,8 +276,14 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     try:
         from .. import reflex_lane as _rl
 
-        _reflex_delivered = _rl.inject_pass(
-            request, session_id=_hub()._session_id_from_context(**context))
+        # Every-call mode (Goran 2026-10-26): the reading is produced from the LIVE request,
+        # on every model call, so the main model never has to re-interpret its own transcript
+        # to know what the choice is. Parked readings (midturn seam) are consumed first if
+        # present — they carry an earlier, cheaper vantage.
+        _rsid = _hub()._session_id_from_context(**context)
+        _reflex_delivered = _rl.inject_pass(request, session_id=_rsid)
+        if not _reflex_delivered:
+            _reflex_delivered = _rl.run_on_request(request, session_id=_rsid)
         if _reflex_delivered:
             _hs_rule_injected = True
     except Exception:  # noqa: BLE001 — delivery must never break the seam

@@ -54,20 +54,32 @@ def test_two_viable_candidates_are_a_fork(monkeypatch):
     assert block
     assert "85%" in block and "78%" in block
     assert block.index("85%") < block.index("78%"), "highest first"
+    # independent readings, not a distribution: they do not have to sum to 100
+    assert "100%" not in block
 
 
-def test_one_viable_candidate_is_silent(monkeypatch):
-    """Evidence pointing one way is not a fork; speaking there is the old defect."""
+def test_no_fork_judgement_is_silent_however_the_candidates_look(monkeypatch):
+    """The fork question is the gate; a confident 'no fork' must stay silent."""
     monkeypatch.setattr(rl, "_transport",
-                        lambda *a, **k: _answers(viable=(0.9, 0.12, 0.05, 0.02)))
+                        lambda *a, **k: _answers(fork=0.2, viable=(0.9, 0.7, 0.5, 0.4)))
     assert rl.fire("s2", "terminal", "src/render.py ok\n" + "z" * 200, ON) == ""
 
 
-def test_weakened_compliance_low_all_round_is_silent(monkeypatch):
-    """All-low is not a fork either: nothing is worth steering toward."""
+def test_one_dominant_candidate_is_silent(monkeypatch):
+    """A fork question yes, but nothing within reach of the top: no block, no noise."""
     monkeypatch.setattr(rl, "_transport",
-                        lambda *a, **k: _answers(viable=(0.3, 0.25, 0.2, 0.1)))
+                        lambda *a, **k: _answers(fork=0.8, viable=(0.9, 0.10, 0.05, 0.02)))
     assert rl.fire("s3", "terminal", "src/render.py\n" + "z" * 200, ON) == ""
+
+
+def test_live_calibration_flat_weights_still_emit(monkeypatch):
+    """Calibrated live: a real fork read 0.44/0.44/0.37 with fork_p 0.81.
+
+    An absolute floor of 0.5 per candidate suppressed every genuine fork, which is the same
+    silent-lane failure in a new costume. This case pins the fix."""
+    monkeypatch.setattr(rl, "_transport",
+                        lambda *a, **k: _answers(fork=0.81, viable=(0.44, 0.44, 0.37, 0.2)))
+    assert rl.fire("s3b", "terminal", "src/render.py broken\n" + "z" * 200, ON)
 
 
 def test_weights_are_not_renormalized(monkeypatch):
@@ -143,6 +155,39 @@ def test_candidates_are_assembled_without_judging_them():
     got = rl.candidates("terminal", "Traceback in /opt/data/app/src/render.py line 12")
     assert any("render.py" in c for c in got)
     assert len(got) >= 2
+
+
+def test_every_call_mode_reads_the_live_request(monkeypatch):
+    """The reading is produced from the request itself — no park, no transcript persistence."""
+    monkeypatch.setattr(rl, "_transport", lambda *a, **k: _answers())
+    rl.clear()
+    req = {"messages": [
+        {"role": "user", "content": "fix the renderer"},
+        {"role": "tool", "content": "Traceback in src/render.py line 12: IndexError while "
+                                    "resolving the template cache, storage backend missing"},
+    ]}
+    assert rl.run_on_request(req, session_id="e1", cfg=ON) is True
+    body = req["messages"][-1]["content"]
+    assert "85%" in body and "reflex" in body.lower()
+    # the block never enters the transcript as an assistant turn
+    assert req["messages"][-1]["role"] == "user"
+
+
+def test_every_call_dedupes_the_same_situation(monkeypatch):
+    """A retried request must not pay twice for the same reading."""
+    monkeypatch.setattr(rl, "_transport", lambda *a, **k: _answers())
+    rl.clear()
+    body = "src/render.py IndexError while resolving the template cache " + "q" * 120
+    req = {"messages": [{"role": "tool", "content": body}]}
+    assert rl.run_on_request(req, session_id="e2", cfg=ON) is True
+    req2 = {"messages": [{"role": "tool", "content": body}]}
+    assert rl.run_on_request(req2, session_id="e2", cfg=ON) is False
+
+
+def test_every_call_skips_a_request_with_no_work(monkeypatch):
+    monkeypatch.setattr(rl, "_transport", lambda *a, **k: pytest.fail("must not call"))
+    req = {"messages": [{"role": "user", "content": "hi"}]}
+    assert rl.run_on_request(req, session_id="e3", cfg=ON) is False
 
 
 def test_one_noul_per_candidate_not_one_choice_over_all():
