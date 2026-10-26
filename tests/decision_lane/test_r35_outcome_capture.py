@@ -181,10 +181,13 @@ def test_capture_outcome_writes_a_label_and_evidence(tmp_path, monkeypatch):
         "trigger": "pre", "signatures_json": json.dumps(sigs()),
     }, db_path=db)
 
+    # a USER message after the fork is the proof the turn closed; without it
+    # capture defers (a fork cannot be settled while its own turn runs)
     monkeypatch.setattr(decision, "_transcript_rows", lambda *a, **k: [
         {"role": "assistant", "content": "", "tool_calls": json.dumps(
             call("write_file", {"path": "/opt/data/projects/demo/out.md"}))},
         {"role": "tool", "content": "{}", "tool_name": "write_file"},
+        {"role": "user", "content": "next task"},
     ])
     got = decision.capture_outcome("s2", db_path=db)
     assert got == rid
@@ -204,7 +207,8 @@ def test_capture_outcome_is_idempotent(tmp_path, monkeypatch):
     decision.ledger_write({"session_id": "s3", "choice": "opt-1",
                            "signatures_json": json.dumps(sigs())}, db_path=db)
     monkeypatch.setattr(decision, "_transcript_rows", lambda *a, **k: [
-        {"role": "tool", "content": "{}", "tool_name": "read_file"}])
+        {"role": "tool", "content": "{}", "tool_name": "read_file"},
+        {"role": "user", "content": "next task"}])
     first = decision.capture_outcome("s3", db_path=db)
     second = decision.capture_outcome("s3", db_path=db)
     assert first

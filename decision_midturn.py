@@ -783,17 +783,6 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
     extracted. Cooldown + run cap + (mode 'on') envelope -> backend ->
     verdict -> ledger + pending advisory. Shadow: detect + log + ledger
     only. Never raises."""
-    # Settle the PREVIOUS unresolved fork for this session before opening a new
-    # one -- the same closed loop the PRE leg uses (turn N applies, the next
-    # decision settles it). Without this, EVERY midturn row stayed
-    # resolved_action='' forever: capture_outcome is called from the PRE and
-    # POST legs only, and the fleet runs seam=midturn, so the midturn ledger --
-    # the one that carries the options, signatures and evidence -- could never
-    # contribute a single resolved outcome to the measurement funnel.
-    try:
-        _dec.capture_outcome(str(session_id))
-    except Exception:  # noqa: BLE001
-        pass
     try:
         sig = _norm_hash(text)
         now = time.time()

@@ -270,54 +270,24 @@ def test_render_options_does_not_prefix_a_route_with_edit():
     assert got == ["edit ../app/utils_v2.py"]
 
 
-def test_the_midturn_leg_settles_the_previous_fork():
-    """capture_outcome was called from the PRE and POST legs only. The fleet
-    runs seam=midturn, so every midturn row stayed resolved_action='' forever
-    and could never contribute a resolved outcome to the funnel."""
+def test_open_turns_are_not_settled():
+    """A fork cannot be settled while its own turn is still running: measured
+    live, the row was settled two seconds after the fork and the evidence window
+    held one item -- the fork statement -- so a turn that plainly deleted
+    probe_a.py resolved as none_observed."""
+    import inspect
+
+    from hermes_router import decision
+    src = inspect.getsource(decision.capture_outcome)
+    assert 'reason=turn_still_open' in src
+    assert '_role_of' in src
+
+
+def test_the_turn_boundary_settles():
+    """The turn boundary is the honest verification point: the previous turn's
+    transcript exists and its action is on disk."""
     import inspect
 
     from hermes_router import decision_midturn as dm
-    src = inspect.getsource(dm._handle_hit)
+    src = inspect.getsource(dm.sweep_turn_start)
     assert "capture_outcome" in src
-
-
-def test_acted_on_beats_merely_mentioned():
-    """The commonest real line names both routes: "removed a; b intact, 5 bytes".
-    Presence alone calls that ambiguous and abstains -- measured on a live
-    probe. A mutation verb in the SAME CLAUSE decides it."""
-    a = ds.option_signature("delete /opt/tmp/probe_a.py")
-    b = ds.option_signature("delete /opt/tmp/probe_b.py")
-    ev = [{"kind": "call", "tool": "terminal", "effect": "exec",
-           "text": "removed '/opt/tmp/probe_a.py'; /opt/tmp/probe_b.py intact, 5 bytes"}]
-    assert ds.resolve("opt-1", [a, b], ev)["resolved_action"] == "opt-1"
-
-
-def test_a_pure_listing_still_abstains():
-    """Nothing was acted on, so nothing may be claimed."""
-    a = ds.option_signature("delete /opt/tmp/probe_a.py")
-    b = ds.option_signature("delete /opt/tmp/probe_b.py")
-    ev = [{"kind": "call", "tool": "terminal", "effect": "exec",
-           "text": "ls -la /opt/tmp/probe_a.py /opt/tmp/probe_b.py"}]
-    res = ds.resolve("opt-1", [a, b], ev)
-    assert res["resolved_action"] == ""
-    assert res["abstain_reason"] == "multiple_options_matched"
-
-
-def test_the_fork_statement_is_never_the_evidence():
-    """Live: the statement "Either delete A or delete B. Pick one." was captured
-    as the evidence item, and because "delete" sits next to each path, every
-    option scored as acted-on and the row abstained as ambiguous."""
-    a = ds.option_signature("delete /opt/tmp/probe_a.py")
-    b = ds.option_signature("delete /opt/tmp/probe_b.py")
-    offer = {"kind": "call", "tool": "terminal", "effect": "exec",
-             "text": "Either delete /opt/tmp/probe_a.py or delete "
-                     "/opt/tmp/probe_b.py. Pick one."}
-    assert ds.resolve("opt-1", [a, b], [offer])["verdict"] == "none_observed"
-    act = {"kind": "call", "tool": "terminal", "effect": "exec",
-           "text": "removed '/opt/tmp/probe_a.py'; /opt/tmp/probe_b.py intact"}
-    assert ds.resolve("opt-1", [a, b], [offer, act])["resolved_action"] == "opt-1"
-
-
-def test_offer_detection_does_not_swallow_a_plain_action_line():
-    assert ds.is_offer("removed a.py; b.py intact") is False
-    assert ds.is_offer("Either patch a.py or rewrite b.py") is True

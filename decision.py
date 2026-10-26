@@ -4314,6 +4314,29 @@ def capture_outcome(session_id: str, db_path: str = "",
         rows = _transcript_rows(session_id, after_ts=after_ts or ts, limit=40)
         if not rows:
             return None
+
+        # A fork cannot be settled while the turn that posed it is still
+        # running: the action it asks about has not happened yet. Measured
+        # live: the row was settled on the next tool call, two seconds after
+        # the fork, and the evidence window held exactly one item -- the fork
+        # statement -- so a turn that plainly deleted probe_a.py resolved as
+        # none_observed. The presence of a USER message after the fork is the
+        # honest proof that the turn closed and a later turn is reading it.
+        def _role_of(r):
+            if isinstance(r, dict):
+                return str(r.get("role") or "")
+            try:
+                return str(r[0] or "")
+            except Exception:  # noqa: BLE001
+                return ""
+
+        if not any(_role_of(r) == "user" for r in rows):
+            try:
+                logger.info("decision_outcome_deferred ledger_id=%s"
+                            " reason=turn_still_open", rid)
+            except Exception:  # noqa: BLE001
+                pass
+            return None
         evidence = _ds.evidence_from_messages(rows)
 
         # A POST audit arrives AFTER the act, so its row is not well-posed for
