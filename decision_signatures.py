@@ -381,6 +381,40 @@ def evidence_from_messages(rows: Iterable[Any]) -> List[Dict[str, Any]]:
     return out
 
 
+_MUTATION_RE = re.compile(
+    r"(?:\brm\b|\bremove[ds]?\b|\bdelet(?:e|ed|ing)\b|\bmv\b|\bcp\b|\bmove[ds]?\b|"
+    r"\bpatch(?:ed|ing)?\b|\bwrit(?:e|ten|ing)\b|\btruncate\b|\bchmod\b|\bsed\s+-i\b|"
+    r"\bapply\b|\boverwrit(?:e|ten)\b|\bcreat(?:e|ed)\b|>{1,2}\s*[^\s|&;]+|"
+    r"\bdrop(?:ped)?\b|\bcommit(?:ted)?\b|\bpush(?:ed)?\b)", re.I)
+
+
+def acted_on(token: str, text: str, window: int = 90) -> bool:
+    """Was `token` ACTED ON in this evidence, or merely mentioned?
+
+    The commonest real transcript line on the fleet names both routes at once:
+    "removed probe_a.py; probe_b.py intact, 5 bytes". Both paths are present, so
+    a plain presence match calls the fork ambiguous and abstains -- measured on a
+    live probe. A mutation verb in the SAME CLAUSE as the token is what
+    separates the route that was taken from the route that was only reported on.
+    The clause boundary matters: scanning a fixed character window instead made
+    every token in the sentence look acted upon, because the verb that mutated
+    the first route sat inside the window of the second.
+    """
+    try:
+        t = str(text or "")
+        for m in re.finditer(re.escape(token), t):
+            start = max(0, m.start() - window)
+            head = t[start:m.start()]
+            cut = max(head.rfind(c) for c in (";", "\n", "&&", "|", "\u2022"))
+            if cut >= 0:
+                head = head[cut + 1:]
+            if _MUTATION_RE.search(head):
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _basename_in(name: str, text: str) -> bool:
     """True when `name` appears in `text` not glued onto a longer identifier."""
     try:
@@ -459,7 +493,11 @@ def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
                 matched, why = True, "file:%s" % next(f for f in want_files
                                                      if _basename_in(f, text))
             if matched:
-                hits.append({"why": why, "tool": tool, "effect": eff})
+                _tok = ""
+                if why.startswith(("path:", "file:", "name:")):
+                    _tok = why.split(":", 1)[1]
+                hits.append({"why": why, "tool": tool, "effect": eff,
+                             "strong": bool(_tok) and acted_on(_tok, text)})
                 if len(hits) >= 5:
                     break
     except Exception:  # noqa: BLE001
@@ -514,6 +552,16 @@ def resolve(choice: str, sigs: List[Dict[str, Any]],
                     "abstain_reason": "", "rule": RESOLVER_RULE_VERSION,
                     "noop_option_present": bool(noop_opts),
                     "noop_option": noop_opts[0] if noop_opts else ""}
+
+        if len(per_option) > 1:
+            # "removed probe_a.py; probe_b.py intact" matches BOTH options by
+            # presence. Only one of them was acted on. Prefer that side; abstain
+            # only if the transcript really does not distinguish them.
+            _strong = {o: any(h.get("strong") for h in hs)
+                       for o, hs in per_option.items()}
+            _only = [o for o, v in _strong.items() if v]
+            if len(_only) == 1:
+                per_option = {_only[0]: per_option[_only[0]]}
 
         if len(per_option) > 1:
             # rule 2: two options matched -> the evidence does not decide it

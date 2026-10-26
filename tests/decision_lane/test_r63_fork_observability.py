@@ -279,3 +279,25 @@ def test_the_midturn_leg_settles_the_previous_fork():
     from hermes_router import decision_midturn as dm
     src = inspect.getsource(dm._handle_hit)
     assert "capture_outcome" in src
+
+
+def test_acted_on_beats_merely_mentioned():
+    """The commonest real line names both routes: "removed a; b intact, 5 bytes".
+    Presence alone calls that ambiguous and abstains -- measured on a live
+    probe. A mutation verb in the SAME CLAUSE decides it."""
+    a = ds.option_signature("delete /opt/tmp/probe_a.py")
+    b = ds.option_signature("delete /opt/tmp/probe_b.py")
+    ev = [{"kind": "call", "tool": "terminal", "effect": "exec",
+           "text": "removed '/opt/tmp/probe_a.py'; /opt/tmp/probe_b.py intact, 5 bytes"}]
+    assert ds.resolve("opt-1", [a, b], ev)["resolved_action"] == "opt-1"
+
+
+def test_a_pure_listing_still_abstains():
+    """Nothing was acted on, so nothing may be claimed."""
+    a = ds.option_signature("delete /opt/tmp/probe_a.py")
+    b = ds.option_signature("delete /opt/tmp/probe_b.py")
+    ev = [{"kind": "call", "tool": "terminal", "effect": "exec",
+           "text": "ls -la /opt/tmp/probe_a.py /opt/tmp/probe_b.py"}]
+    res = ds.resolve("opt-1", [a, b], ev)
+    assert res["resolved_action"] == ""
+    assert res["abstain_reason"] == "multiple_options_matched"
