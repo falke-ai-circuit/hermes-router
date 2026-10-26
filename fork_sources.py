@@ -45,7 +45,11 @@ _FILE_RE = re.compile(
 _VER_SUFFIX = re.compile(r"(?:[._-]?(?:v|ver|version)?\d+|\.bak|\.old|\.orig|\.copy|"
                          r"[._-]backup|~)$", re.I)
 _DOC_HINT = re.compile(r"\.(?:md|rst|adoc)$|(?:^|/)(?:docs?|readme)", re.I)
-_CODE_HINT = re.compile(r"\.(?:py|go|ts|js|rs|java|rb)$", re.I)
+#: shell scripts ARE code. An operations agent forks between a playbook and the
+#: script it claims to describe as often as between a doc and a module, and with
+#: `sh` missing the doc-vs-code source refused the whole family on the holdout.
+_CODE_HINT = re.compile(r"\.(?:py|go|ts|tsx|js|jsx|rs|java|rb|c|cc|cpp|h|"
+                        r"sh|bash|zsh|ps1|sql|tf)$", re.I)
 _CFG_HINT = re.compile(r"\.(?:ya?ml|toml|ini|cfg|json|env)$", re.I)
 _TEST_HINT = re.compile(r"(?:^|/)(?:test_[\w]+\.py|[\w]+_test\.py|tests?/)", re.I)
 
@@ -156,7 +160,14 @@ def _trim_span(s: str) -> str:
     t = " ".join((s or "").split())
     if ":" in t:
         head, tail = t.split(":", 1)
-        if tail.strip():
+        # "Route A: rewrite the parser" is a label followed by the route. But a
+        # colon also shows up inside JSON ("total_lines": 1) and inside prose
+        # ("note: it failed"). Taking the tail unconditionally turned the span
+        # `delete /opt/x/probe_b.py.", "total_lines": 1}` into the route `1}` and
+        # killed the whole fork. Only a short head followed by a substantial tail
+        # is a label.
+        if (tail.strip() and len(head.split()) <= 6
+                and (len(tail.split()) >= 3 or len(tail) >= 0.6 * len(head))):
             t = tail.strip()
     prev = None
     while prev != t:
@@ -197,7 +208,7 @@ def _span_ok(s: str) -> bool:
 #: without that lookahead the commonest real fork on the fleet
 #: ("Either delete /opt/tmp/probe_a.py or delete /opt/tmp/probe_b.py") matched
 #: nothing, because both routes carry a dot inside a FILENAME.
-_SPAN = r"(?:[^.;\n]|\.(?=\S))"
+_SPAN = r"(?:[^.;\n\"}{\[\],]|\.(?=\S))"
 
 _FORK_CONNECTIVES = (
     r"either\s+(?P<a>" + _SPAN + r"{2,80}?)\s+or\s+(?P<b>" + _SPAN + r"{2,80})",
@@ -220,7 +231,9 @@ _LIST_CUE = re.compile(
     r"(?im)^[ \t]*(?:possible[ \t]+)?(?:candidates?|options?|alternatives?|"
     r"hypothes[ie]s|suspects?|possible[ \t]+causes?|root[ \t]+causes?|"
     r"approaches?|readings?|explanations?)[ \t]*:?[ \t]*$")
-_LIST_ITEM = re.compile(r"(?m)^[ \t]*(?:\(?\d+[.)]|[-*\u2022])[ \t]+(.{3,60})$")
+# 2 chars is a legitimate candidate: `fd` and `rg` are tools, and a list of
+# two-letter routes was invisible while the bound was 3.
+_LIST_ITEM = re.compile(r"(?m)^[ \t]*(?:\(?\d+[.)]|[-*\u2022])[ \t]+(.{2,60})$")
 
 
 #: Cheap substring prefilter. The connective regexes cost ~12 ms on a 3 kB text

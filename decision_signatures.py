@@ -101,6 +101,7 @@ _VERB_RULES: Tuple[Tuple[str, str], ...] = (
     (r"\b(edit|patch|rewrite|update|change|modify|fix|refactor)\b", "write"),
     (r"\b(create|write|add|new file|scaffold|build)\b", "write"),
     (r"\b(delete|remove|drop|prune|purge)\b", "write"),
+    (r"\b(rm|unlink|mv|cp|mkdir|touch|chmod|chown|truncate)\b", "write"),
     (r"\b(restart|bounce|reboot|reload)\b", "exec"),
     (r"\b(inspect|read|check|verify|audit|examine|review|measure|probe)\b", "read"),
     (r"\b(search|grep|find|look\s*for|list)\b", "read"),
@@ -111,8 +112,13 @@ _VERB_RULES: Tuple[Tuple[str, str], ...] = (
 # Only paths with a DIRECTORY component. A bare filename like `SKILL.md`
 # appears in every option that touches skills, so it discriminates nothing —
 # live: it made opt-1 and opt-2 both match and forced a spurious abstention.
-_PATH_RE = re.compile(r"(/opt/[A-Za-z0-9_./-]{2,}|~/[A-Za-z0-9_./-]{2,}"
-                      r"|[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+\.(?:py|md|yaml|yml|json|sh|go|ts|tsx))")
+# Any absolute path -- /opt was only ever one of the roots this fleet happens to
+# use, and a doc-vs-code fork on /srv/... lost its leading slash to the relative
+# alternative, so `p in text` never matched the evidence and a perfectly
+# resolvable fork came back none_observed.
+_PATH_RE = re.compile(
+    r"((?:/|~/)[A-Za-z0-9_][A-Za-z0-9_./-]{2,}"
+    r"|[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+\.(?:py|md|yaml|yml|json|sh|go|ts|tsx))")
 # A BARE filename ("edit routes.py" vs "edit test_names.py") is often the ONLY
 # thing that tells two options apart, and the path regex above drops it because
 # it wants a directory component. Excluding it made the commonest fleet fork
@@ -121,6 +127,15 @@ _PATH_RE = re.compile(r"(/opt/[A-Za-z0-9_./-]{2,}|~/[A-Za-z0-9_./-]{2,}"
 # option can be discounted at match time (see resolve) instead of at extract
 # time, where discounting destroys the only discriminator there is.
 #: Words that say what KIND of action it is, never WHICH route was taken.
+#: Function words: they shape a sentence, never name a route.
+_FUNCTION_WORDS = frozenset("""
+behind under over inside outside against toward towards per via with without
+between among across along around before after while when until unless because
+since than then there here where which whose what into onto from off out up
+down back again still just only even also both each every some any all more
+most less least much many few own same other another such very too so not no
+""".split())
+
 _GENERIC_WORDS = frozenset("""
 edit write read update create add remove delete patch revert build deploy run
 test check verify inspect review look keep leave wait defer hold stop start
@@ -200,14 +215,35 @@ def option_signature(label: str, cause_effect: str = "",
         # no file or tool is spelled out -- a later command says `docker run
         # redis`. Long labels are narrative; harvesting "names" from them is how
         # the prose fallback manufactured six pseudo-options, so length bounds it.
+        # NAMES: a route NAME ("redis", "bge", "fd") is observable in a later
+        # command even when no file or tool is spelled out. Two rules keep this
+        # honest, both learned on unseen data: only a SHORT label carries a name
+        # (long labels are narrative -- harvesting names from them is how the
+        # prose fallback invented forks), and a VERB is never a name (a label
+        # "ship bge behind the api" must yield `bge`, not `ship`).
+        # NAMES: a route NAME ("redis", "bge", "e5", "fd") is observable in a
+        # later command even when no file or tool is spelled out. Three rules,
+        # all learned on unseen data: only a SHORT label carries a name (long
+        # labels are narrative -- harvesting names from them is how the prose
+        # fallback invented forks), a VERB is never a name (a label "ship bge
+        # behind the api" must yield `bge`, not `ship`), and a FUNCTION WORD is
+        # never a name (nor is "behind"). A two-character token counts when it
+        # carries a digit ("e5") -- version-style route names are short by nature.
         names: List[str] = []
         _words = [w.strip("`'\"()[].,:;") for w in re.split(r"\s+", str(label or ""))]
         _words = [w for w in _words if w]
         if 1 <= len(_words) <= 6:
+            _single = len(_words) == 1
             for w in _words:
                 lw = w.lower()
-                if (len(lw) < 4 or lw in _STOPWORDS or lw in ALL_TOOLS
-                        or lw in _GENERIC_WORDS):
+                # two characters is a name when nothing else rules it out
+                # ("fd", "rg", "e5"); the stopword / function-word / verb /
+                # generic filters are what keep ordinary prose out, not length.
+                _minlen = 2
+                if (len(lw) < _minlen or lw in _STOPWORDS or lw in _FUNCTION_WORDS
+                        or lw in ALL_TOOLS or lw in _GENERIC_WORDS):
+                    continue
+                if any(re.search(rx, lw) for rx, _e in _VERB_RULES):
                     continue
                 if re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", lw) and lw not in names:
                     names.append(lw)
@@ -345,6 +381,24 @@ def evidence_from_messages(rows: Iterable[Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _basename_in(name: str, text: str) -> bool:
+    """True when `name` appears in `text` not glued onto a longer identifier."""
+    try:
+        return bool(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(name), text or ""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _whole_word(token: str, text: str) -> bool:
+    """A route NAME counts only as a whole token -- `redis` must not match
+    `rediscovered`."""
+    try:
+        return bool(re.search(r"(?<![a-z0-9_])" + re.escape(token) + r"(?![a-z0-9_])",
+                              text or ""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
           ignore: "set[str] | frozenset[str]" = frozenset()) -> List[Dict[str, Any]]:
     """POSITIVE matches only (rule 1), with effect compatibility (rule 3).
@@ -360,8 +414,7 @@ def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
         want_paths = [p for p in (sig.get("paths") or [])
                       if p and p not in ignore and p.rsplit("/", 1)[-1] not in ignore]
         want_files = [f for f in (sig.get("files") or [])
-                      if f and f not in ignore
-                      and not any(f == p.rsplit("/", 1)[-1] for p in want_paths)]
+                      if f and f not in ignore]
         want_names = [n for n in (sig.get("names") or [])
                       if n not in ignore and n not in want_files]
         # "do nothing" is a real option and is satisfied by absence of action —
@@ -374,33 +427,37 @@ def _hits(sig: Dict[str, Any], evidence: List[Dict[str, Any]],
             eff = ev.get("effect") or ""
             tool = ev.get("tool") or ""
             text = ev.get("text") or ""
-            # A read can never stand in for a write/exec signature.
+            # A read can never stand in for a write/exec signature. Write and
+            # exec ARE one class: `rm probe_b.py` is a filesystem mutation run
+            # through the terminal tool, and refusing it because the signature
+            # said "write" while the tool said "exec" made the fleet's commonest
+            # resolvable fork unresolvable.
             if want_effects and eff not in want_effects:
+                if not ({"write", "exec"} & set(want_effects)
+                        and eff in ("write", "exec")):
+                    continue
+            # one effect decision for this evidence item, computed once: the
+            # branches below used to re-test `eff in want_effects` per branch,
+            # which re-blocked the write/exec equivalence above.
+            _eff_ok = (not want_effects) or (eff in want_effects) or (
+                bool({"write", "exec"} & want_effects) and eff in ("write", "exec"))
+            if not _eff_ok:
                 continue
             matched = False
             why = ""
             if want_tools and tool in want_tools:
                 matched, why = True, f"tool:{tool}"
             elif want_paths and any(p and p in text for p in want_paths):
-                # path evidence only counts if the effect class agrees
-                if not want_effects or eff in want_effects:
-                    matched, why = True, f"path:{next(p for p in want_paths if p in text)}"
-            elif want_names and any(re.search(r"(?<![a-z0-9_])" + re.escape(n)
-                                               + r"(?![a-z0-9_])", text)
-                                    for n in want_names):
-                # a route NAME counts when it appears as a whole word in what
-                # was actually invoked -- and only inside the option's own
-                # effect class, so a `read redis docs` cannot satisfy a write.
-                if not want_effects or eff in want_effects:
-                    matched, why = True, "name:%s" % next(
-                        n for n in want_names
-                        if re.search(r"(?<![a-z0-9_])" + re.escape(n) + r"(?![a-z0-9_])", text))
-            elif want_files and any(f in text for f in want_files):
-                # a bare filename counts only when it is the option's OWN name
-                # AND the effect class agrees -- `patch test_names.py` is
-                # evidence for that option and not for `patch routes.py`.
-                if not want_effects or eff in want_effects:
-                    matched, why = True, f"file:{next(f for f in want_files if f in text)}"
+                matched, why = True, "path:%s" % next(p for p in want_paths if p in text)
+            elif want_names and any(_whole_word(n, text) for n in want_names):
+                matched, why = True, "name:%s" % next(n for n in want_names
+                                                      if _whole_word(n, text))
+            elif want_files and any(_basename_in(f, text) for f in want_files):
+                # a basename matches only on a LEFT BOUNDARY: `ledger.py` must
+                # not be satisfied by `test_ledger.py`, or the source file wins
+                # every test-vs-source fork by substring.
+                matched, why = True, "file:%s" % next(f for f in want_files
+                                                     if _basename_in(f, text))
             if matched:
                 hits.append({"why": why, "tool": tool, "effect": eff})
                 if len(hits) >= 5:

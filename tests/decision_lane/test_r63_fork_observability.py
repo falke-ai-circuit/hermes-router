@@ -175,3 +175,84 @@ def test_the_midturn_leg_passes_text_to_the_fork_source():
     from hermes_router import decision_midturn as dm
     src = inspect.getsource(dm)
     assert 'rival_targets(_state(str(session_id)), text)' in src
+
+
+# --- R63e: what the holdout found -----------------------------------------
+# Every case below failed on data the fixes were NOT tuned against and is pinned
+# so it cannot come back.
+
+def test_absolute_paths_outside_opt_keep_their_root():
+    """/srv/... lost its leading slash to the relative-path alternative, so the
+    signature's path never matched the evidence and a resolvable doc-vs-code
+    fork came back none_observed."""
+    sig = ds.option_signature("/srv/ingest/docs/validator.md")
+    assert "/srv/ingest/docs/validator.md" in sig["paths"]
+    ev = [{"kind": "call", "tool": "patch", "effect": "write",
+           "text": "*** Update File: /srv/ingest/docs/validator.md"}]
+    other = ds.option_signature("parser.py")
+    res = ds.resolve("", [sig, other], ev)
+    assert res["resolved_action"] == "opt-1"
+
+
+def test_a_basename_matches_only_on_a_left_boundary():
+    """`ledger.py` must not be satisfied by `test_ledger.py`, or the source file
+    wins every test-vs-source fork by substring."""
+    src = ds.option_signature("/srv/billing/ledger.py")
+    test = ds.option_signature("/srv/billing/tests/test_ledger.py")
+    ev = [{"kind": "call", "tool": "patch", "effect": "write",
+           "text": "*** Update File: /srv/billing/test_ledger.py"}]
+    res = ds.resolve("", [src, test], ev)
+    assert res["resolved_action"] == "opt-2"
+
+
+def test_a_two_character_route_name_is_a_name():
+    """`fd`, `rg` and `e5` are routes; a length floor of 3-4 hid them."""
+    for label in ("fd", "rg", "e5"):
+        assert ds.option_signature(label)["names"] == [label]
+
+
+def test_a_function_word_is_never_a_route_name():
+    sig = ds.option_signature("ship bge behind the api")
+    assert "behind" not in sig["names"]
+    assert "the" not in sig["names"]
+    assert "bge" in sig["names"]
+
+
+def test_a_shell_script_is_code_for_the_doc_vs_code_source():
+    """An operations agent forks between a playbook and the script it describes."""
+    from hermes_router import fork_sources as fs
+    store = {}
+    text = "/srv/fleet/docs/rollout.md says the field exists; /srv/fleet/rollout.sh does not define it."
+    fs.note_seen(store, text)
+    hit = fs.rival_targets(store, text)
+    assert hit and hit["source"] == "doc_vs_code"
+
+
+def test_a_two_character_candidate_is_listed():
+    from hermes_router import fork_sources as fs
+    hit = fs._det_listed_candidates(None, "Candidates:\n- fd\n- rg\n")
+    assert hit and hit["options"] == ["fd", "rg"]
+
+
+def test_a_filesystem_mutation_through_the_terminal_is_write_or_exec():
+    """`rm probe_b.py` is a write done with an exec tool; refusing the pair made
+    the fleet's commonest resolvable fork unresolvable."""
+    a = ds.option_signature("delete /opt/tmp/probe_a.py")
+    b = ds.option_signature("delete /opt/tmp/probe_b.py")
+    ev = [{"kind": "call", "tool": "terminal", "effect": "exec",
+           "text": "rm -f /opt/tmp/probe_b.py"}]
+    res = ds.resolve("", [a, b], ev)
+    assert res["resolved_action"] == "opt-2"
+    assert "write" in ds.option_signature("rm probe_a.py")["effects"]
+
+
+def test_a_json_trailer_cannot_become_a_route():
+    """`delete x.py.", "total_lines": 1}` trimmed to the route `1}` and killed
+    the fork, because the colon rule fired inside JSON."""
+    import json as _json
+    from hermes_router import fork_sources as fs
+    wrapped = _json.dumps({"content": "Either delete /opt/tmp/probe_a.py or "
+                                     "delete /opt/tmp/probe_b.py.",
+                           "total_lines": 1})
+    hit = fs._det_either_or(None, wrapped)
+    assert hit and all("total_lines" not in o for o in hit["options"])
