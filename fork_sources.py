@@ -42,8 +42,13 @@ _FILE_RE = re.compile(
     r"[\w./-]+\.(?:py|ya?ml|json|md|sh|txt|cfg|ini|toml)"
     r"(?:\.(?:bak|old|orig|copy|backup|save|tmp))?\b", re.I)
 #: suffixes that make two stems the "same thing, different interference"
-_VER_SUFFIX = re.compile(r"(?:[._-]?(?:v|ver|version)?\d+|\.bak|\.old|\.orig|\.copy|"
-                         r"[._-]backup|~)$", re.I)
+#: Both separators matter. The dot forms (".old", ".bak") are backups written by
+#: tools; the underscore forms ("_old", "_new", "_v2") are what a human leaves
+#: behind when they fork a module. Without the underscore forms the canonical
+#: duplicate-module pair -- "parse_utils.py" beside "parse_utils_old.py" -- never
+#: groups, so the sibling source reports "no fork" on the exact shape it exists for.
+_VER_SUFFIX = re.compile(r"(?:[._-](?:v|ver|version)?\d+|[._-](?:old|new|orig|copy|"
+                         r"backup|bak|save|tmp)|\.bak|\.old|\.orig|\.copy|~)$", re.I)
 _DOC_HINT = re.compile(r"\.(?:md|rst|adoc)$|(?:^|/)(?:docs?|readme)", re.I)
 #: shell scripts ARE code. An operations agent forks between a playbook and the
 #: script it claims to describe as often as between a doc and a module, and with
@@ -54,11 +59,54 @@ _CFG_HINT = re.compile(r"\.(?:ya?ml|toml|ini|cfg|json|env)$", re.I)
 _TEST_HINT = re.compile(r"(?:^|/)(?:test_[\w]+\.py|[\w]+_test\.py|tests?/)", re.I)
 
 
+#: Tool results reach the seam as JSON-escaped strings. Read literally, "\n" is
+#: a backslash followed by the letter n, so the regex glues that letter onto the
+#: next real path -- "nREADME.md", "tconfig.yaml". Those phantom paths then
+#: poison _dir()/_stem() and every detector built on them. Measured on a live
+#: 9-row session: 6 of 12 extracted "paths" were escape garbage.
+_ESCAPE_RE = re.compile(r"\\([nrt])")
+_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+
+#: A unified diff writes "--- a/path" and "+++ b/path". The two-character
+#: prefix survives into the token and makes the same file look like two, or makes
+#: one file look like a path under a directory called "a".
+_DIFF_PREFIX_RE = re.compile(r"^[ab]/+(?=/)")
+
+#: Cells, worktrees and sandboxes hand the agent an absolute path. The same file
+#: then shows up as "/opt/.../repo/lib/x.py" and "lib/x.py" -- two entries for
+#: one file, so a sibling pair is counted twice instead of being seen as a pair,
+#: and the 120-entry bound is spent on duplicates.
+_REPO_SEG = "/repo/"
+
+
+def _unescape(text: str) -> str:
+    try:
+        return _ESCAPE_RE.sub(lambda m: _ESCAPES[m.group(1)], str(text or ""))
+    except Exception:  # noqa: BLE001
+        return str(text or "")
+
+
+def _normalize_path(p: str) -> str:
+    """One canonical, repo-relative form per file. Never raises."""
+    try:
+        p = str(p or "").strip().strip(".,:;()[]'\"")
+        if not p:
+            return ""
+        p = _DIFF_PREFIX_RE.sub("", p)
+        if _REPO_SEG in p:
+            p = p.rsplit(_REPO_SEG, 1)[-1]
+        while p.startswith("./"):
+            p = p[2:]
+        return p.strip("/")
+    except Exception:  # noqa: BLE001
+        return str(p or "")
+
+
 def _paths(text: str) -> List[str]:
     try:
         out, seen = [], set()
-        for m in _FILE_RE.finditer(str(text or "")):
-            p = m.group(0).strip(".,:;()[]'\"")
+        for m in _FILE_RE.finditer(_unescape(text)):
+            p = _normalize_path(m.group(0))
             if not p or p in seen:
                 continue
             seen.add(p)
@@ -382,15 +430,26 @@ def rival_targets(store: Dict[str, Any], text: str
         for (d, stem), members in fams.items():
             if len(members) < 2:
                 continue
-            key = "sibling:%s/%s" % (d, stem)
+            # Two shapes share a stem and they are different forks. A version or
+            # backup suffix ("x.py" vs "x.py.bak") asks which of two copies is
+            # live. A different extension on the same stem ("limits.py" vs
+            # "limits.yaml") asks whether the code or its data carries the
+            # change. Naming the second shape with the first shape's why-text
+            # describes a fork that is not on the table.
+            _exts = {m.rsplit(".", 1)[-1].lower() for m in members}
+            _same_stem_diff_type = len(set(_norm_stem(m) for m in members)) == 1 and len(_exts) > 1
+            key = ("stem_pair:%s/%s" if _same_stem_diff_type else "sibling:%s/%s") % (d, stem)
             if key in fired:
                 continue
             fired.append(key)
             del fired[:-40]
             return {"source": "sibling_files", "family": key,
                     "options": sorted(members)[:4],
-                    "why": "two files differ only by version/backup suffix; "
-                           "only one is live"}
+                    "why": ("one stem in two file types; the code and its data "
+                            "are both editable, and they are not the same fix")
+                           if _same_stem_diff_type else
+                           ("two files differ only by version/backup suffix; "
+                            "only one is live")}
 
         # --- doc-vs-code: the documentation and the implementation disagree.
         # Measured gap: D3 ("the docs advertise a route the service does not
@@ -440,17 +499,42 @@ def rival_targets(store: Dict[str, Any], text: str
                                "editable; they are not the same fix"}
 
         # --- test-vs-source: which of these two do I change?
+        # A "source" is CODE, not merely a non-test path: with README.md counted
+        # as a source the first pairing on a live session was
+        # "test_vs_src:test_main.py|README.md", which names no fork anyone faces.
+        # The partner is chosen by stem relation first, then same directory, and
+        # an unrelatable single candidate only when it is the sole code file.
         tests = [p for p in seen if _TEST_HINT.search(p)]
-        srcs = [p for p in seen if p not in tests]
+        srcs = [p for p in seen
+                if p not in tests and _CODE_HINT.search(p)
+                and not _DOC_HINT.search(p)]
         if tests and srcs:
-            key = "test_vs_src:%s|%s" % (tests[0], srcs[0])
-            if key not in fired:
-                fired.append(key)
-                del fired[:-40]
-                return {"source": "test_vs_source", "family": key,
-                        "options": [srcs[0], tests[0]][:2],
-                        "why": "a failing test and the code under it are both "
-                               "targets; fixing the test is not fixing the code"}
+            _t = tests[0]
+            _tstem = _norm_stem(_t)
+            for _pref in ("test_", "tests_"):
+                if _tstem.startswith(_pref):
+                    _tstem = _tstem[len(_pref):]
+            if _tstem.endswith("_test"):
+                _tstem = _tstem[:-5]
+            _partner = None
+            for _s in srcs:
+                _sstem = _norm_stem(_s)
+                if _sstem and (_sstem == _tstem or _sstem.startswith(_tstem)
+                               or _tstem.startswith(_sstem)):
+                    _partner = _s
+                    break
+            if _partner is None:
+                _same = [_s for _s in srcs if _dir(_s) == _dir(_t)]
+                _partner = _same[0] if _same else (srcs[0] if len(srcs) == 1 else None)
+            if _partner:
+                key = "test_vs_src:%s|%s" % (_t, _partner)
+                if key not in fired:
+                    fired.append(key)
+                    del fired[:-40]
+                    return {"source": "test_vs_source", "family": key,
+                            "options": [_partner, _t][:2],
+                            "why": "a failing test and the code under it are both "
+                                   "targets; fixing the test is not fixing the code"}
         return None
     except Exception:  # noqa: BLE001
         return None
