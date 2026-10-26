@@ -54,6 +54,20 @@ def test_a_frame_touching_the_named_object_grades_exact(monkeypatch):
     assert out["tool"] == "patch"
 
 
+def test_a_directory_target_counts_exact_when_the_model_works_inside_it(monkeypatch):
+    """The pool often names the workspace, not the file. Acting inside it is hitting the pick,
+    and scoring it as 'class' understates the lane in exactly the case it fires most."""
+    monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.9, 0.05, 0.03, 0.02))
+    rl.clear()
+    body = ("File \"/opt/data/tmp/work/probe.py\", line 3\nAssertionError: assert 0 is None\n"
+            "collected 2 items, 1 failed during the run")
+    req = {"messages": [{"role": "user", "content": "fix it"},
+                        {"role": "tool", "content": body}]}
+    assert rl.run_on_request(req, session_id="g10", cfg=ON) is True
+    out = rl.settle("g10", _after(req, _call("patch", '{"path": "/opt/data/tmp/work/probe.py"}')))
+    assert out["grade"] == "exact", out
+
+
 def test_same_kind_of_move_grades_class(monkeypatch):
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
     rl.clear()

@@ -549,8 +549,13 @@ def settle(session_id: str, request: Any) -> Optional[Dict[str, Any]]:
                 _log(session_id, "reflex_outcome", **out)
             return out
         paths = list(dict.fromkeys(_PATH_ARG.findall(acted["args"])))
-        want = os.path.basename(fr["top_target"].rstrip("/")) if fr["top_target"] else ""
-        exact = bool(want) and any(os.path.basename(p.rstrip("/")) == want for p in paths)
+        want = (fr["top_target"] or "").rstrip("/")
+        if want and not os.path.splitext(want)[1]:
+            # a directory target names a place, not a file: acting anywhere inside it counts
+            exact = any(p.rstrip("/") == want or p.startswith(want + "/") for p in paths)
+        else:
+            base = os.path.basename(want) if want else ""
+            exact = bool(base) and any(os.path.basename(p.rstrip("/")) == base for p in paths)
         same = _tool_class(acted["tool"]) == fr["top_kind"]
         out = {"grade": "exact" if exact else ("class" if same else "none"),
                "tool": acted["tool"], "paths": paths[:3], "top_kind": fr["top_kind"],

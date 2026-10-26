@@ -389,6 +389,43 @@ def _decode_content(content: Any) -> str:
         return content if isinstance(content, str) else str(content or "")
 
 
+_SUPERSEDED_LOGGED: set = set()
+
+
+def _superseded_by_reflex(cfg: Any = None) -> bool:
+    """True when the weighted-extraction lane is armed and this one must stand down.
+
+    The legacy detector scans tool text for declared fork structure, asks an auxiliary model
+    for an option set and bills a backend consult. The extraction lane does the same job from
+    the live request, with a measured hit rate (0.764 top-1 over 499 real fix points) and an
+    outcome record. Running both bills the same turn twice and makes the numbers unattributable
+    — so one of them has to be off, and the one that cannot report whether it was used is the
+    one that goes.
+    """
+    try:
+        c = cfg if isinstance(cfg, dict) else _cfg()
+        if not isinstance(c, dict):
+            return False
+        hr = c.get("hermes_router") if isinstance(c.get("hermes_router"), dict) else c
+        rw = hr.get("reflex_weights") if isinstance(hr, dict) else None
+        return bool((rw or {}).get("enabled"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _log_superseded(session_id: str, seam: str) -> None:
+    try:
+        if session_id in _SUPERSEDED_LOGGED:
+            return
+        _SUPERSEDED_LOGGED.add(session_id)
+        while len(_SUPERSEDED_LOGGED) > 500:
+            _SUPERSEDED_LOGGED.pop()
+        _log(session_id, "legacy_lane_superseded", seam=seam,
+             reason="reflex_weights_armed")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def on_terminal_output(session_id: str, tool_name: str, result: Any,
                        seam: str = SEAM_TERMINAL) -> None:
     """SEAM 1 entry — called from the plugin's transform_terminal_output
@@ -400,6 +437,9 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         cfg = _cfg()
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
+            return
+        if _superseded_by_reflex(cfg):
+            _log_superseded(str(session_id), seam)
             return
         text = result if isinstance(result, str) else str(result or "")
         if not text:
@@ -1236,6 +1276,9 @@ def _instinct_fire(session_id: str, tool_name: str, text: str,
     reflex that costs tokens per tool result is a reflex you switch off.
     """
     try:
+        if _superseded_by_reflex():
+            _log_superseded(str(session_id), "post_tool_call")
+            return
         from . import instinct_triggers as _itr
 
         rmode = _itr.mode_of(cfg)
