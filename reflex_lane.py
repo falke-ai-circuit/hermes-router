@@ -311,7 +311,9 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         _log(session_id, "reflex_weights_ready", top=parsed["options"][0]["p"],
              weights=_weights_str(parsed), margin=_margin(parsed),
              mindset=parsed.get("mindset"), chars=len(block), candidates=len(cands),
-             block=block)
+             top_kind=parsed["options"][0].get("kind"),
+             top_target=parsed["options"][0].get("target"),
+             block=json.dumps(block))
         return block
     except Exception:  # noqa: BLE001
         logger.debug("reflex_lane.fire error", exc_info=True)
@@ -465,6 +467,98 @@ _LAST_BLOCK_LOCK = threading.Lock()
 _LAST_BLOCK: Dict[str, Tuple[str, float]] = {}
 DEDUPE_S = 45.0
 
+# One frame in flight per session, kept so the next request can be asked what the main model
+# actually DID with it. Without this the lane can only report that it spoke, never that it was
+# heard — which is the difference between a delivery log and a measurement.
+_LAST_FRAME_LOCK = threading.Lock()
+_LAST_FRAME: Dict[str, Dict[str, Any]] = {}
+_PATH_ARG = re.compile(r"(?:/opt|/tmp|/home|/root|/srv|/var|/etc)[\w./\-]{3,90}"
+                       r"|[\w.\-]+/[\w.\-]+\.(?:py|js|ts|tsx|go|rs|ya?ml|json|md|sh|toml|sql|cfg|ini)")
+_TOOL_CLASS = (("edit", ("edit", "write", "patch", "apply_patch", "create")),
+               ("read", ("read_file", "read", "view", "cat", "open")),
+               ("run", ("terminal", "exec", "bash", "run", "pytest", "test")),
+               ("search", ("search", "grep", "find", "glob", "rg")))
+
+
+def _tool_class(tool: str) -> str:
+    t = (tool or "").lower()
+    for cls, names in _TOOL_CLASS:
+        if any(n in t for n in names):
+            return cls
+    return "other"
+
+
+def _remember(sid: str, parsed: Dict[str, Any], block: str, n_msgs: int) -> None:
+    top = (parsed.get("options") or [{}])[0]
+    with _LAST_FRAME_LOCK:
+        _LAST_FRAME[sid] = {"ts": time.time(), "n_msgs": n_msgs,
+                            "top_kind": str(top.get("kind") or ""),
+                            "top_target": str(top.get("target") or ""),
+                            "top_label": str(top.get("label") or ""),
+                            "top_p": float(top.get("p") or 0.0),
+                            "mind": dict(parsed.get("mindset") or {}),
+                            "options": "|".join("%.2f" % float(o.get("p") or 0)
+                                                for o in (parsed.get("options") or [])[:4]),
+                            "block": block}
+        while len(_LAST_FRAME) > _PENDING_MAX * 2:
+            _LAST_FRAME.pop(next(iter(_LAST_FRAME)))
+
+
+def settle(session_id: str, request: Any) -> Optional[Dict[str, Any]]:
+    """Grade the previous frame against what the main model actually did next.
+
+    exact = the tool touched the object the top pick named; class = same kind of move;
+    answered = the model replied instead of acting; none = it went elsewhere.
+    Absence of any follow-up is reported as unscoreable, never as a miss.
+    """
+    try:
+        with _LAST_FRAME_LOCK:
+            fr = _LAST_FRAME.pop(session_id, None)
+        if not fr:
+            return None
+        msgs = (request or {}).get("messages") or []
+        if not isinstance(msgs, list):
+            return None
+        if len(msgs) <= fr["n_msgs"]:
+            # nothing has happened since the frame was written; that is not a miss and not a
+            # result — report it as unmeasured and do not log an outcome for it.
+            return {"grade": "unscoreable", "tool": "", "paths": [],
+                    "top_kind": fr["top_kind"], "top_target": fr["top_target"],
+                    "top_p": fr["top_p"], "since_s": round(time.time() - fr["ts"], 1)}
+        acted: Optional[Dict[str, str]] = None
+        replied = False
+        for m in msgs[fr["n_msgs"]:]:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            for c in (m.get("tool_calls") or []):
+                fn = (c.get("function") or {}) if isinstance(c, dict) else {}
+                acted = {"tool": str(fn.get("name") or ""),
+                         "args": str(fn.get("arguments") or "")[:600]}
+                break
+            if acted:
+                break
+            replied = True
+        if not acted:
+            grade = "answered" if replied else "unscoreable"
+            out = {"grade": grade, "tool": "", "paths": [], "top_kind": fr["top_kind"],
+                   "top_target": fr["top_target"], "top_p": fr["top_p"],
+                   "since_s": round(time.time() - fr["ts"], 1)}
+            if grade != "unscoreable":
+                _log(session_id, "reflex_outcome", **out)
+            return out
+        paths = list(dict.fromkeys(_PATH_ARG.findall(acted["args"])))
+        want = os.path.basename(fr["top_target"].rstrip("/")) if fr["top_target"] else ""
+        exact = bool(want) and any(os.path.basename(p.rstrip("/")) == want for p in paths)
+        same = _tool_class(acted["tool"]) == fr["top_kind"]
+        out = {"grade": "exact" if exact else ("class" if same else "none"),
+               "tool": acted["tool"], "paths": paths[:3], "top_kind": fr["top_kind"],
+               "top_target": fr["top_target"], "top_p": fr["top_p"],
+               "since_s": round(time.time() - fr["ts"], 1)}
+        _log(session_id, "reflex_outcome", **out)
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def _window_from_request(request: Any, limit: int = 6) -> Tuple[str, str]:
     """(user ask, recent tool/assistant text) from the live request payload."""
@@ -505,6 +599,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         if not isinstance(request, dict):
             return False
         sid = str(session_id or "req")
+        settle(sid, request)          # grade the last frame against what actually happened
         ask, window = _window_from_request(request)
         if len(window) < 60:
             _rw._note(reason="no_work_in_request")
@@ -550,10 +645,16 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                 _LAST_BLOCK[sid] = (sig, now)
                 while len(_LAST_BLOCK) > _PENDING_MAX * 2:
                     _LAST_BLOCK.pop(next(iter(_LAST_BLOCK)))
+            msgs = request.get("messages") or []
+            _remember(sid, parsed, block, len(msgs) if isinstance(msgs, list) else 0)
             _log(sid, "reflex_weights_delivered", chars=len(block),
                  weights=_weights_str(parsed), margin=_margin(parsed),
                  mindset=parsed.get("mindset"), seam="every_call",
-                 top=parsed["options"][0]["p"], block=block)
+                 top=parsed["options"][0]["p"],
+                 top_kind=parsed["options"][0].get("kind"),
+                 top_target=parsed["options"][0].get("target"),
+                 opts="|".join("%.2f" % float(o["p"]) for o in parsed["options"][:4]),
+                 block=json.dumps(block))
         return bool(ok)
     except Exception:  # noqa: BLE001
         logger.debug("reflex_lane.run_on_request error", exc_info=True)
