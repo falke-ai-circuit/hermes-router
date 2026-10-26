@@ -601,6 +601,16 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
             return
+        # Every turn boundary is a verification point: settle whatever the
+        # previous turn left open, using the transcript that now exists. Waiting
+        # for the NEXT FORK to do this (the PRE leg's rule) leaves every row of
+        # a session that forks once unresolved for ever -- measured: nine
+        # consecutive fresh sessions, options and signatures present, every
+        # resolved_action empty.
+        try:
+            _dec.capture_outcome(str(session_id))
+        except Exception:  # noqa: BLE001
+            pass
         msgs = request.get("messages") if isinstance(request, dict) else None
         if not isinstance(msgs, list):
             return
