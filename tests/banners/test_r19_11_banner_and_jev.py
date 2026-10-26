@@ -157,8 +157,10 @@ def test_jev_backend_retry_then_fail_open(monkeypatch):
     cfg["backend"] = "jev"
     cfg["openrouter_endpoint"] = "http://x/api"
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    envelope = {"schema": "s", "options": [{"id": "opt-1"},
-                                           {"id": "opt-2"}]}
+    # R63L: routes carry labels. An envelope with ids only offers no route text,
+    # so the consult floor refuses it before a backend is ever called.
+    envelope = {"schema": "s", "options": [{"id": "opt-1", "label": "redis"},
+                                          {"id": "opt-2", "label": "memcached"}]}
     calls = {"n": 0}
     monkeypatch.setattr(decision, "render_prompt", lambda env: "PROMPT")
 
@@ -181,8 +183,10 @@ def test_jev_backend_fenced_response_accepted_first_call(monkeypatch):
     cfg["backend"] = "jev"
     cfg["openrouter_endpoint"] = "http://x/api"
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    envelope = {"schema": "s", "options": [{"id": "opt-1"},
-                                           {"id": "opt-2"}]}
+    # R63L: routes carry labels. An envelope with ids only offers no route text,
+    # so the consult floor refuses it before a backend is ever called.
+    envelope = {"schema": "s", "options": [{"id": "opt-1", "label": "redis"},
+                                          {"id": "opt-2", "label": "memcached"}]}
     calls = {"n": 0}
     monkeypatch.setattr(decision, "render_prompt", lambda env: "PROMPT")
 
