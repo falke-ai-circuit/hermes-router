@@ -1,0 +1,35 @@
+# R76-P4 controlled-failure baseline (pinned 2026-10-27 at HEAD 756e8ed).
+#
+# The suite is NOT green and no slice in R76-P4 may claim GREEN over an
+# undiagnosed red (plan §C clause 3). A slice's gate is therefore
+# "failure set EQUALS this set", not "0 failed". Enforced mechanically by:
+#
+#     python3 scripts/baseline_check.py
+#
+# Format: one node id per line; '#' starts a comment; blank lines ignored.
+#     <nodeid>            required — must be red
+#     optional <nodeid>   may be red or green (order/state-dependent class)
+#
+# Every entry here has a row in docs/r76-p4-baseline-triage.md naming its
+# class (env / real / accepted-debt). Adding a line is a decision, not a
+# convenience: an entry with no triage row is a lie about the code.
+
+# --- required (9) ----------------------------------------------------------
+tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks
+tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets
+tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics
+tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
+tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
+tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum
+tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold
+
+# --- optional (1) ----------------------------------------------------------
+# State-dependent, NOT code-dependent: test_m1 does not request the module's
+# own `_env` fixture, so anchor_exec._mindset_history stays unpatched and the
+# stance is read from live session state. Red here on both invocations
+# (standalone module run AND full suite); it can go green where that state
+# exists, which is why it is declared optional rather than required.
+# Row M1 in docs/r76-p4-baseline-triage.md.
+optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
