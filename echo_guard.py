@@ -740,6 +740,16 @@ def enforce_execution_echo(text: str, session_id: str = "",
                    reason="strip_failed", **base)
             return EchoResult("withhold_echo", WITHHELD_TEXT, families,
                               chars - len(stripped), work)
+        # TRUTH IN THE NOTICE, second correction. HAND_BACK_TEXT asserts "No tool activity or
+        # file write was observed this turn". `has_work` is deliberately strict - only a
+        # terminal run or a write qualifies - so a turn that spent itself reading (the commonest
+        # real investigation shape: eight reads and no writes) lands here with the predicate
+        # evaluated but the claim FALSE. Deliver the notice that claims nothing about execution
+        # instead: it is the same body the work-path fallback ships, so nothing new is asserted.
+        if int(work.get("tools") or 0) > 0:
+            _route(log_route, EVENT_WITHHELD, action="withhold_echo",
+                   reason="read_only_tool_activity", **base)
+            return EchoResult("withhold_echo", WITHHELD_TEXT, families, chars, work)
         _route(log_route, EVENT_BLOCKED, action="handback_failure",
                reason="no_work_signal", **base)
         return EchoResult("handback_failure", HAND_BACK_TEXT, families,

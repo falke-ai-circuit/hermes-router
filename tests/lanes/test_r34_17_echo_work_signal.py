@@ -105,6 +105,45 @@ def _write_payload(*names):
     ]}
 
 
+def test_read_only_turn_is_not_told_nothing_was_executed(logged):
+    """LIVE SPECIMEN (orch session api_1793074946_a4d18766, 2026-10-27): eight execute_code
+    reads and greps, body arrived echo-shaped, and the delivered notice said "No tool activity
+    or file write was observed this turn, so nothing was executed" - then the turn was thrown
+    away. `has_work` is strict by design (looking is not work), but that makes the hand-back
+    sentence a false claim about a turn that read eight times. A read-only turn must get the
+    notice that says nothing about execution."""
+    ac.note_turn_open(SID, ASK)
+    assert ac.note_advisory_injected(SID, ASK, chars=600,
+                                     envelope_chars=1951) is True
+    ws.note_request_activity(SID, _write_payload("execute_code", "read_file",
+                                                "search_files"))
+    facts = ws.work_facts(SID)
+    assert facts["has_work"] is False and facts["tools"] == 3
+
+    res = echo_guard.enforce_execution_echo(
+        ECHO_ONLY, SID, frame="execution",
+        log_route=lambda e, **f: logged.append((e, dict(f))))
+    assert res is not None
+    assert res.action == "withhold_echo", res.action
+    assert res.body == echo_guard.WITHHELD_TEXT
+    # the lie is gone, and no new claim replaced it
+    assert "No tool activity" not in res.body
+    assert "nothing was executed" not in res.body.lower()
+    rows = _events(logged, "advisory_echo_withheld")
+    assert any(r.get("reason") == "read_only_tool_activity" for r in rows), rows
+    assert not _events(logged, "advisory_echo_blocked")
+
+
+def test_true_no_activity_turn_still_hands_back(logged):
+    """The other side: with zero tool traffic the hand-back claim IS checked and stays."""
+    ac.note_turn_open(SID, ASK)
+    assert ac.note_advisory_injected(SID, ASK, chars=600,
+                                     envelope_chars=1951) is True
+    res = echo_guard.enforce_execution_echo(ECHO_ONLY, SID, frame="execution")
+    assert res is not None and res.action == "handback_failure", res.action
+    assert res.body == echo_guard.HAND_BACK_TEXT
+
+
 # ------------------------------------------------------- item 1: the predicate
 def test_live_turn_has_work_signal(logged):
     """The exact live shape: one ask, one anchor consult, advisory capped,
@@ -202,12 +241,22 @@ def test_no_work_signal_still_hands_back(logged):
     assert blocked[0]["work_signal"] == "no_tool_activity"
 
 
-def test_read_only_turn_is_handed_back_not_blocked_as_work(logged):
-    """Only looking at files is not work: the handback path stays reachable."""
+def test_read_only_turn_is_not_handed_back_with_a_false_claim(logged):
+    """Only looking at files is still not WORK - that half of the old pin stands.
+
+    What changed (live specimen orch api_1793074946_a4d18766, 2026-10-27): eight execute_code
+    reads and greps, echo-shaped body, and the hand-back told the user "No tool activity ... was
+    observed this turn, so nothing was executed" and discarded the turn. Read-only traffic is
+    tracked (`tools`), so the guard KNOWS the sentence is false. The predicate verdict is
+    unchanged; the notice it selects is now the one that claims nothing about execution.
+    """
     ac.note_turn_open(SID, ASK)
     ws.note_request_activity(SID, _write_payload("read_file"))
+    facts = ws.work_facts(SID)
+    assert facts["has_work"] is False and facts["tools"] == 1
     res = echo_guard.enforce_execution_echo(ECHO_ONLY, SID, frame="execution")
-    assert res is not None and res.action == "handback_failure"
+    assert res is not None and res.action == "withhold_echo", res.action
+    assert "nothing was executed" not in res.body.lower()
 
 
 def test_unstrippable_work_turn_withholds_without_lying(logged):
