@@ -1676,10 +1676,13 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 from . import debug_banner as _dbf
 
                 _fb_model = str(getattr(endpoint, "model", "") or "?")[:80]
-                # R76 P2 U5: through the one renderer, not beside it. The old
-                # hand-formatted string skipped VALID_LANES/FORBIDDEN_LANES, the
-                # "://" host redaction, the _END_LABELS pre/post mapping and the
-                # unpriced marker; metadata_only reproduces its exact text.
+                # R76 P2 U5: through the one renderer, not beside it. What that
+                # buys HERE: lane VALIDATION and the lane label come from
+                # format_banner. It does NOT buy endpoint redaction or the
+                # unpriced marker — metadata_only returns before the endpoint
+                # and usage args are read, so they are passed empty and inert.
+                # The trigger literal is not an _END_LABELS key, so that map is
+                # a no-op here too. Byte-identical to the hand-formatted text.
                 _fb = _dbf.format_banner(
                     "frontier-anchor", "consult failed | empty response", _fb_model,
                     "", 0, 0, 0.0, 0.0, metadata_only=True)

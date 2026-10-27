@@ -150,9 +150,18 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
     metadata_only (R76 P2 U5): the FAILURE-REPORT shape — head, lane label,
     trigger, model, closing tail — with no usage cell and no initiator/L2/L3
     addenda, because there was no response to measure. It exists so the
-    frontier empty-consult banner goes through this renderer (lane whitelist,
-    host redaction, label mapping) instead of being hand-formatted beside it;
-    the text it produces is exactly the string that path printed before.
+    frontier empty-consult banner goes through this renderer instead of being
+    hand-formatted beside it; the text it produces is exactly the string that
+    path printed before.
+
+    Guarantee of this shape, stated exactly: lane VALIDATION applies
+    (FORBIDDEN_LANES or an unknown lane returns ""), and the lane label comes
+    from lane_label(). Endpoint REDACTION does NOT apply: metadata_only
+    returns before the endpoint is ever read, so `endpoint` is accepted and
+    ignored — passing a secret-bearing URI here leaves the rendered bytes
+    unchanged. tokens_in/tokens_out/est_cost are likewise accepted and
+    discarded, so no unpriced-model marker can appear. A caller that needs
+    host redaction must use the normal shape, not this one.
     """
     try:
         lane = str(lane or "")
@@ -212,6 +221,10 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # returned to measure), no initiator, no L2/L3 addenda — head, label,
         # trigger, model, closing tail. This is byte-for-byte the text the
         # frontier empty-consult path hand-formatted before it came here.
+        # It returns BEFORE ep_s is used and before any usage cell exists:
+        # lane validation and the label are the only things this shape
+        # enforces. endpoint/tokens/cost are deliberately dead here — do not
+        # read this branch as a redaction surface (see the docstring).
         if metadata_only:
             return "%s %s | %s | %s %s" % (BANNER_HEAD, _lane_label, trig_s,
                                            model_s, BANNER_TAIL)

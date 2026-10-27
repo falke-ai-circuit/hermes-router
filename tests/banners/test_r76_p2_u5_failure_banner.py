@@ -9,6 +9,12 @@ which skipped everything format_banner exists to do: VALID_LANES/FORBIDDEN_LANES
 validation, the "://" host redaction, the _END_LABELS pre/post mapping and the unpriced
 marker. It is on the failure path, i.e. the path least likely to be exercised.
 
+Correction (R76 P2 U5a): the renderer closes the VALIDATION and label claims only.
+metadata_only returns before the endpoint/usage args are read, so host redaction and
+the unpriced marker are structurally absent on this shape (a secret-bearing endpoint
+renders byte-identically to ""), and the frontier call passes a trigger literal that
+is not an _END_LABELS key. Those are documented-not-asserted below, not claimed.
+
 FROZEN below is the string that path actually parked BEFORE the change — captured by
 driving maybe_execute_anchored with anchored_call returning an empty consult, not by
 reading the source. Every pin here compares against it.
@@ -87,6 +93,25 @@ def test_the_label_comes_from_the_renderer_not_a_literal():
                                        0.0, metadata_only=True)
     assert "shadow-self (uncensored)" in other
     assert "higher-self" not in other
+
+
+def test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction():
+    """Pin the TRUE guarantee at the frontier failure path (R76 P2 U5a).
+
+    Enforced: lane validation (an invalid lane is still refused) and the label
+    mapping. NOT enforced: endpoint redaction — metadata_only returns before the
+    endpoint is read, so a secret-bearing URI renders byte-identically to "".
+    This is the documented-not-asserted half of the U5 claim, pinned so it cannot
+    silently drift back into being advertised as a redaction surface.
+    """
+    assert _render(lane="not-a-lane") == ""
+    secret = "openrouter://api.secret-host.example/v1/very-secret?key=abc"
+    with_secret = debug_banner.format_banner(
+        "frontier-anchor", TRIGGER, "test/model-a", secret, 0, 0, 0.0, 0.0,
+        metadata_only=True)
+    assert with_secret == _render()  # endpoint is inert on this shape
+    doc = debug_banner.format_banner.__doc__ or ""
+    assert "Endpoint REDACTION does NOT apply" in doc
 
 
 def test_no_hand_formatted_banner_survives_in_anchor_exec():
