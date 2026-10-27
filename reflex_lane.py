@@ -638,8 +638,26 @@ def _window_from_request(request: Any, limit: int = 6) -> Tuple[str, str]:
                 ask = text[:1500]
                 continue
             if role in ("tool", "function") or (role == "assistant" and m.get("tool_calls")):
-                if text.strip():
-                    chunks.append(text[:2500])
+                # The ARGUMENTS matter as much as the output: a tool result names the file in
+                # a traceback, but the thing the agent is actually working on is in its own
+                # call. Leaving them out meant extraction mostly never saw the object of the
+                # next move - measured: the real next move was in the candidate set only 28-34%
+                # of the time, and a third of those turns produced no candidates at all.
+                args_txt = ""
+                tcs = m.get("tool_calls") if role == "assistant" else None
+                if isinstance(tcs, list):
+                    bits = []
+                    for t in tcs[:3]:
+                        fn = (t or {}).get("function") or (t or {})
+                        nm = fn.get("name") or ""
+                        a = fn.get("arguments")
+                        if isinstance(a, (dict, list)):
+                            a = json.dumps(a)
+                        bits.append("%s %s" % (nm, str(a or "")[:600]))
+                    args_txt = "\n".join(bits)
+                joined = (text.strip() + ("\n" + args_txt if args_txt else "")).strip()
+                if joined:
+                    chunks.append(joined[:2500])
             if len(chunks) >= limit:
                 break
         chunks.reverse()

@@ -73,13 +73,22 @@ def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
     """
     out: List[Dict[str, str]] = []
     seen = set()
-    paths = salient_paths(window, cap=2)
+    # Two was measured too narrow: the move an agent actually makes next was in the set only
+    # 28-34% of the time across three profiles' real transcripts, which makes a confident
+    # reading confidently wrong. Five paths covers the realistic working set without turning
+    # the block into a menu of the whole tree.
+    paths = salient_paths(window, cap=5)
     if not paths:
         # No named object means nothing to choose between — the block would be generic advice,
         # and only object-bearing candidates were ever measured as accurate. Stay silent.
         return []
+    bases = [os.path.basename(p.rstrip("/")) or p for p in paths]
     for p in paths:
         base = os.path.basename(p.rstrip("/")) or p
+        # a bare basename is ambiguous the moment two files share one - keep the parent
+        # directory only when it actually disambiguates, because block space is scarce
+        if bases.count(base) > 1:
+            base = "/".join(p.rstrip("/").split("/")[-2:])
         for mv, cls, _lab in (("fix", "edit", ""), ("inspect", "read", "")):
             label = ("change %s" if mv == "fix" else "read %s first") % base
             if label in seen:
