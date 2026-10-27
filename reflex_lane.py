@@ -36,6 +36,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import reflex_weights as _rw
 
+# The role card handed to the decision model, cached per process: a .md read on every model
+# call would be a syscall on the hot path for text that changes once a day at most.
+_CARD_CACHE: Dict[str, Any] = {}
+_CARD_LOCK = threading.Lock()
+CARD_CHARS = 400
+CARD_TTL_S = 300.0
+
 logger = logging.getLogger("hermes_router.reflex_lane")
 
 HEADER = "[reflex: a reading of the choice in front of you, not a request]"
@@ -96,9 +103,57 @@ def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
     return seen[:cap] if len(seen) >= 2 else []
 
 
-def build_state(ask: str, tool: str, text: str, extra: str = "") -> str:
-    """The evidence handed to the decision model: the ask, the last action, its result."""
+def _agent_card() -> str:
+    """Who the reading is FOR.
+
+    The decision model was judging the next move without knowing which role has to live with
+    it. "Read X first" means something different to a coder mid-repair and to a reviewer
+    mid-audit, and scope/rigour read differently again. The card comes from the profile's own
+    IDENTITY so every Hermes install carries its own; if it cannot be read the envelope simply
+    omits it rather than inventing a role.
+    """
+    home = os.environ.get("HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME") or ""
+    name = os.environ.get("HERMES_PROFILE") or os.path.basename(home.rstrip("/")) or "agent"
+    now = time.time()
+    with _CARD_LOCK:
+        prev = _CARD_CACHE.get(name)
+        if prev and now - prev[0] < CARD_TTL_S:
+            return prev[1]
+    card = ""
+    try:
+        path = os.path.join(home, "IDENTITY.md") if home else ""
+        if path and os.path.isfile(path):
+            lines, size = [], 0
+            in_fm = False
+            with open(path, errors="replace") as fh:
+                for ln in fh:
+                    s = ln.strip()
+                    # the card is prose, not metadata: skip the YAML frontmatter entirely,
+                    # otherwise the model is told the role is "template_version: v1.1"
+                    if s == "---":
+                        in_fm = not in_fm
+                        continue
+                    if in_fm:
+                        continue
+                    if not s or s.startswith(("#", "---", ">", "|", "*")):
+                        continue
+                    lines.append(s)
+                    size += len(s)
+                    if size > CARD_CHARS:
+                        break
+            card = " ".join(lines)[:CARD_CHARS]
+    except Exception:  # noqa: BLE001 — a missing card must never stop a reading
+        card = ""
+    with _CARD_LOCK:
+        _CARD_CACHE[name] = (now, card)
+    return card
+
+
+def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "") -> str:
+    """The evidence handed to the decision model: who is asking, the ask, the last action."""
     parts = []
+    if card:
+        parts.append("WHO THIS IS FOR (the role that has to live with this step):\n%s" % card)
     if ask:
         parts.append("USER ASK (what this work is for):\n%s" % str(ask)[:1500])
     if extra:
@@ -767,7 +822,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             if prev and prev[0] == sig and now - prev[1] < DEDUPE_S:
                 _rw._note(reason="duplicate_situation")
                 return False
-        data = _transport(_dx.payload(build_state(ask, "", window), cands,
+        data = _transport(_dx.payload(build_state(ask, "", window, card=_agent_card()), cands,
                                       str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return False
