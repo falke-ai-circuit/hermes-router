@@ -1,0 +1,15 @@
+....................F......E.........................                    [100%]
+==================================== ERRORS ====================================
+____________ ERROR at teardown of test_breaker_opens_after_failures ____________
+E   AssertionError: egress attempts recorded: [('subprocess', ['curl', '-s', '-m', '15', '-H', 'Authorization: Bearer ', 'https://inference-api.nousresearch.com/v1/models'])]
+    assert not [('subprocess', ['curl', '-s', '-m', '15', '-H', 'Authorization: Bearer ', ...])]
+------------------------------ Captured log call -------------------------------
+ERROR    hermes_router.decision:decision.py:658 decision_breaker_opened fails=1 cooldown_s=600
+=================================== FAILURES ===================================
+E   AssertionError: assert []
+     +  where [] = _logged('decision_advisory_parked')
+/opt/data/plugins/hermes_router/tests/decision_lane/test_r19_decision_lane_v3.py:332: AssertionError: assert []
+=========================== short test summary info ============================
+FAILED tests/decision_lane/test_r19_decision_lane_v3.py::test_backend_nous_pipeline
+ERROR tests/decision_lane/test_r19_decision_lane_v3.py::test_breaker_opens_after_failures
+1 failed, 51 passed, 1 error in 19.56s

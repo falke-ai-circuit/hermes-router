@@ -1,0 +1,20 @@
+..E.E                                                                    [100%]
+==================================== ERRORS ====================================
+__ ERROR at teardown of test_r10_2_audit_banner_carries_row_ref_after_persist __
+tests/conftest.py:178: in _zero_network_guard
+    assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
+E   AssertionError: egress attempts recorded: [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+E   assert not [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+------------------------------ Captured log call -------------------------------
+WARNING  hermes_router.closure_pass:closure_pass.py:281 closure_pass skipped: AssertionError: TEST EGRESS BLOCKED: outbound socket.connect attempted during a test ((('inference-api.nousresearch.com', 443), 25.0, None)) — the suite is zero-network by directive; mock the provider seam instead (see conftest._zero_network_guard)
+_ ERROR at teardown of test_r10_2_meta_carries_row_for_downgraded_async_banner _
+tests/conftest.py:178: in _zero_network_guard
+    assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
+E   AssertionError: egress attempts recorded: [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+E   assert not [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+------------------------------ Captured log call -------------------------------
+WARNING  hermes_router.closure_pass:closure_pass.py:281 closure_pass skipped: AssertionError: TEST EGRESS BLOCKED: outbound socket.connect attempted during a test ((('inference-api.nousresearch.com', 443), 25.0, None)) — the suite is zero-network by directive; mock the provider seam instead (see conftest._zero_network_guard)
+=========================== short test summary info ============================
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
+3 passed, 2 errors in 1.41s

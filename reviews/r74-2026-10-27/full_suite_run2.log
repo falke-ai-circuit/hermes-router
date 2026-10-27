@@ -1,0 +1,58 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+.....F.................................................................. [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 20%]
+.........F.............................................................. [ 23%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+...................................................................x.... [ 34%]
+........................................................................ [ 37%]
+........................................................................ [ 40%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+.............................................................F.F........ [ 78%]
+........................................................................ [ 80%]
+....................................................s................... [ 83%]
+.........E..E........................................................... [ 86%]
+................................FF...................................... [ 89%]
+.......................................................................s [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 98%]
+............................................                             [100%]
+=============================== warnings summary ===============================
+tests/decision_lane/test_r66_frame_outcome_correlation.py:67
+  /opt/data/plugins/hermes_router/tests/decision_lane/test_r66_frame_outcome_correlation.py:67: PytestUnknownMarkWarning: Unknown pytest.mark.reflex_armed - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.reflex_armed
+
+tests/decision_lane/test_r73_p2_card.py::test_pinned_card_suites_still_pass_unchanged
+  /opt/data/.local/lib/python3.13/site-packages/pytest_asyncio/plugin.py:299: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+  The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+  
+    warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks
+FAILED tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics
+FAILED tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum
+FAILED tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
+6 failed, 2481 passed, 2 skipped, 1 deselected, 1 xfailed, 2 warnings, 2 errors in 325.57s (0:05:25)
+EXIT=1

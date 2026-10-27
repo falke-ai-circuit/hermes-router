@@ -1,0 +1,9 @@
+F1 before/after (same inputs: turn 1 = two fires @1000/100, never consumed; turn 2 open; one fire @7/3)
+
+be228c8 (parent, BUG):
+  old turn1: '· router · impulse (decision) x2 | 2 leads · 0 no-lead | jev-latest @ ? | tok 2000/200 | $0.0000* | initiator=router | row=reflex.1-2'
+  old turn2: '· router · impulse (decision) x3 | 3 leads · 0 no-lead | jev-latest @ ? | tok 2007/203 | $0.0000* | initiator=router | row=reflex.1-3'
+
+11edf2b (fix):
+  new turn1: '· router · impulse (decision) x2 | 2 lead | jev @ typesafe | 2000/200 tok | $0.00000* | row 1-2'
+  new turn2: '· router · impulse (decision) | 1 lead | jev @ typesafe | 7/3 tok | $0.00000* | row 3'

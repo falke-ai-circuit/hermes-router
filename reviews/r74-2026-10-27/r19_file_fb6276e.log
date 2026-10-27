@@ -1,0 +1,7 @@
+......................................F.............                     [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert 'migrate the store now' in 'the fork surfaces as: redis pulls 0.50 (1 prior post_fork_scan verdict(s) in class generic: opt-1 chosen 1x, followed... · impulse (decision) | pre | z-ai/glm-5.3-flash @ hermes-auxiliary | tok 10/5 | $0.0000* | initiator=user | row=848 ·'
+/opt/data/profiles/reviewer/cache/scratch/r74base/hermes_router/tests/decision_lane/test_r19_decision_lane_v3.py:651: AssertionError: assert 'migrate the store now' in 'the fork surfaces as: redis pulls 0.50 (1 prior post_fork_scan verdict(s) in class generic: opt-1 chosen 1x, followed... · impulse (decision) | pre | z-ai/glm-5.3-flash @ hermes-auxiliary | tok 10/5 | $0.0000* | initiator=user | row=848 ·'
+=========================== short test summary info ============================
+FAILED tests/decision_lane/test_r19_decision_lane_v3.py::test_post_fork_scan_options_in_turn_appends_verdict
+1 failed, 51 passed in 18.49s
