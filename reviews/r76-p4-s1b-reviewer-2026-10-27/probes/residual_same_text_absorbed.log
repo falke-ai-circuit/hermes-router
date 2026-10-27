@@ -1,0 +1,37 @@
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_D3.xml
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+________________________ test_opt_same_text_other_cause ________________________
+
+    def test_opt_same_text_other_cause():
+        # a genuinely DIFFERENT cause that happens to render the same assertion text
+        envelope = {"payload": {}}
+>       assert envelope.get("payload", {}).get("mindset") is not None
+E       AssertionError: assert None is not None
+E        +  where None = <built-in method get of dict object at 0x700f1a16a140>('mindset')
+E        +    where <built-in method get of dict object at 0x700f1a16a140> = {}.get
+E        +      where {} = <built-in method get of dict object at 0x700f1a16a1c0>('payload', {})
+E        +        where <built-in method get of dict object at 0x700f1a16a1c0> = {'payload': {}}.get
+
+tests/test_pinned.py:23: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt_same_text_other_cause - AssertionError:...
+2 failed, 4 deselected in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=2
+baseline_check: variant = 2 red (optional order/state-dependent member RED: tests/test_pinned.py::test_opt_same_text_other_cause)
+  optional member RED (tolerated): tests/test_pinned.py::test_opt_same_text_other_cause
+    reason=state-dependent; failure signature matched expect='assert None is not None'
+
+baseline_check: OK — failure set equals the pinned baseline

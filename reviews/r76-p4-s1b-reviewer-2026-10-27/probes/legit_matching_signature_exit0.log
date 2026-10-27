@@ -1,0 +1,32 @@
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_LEGIT_clean.xml
+F.F                                                                      [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+___________________________________ test_opt ___________________________________
+
+    def test_opt():
+        # state-dependent red, the recorded signature
+>       assert None is not None
+E       assert None is not None
+
+tests/test_pinned.py:10: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt - assert None is not None
+2 failed, 1 passed, 2 deselected in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=2
+baseline_check: variant = 2 red (optional order/state-dependent member RED: tests/test_pinned.py::test_opt)
+  optional member RED (tolerated): tests/test_pinned.py::test_opt
+    reason=state-dependent; failure signature matched expect='assert None is not None'
+
+baseline_check: OK — failure set equals the pinned baseline

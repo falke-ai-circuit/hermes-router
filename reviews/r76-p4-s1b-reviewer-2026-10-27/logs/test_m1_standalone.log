@@ -1,0 +1,19 @@
+F................                                                        [100%]
+=================================== FAILURES ===================================
+_________________ test_m1_envelope_carries_the_current_stance __________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x75a473e95e00>
+
+    def test_m1_envelope_carries_the_current_stance(monkeypatch):
+        monkeypatch.setattr(decision, "_session_trace_rows",
+                            lambda sid, limit=80: _trace())
+        env = _envelope()
+        assert isinstance(env.get("mindset"), dict)
+        assert set(env["mindset"]) == {"scope", "rigour"}
+>       assert env["mindset"]["scope"] is not None
+E       assert None is not None
+
+tests/decision_lane/test_r53_midturn_mindset.py:104: AssertionError
+=========================== short test summary info ============================
+FAILED tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+1 failed, 16 passed in 11.02s

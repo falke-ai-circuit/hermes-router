@@ -1,0 +1,277 @@
+===== C_never_exists  EXIT 1 =====
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_C_never_exists.xml
+F.FFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+___________________________________ test_opt ___________________________________
+
+    def test_opt():
+        # state-dependent red, the recorded signature
+>       assert None is not None
+E       assert None is not None
+
+tests/test_pinned.py:10: AssertionError
+________________________________ test_opt_other ________________________________
+
+    def test_opt_other():
+        # real failure inside an optional node, DIFFERENT cause
+>       assert 1 == 2, "different cause: key set changed"
+E       AssertionError: different cause: key set changed
+E       assert 1 == 2
+
+tests/test_pinned.py:14: AssertionError
+________________________________ test_opt_third ________________________________
+
+    def test_opt_third():
+        msg = "envelope lost the mindset key"
+>       assert not msg
+E       AssertionError: assert not 'envelope lost the mindset key'
+
+tests/test_pinned.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt - assert None is not None
+FAILED tests/test_pinned.py::test_opt_other - AssertionError: different cause...
+FAILED tests/test_pinned.py::test_opt_third - AssertionError: assert not 'env...
+4 failed, 1 passed in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=4
+baseline_check: variant = 4 red (no optional members red)
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/test_pinned.py::test_opt  [failure]
+  + tests/test_pinned.py::test_opt_other  [failure]
+  + tests/test_pinned.py::test_opt_third  [failure]
+
+baseline_check: OPTIONAL ID NOT PRESENT IN RUN — the exemption matches nothing (stale, mistyped, renamed or deselected); that is DRIFT:
+  ? tests/test_pinned.py::test_never_exists_anywhere  (declared reason=state-dependent)
+
+baseline_check: DRIFT
+
+===== C2_deselected  EXIT 1 =====
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_C2_deselected.xml
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+1 failed, 1 passed, 3 deselected in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: OPTIONAL ID NOT PRESENT IN RUN — the exemption matches nothing (stale, mistyped, renamed or deselected); that is DRIFT:
+  ? tests/test_pinned.py::test_opt  (declared reason=state-dependent)
+
+baseline_check: DRIFT
+
+===== D_other_cause  EXIT 1 =====
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_D_other_cause.xml
+F.FFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+___________________________________ test_opt ___________________________________
+
+    def test_opt():
+        # state-dependent red, the recorded signature
+>       assert None is not None
+E       assert None is not None
+
+tests/test_pinned.py:10: AssertionError
+________________________________ test_opt_other ________________________________
+
+    def test_opt_other():
+        # real failure inside an optional node, DIFFERENT cause
+>       assert 1 == 2, "different cause: key set changed"
+E       AssertionError: different cause: key set changed
+E       assert 1 == 2
+
+tests/test_pinned.py:14: AssertionError
+________________________________ test_opt_third ________________________________
+
+    def test_opt_third():
+        msg = "envelope lost the mindset key"
+>       assert not msg
+E       AssertionError: assert not 'envelope lost the mindset key'
+
+tests/test_pinned.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt - assert None is not None
+FAILED tests/test_pinned.py::test_opt_other - AssertionError: different cause...
+FAILED tests/test_pinned.py::test_opt_third - AssertionError: assert not 'env...
+4 failed, 1 passed in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=4
+baseline_check: variant = 4 red (no optional members red)
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/test_pinned.py::test_opt  [failure]
+  + tests/test_pinned.py::test_opt_third  [failure]
+
+baseline_check: OPTIONAL REASON MISMATCH — this red is not the red the pin declares, so the colour is not the exemption:
+  ! tests/test_pinned.py::test_opt_other  [failure] reason=state-dependent expect='assert None is not None'
+    observed: tests/test_pinned.py:14: AssertionError
+
+baseline_check: DRIFT
+
+===== D2_third_cause  EXIT 1 =====
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_D2_third_cause.xml
+F.FFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+___________________________________ test_opt ___________________________________
+
+    def test_opt():
+        # state-dependent red, the recorded signature
+>       assert None is not None
+E       assert None is not None
+
+tests/test_pinned.py:10: AssertionError
+________________________________ test_opt_other ________________________________
+
+    def test_opt_other():
+        # real failure inside an optional node, DIFFERENT cause
+>       assert 1 == 2, "different cause: key set changed"
+E       AssertionError: different cause: key set changed
+E       assert 1 == 2
+
+tests/test_pinned.py:14: AssertionError
+________________________________ test_opt_third ________________________________
+
+    def test_opt_third():
+        msg = "envelope lost the mindset key"
+>       assert not msg
+E       AssertionError: assert not 'envelope lost the mindset key'
+
+tests/test_pinned.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt - assert None is not None
+FAILED tests/test_pinned.py::test_opt_other - AssertionError: different cause...
+FAILED tests/test_pinned.py::test_opt_third - AssertionError: assert not 'env...
+4 failed, 1 passed in 0.04s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=4
+baseline_check: variant = 4 red (no optional members red)
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/test_pinned.py::test_opt  [failure]
+  + tests/test_pinned.py::test_opt_other  [failure]
+
+baseline_check: OPTIONAL REASON MISMATCH — this red is not the red the pin declares, so the colour is not the exemption:
+  ! tests/test_pinned.py::test_opt_third  [failure] reason=state-dependent expect='assert None is not None'
+    observed: tests/test_pinned.py:18: AssertionError
+
+baseline_check: DRIFT
+
+===== LEGIT_matching_signature  EXIT 1 =====
+baseline_check: running suite -> /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/junit_LEGIT_matching_signature.xml
+F.FFF                                                                    [100%]
+=================================== FAILURES ===================================
+_______________________________ test_pinned_red ________________________________
+
+    def test_pinned_red():
+>       assert 0, "pinned red"
+E       AssertionError: pinned red
+E       assert 0
+
+tests/test_pinned.py:3: AssertionError
+___________________________________ test_opt ___________________________________
+
+    def test_opt():
+        # state-dependent red, the recorded signature
+>       assert None is not None
+E       assert None is not None
+
+tests/test_pinned.py:10: AssertionError
+________________________________ test_opt_other ________________________________
+
+    def test_opt_other():
+        # real failure inside an optional node, DIFFERENT cause
+>       assert 1 == 2, "different cause: key set changed"
+E       AssertionError: different cause: key set changed
+E       assert 1 == 2
+
+tests/test_pinned.py:14: AssertionError
+________________________________ test_opt_third ________________________________
+
+    def test_opt_third():
+        msg = "envelope lost the mindset key"
+>       assert not msg
+E       AssertionError: assert not 'envelope lost the mindset key'
+
+tests/test_pinned.py:18: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pinned.py::test_pinned_red - AssertionError: pinned red
+FAILED tests/test_pinned.py::test_opt - assert None is not None
+FAILED tests/test_pinned.py::test_opt_other - AssertionError: different cause...
+FAILED tests/test_pinned.py::test_opt_third - AssertionError: assert not 'env...
+4 failed, 1 passed in 0.05s
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=4
+baseline_check: variant = 4 red (optional order/state-dependent member RED: tests/test_pinned.py::test_opt)
+  optional member RED (tolerated): tests/test_pinned.py::test_opt
+    reason=state-dependent; failure signature matched expect='assert None is not None'
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/test_pinned.py::test_opt_other  [failure]
+  + tests/test_pinned.py::test_opt_third  [failure]
+
+baseline_check: DRIFT
+
+===== U_no_reason  EXIT 1 =====
+baseline_check: PIN FILE INVALID — refusing to run against it:
+  ! /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/pin_U_no_reason.txt:2: optional entry tests/test_pinned.py::test_opt declares reason=''; must be one of state-dependent, env, order
+
+baseline_check: DRIFT
+
+===== U_no_expect  EXIT 1 =====
+baseline_check: PIN FILE INVALID — refusing to run against it:
+  ! /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/pin_U_no_expect.txt:2: optional entry tests/test_pinned.py::test_opt declares no expect="..." failure signature — an unexplained exemption is refused
+
+baseline_check: DRIFT
+
+===== U_bad_reason  EXIT 1 =====
+baseline_check: PIN FILE INVALID — refusing to run against it:
+  ! /opt/data/profiles/reviewer/cache/scratch/r76s1b/probe/pin_U_bad_reason.txt:2: optional entry tests/test_pinned.py::test_opt declares reason='flaky'; must be one of state-dependent, env, order
+
+baseline_check: DRIFT

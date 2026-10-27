@@ -1,0 +1,75 @@
+======================================================================
+A  exact set, pinned red only -> EXIT 0
+
+baseline_check: pinned required=1 optional=0
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: OK — failure set equals the pinned baseline
+
+======================================================================
+B  red in run, not in baseline -> EXIT 1
+
+baseline_check: pinned required=1 optional=0
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: PINNED-RED-NOW-GREEN (baseline drifted, re-pin deliberately):
+  - tests/routing/test_pinned.py::test_some_other_required
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/routing/test_pinned.py::test_pinned_red  [failure]
+
+baseline_check: DRIFT
+
+======================================================================
+E  run carries an UNPINNED red -> EXIT 1
+
+baseline_check: pinned required=1 optional=0
+baseline_check: actual failures/errors=2
+baseline_check: variant = 2 red (no optional members red)
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/routing/test_pinned.py::test_unpinned_red  [failure]
+
+baseline_check: DRIFT
+
+======================================================================
+F  pinned red went GREEN (drift) -> EXIT 1
+
+baseline_check: pinned required=1 optional=0
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: PINNED-RED-NOW-GREEN (baseline drifted, re-pin deliberately):
+  - tests/routing/test_pinned.py::test_green
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/routing/test_pinned.py::test_pinned_red  [failure]
+
+baseline_check: DRIFT
+
+======================================================================
+C  OPTIONAL id that never ran / never existed  <-- docstring says drift, code says OK -> EXIT 0
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+  optional member green this run: tests/routing/test_pinned.py::test_never_exists_anywhere
+
+baseline_check: NOTE — every optional entry was green this run; the optional class is doing no work. Re-check the triage doc before removing the entry.
+
+baseline_check: OK — failure set equals the pinned baseline
+
+======================================================================
+D  OPTIONAL id is the red (any red accepted at that node id) -> EXIT 0
+
+baseline_check: pinned required=1 optional=1
+baseline_check: actual failures/errors=2
+baseline_check: variant = 2 red (optional order-dependent member RED: tests/routing/test_pinned.py::test_opt)
+
+baseline_check: OK — failure set equals the pinned baseline
+
+======================================================================
+G  documented flag --show-variant -> EXIT 2 | baseline_check.py: error: unrecognized arguments: --show-variant
+H  empty baseline -> EXIT 1 | baseline_check: pinned baseline is EMPTY — refusing to call that a pass
