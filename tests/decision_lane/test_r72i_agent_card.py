@@ -41,6 +41,25 @@ def test_card_is_prose_not_frontmatter(tmp_path, monkeypatch):
     assert "reflect_count" not in card
 
 
+def test_bold_prose_is_a_card_not_noise(tmp_path, monkeypatch):
+    """Most of the fleet writes IDENTITY prose as bold lines (**Coder - ...**). Treating "*" as
+    markdown noise emptied the card for those profiles while plain-prose profiles looked fine,
+    so the feature was silently absent exactly where it was needed."""
+    ident = tmp_path / "IDENTITY.md"
+    ident.write_text("---\nrole: coder\n---\n\n# IDENTITY.md - Coder\n\n"
+                     "> **Load order on wake:** IDENTITY then SOUL\n\n"
+                     "**Coder - clinical precision through a code-substrate lens.**\n"
+                     "**Trait tags:** conservation-first\n")
+    monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "boldcard")
+    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    card = rl._agent_card()
+    assert "clinical precision" in card
+    assert "conservation-first" in card
+    # the blockquote preamble and headings stay out
+    assert "Load order on wake" not in card
+
+
 def test_missing_identity_yields_empty_card(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "nocards")

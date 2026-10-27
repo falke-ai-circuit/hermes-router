@@ -135,7 +135,14 @@ def _agent_card() -> str:
                         continue
                     if in_fm:
                         continue
-                    if not s or s.startswith(("#", "---", ">", "|", "*")):
+                    # Skip headings, blockquote preamble and tables - but NOT bullet/bold prose.
+                    # Filtering "*" as well made the card empty for every agent whose IDENTITY
+                    # opens with a bold line (**Coder — ...**), i.e. most of the fleet, and the
+                    # only reason conductor looked fine was that its prose is plain.
+                    if not s or s.startswith(("#", "---", ">", "|")):
+                        continue
+                    s = s.lstrip("*").strip()
+                    if not s:
                         continue
                     lines.append(s)
                     size += len(s)
@@ -889,6 +896,9 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             _DELIVERED_AT[sid] = time.time()
             _log(sid, "reflex_weights_delivered", chars=len(block),
                  weights=_weights_str(parsed), margin=_margin(parsed),
+                 # card_chars makes "did the reading know its role" auditable per agent:
+                 # without it the only evidence was a code read, and a silent 0 stays invisible
+                 card_chars=len(_agent_card()),
                  mindset=parsed.get("mindset"), seam="every_call",
                  top=parsed["options"][0]["p"],
                  top_kind=parsed["options"][0].get("kind"),
