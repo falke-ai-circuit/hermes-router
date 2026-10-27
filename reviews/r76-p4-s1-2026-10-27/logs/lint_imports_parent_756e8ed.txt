@@ -1,0 +1,26 @@
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+No matches for ignored import hermes_router.core.usage_ledger.anchor_chain -> 
+hermes_router.anchor_chain.
+No matches for ignored import hermes_router.core.canonical.persona_card -> 
+hermes_router.persona_card.
+No matches for ignored import hermes_router.core.decisions.suggestions -> 
+hermes_router.suggestions.
+No matches for ignored import hermes_router.core.usage_ledger.provider_prices ->
+hermes_router.provider_prices.
+No matches for ignored import hermes_router.core.routing_caps.router_tools -> 
+hermes_router.router_tools.
+No matches for ignored import hermes_router.core.routing_caps.anchor_chain -> 
+hermes_router.anchor_chain.
+No matches for ignored import hermes_router.core.routing_caps.debug_banner -> 
+hermes_router.debug_banner.
+exit=1

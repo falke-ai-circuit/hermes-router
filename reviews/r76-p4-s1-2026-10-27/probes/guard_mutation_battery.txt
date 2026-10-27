@@ -1,0 +1,85 @@
+tree: git archive 0e4ce3a -> wt/hermes_router ; command: lint-imports with PYTHONPATH=wt
+
+CONTROL (unmodified 0e4ce3a): (0, ['core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)', 'core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)', 'Contracts: 2 kept, 0 broken.'])
+
+--- MUTATION 1: drop one ignore entry at a time (a match proves a live edge) ---
+DROP 'hermes_router.core.canonical -> hermes_router.persona_card' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.canonical -> hermes_router.persona_card (l.132)
+DROP 'hermes_router.core.usage_ledger -> hermes_router.anchor_chain' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.usage_ledger -> hermes_router.anchor_chain (l.169)
+DROP 'hermes_router.core.usage_ledger -> hermes_router.provider_prices' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.usage_ledger -> hermes_router.provider_prices (l.178)
+DROP 'hermes_router.core.routing_caps -> hermes_router.anchor_chain' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.routing_caps -> hermes_router.anchor_chain (l.203, l.212)
+DROP 'hermes_router.core.routing_caps -> hermes_router.debug_banner' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.routing_caps -> hermes_router.debug_banner (l.415)
+DROP 'hermes_router.core.decisions -> hermes_router.suggestions' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.decisions -> hermes_router.suggestions (l.165)
+DROP 'hermes_router.core.routing_caps -> hermes_router' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.routing_caps -> hermes_router (l.422)
+DROP 'hermes_router.core.telemetry -> hermes_router' -> exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (7 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.telemetry -> hermes_router (l.69)
+DROP 'hermes_router.core.config_access -> hermes_cli' -> exit 1
+    core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) BROKEN
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.config_access -> hermes_cli (l.59, l.65, l.95, l.171,
+
+--- MUTATION 2: add edges not covered by any exemption ---
+core -> hermes_router.frames (new edge, no exemption): exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.canonical -> hermes_router.frames (l.595)
+core -> features.banners.lifecycle: exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.canonical -> hermes_router.features.banners.lifecycle
+core -> gate.registration: exit 1
+    core/ must not import other hermes_router modules (L0) BROKEN (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 1 kept, 1 broken.
+    -   hermes_router.core.decisions -> hermes_router.gate.registration (l.251)
+core.config_access -> hermes_cli.utils (exempted module pair): exit 0
+    core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 2 kept, 0 broken.
+routing_caps -> root (root exemption swallows): exit 0
+    core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 2 kept, 0 broken.
+telemetry -> root (root exemption swallows): exit 0
+    core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 2 kept, 0 broken.
+features -> api (layers rule, S2 scope): exit 0
+    core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+    core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+    Contracts: 2 kept, 0 broken.
+
+RESTORED control: (0, ['core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)', 'core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)', 'Contracts: 2 kept, 0 broken.'])
