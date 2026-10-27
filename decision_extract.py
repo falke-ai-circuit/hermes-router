@@ -276,7 +276,11 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         # recorded so the block and the gate agree on one number.
         margin = parsed.get("margin")
         margin = float(margin) if isinstance(margin, (int, float)) else p_top - float(opts[1]["p"])
-        if margin >= DECISIVE_MARGIN:
+        # "take this" is a claim about an OBJECT. A generic class move ("run the check") can
+        # lead the distribution without naming anything, and marking that as decisive told the
+        # model to commit to a move that says nothing about what to commit to.
+        has_target = bool(str(opts[0].get("target") or "").strip())
+        if margin >= DECISIVE_MARGIN and has_target:
             lines.append("  %2d%%  %s   <- take this" % (round(p_top * 100),
                                                          str(opts[0]["label"])[:58]))
             for o in opts[1:3]:
@@ -284,7 +288,9 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         else:
             for o in opts[:3]:
                 lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
-            lines.append("  <- too close to call: check before you commit")
+            lines.append("  <- class-level only: no single object leads, so pick from the "
+                         "evidence" if not has_target else
+                         "  <- too close to call: check before you commit")
         mind = parsed.get("mindset") or {}
         bits = []
         for d in ("scope", "rigour"):

@@ -99,16 +99,34 @@ def test_agreement_can_be_switched_off_for_the_ab_arm(monkeypatch):
 
 
 def test_a_decisive_read_says_take_this_and_a_near_tie_says_check():
-    decisive = {"options": [{"p": 0.80, "label": "change render.py"},
-                            {"p": 0.12, "label": "read render.py first"}],
+    decisive = {"options": [{"p": 0.80, "label": "change render.py",
+                             "target": "/app/src/render.py", "kind": "edit"},
+                            {"p": 0.12, "label": "read render.py first",
+                             "target": "/app/src/render.py", "kind": "read"}],
                 "margin": 0.68, "mindset": {}}
     assert "<- take this" in dx.render(decisive)
-    near = {"options": [{"p": 0.52, "label": "change render.py"},
-                        {"p": 0.48, "label": "read render.py first"}],
+    near = {"options": [{"p": 0.52, "label": "change render.py",
+                         "target": "/app/src/render.py", "kind": "edit"},
+                        {"p": 0.48, "label": "read render.py first",
+                         "target": "/app/src/render.py", "kind": "read"}],
             "margin": 0.04, "mindset": {}}
     body = dx.render(near)
     assert "too close to call" in body
     assert "<- take this" not in body
+
+
+def test_a_generic_move_leading_never_claims_take_this():
+    """A class move that names no object can top the distribution - "run the check" often
+    does. Marking that decisive tells the model to commit to a move that says nothing about
+    what to commit to, which is the confidently-wrong failure the lane exists to avoid."""
+    generic = {"options": [{"p": 0.63, "label": "run the check or tests now", "target": "",
+                            "kind": "run"},
+                           {"p": 0.16, "label": "read render.py first",
+                            "target": "/app/src/render.py", "kind": "read"}],
+               "margin": 0.47, "mindset": {}}
+    body = dx.render(generic)
+    assert "<- take this" not in body
+    assert "class-level only" in body
 
 
 def test_the_reading_carries_an_integration_contract_like_the_frontier_lane(monkeypatch):
