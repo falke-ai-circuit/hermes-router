@@ -131,8 +131,14 @@ def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
         # directory only when it actually disambiguates, because block space is scarce
         if bases.count(base) > 1:
             base = "/".join(p.rstrip("/").split("/")[-2:])
+        is_dir = "." not in base
         for mv, cls, _lab in (("fix", "edit", ""), ("inspect", "read", "")):
-            label = ("change %s" if mv == "fix" else "read %s first") % base
+            if is_dir:
+                # "read tmp first" says nothing: a directory is a place to look, not an
+                # object to act on. Measured live leading the board at 60%.
+                label = ("work inside %s" if mv == "fix" else "look inside %s") % base
+            else:
+                label = ("change %s" if mv == "fix" else "read %s first") % base
             if label in seen:
                 continue
             seen.add(label)
@@ -279,7 +285,10 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         # "take this" is a claim about an OBJECT. A generic class move ("run the check") can
         # lead the distribution without naming anything, and marking that as decisive told the
         # model to commit to a move that says nothing about what to commit to.
-        has_target = bool(str(opts[0].get("target") or "").strip())
+        _t = str(opts[0].get("target") or "").strip().rstrip("/")
+        # a directory is a place, not an object: "take this" over one tells the model to commit
+        # to a location, which is not a decision it can act on
+        has_target = bool(_t) and "." in os.path.basename(_t)
         if margin >= DECISIVE_MARGIN and has_target:
             lines.append("  %2d%%  %s   <- take this" % (round(p_top * 100),
                                                          str(opts[0]["label"])[:58]))
