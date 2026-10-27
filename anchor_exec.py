@@ -1676,9 +1676,13 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
                 from . import debug_banner as _dbf
 
                 _fb_model = str(getattr(endpoint, "model", "") or "?")[:80]
-                _fb = ("%s higher-self (frontier) | consult failed | "
-                       "empty response | %s %s" % (
-                           _dbf.BANNER_HEAD, _fb_model, _dbf.BANNER_TAIL))
+                # R76 P2 U5: through the one renderer, not beside it. The old
+                # hand-formatted string skipped VALID_LANES/FORBIDDEN_LANES, the
+                # "://" host redaction, the _END_LABELS pre/post mapping and the
+                # unpriced marker; metadata_only reproduces its exact text.
+                _fb = _dbf.format_banner(
+                    "frontier-anchor", "consult failed | empty response", _fb_model,
+                    "", 0, 0, 0.0, 0.0, metadata_only=True)
                 _dbf.park_anchor_banner(
                     str(session_id or ""), _fb,
                     task_id=str(rec.get("task_id") or ""))

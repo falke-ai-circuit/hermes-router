@@ -141,10 +141,19 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
                   est_cost: Optional[float], latency_s: Optional[float],
                   retries: int = 0, level: Optional[int] = None,
                   task_id: str = "", session_id: str = "", gate: str = "",
-                  route_id: str = "", initiator: str = "") -> str:
+                  route_id: str = "", initiator: str = "",
+                  metadata_only: bool = False) -> str:
     """Render the banner text. Pure string shaping — no I/O, no state.
     Returns "" when the caller should omit the banner (oversized or invalid
-    lane). Never raises."""
+    lane). Never raises.
+
+    metadata_only (R76 P2 U5): the FAILURE-REPORT shape — head, lane label,
+    trigger, model, closing tail — with no usage cell and no initiator/L2/L3
+    addenda, because there was no response to measure. It exists so the
+    frontier empty-consult banner goes through this renderer (lane whitelist,
+    host redaction, label mapping) instead of being hand-formatted beside it;
+    the text it produces is exactly the string that path printed before.
+    """
     try:
         lane = str(lane or "")
         if lane in FORBIDDEN_LANES or lane not in VALID_LANES:
@@ -199,6 +208,13 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # 'impulse (decision)' — the lane KEY stays 'decision', the
         # module name and PROVENANCE_TAG are unchanged.
         _lane_label = lane_label(lane)
+        # R76 P2 U5: the failure-report shape. No usage cell (nothing was
+        # returned to measure), no initiator, no L2/L3 addenda — head, label,
+        # trigger, model, closing tail. This is byte-for-byte the text the
+        # frontier empty-consult path hand-formatted before it came here.
+        if metadata_only:
+            return "%s %s | %s | %s %s" % (BANNER_HEAD, _lane_label, trig_s,
+                                           model_s, BANNER_TAIL)
         # R19 v3: an empty endpoint renders model-only (decision lane has no
         # remote host to name); initiator provenance rides the L1 line.
         model_part = ("%s @ %s" % (model_s, ep_s)) if ep_s else model_s
