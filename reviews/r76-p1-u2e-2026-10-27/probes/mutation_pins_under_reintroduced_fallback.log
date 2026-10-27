@@ -1,0 +1,32 @@
+.F.F...                                                                  [100%]
+=================================== FAILURES ===================================
+_________ test_a_midturn_unreported_model_never_bills_the_cfg_default __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x71dbadf2b950>
+
+    def test_a_midturn_unreported_model_never_bills_the_cfg_default(monkeypatch):
+        keys, rows, ledgers, _banners = _drive_midturn(monkeypatch, "")
+    
+>       assert DECOY not in keys, (
+            "estimate_cost received the configured default on the midturn path: %r"
+            % (keys,))
+E       AssertionError: estimate_cost received the configured default on the midturn path: ['z-ai/glm-5.3-flash', '']
+E       assert 'z-ai/glm-5.3-flash' not in ['z-ai/glm-5.3-flash', '']
+
+tests/routing/test_r76_p1_u2e_price_class_helper.py:143: AssertionError
+________ test_b_turn_close_rollup_costs_zero_for_an_unreported_dispatch ________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x71dbad070e20>
+
+    def test_b_turn_close_rollup_costs_zero_for_an_unreported_dispatch(monkeypatch):
+        keys, _rows, _ledgers, _banners = _drive_midturn(monkeypatch, "")
+        rollup = M.close_turn(SID)
+>       assert DECOY not in keys, keys
+E       AssertionError: ['z-ai/glm-5.3-flash', '']
+E       assert 'z-ai/glm-5.3-flash' not in ['z-ai/glm-5.3-flash', '']
+
+tests/routing/test_r76_p1_u2e_price_class_helper.py:173: AssertionError
+=========================== short test summary info ============================
+FAILED tests/routing/test_r76_p1_u2e_price_class_helper.py::test_a_midturn_unreported_model_never_bills_the_cfg_default
+FAILED tests/routing/test_r76_p1_u2e_price_class_helper.py::test_b_turn_close_rollup_costs_zero_for_an_unreported_dispatch
+2 failed, 5 passed in 4.10s

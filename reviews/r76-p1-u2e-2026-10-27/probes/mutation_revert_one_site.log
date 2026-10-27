@@ -1,0 +1,21 @@
+======================================================================
+MIDTURN CASE: NONE-reported | dispatched_aux_model()= ''
+  estimate_cost keys received : ['', '']
+  tokens rows                 : [{'lane': 'decision', 'model': '', 'cost': 0.0, 'detail': 'decision_midturn'}]
+  ledger row model            : ['']
+  parked banner               : <none>
+  TURN-CLOSE ROLLUP           : · router · impulse (decision) | 1 verdict | tok 2759/102 | $0.0000* | provider=hermes-auxiliary | initiator=agent | row=1 ·
+======================================================================
+MIDTURN CASE: PRICED | dispatched_aux_model()= 'jev-latest'
+  estimate_cost keys received : ['jev-latest', 'jev-latest']
+  tokens rows                 : [{'lane': 'decision', 'model': 'jev-latest', 'cost': 0.000116, 'detail': 'decision_midturn'}]
+  ledger row model            : ['jev-latest']
+  parked banner               : <none>
+  TURN-CLOSE ROLLUP           : · router · impulse (decision) | 1 verdict | tok 2759/102 | $0.000116 | provider=hermes-auxiliary | initiator=agent | row=1 ·
+======================================================================
+MIDTURN CASE: UNPRICED | dispatched_aux_model()= 'zz-no-such-model-9'
+  estimate_cost keys received : ['zz-no-such-model-9', 'zz-no-such-model-9']
+  tokens rows                 : [{'lane': 'decision', 'model': 'zz-no-such-model-9', 'cost': 0.0, 'detail': 'decision_midturn'}]
+  ledger row model            : ['zz-no-such-model-9']
+  parked banner               : <none>
+  TURN-CLOSE ROLLUP           : · router · impulse (decision) | 1 verdict | tok 2759/102 | $0.0000* | provider=hermes-auxiliary | initiator=agent | row=1 ·
