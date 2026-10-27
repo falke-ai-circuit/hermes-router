@@ -172,14 +172,27 @@ def _audit_delivery_pass(request: Any, context: Dict[str, Any]) -> "Optional[dic
         _sid = context.get("session_id") or ""
         _verdict = _ca.consume_verdict(_sid)
         if _verdict:
-            modified_req = copy.deepcopy(request) if isinstance(request, dict) else {}
-            msgs2 = modified_req.get("messages")
-            if isinstance(msgs2, list):
-                msgs2.append({"role": "assistant", "content": _verdict})
-                modified_req["messages"] = msgs2
+            # R73 P0b: the note is the PLATFORM's, so it is delivered in the platform's own
+            # channel. It used to be appended as {"role": "assistant"} - a turn in the agent's
+            # own voice she never wrote, carrying instructions ("now PROCEED"). A verification-
+            # first persona correctly read that as injection and told the user so (valmet
+            # 2026-10-27, msg 73846). Speaking channels - tool result and assistant - belong
+            # to the agent; only `system` is ours to write into.
+            #
+            # It also carries the P0 fence: the block has an explicit END, so its last line can
+            # never read as the next thing to do.
+            try:
+                from .. import reflex_lane as _rl
+
+                _note_text = _rl.fence(str(_verdict)) or str(_verdict)
+            except Exception:  # noqa: BLE001 — framing must never cost the delivery
+                _note_text = str(_verdict)
+            from ..frames import inject_platform_rule as _inject_platform_rule
+            if isinstance(request, dict) and _inject_platform_rule(
+                    request, "higher_self_audit_delivery", _note_text, role="system"):
                 _plugin()._log_route("PRE", event_detail="completion_audit_delivered",
-                           chars=len(_verdict), session_id=_sid)
-                return {"request": modified_req}
+                           chars=len(_note_text), role="system", session_id=_sid)
+                return {"request": request}
     except Exception:  # noqa: BLE001 — verdict delivery must never break routing
         logger.debug("completion audit delivery error", exc_info=True)
     return None

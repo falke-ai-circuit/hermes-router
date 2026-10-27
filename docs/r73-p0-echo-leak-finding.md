@@ -75,3 +75,20 @@ Stop handing the model an answerable object at the generation boundary:
 
 P1 (receipt) and P2 (unification) share this one delivery contract; the fix must land as the
 first unification step, not as a fourth carrier.
+
+## The general rule (R73 doctrine)
+
+> The platform must never write into a speaking channel it does not own.
+> The evidence channel (tool result) and the own-voice channel (assistant) are both speaking
+> channels. Only `system` is the platform's to write into.
+
+P0 was the tool-result channel: the reading was appended to the last tool result and its tail read
+as the next step. P0b is the same breach one channel worse: the higher-self audit note was appended
+as `{"role": "assistant"}` (passes/dispatcher_pre.py:177), so the agent woke to a turn in her own
+voice she never wrote, carrying instructions. valmet read that as injection and said so - she was
+right; the channel was the defect, not the agent.
+
+The rule holds for every future lane: if the platform needs to say something to the agent it says it
+in `system`, fenced (BEGIN/END ROUTER READING), with provenance stated positively (what it is and
+where it came from), and never ending on a directive. Naming the thing you want to deny plants the
+frame; the agent reached for exactly that word.

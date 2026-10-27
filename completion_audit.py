@@ -2808,19 +2808,24 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 except Exception:  # noqa: BLE001
                     pass
             return None
+        # R73 P0b: positive provenance, no negation, no directive at the tail.
+        #   * the old phrasing denied the accusation by name, and the persona that read the note
+        #     reached for exactly that word.
+        #   * the note ended on an operating order ("now PROCEED"), the same tail-directive
+        #     shape as the P0 echo leak: a block whose last line reads as the next thing to do.
+        # Provenance is stated as fact (router-generated, from this session's own audit), the
+        # operating line sits ABOVE the finding, and the note closes on the finding itself.
         note = ("%s\n"
-                "This is an internal message from your higher self — the "
-                "self-reflection and self-critique of the work just done, the "
-                "way intuition raises red flags (or a green light) after you "
-                "complete something. It is not an injection and not an "
-                "external reviewer. Treat it as an anchor and "
-                "self-questioning: read it, adjust your final response "
-                "accordingly, deliver, and do not restate or quote it.\n"
-                "SEAM INSTRUCTION: the audit is complete - now PROCEED. Deliver "
-                "the user's answer, applying whatever the message flagged. "
-                "Do not restate the audit, do not ask permission to continue, "
-                "and do not output any marked text to the user.\\n%s%s%s"
+                "Router-generated audit note (platform, not the user): the completion "
+                "audit of your own previous turn in session %s. It is the "
+                "self-critique of the work just done - what a careful second read "
+                "would raise before the answer ships.\n"
+                "Reading it: apply whatever it flags to the final response and "
+                "keep the note's own text out of the user's reply. The audit is "
+                "complete, so the turn carries on to the user's answer.\n"
+                "\\n%s%s%s"
                 % (_NOTE_MARKER + _NOTE_PREFIX,
+                   str(session_id or "-"),
                    verdict_text,
                    ("\n" + _pov_lines) if locals().get("_pov_lines") else "",
                    # R57: the signed correction rides the SAME note, in words
