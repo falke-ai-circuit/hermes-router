@@ -1,0 +1,26 @@
+1a_bytes_secret_ep                             '· router · higher-self (frontier) | consult failed | empty response | test/model-a ·'
+1b_bytes_empty_ep                              '· router · higher-self (frontier) | consult failed | empty response | test/model-a ·'
+1c_byte_identical                              True
+1d_sha_secret                                  '464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129'
+1e_sha_empty                                   '464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129'
+2a_invalid_lane                                "''"
+2b_forbidden_aux                               "''"
+2c_forbidden_flash                             "''"
+2d_valid_frontier                              "'· router · higher-self (frontier) | consult failed | empty response | test/model-a ·'"
+3a_label_shadow                                "'· router · shadow-self (uncensored) | consult failed | empty response | test/model-a ·'"
+3b_label_decision                              "'· router · impulse (decision) | consult failed | empty response | test/model-a ·'"
+4a_trigger_literal_verbatim                    True
+4b_mapped_trigger_still_maps                   "'· router · higher-self (frontier) | pre-check | test/model-a ·'"
+5a_endpoint_str_called_on_metadata_only        ['openrouter://api.secret-host.example/v1']
+5b_est_cost_read_on_metadata_only              []
+6_line_order_lane_validation                   7840
+6_line_order_ep_read                           8548
+6_line_order_ep_redaction                      8584
+6_line_order_metadata_only_branch              11293
+6_ep_read_before_mo_branch                     True
+6_redaction_before_mo_branch                   True
+7_unpriced_tokens_no_cost_cell                 True
+7b_cost_cell_absent                            True
+8a_doc_has_exact_sentence                      True
+8b_doc_says_returns_before_endpoint_read       True
+9_normal_shape_redacts_host                    '· router · higher-self (frontier) | midturn | m1 @ api.secret-host.example | tok 10/5 | $0.000001'
