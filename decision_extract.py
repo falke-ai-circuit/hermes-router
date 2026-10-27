@@ -244,6 +244,12 @@ _DIAL_WORD = {("scope", 1): "widen", ("scope", -1): "narrow",
 USE_CONTRACT = ("  act: take the top unless the evidence in front of you says otherwise; "
                 "if you deviate, name why in one line")
 
+# A soft reading says "no clear lead" and then, in the same block, told the model to take the
+# top - the two instructions contradicted each other. What the dials are for on a flat board is
+# the stance, not a pick.
+SOFT_CONTRACT = ("  act: no move to take here - let the dials set how much surface you examine "
+                 "and how hard you check; the options are context")
+
 
 def basis_line(tool: str, text: str, limit: int = 92) -> str:
     """Provenance: what the reading was derived from. One line, never invented."""
@@ -305,6 +311,7 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
             if soft:
                 lines.append("  <- no clear lead: the dials above still apply; the board is "
                              "context to weigh, not the move to take")
+                _soft_act = True
             else:
                 lines.append("  <- class-level only: no single object leads, so pick from the "
                              "evidence" if not has_target else
@@ -321,7 +328,7 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
             bits.append("%s %s (%+0.2f)" % (d, _DIAL_WORD.get((d, 1 if v > 0 else -1), "shift"), v))
         if bits:
             lines.append("  dials: " + " | ".join(bits))
-        lines.append(USE_CONTRACT)
+        lines.append(SOFT_CONTRACT if soft else USE_CONTRACT)
         # Over budget: shed optional parts in order of least behavioural value. The
         # contract is the part that changes behaviour, so it goes last; provenance and the
         # register line are audit furniture. Indices are looked up by identity, not by

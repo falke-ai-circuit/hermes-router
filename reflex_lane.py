@@ -103,6 +103,27 @@ def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
     return seen[:cap] if len(seen) >= 2 else []
 
 
+def _profile_home() -> str:
+    """The PROFILE directory this plugin instance lives in.
+
+    Gateways run with HERMES_HOME=/opt/data (the install root), not the profile dir, so both
+    persona_card and a naive IDENTITY read look in the wrong place and find nothing - the card
+    came back as a task line with no role. The plugin is physically inside the profile
+    (<profile>/plugins/hermes_router/), which is the same anchor config_access uses for the
+    active config, so resolve from there: env override -> plugin location -> install root.
+    """
+    env = os.environ.get("HERMES_PROFILE_HOME") or ""
+    if env and os.path.isfile(os.path.join(env, "IDENTITY.md")):
+        return env
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if root and os.path.isfile(os.path.join(root, "IDENTITY.md")):
+            return root
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("HERMES_HOME") or ""
+
+
 def _agent_card(messages: Any = None) -> str:
     """Who the reading is FOR.
 
@@ -142,7 +163,7 @@ def _agent_card(messages: Any = None) -> str:
                 return shared[:4000]
     except Exception:  # noqa: BLE001 — fall through to the local slice, never raise
         pass
-    home = os.environ.get("HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME") or ""
+    home = _profile_home()
     name = os.environ.get("HERMES_PROFILE") or os.path.basename(home.rstrip("/")) or "agent"
     now = time.time()
     with _CARD_LOCK:

@@ -61,9 +61,12 @@ def test_bold_prose_is_a_card_not_noise(tmp_path, monkeypatch):
 
 
 def test_missing_identity_yields_empty_card(tmp_path, monkeypatch):
+    """Isolate the resolver too: with the plugin-location fallback in place, a bare env var is
+    no longer enough to produce a cardless profile (it would borrow the real profile's card)."""
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "nocards")
     monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(rl, "_profile_home", lambda: str(tmp_path))
     assert rl._agent_card() == ""
 
 
