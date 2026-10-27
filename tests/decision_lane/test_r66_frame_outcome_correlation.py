@@ -150,7 +150,8 @@ def test_frame_index_measures_the_transcript_not_our_own_injection(monkeypatch):
     req = _req()
     before = len(req["messages"])
     rl.run_on_request(req, session_id="g9", cfg=ON)
-    assert len(req["messages"]) == before + 1, "the frame was injected"
+    # R72: two appends now - the standing integration contract, then the frame itself.
+    assert len(req["messages"]) == before + 2, "contract + frame were injected"
     # the host rebuilds from the transcript: same base, plus what happened next
     nxt = {"messages": _req()["messages"] + [_call("patch", '{"path": "/opt/data/app/src/render.py"}')]}
     out = rl.settle("g9", nxt)

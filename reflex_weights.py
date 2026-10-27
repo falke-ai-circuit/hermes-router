@@ -82,6 +82,27 @@ def cfg_for(cfg: Any) -> Dict[str, Any]:
             mc = block.get("min_confidence")
             if isinstance(mc, (int, float)) and not isinstance(mc, bool):
                 out["min_confidence"] = max(0.0, min(1.0, float(mc)))
+            # R72: this whitelist silently dropped every key it did not name, so a profile
+            # that configured min_top / min_margin / every_call / timeout was quietly run
+            # on the module defaults. Config that does not arrive is worse than no config,
+            # because the operator believes a knob is set.
+            for k, lo, hi in (("min_top", 0.0, 1.0), ("min_margin", 0.0, 1.0)):
+                v = block.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    out[k] = max(lo, min(hi, float(v)))
+            for k in ("every_call", "agree_silent", "integrate"):
+                v = block.get(k)
+                if isinstance(v, bool):
+                    out[k] = v
+            ts = block.get("reflex_timeout_seconds")
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool) and ts > 0:
+                out["reflex_timeout_seconds"] = float(ts)
+            rg = block.get("register")
+            if isinstance(rg, str) and rg.lower() in ("frame", "instinct"):
+                out["register"] = rg.lower()
+            sh = block.get("shape")
+            if isinstance(sh, str) and sh.lower() in ("user", "system", "evidence"):
+                out["shape"] = sh.lower()
             break
     except Exception:  # noqa: BLE001
         pass

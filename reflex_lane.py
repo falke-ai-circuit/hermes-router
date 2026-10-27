@@ -304,8 +304,10 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
             _log(session_id, "reflex_held", reason=why,
                  top=parsed["options"][0]["p"], margin=parsed["margin"], seam="midturn")
             return ""
-        block = _dx.render(parsed, int(c.get("block_chars") or 560),
-                           basis=_dx.basis_line(tool, text))
+        _rend = (_dx.render_instinct if str(c.get("register") or "frame") == "instinct"
+                 else _dx.render)
+        block = _rend(parsed, int(c.get("block_chars") or 560),
+                      basis=_dx.basis_line(tool, text))
         if not block:
             return ""
         _park(session_id, block)
@@ -599,6 +601,62 @@ def _window_from_request(request: Any, limit: int = 6) -> Tuple[str, str]:
     return ask, "\n---\n".join(chunks)
 
 
+_ARG_PATH = re.compile(r"((?:/opt|/tmp|/home|/root|/srv)[\w./\-]{3,120}"
+                       r"|[\w.\-]+/[\w.\-]+\.(?:py|js|ts|go|rs|ya?ml|json|md|sh))")
+
+
+def _last_move_targets(msgs: Any) -> set:
+    """Targets the main model itself named in its most recent tool call.
+
+    This is how the lane avoids fighting the model's own reflexes instead of merely
+    disagreeing with them: if the last thing it decided to touch is the thing the reading
+    would tell it to touch, the reading has nothing to add.
+    """
+    try:
+        for m in reversed(list(msgs or [])):
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            calls = m.get("tool_calls")
+            if not calls:
+                continue
+            out = set()
+            for c in calls or []:
+                fn = (c.get("function") or {}) if isinstance(c, dict) else {}
+                for p in _ARG_PATH.findall(str(fn.get("arguments") or "")):
+                    out.add(os.path.basename(p.rstrip("/")))
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    return set()
+
+
+def _inject_into_evidence(msgs: Any, block: str) -> bool:
+    """Append the reading to the last tool result - the evidence channel.
+
+    The reading then arrives with the data it was derived from, in the channel the model
+    already treats as ground truth, rather than as a separate message it must reconcile
+    with its own plan. Content shape differs by carrier: str for text tool output, list
+    for multimodal parts.
+    """
+    try:
+        if not isinstance(msgs, list):
+            return False
+        for m in reversed(msgs):
+            if not isinstance(m, dict) or m.get("role") != "tool":
+                continue
+            content = m.get("content")
+            if isinstance(content, str):
+                m["content"] = content.rstrip() + "\n\n" + block
+                return True
+            if isinstance(content, list):
+                content.append({"type": "text", "text": block})
+                return True
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
     """Every-call mode: read the live request, ask, inject. Returns True when injected."""
     try:
@@ -642,15 +700,55 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             _log(sid, "reflex_held", reason=why, top=parsed["options"][0]["p"],
                  margin=parsed["margin"], seam="every_call")
             return False
-        block = _dx.render(parsed, int(c.get("block_chars") or 560),
-                           basis=_dx.basis_line("", window))
+        msgs_now = request.get("messages") or []
+        n_before = len(msgs_now) if isinstance(msgs_now, list) else 0
+
+        # Agreement rule (R72). A reflex that only ever contradicts trains the model to
+        # discount it. When the model's own last move already targets what the reading
+        # would name, the reading adds nothing - so it says nothing, and its silences
+        # stop being indistinguishable from its disagreements.
+        if c.get("agree_silent", True):
+            top_target = str(parsed["options"][0].get("target") or "")
+            want = os.path.basename(top_target.rstrip("/")) if top_target else ""
+            if want and want in _last_move_targets(msgs_now):
+                _rw._note(reason="agreed_with_model")
+                _log(sid, "reflex_agreed", top=parsed["options"][0]["p"],
+                     target=want, seam="every_call")
+                return False
+
+        # register: `frame` is the dashboard (auditable tables); `instinct` is prose.
+        # Which one the model actually acts on is an A/B question, not a taste question.
+        _rend = (_dx.render_instinct if str(c.get("register") or "frame") == "instinct"
+                 else _dx.render)
+        block = _rend(parsed, int(c.get("block_chars") or 560),
+                      basis=_dx.basis_line("", window))
         if not block:
             return False
         from . import frames as _fr
 
-        msgs_now = request.get("messages") or []
-        n_before = len(msgs_now) if isinstance(msgs_now, list) else 0
-        ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
+        # Integration contract (R72). The reading is a reflex, not an advisory, and the
+        # model has to be told which - the frontier and uncensored lanes both carry a
+        # standing rule for exactly this reason. Delivered at most once per context,
+        # marked by rule id, before the reading itself.
+        if c.get("integrate", True):
+            try:
+                _fr.inject_platform_rule(request, _fr.DECISION_RULE_ID,
+                                         _fr.DECISION_RULE, session_id=sid,
+                                         role="system")
+            except Exception:  # noqa: BLE001 - the contract must never break delivery
+                logger.debug("decision rule injection failed", exc_info=True)
+
+        # Delivery shape (R72). `user` = the old interlocutor append; `evidence` = ride the
+        # last tool result; `system` = standing instruction. Which one the model actually
+        # acts on is a question for the A/B, not for intuition.
+        shape = str(c.get("shape") or "user").lower()
+        ok = False
+        if shape == "evidence":
+            ok = _inject_into_evidence(msgs_now, block)
+        if not ok and shape == "system":
+            ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="system")
+        if not ok:
+            ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
         if ok:
             with _LAST_BLOCK_LOCK:
                 _LAST_BLOCK[sid] = (sig, now)
@@ -663,6 +761,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                  top=parsed["options"][0]["p"],
                  top_kind=parsed["options"][0].get("kind"),
                  top_target=parsed["options"][0].get("target"),
+                 shape=shape, register=str(c.get("register") or "frame"),
                  opts="|".join("%.2f" % float(o["p"]) for o in parsed["options"][:4]),
                  block=json.dumps(block))
         return bool(ok)

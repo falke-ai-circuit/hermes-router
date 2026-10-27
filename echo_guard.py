@@ -40,7 +40,9 @@ FAMILIES = (
                          "[ROUTER FORK NOTE", "ROUTER FORK NOTE",
                          # the extraction lane's frame: a restated reading is the same
                          # failure as a restated advisory, and the guard must see it.
-                         "[ROUTER DECISION READING", "ROUTER DECISION READING")),
+                         "[ROUTER DECISION READING", "ROUTER DECISION READING",
+                         # the instinct register: same failure, prose carrier
+                         "[reading - not a request]")),
     ("option_text_placeholder", ("option text for",)),
     ("omission_placeholder", ("omitted by the author",)),
 )

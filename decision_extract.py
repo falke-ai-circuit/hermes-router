@@ -157,6 +157,12 @@ def parse(data: Any, cands: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
 
 HEAD_FRAME = "[ROUTER DECISION READING - decision lane; advisory, not a request]"
 
+# Above this gap the reading is a move to take; below it the two top moves are close
+# enough that committing without checking is the mistake. Measured separation: correct
+# picks carried a mean top weight of 0.774, wrong ones 0.549 - so a real lead is the
+# signal, and a flat distribution is the lane's own noise band.
+DECISIVE_MARGIN = 0.20
+
 # One word per direction, so a dial arrives as a thing to do rather than a number to
 # interpret. Same vocabulary as mindset._STANCE, compressed to fit an every-call block.
 _DIAL_WORD = {("scope", 1): "widen", ("scope", -1): "narrow",
@@ -196,8 +202,24 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         lines = [HEAD_FRAME]
         if basis:
             lines.append(str(basis)[:120])
-        for o in opts[:3]:
-            lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
+        # R72: the block says how decided the reading is, because the two regimes want
+        # different behaviour. A decisive read is a move to take; a near-tie is a warning
+        # to verify before committing. A flat menu of three percentages asks the model to
+        # re-deliberate - which is exactly the deliberation a reflex exists to replace.
+        p_top = float(opts[0]["p"])
+        # margin = lead of the top move over the runner-up. Prefer the value the parser
+        # recorded so the block and the gate agree on one number.
+        margin = parsed.get("margin")
+        margin = float(margin) if isinstance(margin, (int, float)) else p_top - float(opts[1]["p"])
+        if margin >= DECISIVE_MARGIN:
+            lines.append("  %2d%%  %s   <- take this" % (round(p_top * 100),
+                                                         str(opts[0]["label"])[:58]))
+            for o in opts[1:3]:
+                lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
+        else:
+            for o in opts[:3]:
+                lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
+            lines.append("  <- too close to call: check before you commit")
         mind = parsed.get("mindset") or {}
         bits = []
         for d in ("scope", "rigour"):
@@ -221,6 +243,56 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         return block if len(block) <= limit else ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+INSTINCT_TAG = "[reading - not a request]"
+
+
+def render_instinct(parsed: Dict[str, Any], limit: int = 460, basis: str = "") -> str:
+    """The same reading, in the register of a hunch rather than a dashboard.
+
+    A menu of three percentages invites the model to deliberate - which is the deliberation
+    a reflex exists to replace. An instinct is one assertion, the competing pull named, and
+    the two dispositions to hold while acting on it. Percentages stay, because a hunch that
+    cannot be audited is not a reading, but they ride inside a sentence instead of a table.
+    """
+    try:
+        opts = parsed.get("options") or []
+        if len(opts) < 2:
+            return ""
+        top, second = opts[0], opts[1]
+        p_top = float(top["p"])
+        margin = parsed.get("margin")
+        margin = float(margin) if isinstance(margin, (int, float)) else p_top - float(second["p"])
+        lead = str(top["label"])[:64]
+        alt = str(second["label"])[:64]
+        if margin >= DECISIVE_MARGIN:
+            head = "%s %s - clear read (%d%%)." % (INSTINCT_TAG, lead, round(p_top * 100))
+        else:
+            head = ("%s %s, but only just (%d%%) - %s is nearly as likely (%d%%). "
+                    "Check before committing." % (INSTINCT_TAG, lead, round(p_top * 100),
+                                                  alt, round(float(second["p"]) * 100)))
+        hold = _dial_sentence(parsed.get("mindset") or {})
+        body = head + ((" " + hold) if hold else "")
+        if basis:
+            body += "\n" + str(basis)[:110]
+        return body if len(body) <= limit else (head + ((" " + hold) if hold else ""))[:limit]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _dial_sentence(mind: Dict[str, Any]) -> str:
+    """Dials as one clause of posture, not a numeric row."""
+    words = []
+    for d in ("scope", "rigour"):
+        v = mind.get(d)
+        if not isinstance(v, float):
+            continue
+        if abs(v) < 0.15:
+            words.append("%s unchanged" % d)
+        else:
+            words.append("%s %s" % (d, _DIAL_WORD.get((d, 1 if v > 0 else -1), "shift")))
+    return ("hold " + ", ".join(words) + ".") if words else ""
 
 
 def gate(parsed: Dict[str, Any], min_top: float = 0.45, min_margin: float = 0.10) -> Tuple[bool, str]:
