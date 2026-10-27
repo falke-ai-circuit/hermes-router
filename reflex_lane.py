@@ -396,7 +396,10 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         if not cands:
             _rw._note(reason="no_candidates")
             return ""
-        state = build_state(ask, tool, text, extra)
+        # Same card as the every-call path and the other two lanes: without it the midturn
+        # read scores moves for a role it cannot name.
+        _card = _agent_card()
+        state = build_state(ask, tool, text, extra, card=_card)
         data = _transport(_dx.payload(state, cands, str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return ""
@@ -406,20 +409,29 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
             return ""
         ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
                            float(c.get("min_margin") or 0.10))
+        _soft = ""
         if not ok:
-            _rw._note(reason=why, top=parsed["options"][0]["p"], margin=parsed["margin"])
-            _log(session_id, "reflex_held", reason=why,
-                 top=parsed["options"][0]["p"], margin=parsed["margin"], seam="midturn")
-            return ""
+            # Any midturn gets a reading. A flat board downgrades the claim, not the delivery:
+            # the dials and the option set are context even when nothing separates.
+            if why == "no_option_set" or not (parsed.get("options") or parsed.get("mindset")):
+                _rw._note(reason=why, seam_note="nothing to deliver")
+                _log(session_id, "reflex_held", reason=why, seam="midturn")
+                return ""
+            _soft = why
+            _rw._note(reason=why, soft=True, top=parsed["options"][0]["p"],
+                      margin=parsed["margin"])
         _rend = (_dx.render_instinct if str(c.get("register") or "frame") == "instinct"
                  else _dx.render)
+        _soft_kw = {"soft": True} if (_soft and _rend is _dx.render) else {}
         block = _rend(parsed, int(c.get("block_chars") or 560),
-                      basis=_dx.basis_line(tool, text))
+                      basis=_dx.basis_line(tool, text), **_soft_kw)
         if not block:
             return ""
         _park(session_id, block)
         _log(session_id, "reflex_weights_ready", top=parsed["options"][0]["p"],
              weights=_weights_str(parsed), margin=_margin(parsed),
+             mode=("soft:" + _soft) if _soft else "decisive",
+             card_chars=len(_card),
              mindset=parsed.get("mindset"), chars=len(block), candidates=len(cands),
              top_kind=_top_claim(parsed).get("kind"),
              top_target=_top_claim(parsed).get("target"),

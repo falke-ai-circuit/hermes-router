@@ -43,12 +43,17 @@ def test_a_decisive_reading_is_delivered_once(monkeypatch):
     assert rl.inject_pass(req, "s2") is False, "delivered twice"
 
 
-def test_flat_reading_is_not_delivered(monkeypatch):
-    """The lane's own noise band must not steer anything."""
+def test_flat_reading_is_delivered_soft_and_never_steers(monkeypatch):
+    """Goran 2026-10-27: the lane fires on every midturn. A flat board must not steer, so it
+    arrives downgraded - options as context plus the dials - never with "<- take this", and
+    never as silence (silence withheld the dials on the least oriented turns)."""
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.32, 0.30, 0.24, 0.14))
     rl.clear("s3")
-    assert rl.fire("s3", "terminal", BODY, ON) == ""
-    assert rl.take("s3") == ""
+    block = rl.fire("s3", "terminal", BODY, ON)
+    assert block, "a flat reading must still be delivered"
+    assert "<- take this" not in block
+    assert "no clear lead" in block
+    assert rl.take("s3") == block
 
 
 def test_stale_reading_is_dropped_not_delivered_late(monkeypatch):
