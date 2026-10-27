@@ -121,8 +121,33 @@ def _cfg(cfg: Any) -> Dict[str, Any]:
     return c
 
 
+_DISPATCHED = threading.local()
+
+
+def _set_dispatched_model(model: Any) -> None:
+    """R76-P1-U2: record the EXACT model id this thread's consult dispatched.
+
+    The price key and the banner's model cell are both read back from here, so a
+    re-read of config at receipt time can never price (or name) a model that was
+    not the one sent. '' means "nothing was dispatched".
+    """
+    try:
+        _DISPATCHED.model = str(model or "").strip()
+    except Exception:  # noqa: BLE001 — bookkeeping must never break a consult
+        pass
+
+
+def _dispatched_model() -> str:
+    """The model id the last consult on this thread actually dispatched, '' if none."""
+    try:
+        return str(getattr(_DISPATCHED, "model", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _transport(payload_obj: Dict[str, Any], cfg: Dict[str, Any]) -> Any:
     """Post to the decision substrate. Reuses the lane's own transport so config is one seam."""
+    _set_dispatched_model("")  # never inherit the previous consult's model
     try:
         from . import decision as _dec
 
@@ -134,9 +159,12 @@ def _transport(payload_obj: Dict[str, Any], cfg: Dict[str, Any]) -> Any:
             return None
         body = dict(payload_obj)
         body["model"] = str(cfg.get("jev_native_model") or body.get("model") or "jev-latest")
+        # R76-P1-U2: recorded BEFORE the call — this is the id the banner prices.
+        _set_dispatched_model(body["model"])
         return _dec._http_post_json(endpoint, {"Authorization": "Bearer %s" % key}, body,
                                     float(cfg.get("reflex_timeout_seconds") or 8))
     except Exception as exc:  # noqa: BLE001
+        _set_dispatched_model("")
         _rw._note(reason="transport_error", error=type(exc).__name__)
         return None
 
@@ -845,7 +873,9 @@ def _park_summary(session_id: str, acc: Dict[str, Any], cfg: Dict[str, Any]) -> 
         ti = int(acc.get("tok_in") or 0)
         to = int(acc.get("tok_out") or 0)
         cost = float(acc.get("cost") or 0.0)
-        model = str(cfg.get("jev_native_model") or "jev-latest")
+        # R76-P1-U2: the model cell names the id that was dispatched (the same id
+        # the money cell was priced from), so name and price cannot disagree.
+        model = _dispatched_model() or str(cfg.get("jev_native_model") or "jev-latest")
         first = int(acc.get("first_row") or 0)
         last = int(acc.get("last_row") or first)
         leads = int(acc.get("leads") or 0)
@@ -925,19 +955,23 @@ def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> s
         if to is None:
             to = usage.get("output_tokens") or 0
         cfg = _cfg(None)
-        # R75: price the MODEL ID, never the lane's display label. "hermes-auxiliary"
-        # is a display name for the auxiliary lane and matches no price table, so
-        # estimate_cost honestly returned 0.0 and every reading banner rendered the
-        # unpriced cell $0.00000* even though the tokens were real. The model the
-        # reflex consult was dispatched to is jev_native_model (see _transport
-        # callers above), so that is the key. An unknown model still prices 0.0
-        # and still renders the asterisk — failure is fully open, never a guess.
-        price_model = str(cfg.get("jev_native_model") or "jev-latest")
+        # R75: price the MODEL ID, never the lane's display label ("hermes-auxiliary"
+        # matched no price table, so every reading banner rendered $0.00000* with
+        # real tokens).
+        # R76-P1-U2 (review F1): and never a model RE-DERIVED from config at receipt
+        # time either. The key is the id _transport actually dispatched — read from
+        # the dispatch record, not re-resolved — so a config that changed cannot
+        # make the banner price a model nobody called. The config expression is only
+        # a last-resort label for receipts with no dispatch behind them (usage is 0
+        # there, so the cost is moot).
+        price_model = _dispatched_model() or str(cfg.get("jev_native_model") or "jev-latest")
         cost = 0.0
+        _price_meta: Dict[str, Any] = {}
         try:
             from . import usage_ledger
 
             cost = float(usage_ledger.estimate_cost(price_model, int(ti), int(to)) or 0.0)
+            _price_meta = usage_ledger.describe_price(price_model)
         except Exception:  # noqa: BLE001 — a missing price is 0.0, never a guess
             pass
         row = next_rule_id(session_id)
@@ -966,6 +1000,12 @@ def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> s
             pass
         _log(session_id, "reflex_receipt_parked", row=row, seam=str(seam or ""),
              tokens_in=int(ti), tokens_out=int(to), est_cost=round(float(cost or 0.0), 6),
+             # R76-P1-U2: an unpriced model is reported by id AND the table key
+             # that was checked — the asterisk is honest, silence is not.
+             price_model=str(_price_meta.get("model") or price_model),
+             price_key=str(_price_meta.get("key") or ""),
+             price_source=str(_price_meta.get("source") or ""),
+             priced=bool(_price_meta.get("priced")),
              fires=int(snap.get("fires") or 0), verdict=verdict,
              rows="%d-%d" % (int(snap.get("first_row") or 0), int(snap.get("last_row") or 0)),
              top=float((parsed.get("options") or [{}])[0].get("p") or 0.0))

@@ -30,7 +30,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,63 @@ _MEASURED_PRICING: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _price_row(model: str) -> Tuple[Optional[Dict[str, Any]], str, str]:
+    """(prices, key, source) for a model id — the ONE price lookup. Never raises.
+
+    R76-P1-U2: estimate_cost and describe_price must agree on the key they used,
+    or a banner cannot honestly say WHICH model and WHICH table row produced its
+    number. `key` is the row actually matched (alias-normalised when the measured
+    table answered), so an unpriced model is reportable by id and key instead of
+    being papered over with a rate for a model nobody dispatched.
+    """
+    m = str(model or "")
+    try:
+        from .. import anchor_chain
+
+        pricing = anchor_chain.load_anchor_chain().pricing
+        row = pricing.get(m) if isinstance(pricing, dict) else None
+        if isinstance(row, dict):
+            return row, m, "config"
+        # Goran 09-09 ruling (supersedes static estimates): prices come
+        # FROM THE PROVIDER. Fetch per-model pricing from the chain
+        # provider's /models endpoint (cached); unknown model -> 0.0.
+        from .. import provider_prices as _pp
+
+        row = _pp.provider_price_for(m)
+        if isinstance(row, dict):
+            return row, m, "provider"
+        # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-hosted reflex
+        # models (typesafe/jev-router) were billing banners at $0.0000 — the
+        # reflex consults ARE billed (tiny but nonzero: measured $0.042/1M input,
+        # output free). MEASURED fallback table (marked source=measured, NOT
+        # fabricated rates); provider rates still win when present.
+        row = _MEASURED_PRICING.get(m)
+        if isinstance(row, dict):
+            return row, m, "measured"
+        # v4.13.6 rider 3: alias normalization — try the model name with/without
+        # the provider prefix so 'jev-latest' and 'typesafe/jev-latest' resolve to
+        # the same row either way.
+        low = m.strip().lower()
+        alias = low.split("/", 1)[1] if low.startswith("typesafe/") else "typesafe/" + low
+        row = _MEASURED_PRICING.get(alias)
+        if isinstance(row, dict):
+            return row, alias, "measured"
+        return None, m, ""
+    except Exception:  # noqa: BLE001 — a price lookup must never break a lane
+        return None, m, ""
+
+
+def describe_price(model: str) -> Dict[str, Any]:
+    """What the price lookup actually resolved: model, matched key, source, priced.
+
+    R76-P1-U2: cost surfaces log this so an unpriced model is reported by id AND
+    table key (the asterisk is honest); it never becomes a reason to invent a rate.
+    """
+    prices, key, source = _price_row(model)
+    return {"model": str(model or ""), "key": key, "source": source,
+            "priced": isinstance(prices, dict)}
+
+
 def estimate_cost(model: str, input_tokens: Optional[int],
                   output_tokens: Optional[int]) -> float:
     """Estimate cost from the anchor_chain pricing table (the plugin's only
@@ -162,36 +219,9 @@ def estimate_cost(model: str, input_tokens: Optional[int],
     R19.14 FIX 3: the MEASURED fallback table covers OpenRouter-hosted
     reflex models the catalog misses. Never raises."""
     try:
-        from .. import anchor_chain
-
-        pricing = anchor_chain.load_anchor_chain().pricing
-        prices = pricing.get(str(model or "")) if isinstance(pricing, dict) else None
+        prices, _key, _src = _price_row(str(model or ""))
         if not isinstance(prices, dict):
-            # Goran 09-09 ruling (supersedes static estimates): prices come
-            # FROM THE PROVIDER. Fetch per-model pricing from the chain
-            # provider's /models endpoint (cached); unknown model -> 0.0.
-            from .. import provider_prices as _pp
-
-            prices = _pp.provider_price_for(str(model or ""))
-            if not isinstance(prices, dict):
-                # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-
-                # hosted reflex models (typesafe/jev-router) were billing
-                # banners at $0.0000 — the reflex consults ARE billed (tiny
-                # but nonzero: measured $0.042/1M input, output free).
-                # MEASURED fallback table (marked source=measured, NOT
-                # fabricated rates); provider rates still win when present.
-                prices = _MEASURED_PRICING.get(str(model or ""))
-                if not isinstance(prices, dict):
-                    # v4.13.6 rider 3: alias normalization — try the model name
-                    # with/without the provider prefix so 'jev-latest' and
-                    # 'typesafe/jev-latest' resolve to the same row either way.
-                    m = str(model or "").strip().lower()
-                    if m.startswith("typesafe/"):
-                        prices = _MEASURED_PRICING.get(m.split("/", 1)[1])
-                    else:
-                        prices = _MEASURED_PRICING.get("typesafe/" + m)
-                if not isinstance(prices, dict):
-                    return 0.0
+            return 0.0
         it = max(0, int(input_tokens or 0))
         ot = max(0, int(output_tokens or 0))
         cost = (it / 1_000_000.0) * float(prices.get("input_per_1m", 0.0) or 0.0)

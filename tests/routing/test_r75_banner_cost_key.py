@@ -359,3 +359,78 @@ def test_nous_backend_unpriced_dispatch_renders_the_honest_zero(monkeypatch):
     banner = decision.render_decision_banner("pre", meta["model"], meta)
     assert "zz-no-such-model-9" in banner and DECOY not in banner, banner
     assert "$0.0000*" in banner, banner  # the unpriced marker this renderer emits
+
+
+# ---------------------------------------------------------------------------
+# R76-P1-U2 (third site) — the IMPULSE banner prices the model it DISPATCHED.
+#
+# The same F1 defect on the reflex lane: _receipt re-derived its price key from
+# cfg at receipt time and _park_summary named that same cfg value. When the key
+# and the id actually sent diverge, the banner either draws a hard zero for a
+# call that WAS billed, or a rate for a model nobody called.
+# ---------------------------------------------------------------------------
+
+def test_impulse_banner_prices_the_model_that_was_dispatched():
+    # jev-preview dispatched: 1000 in x $0.042/1M => $0.00004 (not the zero)
+    rl._set_dispatched_model("jev-preview")
+    try:
+        banner = rl._receipt(SID, PARSED, _usage(1000, 0), "every_call")
+    finally:
+        rl._set_dispatched_model("")
+    assert banner
+    cell = _cost_cell(banner)
+    assert cell == "$0.00004", banner
+    assert "*" not in cell, banner
+
+
+def test_impulse_banner_never_prices_a_model_it_did_not_dispatch():
+    # config would resolve the PRICED default, but the consult went to an id no
+    # table knows: the honest answer is the asterisk, never a stand-in rate.
+    rl._set_dispatched_model("zz-never-dispatched-9")
+    try:
+        banner = rl._receipt(SID, PARSED, _usage(2759, 102), "every_call")
+    finally:
+        rl._set_dispatched_model("")
+    assert banner
+    cell = _cost_cell(banner)
+    assert cell == "$0.00000*", banner
+    assert "zz-never" in banner, banner          # names the id it could not price
+    assert "jev" not in banner.lower(), banner   # never the priced decoy
+
+
+def test_transport_records_the_id_it_actually_sent(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
+    sent = {}
+
+    def _fake_post(endpoint, headers, body, timeout):
+        sent.update(body)
+        return {"usage": {"prompt_tokens": 10, "completion_tokens": 1}}
+
+    monkeypatch.setattr(decision, "_http_post_json", _fake_post)
+    cfg = {"typesafe_endpoint": "https://api.typesafe.ai/v1/x",
+           "typesafe_api_key_env": "TYPESAFE_API_KEY",
+           "jev_native_model": "jev-preview"}
+    rl._transport({"model": "jev-latest"}, cfg)
+    assert sent.get("model") == "jev-preview", sent
+    assert rl._dispatched_model() == "jev-preview"
+    rl._set_dispatched_model("")
+
+
+def test_a_failed_dispatch_claims_no_model():
+    # nothing sent => nothing priced; a stale id must not bill the next receipt
+    rl._set_dispatched_model("jev-preview")
+    cfg = {"typesafe_endpoint": "https://api.typesafe.ai/v1/x",
+           "typesafe_api_key_env": "ZZ_NO_SUCH_ENV_FOR_TEST"}
+    assert rl._transport({"model": "jev-latest"}, cfg) is None
+    assert rl._dispatched_model() == ""
+
+
+def test_an_unpriced_model_is_reportable_by_id_and_table_key():
+    info = ul.describe_price("zz-never-dispatched-9")
+    assert info["priced"] is False
+    assert info["model"] == "zz-never-dispatched-9"
+    assert info["key"] == "zz-never-dispatched-9"
+    priced = ul.describe_price("jev-latest")
+    assert priced["priced"] is True
+    assert priced["source"] == "measured"
+    assert priced["key"] == "jev-latest"
