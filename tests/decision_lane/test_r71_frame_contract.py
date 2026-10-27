@@ -27,10 +27,16 @@ PARSED = {
 
 
 def test_frame_names_the_lane_and_denies_being_a_request():
+    """R72 standardised the envelope: one marker for every decision surface, the way the
+    frontier and uncensored lanes each carry one. The registers became fields inside it."""
     block = dx.render(PARSED, basis=dx.basis_line("run pytest", "1 failed, 0 passed"))
-    assert block.splitlines()[0] == dx.HEAD_FRAME
-    assert "not a request" in block
-    assert "ROUTER DECISION READING" in block
+    assert block.splitlines()[0] == dx.DECISION_MARKER
+    assert "DECISION-LANE" in block
+    assert "PROVENANCE-LOGGED" in block
+    assert "register: board" in block
+    # the instruction that it is not a request moved into the integration rule, where the
+    # model is told how to treat the marked block; the block itself carries the contract
+    assert "act:" in block
 
 
 def test_provenance_comes_from_the_evidence_provided():

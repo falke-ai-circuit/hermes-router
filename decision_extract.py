@@ -155,7 +155,12 @@ def parse(data: Any, cands: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
         return None
 
 
-HEAD_FRAME = "[ROUTER DECISION READING - decision lane; advisory, not a request]"
+# One envelope for every decision call, the way the frontier and uncensored lanes each
+# carry exactly one marker. The register (board, prose, mindset) is a FIELD inside the
+# envelope, not a different envelope - four different headers for one lane meant the
+# contract that teaches the model how to treat a reading could be read as four things.
+DECISION_MARKER = "[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]"
+HEAD_FRAME = DECISION_MARKER
 
 # Above this gap the reading is a move to take; below it the two top moves are close
 # enough that committing without checking is the mistake. Measured separation: correct
@@ -199,7 +204,8 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         opts = parsed.get("options") or []
         if len(opts) < 2:
             return ""
-        lines = [HEAD_FRAME]
+        reg = "  register: board"
+        lines = [HEAD_FRAME, reg]
         if basis:
             lines.append(str(basis)[:120])
         # R72: the block says how decided the reading is, because the two regimes want
@@ -233,19 +239,25 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         if bits:
             lines.append("  dials: " + " | ".join(bits))
         lines.append(USE_CONTRACT)
-        block = "\n".join(lines)
-        if len(block) <= limit:
-            return block
-        # Over budget: drop provenance and the contract stays. The contract is the part
-        # that changes behaviour; provenance is the part that makes it auditable.
-        short = [lines[0]] + lines[2 if basis else 1:]
-        block = "\n".join(short)
-        return block if len(block) <= limit else ""
+        # Over budget: shed optional parts in order of least behavioural value. The
+        # contract is the part that changes behaviour, so it goes last; provenance and the
+        # register line are audit furniture. Indices are looked up by identity, not by
+        # position - an earlier version assumed a fixed layout and returned an EMPTY block
+        # once another line was inserted, which silently muted the lane.
+        optional = [reg] + ([str(basis)[:120]] if basis else []) + ([lines[-2]] if "dials: " in lines[-2] else [])
+        keep = list(lines)
+        if len("\n".join(keep)) <= limit:
+            return "\n".join(keep)
+        for drop in optional:
+            keep = [ln for ln in keep if ln != drop]
+            if len("\n".join(keep)) <= limit:
+                return "\n".join(keep)
+        return "" if len("\n".join(keep)) > limit else "\n".join(keep)
     except Exception:  # noqa: BLE001
         return ""
 
 
-INSTINCT_TAG = "[reading - not a request]"
+INSTINCT_TAG = DECISION_MARKER
 
 
 def render_instinct(parsed: Dict[str, Any], limit: int = 460, basis: str = "") -> str:
@@ -267,9 +279,10 @@ def render_instinct(parsed: Dict[str, Any], limit: int = 460, basis: str = "") -
         lead = str(top["label"])[:64]
         alt = str(second["label"])[:64]
         if margin >= DECISIVE_MARGIN:
-            head = "%s %s - clear read (%d%%)." % (INSTINCT_TAG, lead, round(p_top * 100))
+            head = ("%s instinct: %s - clear read (%d%%)."
+                    % (INSTINCT_TAG, lead, round(p_top * 100)))
         else:
-            head = ("%s %s, but only just (%d%%) - %s is nearly as likely (%d%%). "
+            head = ("%s instinct: %s, but only just (%d%%) - %s is nearly as likely (%d%%). "
                     "Check before committing." % (INSTINCT_TAG, lead, round(p_top * 100),
                                                   alt, round(float(second["p"]) * 100)))
         hold = _dial_sentence(parsed.get("mindset") or {})
