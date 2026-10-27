@@ -49,20 +49,53 @@ RIGOUR_LEVELS = ["none, it is obviously safe", "a glance at the result",
                  "verify every step against independent evidence"]
 
 
+_ERR_WORDS = ("traceback", "error", "exception", "failed", "failure", "assert")
+
+
 def salient_paths(text: str, cap: int = 4) -> List[str]:
-    """Paths the evidence names, most recent first. Selection only — no plausibility filter."""
-    got: List[str] = []
-    for m in PATH_RE.finditer(text or ""):
+    """Paths the evidence names, ranked by how likely the next move is about them.
+
+    Recency alone was measured too weak: recall fell from 0.50 (window naming one object) to
+    0.24 (five or more), because the relevant object is often named early - in the command
+    that produced the result, or in the traceback - while the last line mentions a log file.
+    Selection only: no plausibility filter, just a better order.
+    """
+    text = text or ""
+    hits: Dict[str, Dict[str, Any]] = {}
+    for m in PATH_RE.finditer(text):
         # trailing sentence punctuation is part of the sentence, not of the path; leaving it in
         # made every target end in a dot and scored perfect hits as misses
         p = (m.group(1) or m.group(0)).strip().strip("\"'()").rstrip(".,;:!?)]}")
         if len(p) < 5:
             continue
-        if p not in got:
-            got.append(p)
-        if len(got) >= cap:
-            break
-    return got
+        rec = hits.setdefault(p, {"n": 0, "pos": m.start(), "err": False,
+                                  "raising": False})
+        rec["n"] += 1
+        rec["pos"] = max(rec["pos"], m.start())
+        window = text[max(0, m.start() - 160):m.start() + 160].lower()
+        if any(w in window for w in _ERR_WORDS):
+            rec["err"] = True
+        # the file that RAISED is a likelier edit target than one merely named in the error
+        # message: a traceback's "File ..." line and its "cannot import from ..." mention are
+        # not equally good evidence
+        if "file " in text[max(0, m.start() - 24):m.start()].lower():
+            rec["raising"] = True
+    if not hits:
+        return []
+    tail = len(text) - 400
+    def score(item):
+        p, r = item
+        s = r["n"] * 2.0
+        if r["err"]:
+            s += 3.0
+        if r.get("raising"):
+            s += 2.0
+        if r["pos"] >= tail:
+            s += 2.0
+        if "." in os.path.basename(p.rstrip("/")):
+            s += 1.0
+        return (-s, -r["pos"])
+    return [p for p, _r in sorted(hits.items(), key=score)[:cap]]
 
 
 def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
@@ -82,6 +115,15 @@ def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
         # No named object means nothing to choose between — the block would be generic advice,
         # and only object-bearing candidates were ever measured as accurate. Stay silent.
         return []
+    # Drop paths that are a truncated prefix of another (a window cut mid-path produced
+    # "HalfWidthPa" next to "HalfWidthPanel.tsx" - two options for one file, one of them
+    # unactionable, both eating block space).
+    filtered = []
+    for p in paths:
+        if any(q != p and q.startswith(p) for q in paths):
+            continue
+        filtered.append(p)
+    paths = filtered or paths
     bases = [os.path.basename(p.rstrip("/")) or p for p in paths]
     for p in paths:
         base = os.path.basename(p.rstrip("/")) or p
@@ -101,6 +143,14 @@ def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
         if not any(o["kind"] == cls for o in out) or mv in ("run_check", "search"):
             seen.add(lab)
             out.append({"move": mv, "kind": cls, "target": "", "label": lab})
+    # A body must be able to say "none of these": forcing a choice among offered moves is how
+    # a reading becomes confidently wrong when the real next move is not in the set. Measured
+    # recall is 0.5 at best (window naming one object) and ~0.3 when it names five or more, so
+    # the escape route is not decoration - it is the honest option most of the time.
+    if len(paths) >= 3 and len(out) < cap:
+        lab = "take a route none of these name"
+        seen.add(lab)
+        out.append({"move": "elsewhere", "kind": "none", "target": "", "label": lab})
     # A block must carry at least one verification move: options that never include "check it"
     # teach the main model to act without verifying.
     if not any(o["kind"] == "run" for o in out):

@@ -314,8 +314,8 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         _log(session_id, "reflex_weights_ready", top=parsed["options"][0]["p"],
              weights=_weights_str(parsed), margin=_margin(parsed),
              mindset=parsed.get("mindset"), chars=len(block), candidates=len(cands),
-             top_kind=parsed["options"][0].get("kind"),
-             top_target=parsed["options"][0].get("target"),
+             top_kind=_top_claim(parsed).get("kind"),
+             top_target=_top_claim(parsed).get("target"),
              block=json.dumps(block))
         return block
     except Exception:  # noqa: BLE001
@@ -543,8 +543,8 @@ def _remember(sid: str, parsed: Dict[str, Any], block: str, n_msgs: int) -> None
     top = (parsed.get("options") or [{}])[0]
     with _LAST_FRAME_LOCK:
         _LAST_FRAME[sid] = {"ts": time.time(), "n_msgs": n_msgs,
-                            "top_kind": str(top.get("kind") or ""),
-                            "top_target": str(top.get("target") or ""),
+                            "top_kind": str(_top_claim({"options": [top]}).get("kind") or ""),
+                            "top_target": str(_top_claim({"options": [top]}).get("target") or ""),
                             "top_label": str(top.get("label") or ""),
                             "top_p": float(top.get("p") or 0.0),
                             "mind": dict(parsed.get("mindset") or {}),
@@ -553,6 +553,21 @@ def _remember(sid: str, parsed: Dict[str, Any], block: str, n_msgs: int) -> None
                             "block": block}
         while len(_LAST_FRAME) > _PENDING_MAX * 2:
             _LAST_FRAME.pop(next(iter(_LAST_FRAME)))
+
+
+def _top_claim(parsed: Any) -> Dict[str, Any]:
+    """The reading's claim about an OBJECT. An abstain option is not a claim.
+
+    The candidate set deliberately offers "take a route none of these name" whenever the
+    window is wide (measured recall collapses there), so the model can decline a wrong menu.
+    If that option wins, the lane has said "not these" - grading it against a path would score
+    a non-claim as a miss, and treating it as a target would make the block point nowhere.
+    """
+    opts = (parsed or {}).get("options") or []
+    for o in opts:
+        if str(o.get("kind") or "") not in ("none", ""):
+            return o
+    return opts[0] if opts else {}
 
 
 def settle(session_id: str, request: Any) -> Optional[Dict[str, Any]]:
@@ -774,7 +789,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         # would name, the reading adds nothing - so it says nothing, and its silences
         # stop being indistinguishable from its disagreements.
         if c.get("agree_silent", True):
-            top_target = str(parsed["options"][0].get("target") or "")
+            top_target = str(_top_claim(parsed).get("target") or "")
             want = os.path.basename(top_target.rstrip("/")) if top_target else ""
             if want and want in _last_move_targets(msgs_now):
                 _rw._note(reason="agreed_with_model")
