@@ -37,18 +37,22 @@ def test_receipt_names_lane_trigger_model_tokens_cost_and_row(parked):
     sid, text, task_id = parked[-1]
     assert sid == "sess-1"
     assert "impulse (decision)" in text          # lane label, same as the other lanes
-    assert "every_call" in text                  # trigger
-    assert "jev" in text.lower() or "?" in text  # model
-    assert "tok 1330/37" in text                 # tokens
-    assert "$" in text                           # cost
-    assert "row=reflex." in text                 # row id
+    assert "every_call" not in text               # R74-A2: xN implies cadence; field dropped
+    assert "jev" in text.lower() and "?" not in text   # model + RESOLVED host, never "?"
+    assert "@ typesafe" in text                   # the real provider, named like other lanes
+    assert "1330/37 tok" in text                  # tokens (summed, compact cell)
+    assert "$" in text                            # cost
+    assert "row 1" in text                        # row id (no "reflex." prefix, R74-A2)
+    assert "1 lead" in text or "1 hold" in text   # the turn's verdict class, singular
     assert task_id == "reflex"  # R74: constant id -> R9d replace, one banner per turn
 
 
 def test_receipt_is_the_shared_banner_shape_not_a_new_one(parked):
     banner = rl._receipt("sess-2", PARSED, {"usage": {}}, "midturn")
     assert banner.startswith(db.BANNER_HEAD), "one banner family, not a fourth renderer"
-    assert "midturn" in banner
+    # R74-A2 dropped the trigger/seam field for size; the shared shape is what is pinned
+    assert "impulse (decision) |" in banner, banner
+    assert "@ typesafe" in banner, banner
 
 
 def test_no_receipt_when_nothing_was_delivered(parked):

@@ -782,14 +782,26 @@ def _acc_update(session_id: str, tokens_in: int, tokens_out: int, cost: float,
     with _ACC_LOCK:
         acc = _ACC.get(sid)
         delivered = False
-        if acc is not None and not _slot_live(sid, str(acc.get("last_text") or "")):
-            if turn and int(acc.get("turn_no") or 0) == turn and int(acc.get("fires") or 0) >= 1:
-                # Same turn, slot already emptied -> the banner was delivered
-                # (or claimed) mid-turn. Drop, never re-park into this turn.
-                delivered = True
+        if acc is not None:
+            acc_turn = int(acc.get("turn_no") or 0)
+            # R74-A2 F1: TURN IDENTITY WINS over the slot probe. A turn whose
+            # parked banner was never consumed (a real live class — see
+            # gate/orchestration.py:_deliver_parked_at_edge) leaves its text in
+            # the anchor slot, so slot-emptiness alone cannot see the boundary
+            # and the next turn inherited its counts. Roll only when BOTH sides
+            # of the turn identity are known: an unknown turn (0) keeps today's
+            # slot-based behaviour rather than guessing a reset that could
+            # clear a live turn's numbers.
+            if turn and acc_turn and acc_turn != turn:
                 acc = None
-            else:
-                acc = None  # previous turn was delivered -> this fire opens a new one
+            elif not _slot_live(sid, str(acc.get("last_text") or "")):
+                if turn and acc_turn == turn and int(acc.get("fires") or 0) >= 1:
+                    # Same turn, slot already emptied -> the banner was delivered
+                    # (or claimed) mid-turn. Drop, never re-park into this turn.
+                    delivered = True
+                    acc = None
+                else:
+                    acc = None  # previous turn was delivered -> this fire opens a new one
         if acc is None:
             acc = {"fires": 0, "leads": 0, "no_lead": 0, "tok_in": 0, "tok_out": 0,
                    "cost": 0.0, "first_row": n, "last_row": n, "triggers": set(),
@@ -819,17 +831,76 @@ def _acc_update(session_id: str, tokens_in: int, tokens_out: int, cost: float,
         return snap, delivered
 
 
+_PROVIDER_HOSTS = (("openrouter.ai", "openrouter"),
+                   ("inference-api.nousresearch.com", "nous"),
+                   ("api.venice.ai", "venice"),
+                   ("api.typesafe.ai", "typesafe"))
+
+
+def _display_model(model: Any) -> str:
+    """Fleet naming for the model cell: bare name, lane prefix/-latest dropped.
+
+    The other lanes print the provider as the HOST cell, so repeating it in the
+    model cell ("typesafe/jev-router @ typesafe") is noise; the fleet reads
+    "jev @ typesafe". Bounded so the line cannot grow past the size budget.
+    """
+    try:
+        m = str(model or "").strip()
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        if m.lower().endswith("-latest") and len(m) > len("-latest") + 1:
+            m = m[: -len("-latest")]
+        return m[:16]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _display_host(cfg: Dict[str, Any]) -> str:
+    """The RESOLVED provider host the other lanes name — never a literal '?'.
+
+    Same provider map render_payload uses for its banners, applied to the
+    decision backend's configured endpoint. Unresolvable -> '' and the cell is
+    omitted (a missing host must not print as a question mark).
+    """
+    try:
+        from . import decision as _dec
+
+        ep = str(cfg.get("typesafe_endpoint")
+                 or (_dec.DEFAULTS or {}).get("typesafe_endpoint") or "")
+    except Exception:  # noqa: BLE001
+        ep = ""
+    try:
+        if "://" in ep:
+            ep = ep.split("://", 1)[1]
+        host = ep.split("/", 1)[0].split(":", 1)[0].strip()
+    except Exception:  # noqa: BLE001
+        host = ""
+    for real, name in _PROVIDER_HOSTS:
+        if real in host:
+            return name
+    return host[:24]
+
+
 def _park_summary(session_id: str, acc: Dict[str, Any], cfg: Dict[str, Any]) -> str:
     """Render the turn's ONE banner line and park it under the constant task id.
 
-    Shape is the receipt line every lane already emits, with the turn's sums:
-        · router · impulse (decision) x3 | 2 leads · 1 no-lead | jev-latest @ ? |
-          tok 6134/280 | $0.000170 | initiator=router | row=reflex.4-6
-    `xN` and the leads field appear only for N > 1, so a single-fire turn is
-    byte-comparable to the pre-R74 line apart from the row suffix. Tokens and
-    cost are SUMMED, never averaged. The variable text (the trigger list) is
-    truncated BEFORE the numbers when MAX_BANNER_CHARS is tight, and an
-    impossible fit omits the banner entirely (never a truncated answer).
+    R74-A2 (Goran, measured): SIZE IS BOUNDED BY TODAY'S LINE, not by
+    MAX_BANNER_CHARS (a global crash-guard). The live single-fire line was 120c;
+    this renderer targets <= 120c and is hard-bounded at 140c for any fire count:
+
+        · router · impulse (decision) x3 | 2 lead · 1 hold | jev @ typesafe |
+          6134/280 tok | $0.00017 | row 4-6
+
+    Compression (all of it, every fire count): the trigger field (`every_call`)
+    is gone — `xN` already implies cadence; verdict classes are singular
+    ("2 lead · 1 hold", zero classes omitted); tokens render `6134/280 tok`; cost
+    carries 5 decimals; the row renders `row 4-6` with no `reflex.` prefix; and
+    the host is the REAL resolved provider, never "?". Tokens and cost are
+    SUMMED, never averaged.
+
+    debug_banner.format_banner stays the shared validator and the fail-open gate
+    for this family: when it refuses (unknown/forbidden lane, oversized), this
+    returns "" and nothing is parked. Never raises.
     """
     try:
         from . import debug_banner as _db
@@ -843,38 +914,57 @@ def _park_summary(session_id: str, acc: Dict[str, Any], cfg: Dict[str, Any]) -> 
         model = str(cfg.get("jev_native_model") or "jev-latest")
         first = int(acc.get("first_row") or 0)
         last = int(acc.get("last_row") or first)
-        row_s = "reflex.%d" % first if n == 1 or last <= first else "reflex.%d-%d" % (first, last)
-        if n <= 1:
-            field2 = str(acc.get("last_seam") or "reading")
-        else:
-            field2 = "%d leads · %d no-lead" % (int(acc.get("leads") or 0),
-                                                int(acc.get("no_lead") or 0))
-            seams = sorted(str(s) for s in (acc.get("triggers") or ()) if str(s))
-            if len(seams) > 1:
-                field2 = "%s · %s" % (field2, ",".join(seams))
-        cap = int(getattr(_db, "MAX_BANNER_CHARS", 700) or 700)
-        banner = ""
-        # truncate the variable trigger list before the numbers, then give up
-        for cut in (len(field2), 60, 40, 24, 0):
-            trial = field2[:cut].strip(" ·,")
-            banner = _db.format_banner(
-                lane="reflex", trigger=trial or "reading", model=model,
-                endpoint="", tokens_in=ti, tokens_out=to, est_cost=cost,
-                latency_s=0, session_id=session_id, route_id=row_s,
-                initiator="router",
-            )
-            if banner and len(banner) + len(row_s) + 10 <= cap:
-                break
-        if not banner:
-            return ""
+        leads = int(acc.get("leads") or 0)
+        holds = int(acc.get("no_lead") or 0)
+
+        head = "%s impulse (decision)" % _db.BANNER_HEAD
         if n > 1:
-            marker = "(decision)"
-            i = banner.find(marker)
-            if i >= 0:
-                j = i + len(marker)
-                banner = "%s x%d%s" % (banner[:j], n, banner[j:])
-        out = "%s | row=%s" % (banner, row_s)
-        return out if len(out) <= cap + len(row_s) + 10 else ""
+            head += " x%d" % n
+
+        classes = []
+        if leads:
+            classes.append("%d lead" % leads)
+        if holds:
+            classes.append("%d hold" % holds)
+        field2 = " · ".join(classes) or "%d lead" % 0
+
+        model_s = _display_model(model)
+        host_s = _display_host(cfg)
+        model_part = ("%s @ %s" % (model_s, host_s)) if (model_s and host_s) else (model_s or host_s)
+        if not model_part:
+            return ""  # nothing honest to name -> no banner, never a "?"
+
+        if cost > 0.0:
+            cost_s = "$%.5f" % cost
+        elif ti > 0 or to > 0:
+            cost_s = "$0.00000*"   # unpriced provider: zero is not a price
+        else:
+            cost_s = "$0.00000"
+
+        row_s = ("row %d" % first) if (n == 1 or last <= first) else ("row %d-%d" % (first, last))
+
+        # the shared formatter is the lane validator / fail-open gate here; its
+        # own render is discarded in favour of the compressed cell order.
+        gate = _db.format_banner(
+            lane="reflex", trigger="reading", model=model, endpoint=host_s,
+            tokens_in=ti, tokens_out=to, est_cost=cost, latency_s=0,
+            session_id=session_id, route_id=("reflex.%d" % first), initiator="router",
+        )
+        if not gate:
+            return ""
+
+        out = " | ".join((head, field2, model_part, "%d/%d tok" % (ti, to), cost_s, row_s))
+        cap = int(getattr(_db, "MAX_BANNER_CHARS", 700) or 700)
+        if len(out) > min(140, cap):
+            # size is a hard requirement, not a target: shorten the two name
+            # cells rather than emit an over-budget line or a truncated field.
+            short_model = model_s[:8]
+            short_host = host_s[:10]
+            model_part = ("%s @ %s" % (short_model, short_host)) if (short_model and short_host) \
+                else (short_model or short_host)
+            out = " | ".join((head, field2, model_part or "-", "%d/%d tok" % (ti, to),
+                              cost_s, row_s))
+        return out if len(out) <= min(140, cap) else ""
     except Exception:  # noqa: BLE001 — a render must never break delivery
         return ""
 
