@@ -258,7 +258,8 @@ def basis_line(tool: str, text: str, limit: int = 92) -> str:
         return ""
 
 
-def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
+def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
+           soft: bool = False) -> str:
     """The block. A distribution, because that is the shape that measured as calibrated.
 
     Four parts, in the order the main model needs them: what this is, what it was read
@@ -267,7 +268,11 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
     """
     try:
         opts = parsed.get("options") or []
-        if len(opts) < 2:
+        # A soft reading is what the lane sends when nothing separates: it still carries the
+        # dials, because scope/rigour are useful on every midturn even when no single move
+        # leads. Silence there was the lane "giving way" on the turns it had least to say -
+        # which is also when the model most needed the dials.
+        if len(opts) < (1 if soft else 2):
             return ""
         reg = "  register: board"
         lines = [HEAD_FRAME, reg]
@@ -289,7 +294,7 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         # a directory is a place, not an object: "take this" over one tells the model to commit
         # to a location, which is not a decision it can act on
         has_target = bool(_t) and "." in os.path.basename(_t)
-        if margin >= DECISIVE_MARGIN and has_target:
+        if margin >= DECISIVE_MARGIN and has_target and not soft:
             lines.append("  %2d%%  %s   <- take this" % (round(p_top * 100),
                                                          str(opts[0]["label"])[:58]))
             for o in opts[1:3]:
@@ -297,9 +302,13 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
         else:
             for o in opts[:3]:
                 lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
-            lines.append("  <- class-level only: no single object leads, so pick from the "
-                         "evidence" if not has_target else
-                         "  <- too close to call: check before you commit")
+            if soft:
+                lines.append("  <- no clear lead: the dials above still apply; the board is "
+                             "context to weigh, not the move to take")
+            else:
+                lines.append("  <- class-level only: no single object leads, so pick from the "
+                             "evidence" if not has_target else
+                             "  <- too close to call: check before you commit")
         mind = parsed.get("mindset") or {}
         bits = []
         for d in ("scope", "rigour"):

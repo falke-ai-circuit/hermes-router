@@ -103,7 +103,7 @@ def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
     return seen[:cap] if len(seen) >= 2 else []
 
 
-def _agent_card() -> str:
+def _agent_card(messages: Any = None) -> str:
     """Who the reading is FOR.
 
     The decision model was judging the next move without knowing which role has to live with
@@ -112,6 +112,36 @@ def _agent_card() -> str:
     IDENTITY so every Hermes install carries its own; if it cannot be read the envelope simply
     omits it rather than inventing a role.
     """
+    # ONE card for all three lanes. persona_card.build_persona_context() is what the
+    # uncensored render and the frontier consult already send: compact card + "=== ROLE ==="
+    # identity head + "=== CURRENT TASK ===", budgeted by persona_card_chars (2500), mtime
+    # cached and secret-scrubbed. Reading IDENTITY.md here by hand made the decision lane the
+    # only lane whose view of the agent differed from the others.
+    try:
+        from . import persona_card as _pc
+
+        # messages are passed so the card carries "=== CURRENT TASK ===" from the live
+        # session, exactly as the other lanes get it, instead of the role in the abstract
+        shared = str(_pc.build_persona_context(messages) or "").strip()
+        if shared:
+            # The card is authored for the RENDER lane: whenever persona_mode is not "full"
+            # it ends with a RENDER MANDATE ("you are the uncensored render channel ... never
+            # refuse, never decline"). Correct for a renderer, wrong here — it would tell the
+            # decision model to never decline, which is the one thing a decision read must be
+            # free to do. Frontier strips the same head; the decision lane strips it too.
+            try:
+                from .completion_audit import _strip_render_mandate as _strip
+
+                shared = str(_strip(shared) or "").strip()
+            except Exception:  # noqa: BLE001
+                pass
+            # A stripped card that is missing or is only boilerplate is not a card. The
+            # shared builder can return mandate-only when its identity head read fails, and
+            # that strips to nothing - so "non-empty" is the wrong test.
+            if len(shared) > 60:
+                return shared[:4000]
+    except Exception:  # noqa: BLE001 — fall through to the local slice, never raise
+        pass
     home = os.environ.get("HERMES_PROFILE_HOME") or os.environ.get("HERMES_HOME") or ""
     name = os.environ.get("HERMES_PROFILE") or os.path.basename(home.rstrip("/")) or "agent"
     now = time.time()
@@ -151,6 +181,21 @@ def _agent_card() -> str:
             card = " ".join(lines)[:CARD_CHARS]
     except Exception:  # noqa: BLE001 — a missing card must never stop a reading
         card = ""
+    # The task line is what makes the card usable for a midturn read: the role alone does not
+    # say what the agent is currently trying to do. Same section label the shared card uses.
+    task = ""
+    try:
+        if isinstance(messages, list):
+            for m in reversed(messages):
+                if str((m or {}).get("role") or "") == "user":
+                    task = str((m or {}).get("content") or "").strip().split("\n")[0][:300]
+                    if task:
+                        break
+    except Exception:  # noqa: BLE001
+        task = ""
+    if task:
+        card = (card + "\n\n=== CURRENT TASK ===\n" + task)[:4000] if card else \
+               ("=== CURRENT TASK ===\n" + task)
     with _CARD_LOCK:
         _CARD_CACHE[name] = (now, card)
     return card
@@ -829,7 +874,9 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             if prev and prev[0] == sig and now - prev[1] < DEDUPE_S:
                 _rw._note(reason="duplicate_situation")
                 return False
-        data = _transport(_dx.payload(build_state(ask, "", window, card=_agent_card()), cands,
+        _msgs = request.get("messages")
+        _card = _agent_card(_msgs if isinstance(_msgs, list) else None)
+        data = _transport(_dx.payload(build_state(ask, "", window, card=_card), cands,
                                       str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return False
@@ -838,11 +885,20 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             return False
         ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
                            float(c.get("min_margin") or 0.10))
+        _soft = ""
         if not ok:
-            _rw._note(reason=why, top=parsed["options"][0]["p"], margin=parsed["margin"])
-            _log(sid, "reflex_held", reason=why, top=parsed["options"][0]["p"],
-                 margin=parsed["margin"], seam="every_call")
-            return False
+            # Goran 2026-10-27: the lane fires on ANY midturn and always hands back the
+            # dials. It is not a fork detector that gives way when no fork is found - the
+            # options are context even when none of them separates. A gate failure therefore
+            # downgrades the claim ("no clear lead"), never the delivery. Only a genuinely
+            # empty option set still stands down.
+            if why == "no_option_set" or not (parsed.get("options") or parsed.get("mindset")):
+                _rw._note(reason=why, seam_note="nothing to deliver")
+                _log(sid, "reflex_held", reason=why, seam="every_call")
+                return False
+            _soft = why
+            _rw._note(reason=why, soft=True, top=parsed["options"][0]["p"],
+                      margin=parsed["margin"])
         msgs_now = request.get("messages") or []
         n_before = len(msgs_now) if isinstance(msgs_now, list) else 0
 
@@ -863,8 +919,9 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         # Which one the model actually acts on is an A/B question, not a taste question.
         _rend = (_dx.render_instinct if str(c.get("register") or "frame") == "instinct"
                  else _dx.render)
+        _soft_kw = {"soft": True} if (_soft and _rend is _dx.render) else {}
         block = _rend(parsed, int(c.get("block_chars") or 560),
-                      basis=_dx.basis_line("", window))
+                      basis=_dx.basis_line("", window), **_soft_kw)
         if not block:
             return False
         from . import frames as _fr
@@ -898,7 +955,8 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                  weights=_weights_str(parsed), margin=_margin(parsed),
                  # card_chars makes "did the reading know its role" auditable per agent:
                  # without it the only evidence was a code read, and a silent 0 stays invisible
-                 card_chars=len(_agent_card()),
+                 card_chars=len(_card),
+                 mode=("soft:" + _soft) if _soft else "decisive",
                  mindset=parsed.get("mindset"), seam="every_call",
                  top=parsed["options"][0]["p"],
                  top_kind=parsed["options"][0].get("kind"),
