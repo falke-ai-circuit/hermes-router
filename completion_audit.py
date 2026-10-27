@@ -2036,16 +2036,16 @@ def _strip_render_mandate(card: str) -> str:
     paired POST coming back `flagged`. `decision.py` already strips this head for
     the decision lane; the audit never got the same treatment.
 
-    Cuts from the mandate header to the next '=== ' section header. Never raises.
+    Cuts the mandate *section* (header to the next '=== ' section header), which
+    also handles the compact card's mandate-FIRST layout — a prefix split there
+    returns "". R73 P2 S1: the body moved to persona_card._strip_render_mandate
+    so there is one section-aware strip for every lane; this name stays as the
+    delegate. Never raises.
     """
     try:
-        t = str(card or "")
-        i = t.find("=== RENDER MANDATE")
-        if i < 0:
-            return t
-        j = t.find("\n=== ", i + 5)
-        out = (t[:i] + t[j + 1:]) if j >= 0 else t[:i]
-        return out.strip()
+        from .persona_card import _strip_render_mandate as _impl
+
+        return _impl(card)
     except Exception:  # noqa: BLE001
         return str(card or "")
 

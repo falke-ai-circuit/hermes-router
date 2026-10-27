@@ -1879,14 +1879,15 @@ def _agent_frame(cfg: Dict[str, Any]) -> str:
     try:
         from . import persona_card
 
-        txt = persona_card.build_persona_context()
         # F3 (rider 6): the persona card can embed an internal RENDER MANDATE
         # block (persona_card.py). That block is backend-instruction text and
         # leaked verbatim into recipient-facing bodies via the advisory
         # persona slot (specimens api_1791011803_2170acf8 +
-        # api_1791011818_c537dd3f). Strip it here, at the frame source, so
-        # it can never reach the envelope's agent_frame at all.
-        head = str(txt or "").split("=== RENDER MANDATE", 1)[0]
+        # api_1791011818_c537dd3f). R73 P2 S1: the strip now comes from the one
+        # card accessor, because the prefix split that used to sit here returned
+        # "" on a mandate-FIRST card (the compact layout) — it deleted the
+        # identity and handed the frame its impersonal fallback every dispatch.
+        head = persona_card.role_card(purpose="read")
         frame = clean_snippet(head, 800)
         if frame:
             return frame

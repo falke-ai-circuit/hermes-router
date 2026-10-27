@@ -34,14 +34,16 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import persona_card as _pc
 from . import reflex_weights as _rw
 
-# The role card handed to the decision model, cached per process: a .md read on every model
-# call would be a syscall on the hot path for text that changes once a day at most.
-_CARD_CACHE: Dict[str, Any] = {}
-_CARD_LOCK = threading.Lock()
-CARD_CHARS = 400
-CARD_TTL_S = 300.0
+# R73 P2 S1: the card, its cache and its IDENTITY parser live in persona_card now
+# (role_card / _identity_slice). The names below stay because this lane's seams — and
+# their tests — reach for them, and because _profile_home must remain a module-global
+# name here: the wrapper calls it through globals, so patching it patches the resolver
+# that actually runs.
+_CARD_CACHE: Dict[str, Any] = _pc._card_cache
+CARD_CHARS = _pc.CARD_CHARS
 
 logger = logging.getLogger("hermes_router.reflex_lane")
 
@@ -103,25 +105,10 @@ def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
     return seen[:cap] if len(seen) >= 2 else []
 
 
-def _profile_home() -> str:
-    """The PROFILE directory this plugin instance lives in.
-
-    Gateways run with HERMES_HOME=/opt/data (the install root), not the profile dir, so both
-    persona_card and a naive IDENTITY read look in the wrong place and find nothing - the card
-    came back as a task line with no role. The plugin is physically inside the profile
-    (<profile>/plugins/hermes_router/), which is the same anchor config_access uses for the
-    active config, so resolve from there: env override -> plugin location -> install root.
-    """
-    env = os.environ.get("HERMES_PROFILE_HOME") or ""
-    if env and os.path.isfile(os.path.join(env, "IDENTITY.md")):
-        return env
-    try:
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if root and os.path.isfile(os.path.join(root, "IDENTITY.md")):
-            return root
-    except Exception:  # noqa: BLE001
-        pass
-    return os.environ.get("HERMES_HOME") or ""
+# R73 P2 S1: the PROFILE-dir resolver moved to persona_card.profile_home() so there is one
+# derivation. Kept as a module-global name here because the lane's tests patch it and the
+# wrapper below resolves it through globals.
+_profile_home = _pc.profile_home
 
 
 def _agent_card(messages: Any = None) -> str:
@@ -133,93 +120,14 @@ def _agent_card(messages: Any = None) -> str:
     IDENTITY so every Hermes install carries its own; if it cannot be read the envelope simply
     omits it rather than inventing a role.
     """
-    # ONE card for all three lanes. persona_card.build_persona_context() is what the
-    # uncensored render and the frontier consult already send: compact card + "=== ROLE ==="
-    # identity head + "=== CURRENT TASK ===", budgeted by persona_card_chars (2500), mtime
-    # cached and secret-scrubbed. Reading IDENTITY.md here by hand made the decision lane the
-    # only lane whose view of the agent differed from the others.
-    try:
-        from . import persona_card as _pc
-
-        # messages are passed so the card carries "=== CURRENT TASK ===" from the live
-        # session, exactly as the other lanes get it, instead of the role in the abstract
-        shared = str(_pc.build_persona_context(messages) or "").strip()
-        if shared:
-            # The card is authored for the RENDER lane: whenever persona_mode is not "full"
-            # it ends with a RENDER MANDATE ("you are the uncensored render channel ... never
-            # refuse, never decline"). Correct for a renderer, wrong here — it would tell the
-            # decision model to never decline, which is the one thing a decision read must be
-            # free to do. Frontier strips the same head; the decision lane strips it too.
-            try:
-                from .completion_audit import _strip_render_mandate as _strip
-
-                shared = str(_strip(shared) or "").strip()
-            except Exception:  # noqa: BLE001
-                pass
-            # A stripped card that is missing or is only boilerplate is not a card. The
-            # shared builder can return mandate-only when its identity head read fails, and
-            # that strips to nothing - so "non-empty" is the wrong test.
-            if len(shared) > 60:
-                return shared[:4000]
-    except Exception:  # noqa: BLE001 — fall through to the local slice, never raise
-        pass
-    home = _profile_home()
-    name = os.environ.get("HERMES_PROFILE") or os.path.basename(home.rstrip("/")) or "agent"
-    now = time.time()
-    with _CARD_LOCK:
-        prev = _CARD_CACHE.get(name)
-        if prev and now - prev[0] < CARD_TTL_S:
-            return prev[1]
-    card = ""
-    try:
-        path = os.path.join(home, "IDENTITY.md") if home else ""
-        if path and os.path.isfile(path):
-            lines, size = [], 0
-            in_fm = False
-            with open(path, errors="replace") as fh:
-                for ln in fh:
-                    s = ln.strip()
-                    # the card is prose, not metadata: skip the YAML frontmatter entirely,
-                    # otherwise the model is told the role is "template_version: v1.1"
-                    if s == "---":
-                        in_fm = not in_fm
-                        continue
-                    if in_fm:
-                        continue
-                    # Skip headings, blockquote preamble and tables - but NOT bullet/bold prose.
-                    # Filtering "*" as well made the card empty for every agent whose IDENTITY
-                    # opens with a bold line (**Coder — ...**), i.e. most of the fleet, and the
-                    # only reason conductor looked fine was that its prose is plain.
-                    if not s or s.startswith(("#", "---", ">", "|")):
-                        continue
-                    s = s.lstrip("*").strip()
-                    if not s:
-                        continue
-                    lines.append(s)
-                    size += len(s)
-                    if size > CARD_CHARS:
-                        break
-            card = " ".join(lines)[:CARD_CHARS]
-    except Exception:  # noqa: BLE001 — a missing card must never stop a reading
-        card = ""
-    # The task line is what makes the card usable for a midturn read: the role alone does not
-    # say what the agent is currently trying to do. Same section label the shared card uses.
-    task = ""
-    try:
-        if isinstance(messages, list):
-            for m in reversed(messages):
-                if str((m or {}).get("role") or "") == "user":
-                    task = str((m or {}).get("content") or "").strip().split("\n")[0][:300]
-                    if task:
-                        break
-    except Exception:  # noqa: BLE001
-        task = ""
-    if task:
-        card = (card + "\n\n=== CURRENT TASK ===\n" + task)[:4000] if card else \
-               ("=== CURRENT TASK ===\n" + task)
-    with _CARD_LOCK:
-        _CARD_CACHE[name] = (now, card)
-    return card
+    # R73 P2 S1: a thin wrapper over the one accessor. role_card(purpose="read") is the shared
+    # card with the RENDER MANDATE *section* removed (a prefix split emptied mandate-first
+    # cards, telling the decision model to never decline is the one thing a read must be free
+    # to do), and it is the profile's IDENTITY prose slice when the shared builder yields no
+    # usable identity — so this module no longer carries a second parser, a second cap or a
+    # second cache. messages ride through so the card carries "=== CURRENT TASK ===" from the
+    # live session, exactly as the other lanes get it.
+    return _pc.role_card(purpose="read", messages=messages, home=_profile_home())
 
 
 def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "") -> str:

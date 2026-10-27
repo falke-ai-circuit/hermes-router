@@ -404,8 +404,12 @@ def _impulse_persona_slot(envelope: Dict[str, Any]) -> str:
             return ""
         # F3 defense (rider 6): a slot fragment is persona VOCABULARY — any
         # internal seam header ('=== RENDER MANDATE' etc.) that survives the
-        # source strip above must never be composed into the frame.
-        if "RENDER MANDATE" in line.upper() or "===" in line:
+        # source strip above must never be composed into the frame. R73 P2 S1:
+        # "this is seam text, not persona prose" has ONE definition, in
+        # persona_card, so this slot cannot drift from the lanes' stripper.
+        from . import persona_card as _seam
+
+        if _seam.has_seam_header(line):
             return ""
         # R13-4 (rider 13): the slot sourced ROUTER/BANNER vocabulary from
         # the agent frame when a prior turn's banner text rode the context

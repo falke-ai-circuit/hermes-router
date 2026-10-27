@@ -302,6 +302,157 @@ def _build_compact_persona_context() -> str:
     return card
 
 
+# ---------------------------------------------------------------------------
+# R73 P2 S1 — the card accessor.
+#
+# Every non-render lane (decision read, completion audit, instinct frame,
+# impulse persona slot) used to carry its own way of getting at identity: a
+# private IDENTITY.md parser in reflex_lane, a prefix-split strip in
+# decision.py, a section strip in instinct_frame.py and another in
+# completion_audit.py. Two of those four were wrong in the same way — the
+# compact card puts RENDER MANDATE *first* (636c), so `card.split("=== RENDER
+# MANDATE", 1)[0]` returns "" and the identity is lost, which is exactly the
+# failure that emptied the impulse persona slot.
+#
+# So there is ONE accessor (role_card), ONE stripper (_strip_render_mandate,
+# section-aware, never a prefix split) and ONE role slice (_identity_slice)
+# here, and the lanes delegate.
+# ---------------------------------------------------------------------------
+
+CARD_CHARS = 400                  # role-only slice cap (was reflex_lane.CARD_CHARS)
+_PERSONA_SECTION_RE = re.compile(r"^=== .*? ===$", re.M)
+
+
+def profile_home() -> str:
+    """The PROFILE directory this plugin instance lives in.
+
+    Gateways run with HERMES_HOME=/opt/data (the install root), not the profile
+    dir, so a naive IDENTITY read looks in the wrong place and finds nothing —
+    the card came back as a task line with no role. The plugin is physically
+    inside the profile (<profile>/plugins/hermes_router/), which is the same
+    anchor config_access uses for the active config, so resolve from there:
+    env override -> plugin location -> install root.
+    """
+    env = os.environ.get("HERMES_PROFILE_HOME") or ""
+    if env and os.path.isfile(os.path.join(env, "IDENTITY.md")):
+        return env
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if root and os.path.isfile(os.path.join(root, "IDENTITY.md")):
+            return root
+    except Exception:  # noqa: BLE001
+        pass
+    return os.environ.get("HERMES_HOME") or ""
+
+
+def _strip_render_mandate(card: str) -> str:
+    """Remove the RENDER MANDATE *section* from a persona card, wherever it sits.
+
+    NOT a prefix split. The compact card puts RENDER MANDATE FIRST, so
+    `card.split("=== RENDER MANDATE", 1)[0]` returns an empty string and the
+    identity never survives. Sections are cut whole (`=== ... ===` header to the
+    next one) and the rest is rejoined in order. A card with no mandate section
+    is returned byte-untouched. Never raises.
+    """
+    try:
+        t = str(card or "")
+        marks = list(_PERSONA_SECTION_RE.finditer(t))
+        if not any("RENDER MANDATE" in m.group(0).upper() for m in marks):
+            return t
+        kept = []
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(t)
+            if "RENDER MANDATE" in m.group(0).upper():
+                continue
+            kept.append(t[m.start():end])
+        return "".join(kept).strip()
+    except Exception:  # noqa: BLE001
+        return str(card or "")
+
+
+def _identity_slice(home: Optional[str] = None, max_chars: int = CARD_CHARS) -> str:
+    """Compact prose role slice from the profile's IDENTITY.md.
+
+    Used only when the shared builder yields no usable identity. The card is
+    prose, not metadata: YAML frontmatter, headings, blockquote preamble and
+    tables stay out — but NOT bullet/bold prose, because most of the fleet
+    writes its role as `**Coder — ...**` and filtering bold lines emptied the
+    card exactly where it was needed. Never raises.
+    """
+    try:
+        home = profile_home() if home is None else str(home or "")
+        path = os.path.join(home, "IDENTITY.md") if home else ""
+        if not path or not os.path.isfile(path):
+            return ""
+        lines: list = []
+        size = 0
+        in_fm = False
+        for ln in _read_slice(path, PERSONA_MAX_CHARS).splitlines():
+            s = ln.strip()
+            if s == "---":
+                in_fm = not in_fm
+                continue
+            if in_fm:
+                continue
+            if not s or s.startswith(("#", "---", ">", "|")):
+                continue
+            s = s.strip("*").strip()
+            if not s:
+                continue
+            lines.append(s)
+            size += len(s)
+            if size > max_chars:
+                break
+        return " ".join(lines)[:max_chars]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def role_card(purpose: str = "read", messages: Optional[list] = None,
+              home: Optional[str] = None) -> str:
+    """The one card every lane asks for.
+
+    purpose="render"  -> byte-identical to build_persona_context(messages). The
+                         render lane is untouched by this accessor.
+    purpose="read"    -> the same card with the RENDER MANDATE *section* removed
+                         (a decision read must stay free to decline), or, when
+                         that leaves no usable identity, the profile's IDENTITY
+                         prose slice with a "=== CURRENT TASK ===` line.
+    Never raises.
+    """
+    raw = build_persona_context(messages)
+    if purpose == "render":
+        return raw
+    card = _strip_render_mandate(str(raw or "")).strip()
+    if len(card) > 60:
+        return card[:4000]
+    card = _identity_slice(home)
+    task = ""
+    try:
+        if isinstance(messages, list):
+            for m in reversed(messages):
+                task = str((m or {}).get("content") or "").strip().split("\n")[0][:300]
+                if task:
+                    break
+    except Exception:  # noqa: BLE001
+        task = ""
+    if task:
+        card = ((card + "\n\n=== CURRENT TASK ===\n" + task)[:4000] if card
+                else ("=== CURRENT TASK ===\n" + task))
+    return card
+
+
+def has_seam_header(text: str) -> bool:
+    """True when a fragment carries internal router seam vocabulary.
+
+    One definition of "this is seam text, not persona prose", so a slot that
+    composes persona vocabulary never glues `=== SECTION ===` headers (or the
+    RENDER MANDATE head) into recipient-facing text. Never raises.
+    """
+    t = str(text or "")
+    return "===" in t or "RENDER MANDATE" in t.upper()
+
+
 def build_continuity_stub(messages: Optional[list], max_chars: int = 1200) -> str:
     """Last user + last assistant exchange, excerpted, for scene continuity."""
     if not isinstance(messages, list) or not messages:

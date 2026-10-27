@@ -99,19 +99,14 @@ def _strip_mandate(card: str) -> str:
     identity never survives — which is the pre-existing `_agent_frame()` defect:
     it silently fell through to its impersonal fallback on every dispatch, so
     the lane's persona slot has been empty in practice.
+
+    R73 P2 S1: the body moved to persona_card._strip_render_mandate — one
+    section-aware strip for every lane (this module, the audit, the decision).
+    This name stays as the delegate so callers and their pins keep resolving.
     """
-    if not card:
-        return ""
-    marks = list(_SECTION_RE.finditer(card))
-    if not marks:
-        return card
-    kept = []
-    for i, m in enumerate(marks):
-        end = marks[i + 1].start() if i + 1 < len(marks) else len(card)
-        if "RENDER MANDATE" in m.group(0).upper():
-            continue
-        kept.append(card[m.start():end])
-    return "".join(kept).strip()
+    from .persona_card import _strip_render_mandate as _impl
+
+    return _impl(card)
 
 
 def who_block() -> str:
