@@ -732,9 +732,13 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         # marked by rule id, before the reading itself.
         if c.get("integrate", True):
             try:
-                _fr.inject_platform_rule(request, _fr.DECISION_RULE_ID,
-                                         _fr.DECISION_RULE, session_id=sid,
-                                         role="system")
+                _ok = _fr.inject_platform_rule(request, _fr.DECISION_RULE_ID,
+                                               _fr.DECISION_RULE, session_id=sid,
+                                               role="system")
+                # the contract is never persisted, so the log is the only proof it was
+                # in the request the model saw - same discipline as the delivery banner
+                _log(sid, "decision_rule_injected", rule=_fr.DECISION_RULE_ID,
+                     chars=len(_fr.DECISION_RULE), appended=bool(_ok), seam="every_call")
             except Exception:  # noqa: BLE001 - the contract must never break delivery
                 logger.debug("decision rule injection failed", exc_info=True)
 
