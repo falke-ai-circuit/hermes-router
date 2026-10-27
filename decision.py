@@ -114,7 +114,17 @@ PROVENANCE_TAG = "[decision-lane advisory]"
 # standardize on the same '· router · impulse (decision)' rollup shape as the
 # frontier/uncensored lanes. DELIVERED_MARK powers the echo filter for new
 # persisted bodies; PROVENANCE_TAG stays ONLY on in-context envelopes.
-DELIVERED_MARK = "· router · impulse (decision)"
+# R76 P2 U4: composed from the banner owner (head + the label it renders for the decision
+# lane), never spelled out again here — a literal replica is how a lane-label rename would
+# silently stop this filter matching. The import stays inside the helper because this module
+# reaches debug_banner lazily at every other call site.
+def _delivered_mark() -> str:
+    from . import debug_banner as _db
+
+    return "%s %s" % (_db.BANNER_HEAD, _db.lane_label("decision"))
+
+
+DELIVERED_MARK = _delivered_mark()
 
 REASON_BREAKER_OPEN = "breaker_open"
 REASON_CAP_EXHAUSTED = "cap_exhausted"

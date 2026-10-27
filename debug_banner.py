@@ -109,6 +109,33 @@ def debug_banner_enabled() -> bool:
     return lvl >= 1
 
 
+def lane_label(lane: str) -> str:
+    """The display label for a lane KEY — the single source for banner identity.
+
+    format_banner renders it, and decision.DELIVERED_MARK derives its echo-filter mark from
+    it, so renaming a lane's user-facing label cannot leave a stale copy behind that silently
+    stops matching. Pure string shaping, never raises.
+    """
+    try:
+        lane = str(lane or "")
+        # Goran 09-14 framing: the uncensored/shadow lane is the agent's own
+        # SHADOW SELF (part of her model, not an external route); the
+        # frontier lane is her HIGHER SELF. Banner labels reflect identity,
+        # not plumbing.
+        # v1.1 addendum (SPEC-impulse-lane-v1.md): display label is
+        # 'impulse (decision)' — the lane KEY stays 'decision', the
+        # module name and PROVENANCE_TAG are unchanged.
+        if lane.startswith("frontier"):
+            return "higher-self (frontier)"
+        if lane in ("shadow", "uncensored", "uncensored-render"):
+            return "shadow-self (uncensored)"
+        if lane in ("decision", "reflex"):
+            return "impulse (decision)"
+        return lane.split("-", 1)[0]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def format_banner(lane: str, trigger: str, model: str, endpoint: str,
                   tokens_in: Optional[int], tokens_out: Optional[int],
                   est_cost: Optional[float], latency_s: Optional[float],
@@ -171,10 +198,7 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
         # v1.1 addendum (SPEC-impulse-lane-v1.md): display label is
         # 'impulse (decision)' — the lane KEY stays 'decision', the
         # module name and PROVENANCE_TAG are unchanged.
-        _lane_label = "higher-self (frontier)" if lane.startswith("frontier") else (
-            "shadow-self (uncensored)" if lane in ("shadow", "uncensored", "uncensored-render")
-            else "impulse (decision)" if lane in ("decision", "reflex")
-            else lane.split("-", 1)[0])
+        _lane_label = lane_label(lane)
         # R19 v3: an empty endpoint renders model-only (decision lane has no
         # remote host to name); initiator provenance rides the L1 line.
         model_part = ("%s @ %s" % (model_s, ep_s)) if ep_s else model_s
