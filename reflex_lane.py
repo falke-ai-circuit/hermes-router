@@ -117,7 +117,6 @@ def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "")
 def _cfg(cfg: Any) -> Dict[str, Any]:
     c = _rw.cfg_for(cfg)
     c.setdefault("every_call", True)
-    c.setdefault("min_fork_probability", 0.5)
     c.setdefault("min_gap", 0.0)
     return c
 
