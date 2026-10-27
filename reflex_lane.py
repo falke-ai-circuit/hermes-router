@@ -55,6 +55,17 @@ _PENDING_MAX = 64
 _SEQ_LOCK = threading.Lock()
 _SEQ: Dict[str, int] = {}
 
+# R74: one banner per turn. Every fire of this lane used to park its OWN segment under a
+# unique task id ("reflex|" + row), and the anchor kind's R9d per-task replace could never
+# match one — so a two-fire turn delivered two banner lines (fleet-wide: 116 turns at
+# row=reflex.2 vs 60 at .1). The accumulator below is the turn's decision content; the
+# constant task id "reflex" makes the existing replace path overwrite it, so the surviving
+# segment always carries the WHOLE turn and never stacks. Bounded like _ANCHOR_BANNERS:
+# max 32 sessions, oldest evicted.
+_ACC: Dict[str, Dict[str, Any]] = {}
+_ACC_MAX = 32
+_ACC_LOCK = threading.Lock()
+
 # Candidate assembly is deliberately dumb: it collects what the transcript makes visible and
 # never decides whether that constitutes a fork. Judgement belongs to the noul question.
 _PATH_RE = re.compile(r"(?:/opt|/tmp|/home|/root|/var|/etc|/srv)[\w./\-]{4,80}"
@@ -327,6 +338,16 @@ def clear(session_id: str = "") -> None:
             _SEQ.pop(session_id, None)
         else:
             _SEQ.clear()
+    # R74: the turn accumulator is delivery state too — a clear must not leave
+    # one test's fire counts to be summed into the next test's banner.
+    try:
+        with _ACC_LOCK:
+            if session_id:
+                _ACC.pop(session_id, None)
+            else:
+                _ACC.clear()
+    except Exception:  # noqa: BLE001 — a reset must never raise
+        pass
     # the live-reading registry is delivery state like any other: leaving it behind made one
     # test's contract injection appear in the next one's
     with _LAST_BLOCK_LOCK:
@@ -680,6 +701,184 @@ def fence(block: str) -> str:
         return ""
 
 
+def _acc_reset(session_id: str) -> None:
+    """Drop one session's turn accumulator. Never raises (delivery state)."""
+    try:
+        with _ACC_LOCK:
+            _ACC.pop(str(session_id or ""), None)
+    except Exception:  # noqa: BLE001 — a reset must never raise
+        pass
+
+
+def _turn_no(session_id: str) -> int:
+    """Current turn number (0 when unknown). Never raises."""
+    try:
+        from . import advisory_consumption as _act
+
+        return int(_act.turn_no(session_id) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _row_int(row: str) -> int:
+    try:
+        return int(str(row or "").rsplit(".", 1)[-1])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _slot_live(session_id: str, last_text: str) -> bool:
+    """True while this session's parked segment is still in the anchor slot.
+
+    Every delivery seam empties that slot — consume and claim alike — so an
+    empty slot is the observable "this turn's banner was delivered" signal.
+    The consume paths (lifecycle, the R33f-A semaphore, claim_banner_ownership)
+    are load-bearing and untouched: the reset is keyed off their effect on the
+    slot, on the session id they consume, and it can only ever touch the
+    session whose counts are being carried. Fail-open -> True (keep the
+    counts): a probe failure may never clear a live turn's numbers.
+    """
+    try:
+        if not last_text:
+            return True
+        from . import debug_banner as _db
+
+        live = str((getattr(_db, "_ANCHOR_BANNERS", {}) or {}).get(
+            str(session_id or ""), "") or "")
+        return last_text[:120] in live
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _verdict_class(parsed: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    """'lead' or 'no_lead' — the class the fire path ALREADY computed.
+
+    A fire is decisive when the lane's own gate passes, soft ("no clear lead")
+    when it downgrades the claim: exactly the `mode=decisive` vs `mode=soft:*`
+    split written to the route log. No new taxonomy is minted here.
+    """
+    try:
+        from . import decision_extract as _dx
+
+        ok, _why = _dx.gate(parsed, float(cfg.get("min_top") or 0.45),
+                            float(cfg.get("min_margin") or 0.10))
+        return "lead" if ok else "no_lead"
+    except Exception:  # noqa: BLE001
+        return "no_lead"
+
+
+def _acc_update(session_id: str, tokens_in: int, tokens_out: int, cost: float,
+                row: str, seam: str, verdict: str) -> Tuple[Dict[str, Any], bool]:
+    """Fold one fire into the turn's accumulator. Returns (snapshot, delivered).
+
+    `delivered` is True when this fire arrives AFTER the turn's banner was
+    already consumed or claimed: the render edge's claim_banner_ownership pops
+    the slot exactly like a consume, and a claimed turn carries its OWN banner,
+    so the reflex summary is DROPPED rather than double-bannered (§3.5).
+    """
+    sid = str(session_id or "")
+    n = _row_int(row)
+    turn = _turn_no(sid)
+    with _ACC_LOCK:
+        acc = _ACC.get(sid)
+        delivered = False
+        if acc is not None and not _slot_live(sid, str(acc.get("last_text") or "")):
+            if turn and int(acc.get("turn_no") or 0) == turn and int(acc.get("fires") or 0) >= 1:
+                # Same turn, slot already emptied -> the banner was delivered
+                # (or claimed) mid-turn. Drop, never re-park into this turn.
+                delivered = True
+                acc = None
+            else:
+                acc = None  # previous turn was delivered -> this fire opens a new one
+        if acc is None:
+            acc = {"fires": 0, "leads": 0, "no_lead": 0, "tok_in": 0, "tok_out": 0,
+                   "cost": 0.0, "first_row": n, "last_row": n, "triggers": set(),
+                   "last_text": "", "last_seam": "", "turn_no": turn}
+            _ACC[sid] = acc
+            while len(_ACC) > _ACC_MAX:
+                _ACC.pop(next(iter(_ACC)), None)
+            if delivered:
+                _ACC.pop(sid, None)
+                return ({"fires": 0, "leads": 0, "no_lead": 0, "tok_in": 0,
+                         "tok_out": 0, "cost": 0.0, "first_row": n, "last_row": n,
+                         "triggers": set(), "last_text": "", "last_seam": seam,
+                         "turn_no": turn}, True)
+        acc["fires"] = int(acc["fires"]) + 1
+        acc["leads"] = int(acc["leads"]) + (1 if verdict == "lead" else 0)
+        acc["no_lead"] = int(acc["no_lead"]) + (1 if verdict == "no_lead" else 0)
+        acc["tok_in"] = int(acc["tok_in"]) + int(tokens_in or 0)
+        acc["tok_out"] = int(acc["tok_out"]) + int(tokens_out or 0)
+        acc["cost"] = float(acc["cost"]) + float(cost or 0.0)
+        acc["last_row"] = n
+        acc["last_seam"] = str(seam or "")
+        try:
+            acc["triggers"].add(str(seam or ""))
+        except Exception:  # noqa: BLE001
+            pass
+        snap = {k: (set(v) if isinstance(v, set) else v) for k, v in acc.items()}
+        return snap, delivered
+
+
+def _park_summary(session_id: str, acc: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    """Render the turn's ONE banner line and park it under the constant task id.
+
+    Shape is the receipt line every lane already emits, with the turn's sums:
+        · router · impulse (decision) x3 | 2 leads · 1 no-lead | jev-latest @ ? |
+          tok 6134/280 | $0.000170 | initiator=router | row=reflex.4-6
+    `xN` and the leads field appear only for N > 1, so a single-fire turn is
+    byte-comparable to the pre-R74 line apart from the row suffix. Tokens and
+    cost are SUMMED, never averaged. The variable text (the trigger list) is
+    truncated BEFORE the numbers when MAX_BANNER_CHARS is tight, and an
+    impossible fit omits the banner entirely (never a truncated answer).
+    """
+    try:
+        from . import debug_banner as _db
+
+        n = int(acc.get("fires") or 0)
+        if n <= 0:
+            return ""
+        ti = int(acc.get("tok_in") or 0)
+        to = int(acc.get("tok_out") or 0)
+        cost = float(acc.get("cost") or 0.0)
+        model = str(cfg.get("jev_native_model") or "jev-latest")
+        first = int(acc.get("first_row") or 0)
+        last = int(acc.get("last_row") or first)
+        row_s = "reflex.%d" % first if n == 1 or last <= first else "reflex.%d-%d" % (first, last)
+        if n <= 1:
+            field2 = str(acc.get("last_seam") or "reading")
+        else:
+            field2 = "%d leads · %d no-lead" % (int(acc.get("leads") or 0),
+                                                int(acc.get("no_lead") or 0))
+            seams = sorted(str(s) for s in (acc.get("triggers") or ()) if str(s))
+            if len(seams) > 1:
+                field2 = "%s · %s" % (field2, ",".join(seams))
+        cap = int(getattr(_db, "MAX_BANNER_CHARS", 700) or 700)
+        banner = ""
+        # truncate the variable trigger list before the numbers, then give up
+        for cut in (len(field2), 60, 40, 24, 0):
+            trial = field2[:cut].strip(" ·,")
+            banner = _db.format_banner(
+                lane="reflex", trigger=trial or "reading", model=model,
+                endpoint="", tokens_in=ti, tokens_out=to, est_cost=cost,
+                latency_s=0, session_id=session_id, route_id=row_s,
+                initiator="router",
+            )
+            if banner and len(banner) + len(row_s) + 10 <= cap:
+                break
+        if not banner:
+            return ""
+        if n > 1:
+            marker = "(decision)"
+            i = banner.find(marker)
+            if i >= 0:
+                j = i + len(marker)
+                banner = "%s x%d%s" % (banner[:j], n, banner[j:])
+        out = "%s | row=%s" % (banner, row_s)
+        return out if len(out) <= cap + len(row_s) + 10 else ""
+    except Exception:  # noqa: BLE001 — a render must never break delivery
+        return ""
+
+
 def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> str:
     """Park a delivery receipt for a reading that actually shipped.
 
@@ -710,18 +909,33 @@ def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> s
             pass
         cfg = _cfg(None)
         row = next_rule_id(session_id)
-        banner = _db.format_banner(
-            lane="reflex", trigger=str(seam or "reading"),
-            model=str(cfg.get("jev_native_model") or "jev-latest"), endpoint="",
-            tokens_in=int(ti), tokens_out=int(to), est_cost=cost, latency_s=0,
-            session_id=session_id, route_id=row, initiator="router",
-        )
+        verdict = _verdict_class(parsed, cfg)
+        # R74: fold this fire into the turn's accumulator, then park the
+        # RENDERED SUMMARY under the CONSTANT task id "reflex" — the anchor
+        # kind's R9d replace path then overwrites its own segment instead of
+        # appending a second line (one banner per turn).
+        snap, delivered = _acc_update(
+            session_id, int(ti), int(to), float(cost or 0.0), row,
+            str(seam or "reading"), verdict)
+        if delivered:
+            _log(session_id, "reflex_banner_dropped", row=row,
+                 reason="turn_already_delivered", seam=str(seam or ""))
+            return ""
+        banner = _park_summary(session_id, snap, cfg)
         if not banner:
             return ""
-        banner = "%s | row=%s" % (banner, row)
-        _db.park_anchor_banner(session_id, banner, task_id="reflex|" + row)
+        _db.park_anchor_banner(session_id, banner, task_id="reflex")
+        try:
+            with _ACC_LOCK:
+                cur = _ACC.get(str(session_id or ""))
+                if isinstance(cur, dict) and int(cur.get("fires") or 0) == int(snap.get("fires") or 0):
+                    cur["last_text"] = banner
+        except Exception:  # noqa: BLE001 — bookkeeping never breaks delivery
+            pass
         _log(session_id, "reflex_receipt_parked", row=row, seam=str(seam or ""),
-             tokens_in=int(ti), tokens_out=int(to), est_cost=round(cost, 6),
+             tokens_in=int(ti), tokens_out=int(to), est_cost=round(float(cost or 0.0), 6),
+             fires=int(snap.get("fires") or 0), verdict=verdict,
+             rows="%d-%d" % (int(snap.get("first_row") or 0), int(snap.get("last_row") or 0)),
              top=float((parsed.get("options") or [{}])[0].get("p") or 0.0))
         return banner
     except Exception:  # noqa: BLE001 — a receipt must never break a delivery

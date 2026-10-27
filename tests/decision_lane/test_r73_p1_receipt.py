@@ -42,7 +42,7 @@ def test_receipt_names_lane_trigger_model_tokens_cost_and_row(parked):
     assert "tok 1330/37" in text                 # tokens
     assert "$" in text                           # cost
     assert "row=reflex." in text                 # row id
-    assert task_id.startswith("reflex|")
+    assert task_id == "reflex"  # R74: constant id -> R9d replace, one banner per turn
 
 
 def test_receipt_is_the_shared_banner_shape_not_a_new_one(parked):
