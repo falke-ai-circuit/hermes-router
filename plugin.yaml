@@ -1,6 +1,6 @@
 # hermes-router — generic two-lane Hermes router plugin (manifest v2)
 name: hermes-router
-version: 6.13.10
+version: 6.13.11
 manifest_version: 2
 api_version: 1
 license: MIT

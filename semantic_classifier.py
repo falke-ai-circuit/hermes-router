@@ -139,6 +139,26 @@ def resolve_aux_model(ep: Dict[str, Any]) -> str:
         return ""
 
 
+def aux_price_model(cls: Optional[Dict[str, Any]] = None) -> str:
+    """R75: the MODEL ID an aux dispatch is priced against.
+
+    Never the "hermes-auxiliary" display label: that string is a lane name, no
+    price table keys on it, so estimate_cost honestly returned 0.0 and every
+    aux/decision banner rendered the unpriced cell $0.00000* while the tokens
+    were real. Resolved the same way the dispatch itself resolves — the
+    configured aux endpoint model, else the agent's own model — and only then
+    does the literal 'jev-latest' stand in as a last resort. An unknown model
+    still prices 0.0 downstream: failure stays open, never a fabricated rate.
+    """
+    try:
+        block = _classification_cfg() if cls is None else cls
+        if not isinstance(block, dict):
+            block = {}
+        return resolve_aux_model(_endpoint_cfg(block)) or "jev-latest"
+    except Exception:  # noqa: BLE001 — a price key must never break the lane
+        return "jev-latest"
+
+
 def _endpoint_cfg(cls: Dict[str, Any]) -> Dict[str, Any]:
     ep = cls.get("aux_endpoint")
     return ep if isinstance(ep, dict) else {}
@@ -441,9 +461,13 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
 
             _it, _ot = _usage_from_response(data)
             if _it is not None or _ot is not None:
+                # R75: price the resolved MODEL ID, not the lane label. The
+                # record's model/endpoint column keeps the display name (the
+                # banner's "@ hermes-auxiliary" cell comes from it); only the
+                # price key changes — an unknown model still prices 0.0.
                 usage_ledger.record_tokens(
                     "aux", "hermes-auxiliary", session_id, _it, _ot,
-                    usage_ledger.estimate_cost("hermes-auxiliary", _it, _ot),
+                    usage_ledger.estimate_cost(aux_price_model(cls), _it, _ot),
                     "stage2_classify",
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane

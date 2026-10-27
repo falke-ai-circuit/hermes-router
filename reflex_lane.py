@@ -990,14 +990,22 @@ def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> s
         to = usage.get("completion_tokens")
         if to is None:
             to = usage.get("output_tokens") or 0
+        cfg = _cfg(None)
+        # R75: price the MODEL ID, never the lane's display label. "hermes-auxiliary"
+        # is a display name for the auxiliary lane and matches no price table, so
+        # estimate_cost honestly returned 0.0 and every reading banner rendered the
+        # unpriced cell $0.00000* even though the tokens were real. The model the
+        # reflex consult was dispatched to is jev_native_model (see _transport
+        # callers above), so that is the key. An unknown model still prices 0.0
+        # and still renders the asterisk — failure is fully open, never a guess.
+        price_model = str(cfg.get("jev_native_model") or "jev-latest")
         cost = 0.0
         try:
             from . import usage_ledger
 
-            cost = float(usage_ledger.estimate_cost("hermes-auxiliary", int(ti), int(to)) or 0.0)
+            cost = float(usage_ledger.estimate_cost(price_model, int(ti), int(to)) or 0.0)
         except Exception:  # noqa: BLE001 — a missing price is 0.0, never a guess
             pass
-        cfg = _cfg(None)
         row = next_rule_id(session_id)
         verdict = _verdict_class(parsed, cfg)
         # R74: fold this fire into the turn's accumulator, then park the
