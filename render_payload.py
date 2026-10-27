@@ -237,7 +237,18 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
 
         ti = meta.get("tokens_in")
         to = meta.get("tokens_out")
-        cost = usage_ledger.estimate_cost(str(model or ""), ti, to)
+        # R76-P1-U2d: price the id the transport DISPATCHED ('' when it reported
+        # none -> 0.0 + the honest unpriced marker). The cfg/default model that the
+        # model cell may carry is provenance, never a price key.
+        _price_key = (str(meta.get("price_model") or "")
+                      if "price_model" in meta else str(model or ""))
+        # Fail-open (R76-P1-U2d): the price lookup is a receipt nicety — an
+        # exception in it must never swallow or alter the banner. Unpriceable
+        # renders as the honest 0.0 marker.
+        try:
+            cost = usage_ledger.estimate_cost(_price_key, ti, to)
+        except Exception:  # noqa: BLE001
+            cost = 0.0
         # R19.9: banner shows the PROVIDER (identical pattern to other
         # lanes), never the raw URL.
         ep = str(meta.get("endpoint") or "")

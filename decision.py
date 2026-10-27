@@ -3107,8 +3107,14 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             # call served by an id that has no price row). Read back the id the aux client
             # actually dispatched; only when it reports none is the configured id kept as the
             # label, because then nothing distinguishes it from the intended target.
+            # R76-P1-U2d: the model CELL is provenance; the PRICE KEY is a different
+            # fact and must be the dispatched id only. Carried separately: `price_model`
+            # is the id the transport reported, '' when it reported none. Pricing reads
+            # that key — never the cfg/default label — so a call that dispatched nothing
+            # prices 0.0 and renders the honest unpriced marker.
             _sent_model = _sc.dispatched_aux_model()
-            meta = dict(meta, model=_sent_model or model, endpoint="hermes-auxiliary",
+            meta = dict(meta, model=_sent_model or model, price_model=_sent_model,
+                        endpoint="hermes-auxiliary",
                         latency_s=round(time.time() - t0, 2))
             if body is None:
                 return None, meta, REASON_TIMEOUT
@@ -4068,6 +4074,12 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         # real session id). A failed write is FAIL-LOUD: logged at ERROR +
         # a route event + a banner marker, never a silent miss.
         ti, to = meta.get("tokens_in"), meta.get("tokens_out")
+        # R76-P1-U2d: the row's model column is PROVENANCE (the lane/target this row
+        # records); the price key is the model the transport dispatched, and is '' when
+        # the transport reported none. A missing id prices 0.0 — never the cfg/default
+        # label that the model column may still carry.
+        _price_key = (meta["price_model"] if "price_model" in meta
+                      else base_row["model"])
         tokens_claimed = ti is not None or to is not None
         tokens_ok = None if not tokens_claimed else True
         if tokens_claimed:
@@ -4077,7 +4089,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                 tokens_ok = bool(usage_ledger.record_tokens(
                     "decision", base_row["model"],
                     str(ids.get("session_id") or ""), ti, to,
-                    usage_ledger.estimate_cost(base_row["model"], ti, to),
+                    usage_ledger.estimate_cost(_price_key, ti, to),
                     "decision_v3", task_id=str(ids.get("task_id") or ""),
                     initiator=str(ids.get("initiator") or "user")))
             except Exception as _tok_exc:  # noqa: BLE001
