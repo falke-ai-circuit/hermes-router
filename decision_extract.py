@@ -348,7 +348,6 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
             if soft:
                 lines.append("  <- no clear lead: the dials above still apply; the board is "
                              "context to weigh, not the move to take")
-                _soft_act = True
             else:
                 lines.append("  <- class-level only: no single object leads, so pick from the "
                              "evidence" if not has_target else
@@ -379,7 +378,13 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
             keep = [ln for ln in keep if ln != drop]
             if len("\n".join(keep)) <= limit:
                 return "\n".join(keep)
-        return "" if len("\n".join(keep)) > limit else "\n".join(keep)
+        # Reaching here means the block is STILL over budget: `optional` always contains
+        # `reg` (the list literal above leads with it), so the loop above ran at least once
+        # and any iteration that brought the block under budget already returned. The old
+        # tail was `"" if len(...) > limit else "\n".join(keep)`; its second arm could never
+        # fire (R73 inventory: dominant by construction, 639/639 traced executions returned
+        # ""). Shedding the loop is live - only the unreachable arm is gone.
+        return ""
     except Exception:  # noqa: BLE001
         return ""
 
