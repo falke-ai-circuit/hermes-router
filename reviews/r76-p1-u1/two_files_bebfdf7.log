@@ -1,0 +1,12 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0
+rootdir: /opt/data/profiles/reviewer/cache/scratch/r75head/hermes_router
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0, devtools-0.12.2
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 27 items
+
+tests/decision_lane/test_r73_p1_receipt.py ...                           [ 11%]
+tests/routing/test_r10_catalog_resolution.py ........................    [100%]
+
+============================== 27 passed in 3.06s ==============================
