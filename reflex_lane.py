@@ -32,7 +32,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from . import persona_card as _pc
 from . import reflex_weights as _rw
@@ -47,8 +47,6 @@ CARD_CHARS = _pc.CARD_CHARS
 
 logger = logging.getLogger("hermes_router.reflex_lane")
 
-HEADER = "[reflex: a reading of the choice in front of you, not a request]"
-VALIDATE = "Fork present"
 _PENDING_LOCK = threading.Lock()
 _PENDING: Dict[str, Dict[str, Any]] = {}
 _PENDING_MAX = 64
@@ -66,17 +64,6 @@ _ACC: Dict[str, Dict[str, Any]] = {}
 _ACC_MAX = 32
 _ACC_LOCK = threading.Lock()
 
-# Candidate assembly is deliberately dumb: it collects what the transcript makes visible and
-# never decides whether that constitutes a fork. Judgement belongs to the noul question.
-_PATH_RE = re.compile(r"(?:/opt|/tmp|/home|/root|/var|/etc|/srv)[\w./\-]{4,80}"
-                      r"|(?:^|[\s\"'(])((?:[\w.\-]+/){1,6}[\w.\-]+\.(?:py|js|ts|go|rs|ya?ml|"
-                      r"json|md|sh|toml|sql|css|html))")
-_CMD_RE = re.compile(r"^\s*(?:\$|#)?\s*((?:sudo\s+)?(?:git|pytest|python3?|npm|go|make|"
-                     r"docker|systemctl|curl|bash|ls|cat|grep|rg)\b[^\n]{0,70})", re.M)
-_GENERIC = ("stop and report what is known so far",
-            "ask the user which way to go",
-            "continue with the current approach unchanged")
-
 
 def enabled(cfg: Any) -> bool:
     """Armed per profile via ``hermes_router.reflex_weights.enabled``. Default OFF."""
@@ -84,36 +71,6 @@ def enabled(cfg: Any) -> bool:
         return bool(_rw.cfg_for(cfg).get("enabled"))
     except Exception:  # noqa: BLE001
         return False
-
-
-def candidates(tool: str, text: str, cap: int = 4) -> List[str]:
-    """Actions the transcript makes visible. No filtering, no ranking, no fork judgement."""
-    seen: List[str] = []
-    try:
-        for m in _PATH_RE.finditer(text or ""):
-            p = (m.group(1) or m.group(0)).strip().strip("\"'()")
-            if len(p) < 5:
-                continue
-            for verb in ("open", "fix"):
-                cand = "%s %s" % (verb, p)
-                if cand not in seen:
-                    seen.append(cand)
-            if len(seen) >= cap:
-                break
-        if len(seen) < cap:
-            for m in list(_CMD_RE.finditer(text or ""))[:2]:
-                cand = "re-run: %s" % m.group(1).strip()[:60]
-                if cand not in seen:
-                    seen.append(cand)
-        for g in _GENERIC:
-            if len(seen) >= cap:
-                break
-            if g not in seen:
-                seen.append(g)
-    except Exception:  # noqa: BLE001
-        pass
-    # A fork needs at least two distinguishable actions; one candidate is not a choice.
-    return seen[:cap] if len(seen) >= 2 else []
 
 
 # R73 P2 S1: the PROFILE-dir resolver moved to persona_card.profile_home() so there is one
@@ -155,28 +112,6 @@ def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "")
     if text:
         parts.append("RESULT OF THAT ACTION (truncated):\n%s" % str(text)[:4000])
     return "\n\n".join(parts)
-
-
-def render(parsed: Dict[str, Any], limit: int = 400) -> str:
-    """The block the main model reads. Short, weighted, no imperative."""
-    try:
-        opts = parsed.get("options") or []
-        if len(opts) < 2:
-            return ""
-        lines = [HEADER]
-        for o in opts[:3]:
-            # Percentages, not a normalized 0.62/0.28/0.10 split: these are independent
-            # viability readings, so 85% / 78% / 71% is a truthful "three live options".
-            lines.append("  %d%%  %s" % (round(float(o["p"]) * 100), str(o["action"])[:68]))
-        mind = parsed.get("mindset") or {}
-        bits = ["%s %+0.2f" % (d, float(mind[d])) for d in _rw.DRIVES
-                if isinstance(mind.get(d), float)]
-        if bits:
-            lines.append("  mind: " + " ".join(bits))
-        block = "\n".join(lines)
-        return block if len(block) <= limit else ""
-    except Exception:  # noqa: BLE001
-        return ""
 
 
 def _cfg(cfg: Any) -> Dict[str, Any]:
