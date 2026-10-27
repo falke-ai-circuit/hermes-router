@@ -52,7 +52,28 @@ RIGOUR_LEVELS = ["none, it is obviously safe", "a glance at the result",
 _ERR_WORDS = ("traceback", "error", "exception", "failed", "failure", "assert")
 
 
-def salient_paths(text: str, cap: int = 4) -> List[str]:
+# Names that are tools, not places. `python3` has no dot, so the old is_dir heuristic
+# ("no dot => directory") rendered "work inside python3" at 3% on a live turn.
+TOOL_NAMES = frozenset((
+    "python", "python3", "node", "npm", "npx", "git", "bash", "sh", "zsh", "pytest", "go",
+    "make", "cargo", "pip", "pip3", "curl", "sed", "awk", "grep", "rg", "docker", "s6-svc",
+))
+
+
+def _is_fragment(text: str, end: int, p: str) -> bool:
+    """A match that stops at a template placeholder is half a path, not an object.
+
+    PATH_RE stops at `<`, so `/run/service/gateway-<agent>` yields `/run/service/gateway-`, whose
+    basename has no dot and therefore rendered "look inside gateway-" at 26% on a live turn
+    (340 fragment mentions per 3000 turns on orchestrator, 5-11% of all path mentions fleet-wide).
+    """
+    nxt = text[end:end + 1]
+    if nxt and nxt in "<>*{}$%":
+        return True
+    return p.rstrip("/").endswith(("/", "-", "_", "."))
+
+
+def salient_paths(text: str, cap: int = 4, ask: str = "") -> List[str]:
     """Paths the evidence names, ranked by how likely the next move is about them.
 
     Recency alone was measured too weak: recall fell from 0.50 (window naming one object) to
@@ -67,6 +88,10 @@ def salient_paths(text: str, cap: int = 4) -> List[str]:
         # made every target end in a dot and scored perfect hits as misses
         p = (m.group(1) or m.group(0)).strip().strip("\"'()").rstrip(".,;:!?)]}")
         if len(p) < 5:
+            continue
+        if _is_fragment(text, m.end(), p):
+            continue
+        if os.path.basename(p.rstrip("/")).lower() in TOOL_NAMES:
             continue
         rec = hits.setdefault(p, {"n": 0, "pos": m.start(), "err": False,
                                   "raising": False})
@@ -83,6 +108,9 @@ def salient_paths(text: str, cap: int = 4) -> List[str]:
     if not hits:
         return []
     tail = len(text) - 400
+    # words the ask actually used - matched against candidate stems, never as a substring of
+    # the whole ask (a 4-char stem inside "production" is not relevance)
+    _ask_terms = set(re.findall(r"[a-z0-9_]{4,}", (ask or "").lower()))
     def score(item):
         p, r = item
         s = r["n"] * 2.0
@@ -94,11 +122,20 @@ def salient_paths(text: str, cap: int = 4) -> List[str]:
             s += 2.0
         if "." in os.path.basename(p.rstrip("/")):
             s += 1.0
+        # ASK RELEVANCE (R73 P3): the ask used to be concatenated into the window and then
+        # scored as if it were scenery, so a file printed by an earlier listing outranked the
+        # object the user actually named ("why is valmet flagging frontier as injection" ->
+        # "read orchestration.py first"). The ask is scored as its own term, and it is strong
+        # enough to beat mention-count scenery.
+        if _ask_terms:
+            stem = os.path.splitext(os.path.basename(p.rstrip("/")))[0].lower()
+            if len(stem) >= 4 and stem in _ask_terms:
+                s += 6.0
         return (-s, -r["pos"])
     return [p for p, _r in sorted(hits.items(), key=score)[:cap]]
 
 
-def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
+def candidate_set(window: str, cap: int = 7, ask: str = "") -> List[Dict[str, str]]:
     """Target-bearing actions first (the object of the next move), then the move classes.
 
     The proof used file-choice among visible paths and scored 0.764 top-1; the generic classes
@@ -110,7 +147,7 @@ def candidate_set(window: str, cap: int = 7) -> List[Dict[str, str]]:
     # 28-34% of the time across three profiles' real transcripts, which makes a confident
     # reading confidently wrong. Five paths covers the realistic working set without turning
     # the block into a menu of the whole tree.
-    paths = salient_paths(window, cap=5)
+    paths = salient_paths(window, cap=5, ask=ask)
     if not paths:
         # No named object means nothing to choose between — the block would be generic advice,
         # and only object-bearing candidates were ever measured as accurate. Stay silent.

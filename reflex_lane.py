@@ -210,8 +210,11 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
             return ""
         from . import decision_extract as _dx
 
-        cands = _dx.candidate_set((text or "") + "\n" + (ask or ""),
-                                  cap=int(c.get("max_options") or 7))
+        # R73 P3: the ask is passed SEPARATELY - concatenating it into the window made the
+        # ask's own objects score as scenery, and the top move drifted to whatever a listing
+        # printed earlier. Window and ask stay distinguishable all the way down.
+        cands = _dx.candidate_set((text or ""), cap=int(c.get("max_options") or 7),
+                                  ask=(ask or ""))
         if not cands:
             _rw._note(reason="no_candidates")
             return ""
@@ -772,7 +775,8 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             return False
         from . import decision_extract as _dx
 
-        cands = _dx.candidate_set(window + "\n" + ask, cap=int(c.get("max_options") or 7))
+        # R73 P3: ask scored as its own term, never concatenated into the window
+        cands = _dx.candidate_set(window, cap=int(c.get("max_options") or 7), ask=ask)
         if not cands:
             _rw._note(reason="no_candidates")
             return False
