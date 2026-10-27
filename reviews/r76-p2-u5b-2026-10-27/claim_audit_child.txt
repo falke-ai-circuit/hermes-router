@@ -1,0 +1,43 @@
+{
+ "label": "child-50a3311",
+ "package": "/opt/data/tmp/u5b/child/hermes_router/__init__.py",
+ "1a_endpoint_str_invoked": true,
+ "1b_redaction_split_invoked": true,
+ "1c_events": [
+  "str",
+  "split"
+ ],
+ "1d_line_with_secret_ep": "· router · higher-self (frontier) | consult failed | empty response | test/model-a ·",
+ "1e_line_with_empty_ep": "· router · higher-self (frontier) | consult failed | empty response | test/model-a ·",
+ "1f_byte_identical": true,
+ "1g_sha_secret_ep": "464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129",
+ "1h_sha_empty_ep": "464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129",
+ "1i_line_has_endpoint_cell": false,
+ "1j_line_has_usage_cell": false,
+ "2_pre_conversion": [],
+ "2a_usage_args_read_on_metadata_only": [
+  "est_cost",
+  "tokens_in",
+  "tokens_out"
+ ],
+ "2b_unpriced_marker_present": false,
+ "3a_invalid_lane": "''",
+ "3b_forbidden_aux": "''",
+ "3c_label_shadow": "· router · shadow-self (uncensored) | consult failed | empty response | test/model-a ·",
+ "3d_normal_shape_redacts": "· router · impulse (decision) | midturn | jev-latest @ api.secret-host.example | tok 10/5 | $0.000001",
+ "4_docstring_flat": "Render the banner text. Pure string shaping — no I/O, no state. Returns \"\" when the caller should omit the banner (oversized or invalid lane). Never raises. metadata_only (R76 P2 U5): the FAILURE-REPORT shape — head, lane label, trigger, model, closing tail — with no usage cell and no initiator/L2/L3 addenda, because there was no response to measure. It exists so the frontier empty-consult banner goes through this renderer instead of being hand-formatted beside it; the text it produces is exactly the string that path printed before. Guarantee of this shape, stated exactly: lane VALIDATION applies (FORBIDDEN_LANES or an unknown lane returns \"\"), and the lane label comes from lane_label(). Endpoint REDACTION does NOT reach the rendered line — not because the endpoint goes unread: `ep_s` is built and host-redacted (:180-183) and tokens_in/tokens_out/est_cost are converted (:170-172) BEFORE this branch, and metadata_only returns before `ep_s` and those figures are USED, because the failure shape renders no endpoint cell and no usage cell. The redacted host and the figures are therefore discarded unrendered. Passing a secret-bearing URI leaves the rendered bytes unchanged, and no unpriced-model marker can appear, for that reason: the values are read, then dropped, not skipped. A caller that needs host redaction on the line must use the normal shape, not this one.",
+ "4a_claims_value_read_then_dropped": true,
+ "4b_claims_old_mechanism": false,
+ "5_pointers": {
+  "ep_s_actual": 184,
+  "conversion_actual": 174,
+  "branch_actual": 232,
+  "cited_180": "# integers, and a bounded cost figure ever render. The model and",
+  "cited_181": "# endpoint strings are scheme-validated upstream; slice defensively",
+  "cited_183": "model_s = str(model or \"?\")[:120]",
+  "cited_170": "try:",
+  "cited_172": "if lane in FORBIDDEN_LANES or lane not in VALID_LANES:",
+  "cited_228": "# It returns BEFORE ep_s is used and before any usage cell exists:",
+  "cited_224": "# R76 P2 U5: the failure-report shape. No usage cell (nothing was"
+ }
+}

@@ -1,0 +1,43 @@
+{
+ "label": "parent-9874d0e",
+ "package": "/opt/data/tmp/u5b/parent/hermes_router/__init__.py",
+ "1a_endpoint_str_invoked": true,
+ "1b_redaction_split_invoked": true,
+ "1c_events": [
+  "str",
+  "split"
+ ],
+ "1d_line_with_secret_ep": "· router · higher-self (frontier) | consult failed | empty response | test/model-a ·",
+ "1e_line_with_empty_ep": "· router · higher-self (frontier) | consult failed | empty response | test/model-a ·",
+ "1f_byte_identical": true,
+ "1g_sha_secret_ep": "464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129",
+ "1h_sha_empty_ep": "464bcba0e5f10bb3bf57d11cbf0ae1f45377ae38966b2f1a36128d81d68cb129",
+ "1i_line_has_endpoint_cell": false,
+ "1j_line_has_usage_cell": false,
+ "2_pre_conversion": [],
+ "2a_usage_args_read_on_metadata_only": [
+  "est_cost",
+  "tokens_in",
+  "tokens_out"
+ ],
+ "2b_unpriced_marker_present": false,
+ "3a_invalid_lane": "''",
+ "3b_forbidden_aux": "''",
+ "3c_label_shadow": "· router · shadow-self (uncensored) | consult failed | empty response | test/model-a ·",
+ "3d_normal_shape_redacts": "· router · impulse (decision) | midturn | jev-latest @ api.secret-host.example | tok 10/5 | $0.000001",
+ "4_docstring_flat": "Render the banner text. Pure string shaping — no I/O, no state. Returns \"\" when the caller should omit the banner (oversized or invalid lane). Never raises. metadata_only (R76 P2 U5): the FAILURE-REPORT shape — head, lane label, trigger, model, closing tail — with no usage cell and no initiator/L2/L3 addenda, because there was no response to measure. It exists so the frontier empty-consult banner goes through this renderer instead of being hand-formatted beside it; the text it produces is exactly the string that path printed before. Guarantee of this shape, stated exactly: lane VALIDATION applies (FORBIDDEN_LANES or an unknown lane returns \"\"), and the lane label comes from lane_label(). Endpoint REDACTION does NOT apply: metadata_only returns before the endpoint is ever read, so `endpoint` is accepted and ignored — passing a secret-bearing URI here leaves the rendered bytes unchanged. tokens_in/tokens_out/est_cost are likewise accepted and discarded, so no unpriced-model marker can appear. A caller that needs host redaction must use the normal shape, not this one.",
+ "4a_claims_value_read_then_dropped": false,
+ "4b_claims_old_mechanism": true,
+ "5_pointers": {
+  "ep_s_actual": 180,
+  "conversion_actual": 170,
+  "branch_actual": 228,
+  "cited_180": "ep_s = str(endpoint or \"?\")",
+  "cited_181": "if \"://\" in ep_s:",
+  "cited_183": "ep_s = ep_s[:120]",
+  "cited_170": "ti = int(tokens_in) if isinstance(tokens_in, (int, float)) else 0",
+  "cited_172": "cost = max(0.0, float(est_cost or 0.0))",
+  "cited_228": "if metadata_only:",
+  "cited_224": "# It returns BEFORE ep_s is used and before any usage cell exists:"
+ }
+}

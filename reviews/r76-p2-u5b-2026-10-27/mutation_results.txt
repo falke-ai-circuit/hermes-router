@@ -1,0 +1,18 @@
+M1_restore_false_sentence_in_docstring: 2 failed, 7 passed in 2.19s
+    caught-by test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction
+    caught-by test_no_site_still_claims_the_endpoint_goes_unread
+M2_code_genuinely_skips_reading_endpoint: 1 failed, 8 passed in 0.77s
+    caught-by test_the_documented_mechanism_matches_observable_behaviour
+M3_reinstate_false_claim_in_call_site_comment: 1 failed, 8 passed in 2.15s
+    caught-by test_no_site_still_claims_the_endpoint_goes_unread
+M4_reinstate_false_claim_wrapped_in_test_own_docstring: 1 failed, 8 passed in 0.91s
+    caught-by test_no_site_still_claims_the_endpoint_goes_unread
+M5_reinstate_false_claim_as_docstring_only_in_anchor_exec: 1 failed, 8 passed in 2.06s
+    caught-by test_no_site_still_claims_the_endpoint_goes_unread
+
+--- summary ---
+M1_restore_false_sentence_in_docstring: CAUGHT (2 failed, 7 passed in 2.19s) :: ['test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction', 'test_no_site_still_claims_the_endpoint_goes_unread']
+M2_code_genuinely_skips_reading_endpoint: CAUGHT (1 failed, 8 passed in 0.77s) :: ['test_the_documented_mechanism_matches_observable_behaviour']
+M3_reinstate_false_claim_in_call_site_comment: CAUGHT (1 failed, 8 passed in 2.15s) :: ['test_no_site_still_claims_the_endpoint_goes_unread']
+M4_reinstate_false_claim_wrapped_in_test_own_docstring: CAUGHT (1 failed, 8 passed in 0.91s) :: ['test_no_site_still_claims_the_endpoint_goes_unread']
+M5_reinstate_false_claim_as_docstring_only_in_anchor_exec: CAUGHT (1 failed, 8 passed in 2.06s) :: ['test_no_site_still_claims_the_endpoint_goes_unread']
