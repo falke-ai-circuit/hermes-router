@@ -1,0 +1,21 @@
+======================================================================
+CASE: NONE-reported | dispatched_aux_model()= ''
+  estimate_cost keys received : ['', '']
+  tokens rows                 : [{'lane': 'decision', 'model': 'z-ai/glm-5.3-flash', 'cost': 0.0, 'detail': 'decision_v3'}]
+  banner                      : · router · impulse (decision) | pre | z-ai/glm-5.3-flash @ hermes-auxiliary | tok 2759/102 | $0.0000* | initiator=user | row=1 ·
+  price('') = 0.0
+  price of cfg decoy         = 0.000372
+======================================================================
+CASE: PRICED | dispatched_aux_model()= 'jev-latest'
+  estimate_cost keys received : ['jev-latest', 'jev-latest']
+  tokens rows                 : [{'lane': 'decision', 'model': 'jev-latest', 'cost': 0.000116, 'detail': 'decision_v3'}]
+  banner                      : · router · impulse (decision) | pre | jev-latest @ hermes-auxiliary | tok 2759/102 | $0.000116 | initiator=user | row=1 ·
+  price('jev-latest') = 0.000116
+  price of cfg decoy         = 0.000372
+======================================================================
+CASE: UNPRICED | dispatched_aux_model()= 'zz-no-such-model-9'
+  estimate_cost keys received : ['zz-no-such-model-9', 'zz-no-such-model-9']
+  tokens rows                 : [{'lane': 'decision', 'model': 'zz-no-such-model-9', 'cost': 0.0, 'detail': 'decision_v3'}]
+  banner                      : · router · impulse (decision) | pre | zz-no-such-model-9 @ hermes-auxiliary | tok 2759/102 | $0.0000* | initiator=user | row=1 ·
+  price('zz-no-such-model-9') = 0.0
+  price of cfg decoy         = 0.000372

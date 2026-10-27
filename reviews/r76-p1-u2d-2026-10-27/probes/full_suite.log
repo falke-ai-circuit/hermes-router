@@ -1,0 +1,381 @@
+........................................................................ [  2%]
+........................................................................ [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+...........F............................................................ [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+..............FF........................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+.x...................................................................... [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 42%]
+........................................................................ [ 45%]
+........................................................................ [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+........................................................................ [ 71%]
+........................................................................ [ 74%]
+......................................................................F. [ 76%]
+F....................................................................... [ 79%]
+........................................................................ [ 82%]
+..................s............................E..E..................... [ 85%]
+......................................................................FF [ 88%]
+........................................................................ [ 91%]
+.....................................s.................................. [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+..........                                                               [100%]
+==================================== ERRORS ====================================
+__ ERROR at teardown of test_r10_2_audit_banner_carries_row_ref_after_persist __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a24dd774980>
+
+    @pytest.fixture(autouse=True)
+    def _zero_network_guard(monkeypatch):
+        """v3.6.0 zero-network suite guard (Goran-direct stress phase, 2026-09-07):
+        NO test may make an outbound network call. Two layers:
+    
+        1. Model-provider credential env vars are REMOVED for the duration of each
+           test — the plugin's key-resolution seams (router._read_key,
+           semantic_classifier._resolve_key, anchor_exec._resolve_key) then fail
+           closed to "" and every un-mocked LLM path fail-opens to pass-through
+           without paying a 25s timeout. Root-caused 2026-09-07: the gateway env
+           exports NOUS_API_KEY; pytest children inherited it, so un-mocked POST
+           paths fired REAL aux calls to the nous inference API (live-caught:
+           test_loop_guard flake + 541s suite runtime from 25s curl timeouts).
+        2. outbound socket connects + curl subprocess spawns raise immediately —
+           a hard tripwire: any future test that regresses into network I/O fails
+           LOUDLY at the call site instead of silently burning provider tokens.
+    
+        Test-infra only — production key resolution and egress are untouched.
+        Scoped to model-provider keys: BROWSERBASE/TELEGRAM/DISCORD/etc. are NOT
+        LLM lanes and stay alone.
+        """
+        _MODEL_KEY_ENV_VARS = (
+            "MINIMAX_API_KEY", "VENICE_API_KEY", "OPENROUTER_API_KEY",
+            "NOUS_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        )
+        for _var in _MODEL_KEY_ENV_VARS:
+            monkeypatch.delenv(_var, raising=False)
+    
+        import socket as _socket
+        import subprocess as _subprocess
+    
+        _calls: list = []
+    
+        def _blocked_socket(*args, **kwargs):  # noqa: ANN002, ANN003
+            _calls.append(("socket", args))
+            raise AssertionError(
+                "TEST EGRESS BLOCKED: outbound socket.connect attempted during a "
+                "test (%r) — the suite is zero-network by directive; mock the "
+                "provider seam instead (see conftest._zero_network_guard)" % (args,))
+    
+        def _blocked_subprocess_run(*args, **kwargs):  # noqa: ANN002, ANN003
+            argv = args[0] if args else kwargs.get("args", ())
+            _calls.append(("subprocess", argv))
+            raise AssertionError(
+                "TEST EGRESS BLOCKED: subprocess.run attempted during a test "
+                "(argv head: %r) — curl-backed provider lanes must be mocked in "
+                "tests (see conftest._zero_network_guard)" % (list(argv)[:3] if argv else (),))
+    
+        monkeypatch.setattr(_socket.socket, "connect", _blocked_socket, raising=True)
+        monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
+        monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
+    
+        # R10/R10b: the provider-catalog seam (provider_prices
+        # .provider_catalog_entries — the lane-scoped single fetch path) is a
+        # curl-backed provider lane — default tests to an empty catalog
+        # (fail-open) so declared-path flows never reach live egress. Tests of
+        # catalog resolution override this seam explicitly.
+        try:
+            import hermes_router.provider_prices as _pp
+    
+            monkeypatch.setattr(_pp, "provider_catalog_entries",
+                                lambda lane: (), raising=True)
+            monkeypatch.setattr(_pp, "provider_catalog_ids",
+                                lambda lane="uncensored": (), raising=True)
+        except ImportError:
+            pass
+    
+        yield
+        # introspection hook for the zero-network proof test
+>       assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
+E       AssertionError: egress attempts recorded: [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+E       assert not [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+
+tests/conftest.py:178: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  hermes_router.closure_pass:closure_pass.py:281 closure_pass skipped: AssertionError: TEST EGRESS BLOCKED: outbound socket.connect attempted during a test ((('inference-api.nousresearch.com', 443), 25.0, None)) — the suite is zero-network by directive; mock the provider seam instead (see conftest._zero_network_guard)
+_ ERROR at teardown of test_r10_2_meta_carries_row_for_downgraded_async_banner _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a24dd7760b0>
+
+    @pytest.fixture(autouse=True)
+    def _zero_network_guard(monkeypatch):
+        """v3.6.0 zero-network suite guard (Goran-direct stress phase, 2026-09-07):
+        NO test may make an outbound network call. Two layers:
+    
+        1. Model-provider credential env vars are REMOVED for the duration of each
+           test — the plugin's key-resolution seams (router._read_key,
+           semantic_classifier._resolve_key, anchor_exec._resolve_key) then fail
+           closed to "" and every un-mocked LLM path fail-opens to pass-through
+           without paying a 25s timeout. Root-caused 2026-09-07: the gateway env
+           exports NOUS_API_KEY; pytest children inherited it, so un-mocked POST
+           paths fired REAL aux calls to the nous inference API (live-caught:
+           test_loop_guard flake + 541s suite runtime from 25s curl timeouts).
+        2. outbound socket connects + curl subprocess spawns raise immediately —
+           a hard tripwire: any future test that regresses into network I/O fails
+           LOUDLY at the call site instead of silently burning provider tokens.
+    
+        Test-infra only — production key resolution and egress are untouched.
+        Scoped to model-provider keys: BROWSERBASE/TELEGRAM/DISCORD/etc. are NOT
+        LLM lanes and stay alone.
+        """
+        _MODEL_KEY_ENV_VARS = (
+            "MINIMAX_API_KEY", "VENICE_API_KEY", "OPENROUTER_API_KEY",
+            "NOUS_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        )
+        for _var in _MODEL_KEY_ENV_VARS:
+            monkeypatch.delenv(_var, raising=False)
+    
+        import socket as _socket
+        import subprocess as _subprocess
+    
+        _calls: list = []
+    
+        def _blocked_socket(*args, **kwargs):  # noqa: ANN002, ANN003
+            _calls.append(("socket", args))
+            raise AssertionError(
+                "TEST EGRESS BLOCKED: outbound socket.connect attempted during a "
+                "test (%r) — the suite is zero-network by directive; mock the "
+                "provider seam instead (see conftest._zero_network_guard)" % (args,))
+    
+        def _blocked_subprocess_run(*args, **kwargs):  # noqa: ANN002, ANN003
+            argv = args[0] if args else kwargs.get("args", ())
+            _calls.append(("subprocess", argv))
+            raise AssertionError(
+                "TEST EGRESS BLOCKED: subprocess.run attempted during a test "
+                "(argv head: %r) — curl-backed provider lanes must be mocked in "
+                "tests (see conftest._zero_network_guard)" % (list(argv)[:3] if argv else (),))
+    
+        monkeypatch.setattr(_socket.socket, "connect", _blocked_socket, raising=True)
+        monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
+        monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
+    
+        # R10/R10b: the provider-catalog seam (provider_prices
+        # .provider_catalog_entries — the lane-scoped single fetch path) is a
+        # curl-backed provider lane — default tests to an empty catalog
+        # (fail-open) so declared-path flows never reach live egress. Tests of
+        # catalog resolution override this seam explicitly.
+        try:
+            import hermes_router.provider_prices as _pp
+    
+            monkeypatch.setattr(_pp, "provider_catalog_entries",
+                                lambda lane: (), raising=True)
+            monkeypatch.setattr(_pp, "provider_catalog_ids",
+                                lambda lane="uncensored": (), raising=True)
+        except ImportError:
+            pass
+    
+        yield
+        # introspection hook for the zero-network proof test
+>       assert not _calls, "egress attempts recorded: %r" % (_calls[:5],)
+E       AssertionError: egress attempts recorded: [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+E       assert not [('socket', (('inference-api.nousresearch.com', 443), 25.0, None))]
+
+tests/conftest.py:178: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  hermes_router.closure_pass:closure_pass.py:281 closure_pass skipped: AssertionError: TEST EGRESS BLOCKED: outbound socket.connect attempted during a test ((('inference-api.nousresearch.com', 443), 25.0, None)) — the suite is zero-network by directive; mock the provider seam instead (see conftest._zero_network_guard)
+=================================== FAILURES ===================================
+__________________ test_legacy_mention_allowlist_only_shrinks __________________
+
+    def test_legacy_mention_allowlist_only_shrinks():
+        hits = {rel for rel, path in _package_py_files()
+                if LEGACY in open(path, "r", encoding="utf-8").read()}
+        unexpected = hits - ALLOWED_FILES
+>       assert not unexpected, f"new legacy mentions appeared: {sorted(unexpected)}"
+E       AssertionError: new legacy mentions appeared: ['decision_midturn.py', 'reflex_weights.py']
+E       assert not {'decision_midturn.py', 'reflex_weights.py'}
+
+tests/classification/test_p05_legacy_purge_guard.py:95: AssertionError
+________________ test_b_no_max_tokens_literals_outside_budgets _________________
+
+    def test_b_no_max_tokens_literals_outside_budgets():
+        pat = re.compile(r'"max_tokens"\s*:\s*\d')
+        hits = []
+        for path in _py_files():
+            rel = _rel(path)
+            if rel == "core/budgets.py" or rel.startswith("tests/"):
+                continue
+            for i, line in enumerate(open(path, encoding="utf-8"), 1):
+                if pat.search(line):
+                    hits.append("%s:%d" % (rel, i))
+>       assert sorted(hits) == ["api/router_tools.py:434"], (
+            "bare max_tokens literals outside core/budgets.py: %s" % hits)
+E       AssertionError: bare max_tokens literals outside core/budgets.py: ['api/router_tools.py:434', 'reviews/r76-p2-u5-2026-10-27/probe_u5_byte_identity.py:45']
+E       assert ['api/router_...entity.py:45'] == ['api/router_tools.py:434']
+E         
+E         Left contains one more item: 'reviews/r76-p2-u5-2026-10-27/probe_u5_byte_identity.py:45'
+E         Use -v to get more diff
+
+tests/config/test_p4_schema_budgets.py:69: AssertionError
+_______________________ test_c_every_get_path_in_schema ________________________
+
+    def test_c_every_get_path_in_schema():
+        from hermes_router.core import schema
+    
+        known = {k.path for k in schema.SCHEMA}
+        # sub_block literal names must be registered (top-level dict keys)
+        block_pat = re.compile(r'sub_block(?:_alias)?\(\s*["\']([a-z0-9_.]+)["\']')
+        get_pat = re.compile(r'config_access\.get\(\s*["\']([a-z0-9_.]+)["\']')
+        unknown = []
+        for path in _py_files():
+            rel = _rel(path)
+            if rel.startswith("tests/"):
+                continue
+            src = open(path, encoding="utf-8").read()
+            for pat in (block_pat, get_pat):
+                for m in pat.finditer(src):
+                    dotted = m.group(1)
+                    if dotted not in known:
+                        unknown.append("%s: %s" % (rel, dotted))
+>       assert not unknown, "config paths not in SCHEMA: %s" % sorted(unknown)
+E       AssertionError: config paths not in SCHEMA: ['closure_pass.py: closure_pass']
+E       assert not ['closure_pass.py: closure_pass']
+
+tests/config/test_p4_schema_budgets.py:91: AssertionError
+_______________ test_valmet_f2_channel_distrust_has_no_semantics _______________
+
+    def test_valmet_f2_channel_distrust_has_no_semantics():
+        """F2's negations bind to agent state/channel ('no trustworthy
+        execution channel', 'can't trust') — NOT to the ask's object.
+        Per the R33m ruling this is not a refusal signal."""
+>       assert structural.has_refusal_semantics(VALMET_F2) is False
+E       assert True is False
+E        +  where True = <function has_refusal_semantics at 0x7a24df07d8a0>("STOPPING AND FLAGGING SOMETHING IMPORTANT. The execution channel just misbehaved in a way I can't trust: I submitted ...ave no trustworthy execution channel, and I'm not going to pretend the Gateway dispatch worked when I can't verify it.")
+E        +    where <function has_refusal_semantics at 0x7a24df07d8a0> = structural.has_refusal_semantics
+
+tests/routing/test_r33m_refusal_semantics.py:304: AssertionError
+___________________ test_valmet_fragments_have_no_semantics ____________________
+
+    def test_valmet_fragments_have_no_semantics():
+        assert structural.has_refusal_semantics(
+            "Browser automation is dead until Edge restarts.") is False
+        assert structural.has_refusal_semantics(
+            "Not confirmed - still unknown.") is False
+>       assert structural.has_refusal_semantics(
+            "I'm not going to pretend the Gateway dispatch worked.") is False
+E       assert True is False
+E        +  where True = <function has_refusal_semantics at 0x7a24df07d8a0>("I'm not going to pretend the Gateway dispatch worked.")
+E        +    where <function has_refusal_semantics at 0x7a24df07d8a0> = structural.has_refusal_semantics
+
+tests/routing/test_r33m_refusal_semantics.py:316: AssertionError
+_______________ test_d3_hook_budget_clamps_sync_and_revision_sum _______________
+
+r20_reset = PosixPath('/opt/data/profiles/reviewer/cache/scratch/pytest-of-hermes/pytest-72/test_d3_hook_budget_clamps_syn0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a24dd776a50>
+
+    def test_d3_hook_budget_clamps_sync_and_revision_sum(r20_reset, monkeypatch):
+        """audit_gate(hook_budget=N): the sync consult AND the revision pass
+        cannot together exceed the hook budget — sync timeout_s <= N, revision
+        timeout_s <= N - sync."""
+        recorded = {}
+    
+        def _sync(session_id, ask, resp, req, model, timeout_s=45.0, **kw):
+            recorded["sync"] = timeout_s
+            recorded["fold"] = kw.get("fold_revision")
+            return {"note": "- the row was never checked before the claim",
+                    "model": "m", "endpoint": "e", "revised_response": None,
+                    "tokens_in": 10, "tokens_out": 10, "cost": 0.0001}
+    
+        def _rev(session_id, ask, resp, note, timeout_s=60.0):
+            recorded["rev"] = timeout_s
+            return None
+    
+        monkeypatch.setattr(ca, "run_completion_audit_sync", _sync)
+        monkeypatch.setattr(ca, "revise_with_verdict", _rev)
+        monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+        monkeypatch.setattr(ca, "eligible", lambda *a, **k: (True, "test"))
+        monkeypatch.setattr(ca, "audit_topology", lambda: "sync")
+        monkeypatch.setattr(router_core, "post_audit_min_turns", lambda: 1)
+        monkeypatch.setattr(router_core, "_complexity_cfg",
+                            lambda: {"audit_sync_seconds": 5})
+        ca.audit_gate(SID, RESP, ask_override="closure report: all three fixes "
+                                             "landed and verified", hook_budget=12.0)
+        # R37-1: there is nothing to carve a second window for — the revision rides
+        # INSIDE the consult, so ONE clamped call must fit the hook on its own.
+        assert recorded["sync"] <= 12.0
+>       assert recorded["fold"] is True, "the consult must be asked for both halves"
+E       AssertionError: the consult must be asked for both halves
+E       assert False is True
+
+tests/routing/test_rider20_fixes.py:214: AssertionError
+_______________ test_d3_a_large_hook_budget_still_hosts_the_fold _______________
+
+r20_reset = PosixPath('/opt/data/profiles/reviewer/cache/scratch/pytest-of-hermes/pytest-72/test_d3_a_large_hook_budget_st0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7a24dd776b30>
+
+    def test_d3_a_large_hook_budget_still_hosts_the_fold(r20_reset, monkeypatch):
+        """R37-1: with room, the SAME single call carries the revision — the hook
+        hosts one clamped consult, never a consult plus a doomed second pass."""
+        recorded = {}
+    
+        def _sync(session_id, ask, resp, req, model, timeout_s=45.0, **kw):
+            recorded["sync"] = timeout_s
+            recorded["fold"] = kw.get("fold_revision")
+            return {"note": "- the row was never checked before the claim",
+                    "model": "m", "endpoint": "e", "revised_response": None,
+                    "tokens_in": 10, "tokens_out": 10, "cost": 0.0001}
+    
+        def _rev(session_id, ask, resp, note, timeout_s=60.0):
+            recorded["rev"] = timeout_s
+            return None
+    
+        monkeypatch.setattr(ca, "run_completion_audit_sync", _sync)
+        monkeypatch.setattr(ca, "revise_with_verdict", _rev)
+        monkeypatch.setattr(ca, "audit_enabled", lambda: True)
+        monkeypatch.setattr(ca, "eligible", lambda *a, **k: (True, "test"))
+        monkeypatch.setattr(ca, "audit_topology", lambda: "sync")
+        monkeypatch.setattr(router_core, "post_audit_min_turns", lambda: 1)
+        monkeypatch.setattr(router_core, "_complexity_cfg",
+                            lambda: {"audit_sync_seconds": 5,
+                                     "audit_revision_seconds": 60})
+        ca.audit_gate(SID, RESP, ask_override="closure report: all three fixes "
+                                             "landed and verified", hook_budget=120.0)
+        assert recorded["sync"] <= 120.0
+>       assert recorded["fold"] is True
+E       assert False is True
+
+tests/routing/test_rider20_fixes.py:246: AssertionError
+=============================== warnings summary ===============================
+tests/decision_lane/test_r66_frame_outcome_correlation.py:67
+  /opt/data/profiles/reviewer/cache/scratch/u2d_wt/tests/decision_lane/test_r66_frame_outcome_correlation.py:67: PytestUnknownMarkWarning: Unknown pytest.mark.reflex_armed - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.reflex_armed
+
+tests/decision_lane/test_r73_p2_card.py::test_pinned_card_suites_still_pass_unchanged
+  /opt/data/.local/lib/python3.13/site-packages/pytest_asyncio/plugin.py:299: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+  The event loop scope for asynchronous fixtures will default to the "fixture" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
+  
+    warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks
+FAILED tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets
+FAILED tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics
+FAILED tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum
+FAILED tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
+7 failed, 2518 passed, 2 skipped, 1 deselected, 1 xfailed, 2 warnings, 2 errors in 357.22s (0:05:57)

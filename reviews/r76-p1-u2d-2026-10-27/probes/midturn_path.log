@@ -1,0 +1,16 @@
+======================================================================
+MIDTURN CASE: NONE-reported | dispatched_aux_model()= ''
+  estimate_cost keys received : ['z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash']
+  tokens rows                 : [{'lane': 'decision', 'model': 'z-ai/glm-5.3-flash', 'cost': 0.000372, 'detail': 'decision_midturn'}]
+  ledger row model            : ['z-ai/glm-5.3-flash']
+  parked banner               : <none>
+  TURN-CLOSE ROLLUP           : · router · impulse (decision) | 1 verdict | tok 2759/102 | $0.000372 | provider=hermes-auxiliary | initiator=agent | row=1 ·
+  parked banners (all)        : []
+======================================================================
+MIDTURN CASE: PRICED | dispatched_aux_model()= 'jev-latest'
+  estimate_cost keys received : ['jev-latest', 'jev-latest']
+  tokens rows                 : [{'lane': 'decision', 'model': 'jev-latest', 'cost': 0.000116, 'detail': 'decision_midturn'}]
+  ledger row model            : ['jev-latest']
+  parked banner               : <none>
+  TURN-CLOSE ROLLUP           : · router · impulse (decision) | 1 verdict | tok 2759/102 | $0.000116 | provider=hermes-auxiliary | initiator=agent | row=1 ·
+  parked banners (all)        : []
