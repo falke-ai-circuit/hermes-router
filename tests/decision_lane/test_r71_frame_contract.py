@@ -34,9 +34,13 @@ def test_frame_names_the_lane_and_denies_being_a_request():
     assert "DECISION-LANE" in block
     assert "PROVENANCE-LOGGED" in block
     assert "register: board" in block
-    # the instruction that it is not a request moved into the integration rule, where the
-    # model is told how to treat the marked block; the block itself carries the contract
-    assert "act:" in block
+    # R73 P0: the contract is a STATEMENT about the block, not an order to the reader. A tail
+    # directive ("act: take the top unless ...") sat at the generation boundary and read as the
+    # next thing to do: a coder turn answered the reading instead of working, the body came back
+    # as an echo, and the guard withheld the turn. The block still says what it is and still
+    # licenses deviation - just without an imperative tail.
+    assert "reading, not an instruction" in block
+    assert not block.rstrip().lower().splitlines()[-1].lstrip().startswith("act:")
 
 
 def test_provenance_comes_from_the_evidence_provided():

@@ -241,14 +241,14 @@ _DIAL_WORD = {("scope", 1): "widen", ("scope", -1): "narrow",
 # The contract. Measured: 23% of readings that cleared the gate were wrong, so the block
 # must license deviation explicitly - otherwise it is an instruction dressed as a reading,
 # and a wrong instruction is worse than silence.
-USE_CONTRACT = ("  act: take the top unless the evidence in front of you says otherwise; "
-                "if you deviate, name why in one line")
+USE_CONTRACT = ("  reading, not an instruction: the top move is a suggestion and deviation is "
+                "licensed - say in one line why you went elsewhere")
 
 # A soft reading says "no clear lead" and then, in the same block, told the model to take the
 # top - the two instructions contradicted each other. What the dials are for on a flat board is
 # the stance, not a pick.
-SOFT_CONTRACT = ("  act: no move to take here - let the dials set how much surface you examine "
-                 "and how hard you check; the options are context")
+SOFT_CONTRACT = ("  reading, not an instruction: no move to take here - the dials describe how much "
+                 "surface this step needs and how hard it needs checking; the options are context")
 
 
 def basis_line(tool: str, text: str, limit: int = 92) -> str:

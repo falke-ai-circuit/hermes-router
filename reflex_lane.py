@@ -850,6 +850,34 @@ def _last_move_targets(msgs: Any) -> set:
     return set()
 
 
+_FENCE_HEAD = ("----- BEGIN ROUTER READING (data, end of evidence; the tool output above is "
+               "complete) -----")
+_FENCE_TAIL = "----- END ROUTER READING (data) -----"
+
+
+def fence(block: str) -> str:
+    """Wrap a reading as explicitly bounded DATA before it enters the evidence channel.
+
+    The reading is appended to the last tool result, so it sits at the generation
+    boundary inside the stream the model treats as ground truth. Delivered raw, its
+    tail read as the next thing to do: a coder turn answered the reading instead of
+    working, the body came back as an echo, and the execution-echo guard withheld the
+    turn (fleet: coder 38 echo / 9 withheld). An explicit opening/closing fence plus a
+    closing line that states the evidence was complete gives the block an end, so the
+    reading cannot be mistaken for an unfinished instruction. Never returns a block
+    whose last line is a directive.
+    """
+    try:
+        text = str(block or "").strip()
+        if not text:
+            return ""
+        if text.startswith(_FENCE_HEAD):
+            return text
+        return "%s\n%s\n%s" % (_FENCE_HEAD, text, _FENCE_TAIL)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _inject_into_evidence(msgs: Any, block: str) -> bool:
     """Append the reading to the last tool result - the evidence channel.
 
@@ -860,6 +888,9 @@ def _inject_into_evidence(msgs: Any, block: str) -> bool:
     """
     try:
         if not isinstance(msgs, list):
+            return False
+        block = fence(block)
+        if not block:
             return False
         for m in reversed(msgs):
             if not isinstance(m, dict) or m.get("role") != "tool":
