@@ -304,7 +304,8 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
             _log(session_id, "reflex_held", reason=why,
                  top=parsed["options"][0]["p"], margin=parsed["margin"], seam="midturn")
             return ""
-        block = _dx.render(parsed, int(c.get("block_chars") or 400))
+        block = _dx.render(parsed, int(c.get("block_chars") or 560),
+                           basis=_dx.basis_line(tool, text))
         if not block:
             return ""
         _park(session_id, block)
@@ -641,7 +642,8 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             _log(sid, "reflex_held", reason=why, top=parsed["options"][0]["p"],
                  margin=parsed["margin"], seam="every_call")
             return False
-        block = _dx.render(parsed, int(c.get("block_chars") or 400))
+        block = _dx.render(parsed, int(c.get("block_chars") or 560),
+                           basis=_dx.basis_line("", window))
         if not block:
             return False
         from . import frames as _fr

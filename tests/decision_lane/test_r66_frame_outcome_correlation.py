@@ -173,7 +173,9 @@ def test_delivery_log_carries_the_block_machine_readably(monkeypatch):
     rl.run_on_request(_req(), session_id="g7", cfg=ON)
     assert seen.get("top_kind") in ("edit", "read")
     block = json.loads(seen["block"])
-    assert "80%" in block and "adjust:" in block
+    # R71: the frame replaced the bare "adjust:" line. The block must still carry the
+    # distribution and the dials in a form the log can be rebuilt from.
+    assert "80%" in block and "dials:" in block
 
 
 def test_mindset_dials_reach_the_block_in_signed_form(monkeypatch):
@@ -185,4 +187,6 @@ def test_mindset_dials_reach_the_block_in_signed_form(monkeypatch):
                                                     "rigour": {"score": 4}}})
     rl.clear()
     block = rl.fire("m1", "terminal", BODY, ON, ask="fix it")
-    assert "scope -1.00" in block and "rigour +1.00" in block
+    # R71: dials ship as a word plus the signed value - the word so the model can act on
+    # it, the value so the reading stays auditable.
+    assert "scope narrow (-1.00)" in block and "rigour verify (+1.00)" in block

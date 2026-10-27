@@ -37,7 +37,10 @@ EVENT = "envelope_echo_delivered"
 # Marker families -> literal marker strings (case-insensitive substring).
 FAMILIES = (
     ("advisory_header", ("[ROUTER ADVISORY", "ROUTER ADVISORY — decision lane",
-                         "[ROUTER FORK NOTE", "ROUTER FORK NOTE")),
+                         "[ROUTER FORK NOTE", "ROUTER FORK NOTE",
+                         # the extraction lane's frame: a restated reading is the same
+                         # failure as a restated advisory, and the guard must see it.
+                         "[ROUTER DECISION READING", "ROUTER DECISION READING")),
     ("option_text_placeholder", ("option text for",)),
     ("omission_placeholder", ("omitted by the author",)),
 )

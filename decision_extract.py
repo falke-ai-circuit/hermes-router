@@ -155,21 +155,69 @@ def parse(data: Any, cands: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
         return None
 
 
-def render(parsed: Dict[str, Any], limit: int = 400) -> str:
-    """The block. A distribution, because that is the shape that measured as calibrated."""
+HEAD_FRAME = "[ROUTER DECISION READING - decision lane; advisory, not a request]"
+
+# One word per direction, so a dial arrives as a thing to do rather than a number to
+# interpret. Same vocabulary as mindset._STANCE, compressed to fit an every-call block.
+_DIAL_WORD = {("scope", 1): "widen", ("scope", -1): "narrow",
+              ("rigour", 1): "verify", ("rigour", -1): "settle"}
+
+# The contract. Measured: 23% of readings that cleared the gate were wrong, so the block
+# must license deviation explicitly - otherwise it is an instruction dressed as a reading,
+# and a wrong instruction is worse than silence.
+USE_CONTRACT = ("  act: take the top unless the evidence in front of you says otherwise; "
+                "if you deviate, name why in one line")
+
+
+def basis_line(tool: str, text: str, limit: int = 92) -> str:
+    """Provenance: what the reading was derived from. One line, never invented."""
+    try:
+        head = " ".join(str(text or "").split())[:limit]
+        if not head:
+            return ""
+        if tool:
+            return "  from: %s -> %s" % (str(tool)[:24], head)
+        return "  from: %s" % head
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "") -> str:
+    """The block. A distribution, because that is the shape that measured as calibrated.
+
+    Four parts, in the order the main model needs them: what this is, what it was read
+    from, the weighted moves, the dials, and how to act on it. Same shape as the frontier
+    and uncensored frames - identity, provenance, payload, contract.
+    """
     try:
         opts = parsed.get("options") or []
         if len(opts) < 2:
             return ""
-        lines = ["[reflex: weighted reading of the choice in front of you - not a request]"]
-        for o in opts[:4]:
-            lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:64]))
+        lines = [HEAD_FRAME]
+        if basis:
+            lines.append(str(basis)[:120])
+        for o in opts[:3]:
+            lines.append("  %2d%%  %s" % (round(float(o["p"]) * 100), str(o["label"])[:60]))
         mind = parsed.get("mindset") or {}
-        bits = ["%s %+0.2f" % (d, float(mind[d])) for d in ("scope", "rigour")
-                if isinstance(mind.get(d), float)]
+        bits = []
+        for d in ("scope", "rigour"):
+            v = mind.get(d)
+            if not isinstance(v, float):
+                continue
+            if abs(v) < 0.15:
+                bits.append("%s steady" % d)
+                continue
+            bits.append("%s %s (%+0.2f)" % (d, _DIAL_WORD.get((d, 1 if v > 0 else -1), "shift"), v))
         if bits:
-            lines.append("  adjust: " + "  ".join(bits))
+            lines.append("  dials: " + " | ".join(bits))
+        lines.append(USE_CONTRACT)
         block = "\n".join(lines)
+        if len(block) <= limit:
+            return block
+        # Over budget: drop provenance and the contract stays. The contract is the part
+        # that changes behaviour; provenance is the part that makes it auditable.
+        short = [lines[0]] + lines[2 if basis else 1:]
+        block = "\n".join(short)
         return block if len(block) <= limit else ""
     except Exception:  # noqa: BLE001
         return ""
