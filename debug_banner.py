@@ -156,12 +156,16 @@ def format_banner(lane: str, trigger: str, model: str, endpoint: str,
 
     Guarantee of this shape, stated exactly: lane VALIDATION applies
     (FORBIDDEN_LANES or an unknown lane returns ""), and the lane label comes
-    from lane_label(). Endpoint REDACTION does NOT apply: metadata_only
-    returns before the endpoint is ever read, so `endpoint` is accepted and
-    ignored — passing a secret-bearing URI here leaves the rendered bytes
-    unchanged. tokens_in/tokens_out/est_cost are likewise accepted and
-    discarded, so no unpriced-model marker can appear. A caller that needs
-    host redaction must use the normal shape, not this one.
+    from lane_label(). Endpoint REDACTION does NOT reach the rendered line —
+    not because the endpoint goes unread: `ep_s` is built and host-redacted
+    (:180-183) and tokens_in/tokens_out/est_cost are converted (:170-172)
+    BEFORE this branch, and metadata_only returns before `ep_s` and those
+    figures are USED, because the failure shape renders no endpoint cell and
+    no usage cell. The redacted host and the figures are therefore discarded
+    unrendered. Passing a secret-bearing URI leaves the rendered bytes
+    unchanged, and no unpriced-model marker can appear, for that reason: the
+    values are read, then dropped, not skipped. A caller that needs host
+    redaction on the line must use the normal shape, not this one.
     """
     try:
         lane = str(lane or "")

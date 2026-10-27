@@ -9,11 +9,14 @@ which skipped everything format_banner exists to do: VALID_LANES/FORBIDDEN_LANES
 validation, the "://" host redaction, the _END_LABELS pre/post mapping and the unpriced
 marker. It is on the failure path, i.e. the path least likely to be exercised.
 
-Correction (R76 P2 U5a): the renderer closes the VALIDATION and label claims only.
-metadata_only returns before the endpoint/usage args are read, so host redaction and
-the unpriced marker are structurally absent on this shape (a secret-bearing endpoint
-renders byte-identically to ""), and the frontier call passes a trigger literal that
-is not an _END_LABELS key. Those are documented-not-asserted below, not claimed.
+Correction (R76 P2 U5b): the renderer closes the VALIDATION and label claims only.
+metadata_only returns before `ep_s` and the usage cells are USED — the endpoint is
+read and host-redacted, and the token/cost args are converted, BEFORE that branch,
+then discarded, because this shape renders no endpoint cell and no usage cell. So a
+secret-bearing endpoint renders byte-identically to "" and no unpriced marker can
+appear: the values are read and dropped, not skipped. The frontier call also passes a
+trigger literal that is not an _END_LABELS key. Those are documented-not-asserted
+below, not claimed.
 
 FROZEN below is the string that path actually parked BEFORE the change — captured by
 driving maybe_execute_anchored with anchored_call returning an empty consult, not by
@@ -96,13 +99,15 @@ def test_the_label_comes_from_the_renderer_not_a_literal():
 
 
 def test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction():
-    """Pin the TRUE guarantee at the frontier failure path (R76 P2 U5a).
+    """Pin the TRUE guarantee at the frontier failure path (R76 P2 U5b).
 
     Enforced: lane validation (an invalid lane is still refused) and the label
-    mapping. NOT enforced: endpoint redaction — metadata_only returns before the
-    endpoint is read, so a secret-bearing URI renders byte-identically to "".
-    This is the documented-not-asserted half of the U5 claim, pinned so it cannot
-    silently drift back into being advertised as a redaction surface.
+    mapping. NOT enforced on the rendered line: endpoint redaction — the endpoint
+    IS read and host-redacted, then discarded, because metadata_only returns
+    before `ep_s` is used and this shape renders no endpoint cell. A
+    secret-bearing URI therefore renders byte-identically to "". This is the
+    documented-not-asserted half of the U5 claim, pinned so it cannot silently
+    drift back into being advertised as a redaction surface.
     """
     assert _render(lane="not-a-lane") == ""
     secret = "openrouter://api.secret-host.example/v1/very-secret?key=abc"
@@ -110,8 +115,69 @@ def test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction():
         "frontier-anchor", TRIGGER, "test/model-a", secret, 0, 0, 0.0, 0.0,
         metadata_only=True)
     assert with_secret == _render()  # endpoint is inert on this shape
-    doc = debug_banner.format_banner.__doc__ or ""
-    assert "Endpoint REDACTION does NOT apply" in doc
+    doc = " ".join((debug_banner.format_banner.__doc__ or "").split())
+    assert "Endpoint REDACTION does NOT reach the rendered line" in doc
+    assert "the values are read, then dropped, not skipped" in doc
+
+
+def test_the_documented_mechanism_matches_observable_behaviour():
+    """The claim says the endpoint is READ and host-redacted, then discarded.
+
+    Drive the shape with an object whose __str__ records invocation. The read
+    must happen — a skipped read leaves the log empty — and the rendered line
+    must carry no endpoint. Both halves are measured, so neither "returns
+    before it is ever read" nor "a secret host rides in the line" can be
+    asserted without the code contradicting it. This is the pin the false
+    sentence could not survive.
+    """
+    calls: list[int] = []
+
+    class _Probe:
+        def __str__(self) -> str:
+            calls.append(1)
+            return "openrouter://api.secret-host.example/v1"
+
+    line = debug_banner.format_banner(
+        "frontier-anchor", TRIGGER, "test/model-a", _Probe(), 0, 0, 0.0, 0.0,
+        metadata_only=True)
+    assert calls, "metadata_only must READ the endpoint: str() is invoked"
+    assert line == _render()          # ...and the redacted host is discarded
+    assert "secret-host" not in line  # no endpoint cell on the failure shape
+    assert "@" not in line
+
+
+# Phrase halves are concatenated so this tripwire's own text never matches
+# itself; the scan is whitespace-flattened so line wrapping cannot hide a
+# reinstated claim (the U5a wording was wrapped across lines at two sites).
+_FALSE_CLAIMS = (
+    "before the endpoint is " + "ever read",
+    "before the endpoint and " + "usage args are read",
+    "before the endpoint/usage args " + "are read",
+    "before the endpoint\n" + "is read",
+)
+
+
+def _flat(path: pathlib.Path) -> str:
+    return " ".join(path.read_text(errors="ignore").split())
+
+
+def test_no_site_still_claims_the_endpoint_goes_unread():
+    """The claim's homes — docstring, call-site comment, pin text — are guarded."""
+    import inspect
+
+    srcs = {
+        "debug_banner.py": str(debug_banner.__file__),
+        "anchor_exec.py": str(ax.__file__),
+        "this_test_module": str(__file__),
+    }
+    for name, path in srcs.items():
+        flat = _flat(pathlib.Path(path))
+        for phrase in _FALSE_CLAIMS:
+            assert " ".join(phrase.split()) not in flat, (name, phrase)
+    # the pin docstring is runtime-visible too
+    pin_doc = inspect.getdoc(
+        test_metadata_only_enforces_lane_validation_but_not_endpoint_redaction) or ""
+    assert "before the endpoint" not in " ".join(pin_doc.split())
 
 
 def test_no_hand_formatted_banner_survives_in_anchor_exec():
