@@ -613,6 +613,7 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         _ensure_rule(request, session_id, _cfg(None))
         ok = _fr.append_platform_rule(msgs, next_rule_id(session_id), block, role="user")
         if ok:
+            _receipt(session_id, {}, None, "midturn")
             _log(session_id, "reflex_weights_delivered", chars=len(block))
         return bool(ok)
     except Exception:  # noqa: BLE001
@@ -878,6 +879,54 @@ def fence(block: str) -> str:
         return ""
 
 
+def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> str:
+    """Park a delivery receipt for a reading that actually shipped.
+
+    A reading is a billed call that changes what the model does next, and it used to leave no
+    trace the user could see: reflex_lane had zero banner references while decision.py had 41,
+    so only the older PRE/POST path ever bannered (4/4 readings delivered, 0/4 banners on the
+    API surface). This is the SAME mechanism the other lanes use - debug_banner.format_banner
+    + park_anchor_banner consumed at the post seam - never a second banner system. It names
+    lane, trigger, model, tokens, cost and the reading's row id, and it is only parked when a
+    block was really delivered.
+    """
+    try:
+        from . import debug_banner as _db
+
+        usage = (data or {}).get("usage") or {} if isinstance(data, dict) else {}
+        ti = usage.get("prompt_tokens")
+        if ti is None:
+            ti = usage.get("input_tokens") or 0
+        to = usage.get("completion_tokens")
+        if to is None:
+            to = usage.get("output_tokens") or 0
+        cost = 0.0
+        try:
+            from . import usage_ledger
+
+            cost = float(usage_ledger.estimate_cost("hermes-auxiliary", int(ti), int(to)) or 0.0)
+        except Exception:  # noqa: BLE001 — a missing price is 0.0, never a guess
+            pass
+        cfg = _cfg(None)
+        row = next_rule_id(session_id)
+        banner = _db.format_banner(
+            lane="reflex", trigger=str(seam or "reading"),
+            model=str(cfg.get("jev_native_model") or "jev-latest"), endpoint="",
+            tokens_in=int(ti), tokens_out=int(to), est_cost=cost, latency_s=0,
+            session_id=session_id, route_id=row, initiator="router",
+        )
+        if not banner:
+            return ""
+        banner = "%s | row=%s" % (banner, row)
+        _db.park_anchor_banner(session_id, banner, task_id="reflex|" + row)
+        _log(session_id, "reflex_receipt_parked", row=row, seam=str(seam or ""),
+             tokens_in=int(ti), tokens_out=int(to), est_cost=round(cost, 6),
+             top=float((parsed.get("options") or [{}])[0].get("p") or 0.0))
+        return banner
+    except Exception:  # noqa: BLE001 — a receipt must never break a delivery
+        return ""
+
+
 def _inject_into_evidence(msgs: Any, block: str) -> bool:
     """Append the reading to the last tool result - the evidence channel.
 
@@ -1009,6 +1058,9 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         if not ok:
             ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
         if ok:
+            # P1: a delivered reading is a billed call with a visible effect, so it ships with
+            # a receipt through the same banner path as every other lane.
+            _receipt(sid, parsed, data, "every_call")
             with _LAST_BLOCK_LOCK:
                 _LAST_BLOCK[sid] = (sig, now)
                 while len(_LAST_BLOCK) > _PENDING_MAX * 2:
