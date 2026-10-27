@@ -140,23 +140,45 @@ def resolve_aux_model(ep: Dict[str, Any]) -> str:
 
 
 def aux_price_model(cls: Optional[Dict[str, Any]] = None) -> str:
-    """R75: the MODEL ID an aux dispatch is priced against.
+    """R76-P1-U2 F1: REMOVED concept — an aux call is priced from the model that
+    was actually dispatched, never from a resolved/default substitute.
 
-    Never the "hermes-auxiliary" display label: that string is a lane name, no
-    price table keys on it, so estimate_cost honestly returned 0.0 and every
-    aux/decision banner rendered the unpriced cell $0.00000* while the tokens
-    were real. Resolved the same way the dispatch itself resolves — the
-    configured aux endpoint model, else the agent's own model — and only then
-    does the literal 'jev-latest' stand in as a last resort. An unknown model
-    still prices 0.0 downstream: failure stays open, never a fabricated rate.
+    The R75 shape of this helper resolved a configured model and fell back to
+    the literal 'jev-latest'; in a layout where that resolution is empty the
+    banner then drew a precise-looking rate for a call some OTHER model served.
+    That is worse than an honest zero. Kept only as a hard error so any
+    surviving caller fails loudly instead of silently fabricating a price.
+    """
+    raise RuntimeError(
+        "aux_price_model is retired (R76-P1-U2 F1): price the dispatched model "
+        "via dispatched_aux_model(), or 0.0 when it is unknown")
+
+
+_DISPATCHED = threading.local()
+
+
+def _set_dispatched_aux_model(model: Any) -> None:
+    """Record the model id the aux client ACTUALLY dispatched, per thread.
+
+    Set by _hermes_aux_call (the single place that resolves the client), read by
+    the tokens-ledger taps. '' means "we do not know what served this call".
+    """
+    _DISPATCHED.model = str(model or "").strip()
+
+
+def dispatched_aux_model() -> str:
+    """The model id this thread's last aux dispatch reported, '' if unknown.
+
+    R76-P1-U2 F1: cost surfaces have one job — be true. An aux call is priced
+    from the model `get_text_auxiliary_client("router")` returned for THAT call,
+    never from a configured model, a lane label, or a default model id. When the
+    id is unknown the caller prices 0.0 and the banner renders the honest
+    unpriced marker: a missing number beats a plausible wrong one.
     """
     try:
-        block = _classification_cfg() if cls is None else cls
-        if not isinstance(block, dict):
-            block = {}
-        return resolve_aux_model(_endpoint_cfg(block)) or "jev-latest"
-    except Exception:  # noqa: BLE001 — a price key must never break the lane
-        return "jev-latest"
+        return str(getattr(_DISPATCHED, "model", "") or "")
+    except Exception:  # noqa: BLE001 — pricing must never raise into delivery
+        return ""
 
 
 def _endpoint_cfg(cls: Dict[str, Any]) -> Dict[str, Any]:
@@ -361,9 +383,14 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
     there; the plugin maintains none). Returns raw OpenAI-shape JSON (same
     contract downstream parse expects) or None on failure. Never raises."""
     try:
+        _set_dispatched_aux_model("")  # never inherit the previous call's model
         from agent.auxiliary_client import get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client("router")
+        # R76-P1-U2 F1: the ONLY source of the price key — the model this call
+        # was dispatched to. Recorded before dispatch so the ledger tap after it
+        # cannot price a different model, and '' when the client reports none.
+        _set_dispatched_aux_model(model)
         if client is None:
             logger.error("hermes_aux_failed reason=no_client")
             return None
@@ -392,6 +419,7 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
                              "completion_tokens": getattr(usage, "completion_tokens", None)}
         return json.dumps(body)
     except Exception as exc:  # noqa: BLE001
+        _set_dispatched_aux_model("")
         logger.error("hermes_aux_failed reason=exception detail=%s", str(exc)[:160])
         return None
 
@@ -461,13 +489,15 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
 
             _it, _ot = _usage_from_response(data)
             if _it is not None or _ot is not None:
-                # R75: price the resolved MODEL ID, not the lane label. The
-                # record's model/endpoint column keeps the display name (the
-                # banner's "@ hermes-auxiliary" cell comes from it); only the
-                # price key changes — an unknown model still prices 0.0.
+                # R76-P1-U2 F1: price ONLY the model this call actually
+                # dispatched. Unknown id -> 0.0 and the honest unpriced marker;
+                # never a configured/default stand-in (a plausible wrong rate is
+                # worse than an honest zero). Pricing never raises.
+                _aux_model = dispatched_aux_model()
                 usage_ledger.record_tokens(
                     "aux", "hermes-auxiliary", session_id, _it, _ot,
-                    usage_ledger.estimate_cost(aux_price_model(cls), _it, _ot),
+                    (usage_ledger.estimate_cost(_aux_model, _it, _ot)
+                     if _aux_model else 0.0),
                     "stage2_classify",
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane

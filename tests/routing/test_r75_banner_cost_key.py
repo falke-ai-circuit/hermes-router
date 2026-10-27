@@ -1,35 +1,40 @@
-"""R75 — the banner billed $0.00000* because it priced a LABEL, not a model.
+"""R75 + R76-P1-U2 — a banner prices what was DISPATCHED, or it says nothing.
 
-Live line (Goran 2026-10-27):
+R75 (Goran 2026-10-27): the banner billed $0.00000* with real tokens because
+`reflex_lane` priced the string "hermes-auxiliary" — the auxiliary lane's DISPLAY
+name. No price source keys on a label, so estimate_cost honestly returned 0.0 and
+the renderer honestly drew the unpriced cell.
 
-    · router · impulse (decision) | 1 lead | jev @ typesafe | 2759/102 tok | $0.00000* | row 2
+    estimate_cost("hermes-auxiliary", 2759, 102) -> 0.0
+    estimate_cost("jev-latest",       2759, 102) -> 0.000116
 
-Tokens were real, the host was right, and the cost was structurally dead:
-`reflex_lane.py` called `usage_ledger.estimate_cost("hermes-auxiliary", ...)`.
-"hermes-auxiliary" is the auxiliary lane's DISPLAY name — no price table (anchor
-chain, provider /models, measured fallback) keys on it — so estimate_cost
-honestly returned 0.0 and the renderer honestly drew the unpriced cell.
+R76-P1-U2 (review F1, blocking): the R75 fix was right for the reflex site but
+WRONG for the two aux sites — they priced a *resolved/default* model, which in
+the repo/test layout degenerated to "jev-latest" while the call was served by
+something else. A precise-looking wrong rate is worse than an honest zero: cost
+surfaces have exactly one job, be true.
 
-Proved deterministically: estimate_cost("hermes-auxiliary", 2759, 102) == 0.0
-vs estimate_cost("jev-latest", 2759, 102) == 0.000116.
+The contract these pins enforce:
 
-Same literal sat in decision.py and semantic_classifier.py, so these pins cover
-all three sites and fix the CONTRACT, not one line:
-
-* the price key is always a resolved model id — never the lane label;
-* a priced model with real tokens renders a non-zero cost and NO asterisk;
-* an unknown model still renders $0.00000* (fail-open is not regressed — the
-  asterisk is honest and a fabricated rate is worse than a zero);
-* banner shape/budget/aggregation (R74) is untouched.
+* an aux site prices the model `get_text_auxiliary_client("router")` reported for
+  THAT call — asserted by equality, never "some priceable model was used";
+* when that id is absent the site prices 0.0 and the banner renders the unpriced
+  marker — a missing model id must never silently become a priced call;
+* the reflex site keeps its own dispatched model (jev_native_model);
+* an unknown model still renders $0.00000* (fail-open not regressed, no invented
+  rate), and pricing never raises into delivery;
+* banner shape/budget/aggregation (R74) untouched.
 """
 import json
 import pathlib
 import re
+import types
 
 import pytest
 
 from hermes_router import config_access as ca
 from hermes_router import debug_banner as db
+from hermes_router import decision
 from hermes_router import reflex_lane as rl
 from hermes_router import semantic_classifier as sc
 from hermes_router.core import usage_ledger as ul
@@ -41,6 +46,15 @@ PARSED = {"options": [{"p": 0.61, "label": "run the check", "kind": "test",
                       {"p": 0.44, "label": "read the file", "kind": "read",
                        "move": "read_file", "target": ""}],
           "margin": 0.17}
+
+# a model id the price tables know, used for the real-rate pin
+PRICED = "jev-latest"
+# the model the fake aux client reports having DISPATCHED — deliberately neither
+# the priced id nor any plausible configured/default id, so a stand-in that
+# happens to equal the default cannot make the equality pins pass
+DISPATCHED = "MiniMax-M3"
+# what a configured/default resolver would have picked instead (the F1 decoy)
+DECOY = "z-ai/glm-5.3-flash"
 
 
 def _usage(ti, to):
@@ -56,13 +70,64 @@ def _wipe(sid):
 @pytest.fixture(autouse=True)
 def clean():
     _wipe(SID)
+    sc._set_dispatched_aux_model("")
     yield
     _wipe(SID)
+    sc._set_dispatched_aux_model("")
 
 
 def _cost_cell(banner):
     cells = [c.strip() for c in str(banner or "").split(" | ")]
     return next((c for c in cells if c.startswith("$")), "")
+
+
+# ---------------------------------------------------------------------------
+# Harness: a fake Hermes aux client that reports a chosen model id.
+# ---------------------------------------------------------------------------
+
+class _AuxClient:
+    """Minimal OpenAI-shape client; records the model actually sent."""
+
+    def __init__(self, content):
+        self.sent = []
+        _outer = self
+
+        class _Completions:
+            def create(self, **kw):
+                _outer.sent.append(kw.get("model"))
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        message=types.SimpleNamespace(content=content))],
+                    usage=types.SimpleNamespace(prompt_tokens=2759,
+                                                completion_tokens=102))
+
+        self.chat = types.SimpleNamespace(completions=_Completions())
+
+
+def _stub_aux(monkeypatch, model, content="benign"):
+    """Route the REAL _hermes_aux_call at a fake client reporting `model`."""
+    monkeypatch.setattr(sc, "_hermes_aux_call", sc._original_hermes_aux)
+    client = _AuxClient(content)
+    monkeypatch.setattr("agent.auxiliary_client.get_text_auxiliary_client",
+                        lambda task: (client, model))
+    return client
+
+
+def _capture(monkeypatch):
+    """Capture price keys and ledger cost cells, in call order."""
+    seen, rows = [], []
+
+    def _est(m, i, o):
+        seen.append(m)
+        return 0.000116
+
+    def _rec(lane, model, sid, it, ot, cost, detail="", **kw):
+        rows.append({"lane": lane, "model": model, "cost": cost, "detail": detail})
+        return True
+
+    monkeypatch.setattr(ul, "estimate_cost", _est)
+    monkeypatch.setattr(ul, "record_tokens", _rec)
+    return seen, rows
 
 
 # ---------------------------------------------------------------------------
@@ -76,44 +141,39 @@ def test_no_estimate_cost_call_anywhere_prices_the_lane_label():
                        for p in root.rglob("*.py")
                        if "tests" not in p.parts and pat.search(p.read_text(encoding="utf-8")))
     assert offenders == [], (
-        "estimate_cost() must be called with a resolved MODEL ID, never the "
+        "estimate_cost() must be called with a dispatched MODEL ID, never the "
         "'hermes-auxiliary' display label (no price table keys on it -> every "
         "such banner renders the unpriced cell $0.00000*): %s" % offenders)
 
 
-def test_the_three_known_sites_pass_a_model_not_the_label(monkeypatch):
-    """Each of the three sites feeds estimate_cost a value that can be priced.
+# ---------------------------------------------------------------------------
+# Pin 2 (F1) — an aux site prices the DISPATCHED model, asserted by equality.
+# ---------------------------------------------------------------------------
 
-    Asserted at the CALL, not in the source: a source grep cannot tell a
-    variable holding the label from one holding the model.
-    """
-    import hermes_router.decision as decision
-
-    seen = []
-
-    def _est(model, it, ot):
-        seen.append(model)
-        return 0.000116
-
-    monkeypatch.setattr(ul, "estimate_cost", _est)
-
-    # (a) reflex_lane._receipt
-    rl._receipt(SID, PARSED, _usage(2759, 102), "every_call")
-
-    # (b) semantic_classifier.aux_raw_call
-    monkeypatch.setattr(sc, "_hermes_aux_call", lambda p, t: json.dumps(
-        {"choices": [{"message": {"content": "benign"}}],
-         "usage": {"prompt_tokens": 2759, "completion_tokens": 102}}))
-    monkeypatch.setattr(ul, "record_tokens", lambda *a, **k: True)
+def test_aux_raw_call_prices_the_dispatched_model_not_a_resolved_one(monkeypatch):
+    # dispatched model deliberately differs from BOTH the configured model and
+    # any plausible default, so a stand-in cannot pass this pin by coincidence
+    _stub_aux(monkeypatch, DISPATCHED)
+    monkeypatch.setattr(ca, "agent_model", lambda: DECOY)
+    monkeypatch.setattr(sc, "resolve_aux_model", lambda ep: DECOY)
+    seen, rows = _capture(monkeypatch)
     sc.reset_limits()
-    assert sc.aux_raw_call("judge this", session_id=SID) is not None
 
-    # (c) decision.score's aux tap — the live "impulse (decision)" path
-    monkeypatch.setattr(ca, "agent_model", lambda: "")  # deterministic key
-    monkeypatch.setattr(sc, "_hermes_aux_call", lambda p, t: json.dumps(
-        {"choices": [{"message": {"content": json.dumps(
-            {"decision": "escalate", "confidence": 0.9, "precedents": []})}}],
-         "usage": {"prompt_tokens": 2759, "completion_tokens": 102}}))
+    assert sc.aux_raw_call("judge this", session_id=SID) is not None
+    assert seen == [DISPATCHED], (
+        "the aux tap must price the model the client dispatched (%r), got %r"
+        % (DISPATCHED, seen))
+    assert rows and rows[0]["cost"] == 0.000116
+    assert rows[0]["detail"] == "stage2_classify"
+
+
+def test_decision_score_prices_the_dispatched_model_not_a_resolved_one(monkeypatch):
+    _stub_aux(monkeypatch, DISPATCHED, content=json.dumps(
+        {"decision": "escalate", "confidence": 0.9, "precedents": []}))
+    monkeypatch.setattr(ca, "agent_model", lambda: DECOY)
+    monkeypatch.setattr(sc, "resolve_aux_model", lambda ep: DECOY)
+    seen, rows = _capture(monkeypatch)
+
     frame = {"precedents": [{"id": "1", "ts": "2026-01-01", "same_repo": True,
                              "recent": True, "snippet": "buffer sizing"}],
              "evol": []}
@@ -122,15 +182,86 @@ def test_the_three_known_sites_pass_a_model_not_the_label(monkeypatch):
         {"calls_per_hour": 20, "score_timeout_seconds": 8,
          "confidence_threshold": 0.6, "max_precedent_age_days": 90})
     assert reason == "ok" and verdict is not None, (verdict, reason)
+    assert seen == [DISPATCHED], seen
+    assert rows and rows[0]["detail"] == "decision_score"
+    assert rows[0]["cost"] == 0.000116
 
-    assert seen, "estimate_cost was never reached"
-    assert "hermes-auxiliary" not in seen, seen
-    assert all(str(m).strip() for m in seen), seen
-    assert seen.count("jev-latest") >= 2, seen
+
+def test_aux_rate_is_the_real_rate_of_the_dispatched_model(monkeypatch):
+    """Real pricing end-to-end: a dispatched model the tables know bills its
+    own rate (2759 in x $0.042/1M, output free), not a rounded placeholder."""
+    _stub_aux(monkeypatch, PRICED)
+    rows = []
+    monkeypatch.setattr(ul, "record_tokens",
+                        lambda lane, model, sid, it, ot, cost, detail="", **kw:
+                        rows.append(cost) or True)
+    sc.reset_limits()
+    assert sc.aux_raw_call("judge this", session_id=SID) is not None
+    assert rows == [0.000116], rows
+
+
+def test_reflex_still_prices_its_own_dispatched_model(monkeypatch):
+    seen, _rows = _capture(monkeypatch)
+    rl._receipt(SID, PARSED, _usage(2759, 102), "every_call")
+    assert seen and seen[0] == PRICED, seen
 
 
 # ---------------------------------------------------------------------------
-# Pin 2 — priced model + real tokens => non-zero cost, no asterisk.
+# Pin 3 (F1) — a MISSING model id must never become a priced call.
+# ---------------------------------------------------------------------------
+
+def test_missing_dispatched_model_prices_zero_and_never_a_stand_in(monkeypatch):
+    _stub_aux(monkeypatch, None)  # the client reports no model
+    monkeypatch.setattr(ca, "agent_model", lambda: DECOY)   # the stand-in trap
+    monkeypatch.setattr(sc, "resolve_aux_model", lambda ep: DECOY)
+    seen, rows = _capture(monkeypatch)
+    sc.reset_limits()
+
+    assert sc.aux_raw_call("judge this", session_id=SID) is not None
+    assert seen == [], (
+        "no dispatched model id -> estimate_cost must NOT be called at all "
+        "(a priced call here is a fabricated rate), keys were %r" % (seen,))
+    assert rows and rows[0]["cost"] == 0.0, rows
+
+
+def test_missing_dispatched_model_on_the_decision_path_prices_zero(monkeypatch):
+    _stub_aux(monkeypatch, "", content=json.dumps(
+        {"decision": "escalate", "confidence": 0.9, "precedents": []}))
+    monkeypatch.setattr(ca, "agent_model", lambda: DECOY)
+    seen, rows = _capture(monkeypatch)
+
+    frame = {"precedents": [{"id": "1", "ts": "2026-01-01", "same_repo": True,
+                             "recent": True, "snippet": "buffer sizing"}],
+             "evol": []}
+    verdict, reason = decision.score(
+        frame, "which approach?",
+        {"calls_per_hour": 20, "score_timeout_seconds": 8,
+         "confidence_threshold": 0.6, "max_precedent_age_days": 90})
+    assert reason == "ok" and verdict is not None
+    assert seen == [], seen
+    assert rows and rows[0]["cost"] == 0.0, rows
+
+
+def test_the_retired_default_model_helper_is_not_called_from_production():
+    with pytest.raises(RuntimeError):
+        sc.aux_price_model()
+    root = pathlib.Path(rl.__file__).parent
+    callers = []
+    for p in root.rglob("*.py"):
+        # production only: tests document the proof, reviews/ holds the
+        # reviewer's probe artefacts (evidence, never rewritten by a fix)
+        if "tests" in p.parts or "reviews" in p.parts:
+            continue
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            if "aux_price_model(" in line and not line.strip().startswith("def "):
+                callers.append("%s:%d" % (p.name, i))
+    assert callers == [], (
+        "aux_price_model() resolved a default model id and is retired; price the "
+        "dispatched model or 0.0: %s" % callers)
+
+
+# ---------------------------------------------------------------------------
+# Pin 4 — a priced banner renders the rate; an unpriced one keeps the asterisk.
 # ---------------------------------------------------------------------------
 
 def test_priced_model_renders_nonzero_cost_and_no_asterisk(monkeypatch):
@@ -145,23 +276,7 @@ def test_priced_model_renders_nonzero_cost_and_no_asterisk(monkeypatch):
     assert cell == "$0.00012", banner
 
 
-def test_the_call_receives_the_resolved_model_id(monkeypatch):
-    seen = []
-
-    def _est(model, it, ot):
-        seen.append(model)
-        return 0.000116
-
-    monkeypatch.setattr(ul, "estimate_cost", _est)
-    rl._receipt(SID, PARSED, _usage(2759, 102), "every_call")
-    assert seen == ["jev-latest"], seen
-
-
-# ---------------------------------------------------------------------------
-# Pin 3 — the honest path is NOT regressed: unknown model stays $0.00000*.
-# ---------------------------------------------------------------------------
-
-def test_unknown_model_still_prices_zero_and_keeps_the_asterisk():
+def test_unknown_model_still_renders_the_honest_zero():
     assert ul.estimate_cost("zz-no-such-model-9", 2759, 102) == 0.0
     acc = {"fires": 1, "tok_in": 2759, "tok_out": 102, "cost": 0.0,
            "first_row": 2, "last_row": 2, "leads": 1, "no_lead": 0}
@@ -176,50 +291,17 @@ def test_estimate_cost_still_refuses_to_fabricate_a_rate():
 
 
 # ---------------------------------------------------------------------------
-# The shared resolver the two aux sites use.
+# Pin 5 — pricing never raises into a delivery.
 # ---------------------------------------------------------------------------
 
-def test_aux_price_model_prefers_the_configured_endpoint_model():
-    cfg = {"aux_endpoint": {"model": "z-ai/glm-5.3-flash"}}
-    assert sc.aux_price_model(cfg) == "z-ai/glm-5.3-flash"
+def test_a_pricing_explosion_cannot_break_the_aux_lane(monkeypatch):
+    _stub_aux(monkeypatch, PRICED)
 
+    def _boom(*a, **k):
+        raise RuntimeError("ledger down")
 
-def test_aux_price_model_falls_back_to_the_agent_model(monkeypatch):
-    monkeypatch.setattr(ca, "agent_model", lambda: "z-ai/glm-5.3-flash")
-    assert sc.aux_price_model({}) == "z-ai/glm-5.3-flash"
-
-
-def test_aux_price_model_last_resort_is_jev_latest(monkeypatch):
-    monkeypatch.setattr(ca, "agent_model", lambda: "")
-    assert sc.aux_price_model({}) == "jev-latest"
-
-
-def test_aux_price_model_never_returns_the_display_label(monkeypatch):
-    monkeypatch.setattr(ca, "agent_model", lambda: "")
-    for cfg in ({}, {"aux_endpoint": {}}, {"aux_endpoint": {"model": "auto"}},
-                {"aux_endpoint": {"model": "hermes"}}, None):
-        got = sc.aux_price_model(cfg)
-        assert got and got != "hermes-auxiliary", (cfg, got)
-
-
-# ---------------------------------------------------------------------------
-# The two ledger taps bill the model, not the label.
-# ---------------------------------------------------------------------------
-
-def test_aux_raw_call_ledger_row_is_priced_from_the_model(monkeypatch):
-    monkeypatch.setattr(ca, "agent_model", lambda: "jev-latest")
-    monkeypatch.setattr(sc, "_hermes_aux_call", lambda p, t: json.dumps(
-        {"choices": [{"message": {"content": "benign"}}],
-         "usage": {"prompt_tokens": 2759, "completion_tokens": 102}}))
-    rows = []
-
-    def _rec(lane, model, sid, it, ot, cost, detail="", **kw):
-        rows.append({"lane": lane, "model": model, "cost": cost, "detail": detail})
-        return True
-
-    monkeypatch.setattr(ul, "record_tokens", _rec)
+    monkeypatch.setattr(ul, "estimate_cost", _boom)
+    monkeypatch.setattr(ul, "record_tokens", _boom)
     sc.reset_limits()
-    assert sc.aux_raw_call("judge this", session_id=SID) is not None
-    assert rows, "the aux tokens-ledger tap must still write"
-    assert float(rows[0]["cost"] or 0.0) > 0.0, rows[0]
-    assert rows[0]["detail"] == "stage2_classify"
+    # the classification still returns its content: observability, not delivery
+    assert sc.aux_raw_call("judge this", session_id=SID) == "benign"

@@ -790,12 +790,15 @@ def score(frame: Dict[str, Any], task_text: str,
 
             _it, _ot = _sc._usage_from_response(data)
             if _it is not None or _ot is not None:
-                # R75: the price key must be the resolved MODEL ID, never the
-                # "hermes-auxiliary" display label (which matches no price
-                # table, so this lane billed $0.00000* with real tokens).
+                # R76-P1-U2 F1: price the model THIS aux call was dispatched to
+                # (reported by the aux client), never the "hermes-auxiliary"
+                # display label and never a default model id. Unknown -> 0.0,
+                # which renders the honest unpriced marker.
+                _aux_model = _sc.dispatched_aux_model()
                 _tok_ok = usage_ledger.record_tokens(
                     "decision", "hermes-auxiliary", "", _it, _ot,
-                    usage_ledger.estimate_cost(_sc.aux_price_model(), _it, _ot),
+                    (usage_ledger.estimate_cost(_aux_model, _it, _ot)
+                     if _aux_model else 0.0),
                     "decision_score",
                 )
                 if _tok_ok is False:
