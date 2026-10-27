@@ -64,6 +64,7 @@ def test_paths_lose_sentence_punctuation():
     assert not any(p.endswith((".", ",")) for p in got)
 
 
+@pytest.mark.reflex_armed
 def test_legacy_lane_stands_down_on_the_dual_config_blocks(monkeypatch):
     """The legacy reader looks at uncensored_router first and that block has no
     reflex_weights, so a single-block check reported 'not armed' while the new lane fired."""

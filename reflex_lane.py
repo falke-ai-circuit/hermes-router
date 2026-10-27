@@ -386,6 +386,22 @@ def clear(session_id: str = "") -> None:
             _SEQ.pop(session_id, None)
         else:
             _SEQ.clear()
+    # the live-reading registry is delivery state like any other: leaving it behind made one
+    # test's contract injection appear in the next one's
+    with _LAST_BLOCK_LOCK:
+        if session_id:
+            _DELIVERED_AT.pop(session_id, None)
+        else:
+            _DELIVERED_AT.clear()
+            _LAST_BLOCK.clear()
+    # the contract is latched once per context by frames; a full clear must release it too,
+    # or the next caller silently gets a reading with no instruction for it
+    if not session_id:
+        try:
+            from . import frames as _fr
+            _fr.reset_rule_latch()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ── wiring helpers ──────────────────────────────────────────────────────────────────────
@@ -451,6 +467,10 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         msgs = request.get("messages")
         if not isinstance(msgs, list):
             return False
+        # the contract goes in BEFORE the reading: the model must know what the marked
+        # block is by the time it reaches it, not after
+        _DELIVERED_AT[session_id] = time.time()
+        _ensure_rule(request, session_id, _cfg(None))
         ok = _fr.append_platform_rule(msgs, next_rule_id(session_id), block, role="user")
         if ok:
             _log(session_id, "reflex_weights_delivered", chars=len(block))
@@ -468,6 +488,33 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
 # not add to it.
 
 _LAST_BLOCK_LOCK = threading.Lock()
+
+# A reading is live in a context once any seam has delivered one. The integration contract
+# has to follow the READING, not the call that happens to deliver it: a block parked by the
+# midturn seam is delivered by inject_pass, which never reached the contract injection that
+# lives on the request-surface path, so the model got a marked block and no instruction for
+# it. Tracked here so either path can ensure the rule is present.
+_DELIVERED_AT: Dict[str, float] = {}
+LIVE_READING_TTL = 1800.0
+
+
+def _ensure_rule(request: Any, sid: str, c: Dict[str, Any]) -> None:
+    """Put the standing rule in the request while a reading is live in this context."""
+    if not c.get("integrate", True):
+        return
+    ts = _DELIVERED_AT.get(sid)
+    if not ts or (time.time() - ts) > LIVE_READING_TTL:
+        return
+    try:
+        from . import frames as _fr
+        ok = _fr.inject_platform_rule(request, _fr.DECISION_RULE_ID, _fr.DECISION_RULE,
+                                      session_id=sid, role="system")
+        # the contract is never persisted, so this log line is the only proof it was in the
+        # request the model saw
+        _log(sid, "decision_rule_injected", rule=_fr.DECISION_RULE_ID,
+             chars=len(_fr.DECISION_RULE), appended=bool(ok), seam="every_call")
+    except Exception:  # noqa: BLE001 - the contract must never break delivery
+        logger.debug("decision rule injection failed", exc_info=True)
 _LAST_BLOCK: Dict[str, Tuple[str, float]] = {}
 DEDUPE_S = 45.0
 
@@ -667,6 +714,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             return False
         sid = str(session_id or "req")
         settle(sid, request)          # grade the last frame against what actually happened
+        _ensure_rule(request, sid, c)  # a reading delivered by another seam still needs it
         ask, window = _window_from_request(request)
         if len(window) < 60:
             _rw._note(reason="no_work_in_request")
@@ -730,17 +778,8 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         # model has to be told which - the frontier and uncensored lanes both carry a
         # standing rule for exactly this reason. Delivered at most once per context,
         # marked by rule id, before the reading itself.
-        if c.get("integrate", True):
-            try:
-                _ok = _fr.inject_platform_rule(request, _fr.DECISION_RULE_ID,
-                                               _fr.DECISION_RULE, session_id=sid,
-                                               role="system")
-                # the contract is never persisted, so the log is the only proof it was
-                # in the request the model saw - same discipline as the delivery banner
-                _log(sid, "decision_rule_injected", rule=_fr.DECISION_RULE_ID,
-                     chars=len(_fr.DECISION_RULE), appended=bool(_ok), seam="every_call")
-            except Exception:  # noqa: BLE001 - the contract must never break delivery
-                logger.debug("decision rule injection failed", exc_info=True)
+        _DELIVERED_AT[sid] = time.time()
+        _ensure_rule(request, sid, c)
 
         # Delivery shape (R72). `user` = the old interlocutor append; `evidence` = ride the
         # last tool result; `system` = standing instruction. Which one the model actually
@@ -759,6 +798,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                 while len(_LAST_BLOCK) > _PENDING_MAX * 2:
                     _LAST_BLOCK.pop(next(iter(_LAST_BLOCK)))
             _remember(sid, parsed, block, n_before)
+            _DELIVERED_AT[sid] = time.time()
             _log(sid, "reflex_weights_delivered", chars=len(block),
                  weights=_weights_str(parsed), margin=_margin(parsed),
                  mindset=parsed.get("mindset"), seam="every_call",

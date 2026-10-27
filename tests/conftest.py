@@ -349,3 +349,21 @@ def _isolate_router_config(monkeypatch, request):
         _st._PRE_ADVISORY.clear()
     except Exception:  # noqa: BLE001
         pass
+
+@pytest.fixture(autouse=True)
+def _legacy_lane_not_superseded(monkeypatch, request):
+    """The fleet's live config is not part of a test.
+
+    Arming the decision reflex on the real profiles turned 24 legacy-lane tests red, because
+    the midturn lane asks the live profile config whether the reflex has superseded it. A
+    test that asserts legacy behaviour must not depend on which shape production happens to
+    be running today. Tests that DO want supersession opt in with @pytest.mark.reflex_armed.
+    """
+    if request.node.get_closest_marker("reflex_armed"):
+        return
+    try:
+        from hermes_router import decision_midturn as _dm
+        monkeypatch.setattr(_dm, "_superseded_by_reflex", lambda cfg=None: False,
+                            raising=False)
+    except Exception:  # noqa: BLE001 - isolation must never fail a test
+        pass
