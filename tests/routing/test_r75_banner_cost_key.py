@@ -305,3 +305,57 @@ def test_a_pricing_explosion_cannot_break_the_aux_lane(monkeypatch):
     sc.reset_limits()
     # the classification still returns its content: observability, not delivery
     assert sc.aux_raw_call("judge this", session_id=SID) == "benign"
+
+
+# ---------------------------------------------------------------------------
+# R76-P1-U2 addendum (F1, same defect class): the decision lane's DEFAULT
+# backend ("nous") puts no model in the request — semantic_classifier's aux
+# client picks it. decision.call_backend used to record the CONFIGURED model in
+# meta, so the ledger row and the parked banner named AND priced a model nobody
+# dispatched (measured: cfg z-ai/glm-5.3-flash claimed $0.000372 for a call
+# served by an id that has no price row). The row/banner model cell must be the
+# id the aux client reported, and the money cell must be that id's own rate.
+# ---------------------------------------------------------------------------
+
+def _verdict_json():
+    return json.dumps({"questions": [{"id": "q1", "type": "choice", "chosen": "a1"}]})
+
+
+def _nous_meta(monkeypatch, dispatched):
+    env = decision.build_envelope(SID, "redis or memcached? weigh the tradeoffs", [], "pre")
+    assert env, "fixture envelope must carry an option set"
+
+    def _call(payload_json, timeout):
+        sc._set_dispatched_aux_model(dispatched)
+        return json.dumps({"choices": [{"message": {"content": _verdict_json()}}],
+                           "usage": {"prompt_tokens": 2759, "completion_tokens": 102}})
+
+    monkeypatch.setattr(sc, "_hermes_aux_call", _call)
+    content, meta, reason = decision.call_backend(env, {"backend": "nous", "model": DECOY})
+    assert reason == "ok", reason
+    return meta
+
+
+def test_nous_backend_records_the_dispatched_model_not_the_configured_one(monkeypatch):
+    meta = _nous_meta(monkeypatch, DISPATCHED)
+    assert meta["model"] == DISPATCHED, (
+        "the decision row must name the model the aux client dispatched (%r), got %r"
+        % (DISPATCHED, meta["model"]))
+    assert meta["model"] != DECOY
+
+
+def test_nous_backend_banner_prices_the_dispatched_model(monkeypatch):
+    meta = _nous_meta(monkeypatch, PRICED)
+    banner = decision.render_decision_banner("pre", meta["model"], meta)
+    assert PRICED in banner and DECOY not in banner, banner
+    real = ul.estimate_cost(PRICED, meta.get("tokens_in"), meta.get("tokens_out"))
+    assert real > 0, "fixture expects a priced id"
+    assert ("$%.6f" % real) in banner, banner
+    assert "$0.00000*" not in banner, banner
+
+
+def test_nous_backend_unpriced_dispatch_renders_the_honest_zero(monkeypatch):
+    meta = _nous_meta(monkeypatch, "zz-no-such-model-9")
+    banner = decision.render_decision_banner("pre", meta["model"], meta)
+    assert "zz-no-such-model-9" in banner and DECOY not in banner, banner
+    assert "$0.0000*" in banner, banner  # the unpriced marker this renderer emits

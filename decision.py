@@ -3100,7 +3100,15 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                                   "max_tokens": _budgets.budget("verdict")["max_tokens"],
                                   "temperature": 0.0})
             body = _sc._hermes_aux_call(payload, int(timeout))
-            meta = dict(meta, model=model, endpoint="hermes-auxiliary",
+            # R76-P1-U2 addendum (F1, same defect class as the aux/tap sites): this branch
+            # puts NO model in the request — semantic_classifier's client picks it. Recording
+            # the CONFIG model here made the ledger row and the parked banner price a model
+            # nobody dispatched (measured: cfg 'z-ai/glm-5.3-flash' billed $0.000372 for a
+            # call served by an id that has no price row). Read back the id the aux client
+            # actually dispatched; only when it reports none is the configured id kept as the
+            # label, because then nothing distinguishes it from the intended target.
+            _sent_model = _sc.dispatched_aux_model()
+            meta = dict(meta, model=_sent_model or model, endpoint="hermes-auxiliary",
                         latency_s=round(time.time() - t0, 2))
             if body is None:
                 return None, meta, REASON_TIMEOUT
