@@ -12,10 +12,11 @@ client that reported nothing therefore billed the CONFIGURED model:
 
 The contract pinned here:
 
-* the ledger/banner MODEL cell stays provenance (it may name the lane's target);
+* the ledger/banner MODEL cell is the dispatched id — '' when the transport
+  reported none (R76-P1-U2e closes the D2 gap: no cfg/default substitute);
 * the PRICE KEY is `meta["price_model"]` — the dispatched id, '' when the
   transport reported none — and never the cfg/default label;
-* unpriced dispatch -> 0.0 and the honest `$0.00000*` marker, with the id named;
+* unpriced dispatch -> 0.0 and the honest `$0.0000*` marker, with the id named;
 * priced dispatch -> that model's real rate;
 * a price-path exception cannot block or alter the banner (fail-open);
 * the three sites already correct (reflex_lane._receipt, decision.score,
@@ -137,11 +138,13 @@ def test_a_nous_unreported_model_prices_zero_never_the_configured_default(monkey
     meta = _call_backend(monkeypatch, "")
 
     assert meta["price_model"] == "", meta.get("price_model")
-    # provenance cell may name the lane target; the PRICE KEY must not
+    # R76-P1-U2e (D2): the NAME cell is the dispatched id too — '' here.
+    assert meta["model"] == "", meta.get("model")
     banner = rp.render_decision_banner("pre", meta["model"], meta)
     assert banner, "banner must render"
     assert "$0.0000*" in banner, banner
     assert "$0.000372" not in banner, banner
+    assert DECOY not in banner, banner
     assert DECOY not in keys, (
         "estimate_cost received the configured default (%r): %r" % (DECOY, keys))
     assert "" in keys, keys

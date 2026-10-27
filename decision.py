@@ -3091,7 +3091,6 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
         if backend == "nous":
             # OpenAI-compatible chat endpoint via the profile's aux path —
             # the plumbing stub for conductor live tests (NO Jev credits).
-            model = str(cfg.get("model") or DEFAULTS["model"])
             from . import semantic_classifier as _sc
             from .core import budgets as _budgets
 
@@ -3105,15 +3104,14 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             # the CONFIG model here made the ledger row and the parked banner price a model
             # nobody dispatched (measured: cfg 'z-ai/glm-5.3-flash' billed $0.000372 for a
             # call served by an id that has no price row). Read back the id the aux client
-            # actually dispatched; only when it reports none is the configured id kept as the
-            # label, because then nothing distinguishes it from the intended target.
-            # R76-P1-U2d: the model CELL is provenance; the PRICE KEY is a different
-            # fact and must be the dispatched id only. Carried separately: `price_model`
-            # is the id the transport reported, '' when it reported none. Pricing reads
-            # that key — never the cfg/default label — so a call that dispatched nothing
-            # prices 0.0 and renders the honest unpriced marker.
+            # actually dispatched.
+            # R76-P1-U2e (reviewer D2): the NAME cell must be the dispatched id too. An
+            # unreported dispatch stays '' — the endpoint cell ('hermes-auxiliary') already
+            # names the lane, and the cfg/default id is NOT provenance for a call nobody
+            # dispatched. `price_model` carries the same fact for the billing resolver
+            # (usage_ledger.price_key), so no site re-invents the fallback.
             _sent_model = _sc.dispatched_aux_model()
-            meta = dict(meta, model=_sent_model or model, price_model=_sent_model,
+            meta = dict(meta, model=_sent_model, price_model=_sent_model,
                         endpoint="hermes-auxiliary",
                         latency_s=round(time.time() - t0, 2))
             if body is None:
@@ -3646,7 +3644,8 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                           "trigger": trigger,
                           "trigger_kind": trigger_kind(trigger),
                           "fork_class": fork_class(ask_text, opts),
-                          "model": str(cfg.get("model") or ""),
+                          # R76-P1-U2e (D2): no dispatch happened -> no id.
+                          "model": "",
                           "fail_open_reason": cap_reason})
             return
         envelope = build_envelope(session_id, ask_text, opts, trigger, cfg)
@@ -3657,7 +3656,8 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                           "trigger": trigger,
                           "trigger_kind": trigger_kind(trigger),
                           "fork_class": fork_class(ask_text, opts),
-                          "model": str(cfg.get("model") or ""),
+                          # R76-P1-U2e (D2): no dispatch happened -> no id.
+                          "model": "",
                           "fail_open_reason": REASON_NO_OPTIONS})
             return
         if _breaker_open(cfg):
@@ -3668,7 +3668,8 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                           "trigger_kind": trigger_kind(trigger),
                           "fork_class": envelope.get("fork_class", ""),
                           "options_hash": options_hash(envelope),
-                          "model": str(cfg.get("model") or ""),
+                          # R76-P1-U2e (D2): no dispatch happened -> no id.
+                          "model": "",
                           "fail_open_reason": REASON_BREAKER_OPEN})
             return
         if not _WORKER_SEM.acquire(blocking=False):
@@ -3911,7 +3912,9 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             "trigger_kind": trigger_kind(ids.get("trigger", "pre")),
             "fork_class": envelope.get("fork_class", ""),
             "options_hash": options_hash(envelope),
-            "model": str(meta.get("model") or cfg.get("model") or ""),
+            # R76-P1-U2e: the name cell is the DISPATCHED id ('', never the cfg
+            # default, when nothing was reported). A fabricated id here was D2.
+            "model": str(meta.get("model") or ""),
             "model_version": str(meta.get("model") or ""),
             "envelope_hash": envelope_hash(envelope),
             "fork_signature": str(ids.get("fork_signature", "")),
@@ -4074,12 +4077,14 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         # real session id). A failed write is FAIL-LOUD: logged at ERROR +
         # a route event + a banner marker, never a silent miss.
         ti, to = meta.get("tokens_in"), meta.get("tokens_out")
-        # R76-P1-U2d: the row's model column is PROVENANCE (the lane/target this row
-        # records); the price key is the model the transport dispatched, and is '' when
-        # the transport reported none. A missing id prices 0.0 — never the cfg/default
-        # label that the model column may still carry.
-        _price_key = (meta["price_model"] if "price_model" in meta
-                      else base_row["model"])
+        # R76-P1-U2e: ONE resolver decides the billing id (usage_ledger.price_key):
+        # the dispatched id, '' when the transport reported none -> 0.0. The row's
+        # model column is the same dispatched id — never a cfg/default substitute.
+        try:
+            from . import usage_ledger as _ul_pk
+            _price_key = _ul_pk.price_key(meta, base_row["model"])
+        except Exception:  # noqa: BLE001 — unresolvable id prices as unknown
+            _price_key = ""
         tokens_claimed = ti is not None or to is not None
         tokens_ok = None if not tokens_claimed else True
         if tokens_claimed:

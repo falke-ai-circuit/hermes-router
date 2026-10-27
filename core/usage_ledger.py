@@ -212,6 +212,33 @@ def describe_price(model: str) -> Dict[str, Any]:
             "priced": isinstance(prices, dict)}
 
 
+def price_key(meta: Optional[Dict[str, Any]],
+              fallback_model: str = "") -> str:
+    """THE billing-id resolver — the one place a plugin lane decides which model
+    id a price lookup may use. Never raises.
+
+    R76-P1-U2e (class-closing): a lane that dispatches without naming a model
+    (the `nous` branch lets the aux client pick) records the id the transport
+    REPORTED in ``meta["price_model"]`` — '' when it reported none. That empty
+    key is the honest answer: `estimate_cost('')` yields 0.0 and the banner
+    renders the unpriced marker. Substituting ``cfg.get("model")`` /
+    ``DEFAULTS["model"]`` here is what billed a model nobody dispatched.
+
+    Lanes that dispatch an explicit model have no ``price_model`` key; their
+    ``meta["model"]`` IS the dispatched id, so it is the key. ``fallback_model``
+    exists only for render call sites that hold the id as a separate argument —
+    it must be that same dispatched id, never a cfg default.
+    """
+    try:
+        if not isinstance(meta, dict):
+            return str(fallback_model or "")
+        if "price_model" in meta:
+            return str(meta.get("price_model") or "")
+        return str(meta.get("model") or fallback_model or "")
+    except Exception:  # noqa: BLE001 — a resolver fault must price as unknown
+        return ""
+
+
 def estimate_cost(model: str, input_tokens: Optional[int],
                   output_tokens: Optional[int]) -> float:
     """Estimate cost from the anchor_chain pricing table (the plugin's only

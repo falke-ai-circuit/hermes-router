@@ -237,11 +237,10 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
 
         ti = meta.get("tokens_in")
         to = meta.get("tokens_out")
-        # R76-P1-U2d: price the id the transport DISPATCHED ('' when it reported
-        # none -> 0.0 + the honest unpriced marker). The cfg/default model that the
-        # model cell may carry is provenance, never a price key.
-        _price_key = (str(meta.get("price_model") or "")
-                      if "price_model" in meta else str(model or ""))
+        # R76-P1-U2e: the ONE billing-id resolver. The dispatched id is the only
+        # key; '' (no model reported) prices 0.0 + the honest unpriced marker.
+        # `model` is the dispatched name cell, never a cfg/default substitute.
+        _price_key = usage_ledger.price_key(meta, str(model or ""))
         # Fail-open (R76-P1-U2d): the price lookup is a receipt nicety — an
         # exception in it must never swallow or alter the banner. Unpriceable
         # renders as the honest 0.0 marker.
@@ -263,7 +262,9 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
             ep = "" if ("/" in ep and ep.startswith("http")) else ep
         _out = debug_banner.format_banner(
             lane="decision", trigger=str(trigger or "none"),
-            model=str(model or "?"), endpoint=ep,
+            # R76-P1-U2e (D2): no fabricated id. An unreported dispatch names
+            # the lane (endpoint cell) instead of inventing a model id.
+            model=str(model or ep or "?"), endpoint=ep,
             tokens_in=ti, tokens_out=to, est_cost=cost,
             latency_s=meta.get("latency_s"),
             initiator=str(initiator or "user"))

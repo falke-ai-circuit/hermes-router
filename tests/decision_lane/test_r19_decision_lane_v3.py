@@ -336,7 +336,11 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
     assert row["choice"] == "opt-1"
     assert row["outcome"] == "pending"
     assert row["trigger"] == "pre"
-    assert row["model"] == decision.DEFAULTS["model"]
+    # R76-P1-U2e (D2): the mocked aux transport reports no dispatched model, so
+    # the row's name cell stays '' — the cfg default is not provenance for a
+    # call nobody dispatched (this assertion used to pin the fabricated id).
+    assert row["model"] == ""
+    assert row["model"] != decision.DEFAULTS["model"]
     assert row["options_hash"] and row["envelope_hash"]
 
 

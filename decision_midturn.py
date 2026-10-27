@@ -948,7 +948,10 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _log(session_id, "midturn_row_without_options", mode=mode,
                  tool=str(tool_name or ""), seam=seam)
         base["envelope_hash"] = _dec.envelope_hash(envelope)
-        base["model"] = str(meta.get("model") or cfg.get("model") or "")
+        # R76-P1-U2e (reviewer D2): the name cell is the DISPATCHED id. An
+        # unreported dispatch stays '' — never the cfg default, which named a
+        # model that never served the call.
+        base["model"] = str(meta.get("model") or "")
         base["model_version"] = str(meta.get("model") or "")
         if content is None:
             _dec.ledger_write(dict(base, fail_open_reason=str(reason)))
@@ -1033,10 +1036,13 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
 
             _ti, _to = meta.get("tokens_in"), meta.get("tokens_out")
             if _ti is not None or _to is not None:
+                # R76-P1-U2e: ONE resolver for the billing id — the dispatched
+                # model, '' when the transport reported none -> 0.0.
+                _pk = _ul.price_key(meta, base["model"])
                 _tokens_ok = bool(_ul.record_tokens(
                     "decision", base["model"],
                     str(session_id or ""), _ti, _to,
-                    _ul.estimate_cost(base["model"], _ti, _to),
+                    _ul.estimate_cost(_pk, _ti, _to),
                     "decision_midturn",
                     task_id=str(base.get("task_id") or ""),
                     initiator="auto"))
@@ -1198,7 +1204,10 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
         "trigger_kind": TRIGGER_KIND,
         "fork_class": fork_cls,
         "options_hash": sig,
-        "model": str(cfg.get("model") or ""),
+        # R76-P1-U2e (D2): a row is only named by the id the dispatch reported;
+        # _handle_hit overwrites this after call_backend. Suppression rows (no
+        # dispatch at all) stay '' rather than naming the cfg target.
+        "model": "",
         "delta_source": DELTA_SOURCE,
         "fork_signature": sig,
         "midturn_mode": mode,
@@ -1486,11 +1495,14 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
     turn-close rollup can render `row=<rid>` (same reconciliation contract
     the manual-path banner already honors)."""
     try:
-        model = str(meta.get("model") or cfg.get("model") or "")
+        # R76-P1-U2e: name cell = dispatched id ('' when none reported); the
+        # price key comes from the ONE resolver, never the cfg default.
+        model = str(meta.get("model") or "")
         ti, to = meta.get("tokens_in"), meta.get("tokens_out")
         try:
             from . import usage_ledger
-            cost = usage_ledger.estimate_cost(model, ti, to)
+            cost = usage_ledger.estimate_cost(
+                usage_ledger.price_key(meta, model), ti, to)
         except Exception:  # noqa: BLE001
             cost = 0.0
         rec = {"choice": str(verdict.get("choice") or ""),
@@ -1684,10 +1696,16 @@ def _aggregate_line(n: int, ti: int, to: int, total: float,
         # within the cap and cut after it; only fall back to the raw
         # cap when no boundary exists.
         # F6 (rider 6): '1 verdict' — singular grammar when n == 1.
+        # R76-P1-U2e: the rollup reconciles against the same honest marker. A
+        # zero total over measured tokens means nothing was priced (the
+        # dispatched id was unreported or has no price row) — render the
+        # asterisk, never a bare 0.000000 that reads as a true price.
+        _cost_cell = ("$%.6f" % total) if total > 0.0 else (
+            "$0.0000*" if (ti or to) else "$%.6f" % total)
         parts = ["· router · impulse (decision) | %d verdict%s "
-                 "| tok %d/%d | $%.6f | provider=%s | initiator=agent"
+                 "| tok %d/%d | %s | provider=%s | initiator=agent"
                  % (n,
-                    "" if n == 1 else "s", ti, to, total, prov
+                    "" if n == 1 else "s", ti, to, _cost_cell, prov
                     or "(unknown)")]
         # R8-1 (rider 8): reconciliation contract on the midturn variant —
         # the rollup carries `row=<rid>` refs for every verdict that has a
