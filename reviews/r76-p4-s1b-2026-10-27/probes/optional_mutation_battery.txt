@@ -1,0 +1,83 @@
+=== PROBE c  legitimate state-dependent red, reason recorded -> EXIT 0
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (optional order/state-dependent member RED: tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance)
+  optional member RED (tolerated): tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+    reason=state-dependent; failure signature matched expect='assert None is not None'
+
+baseline_check: OK — failure set equals the pinned baseline
+
+=== PROBE a  optional id absent from the run (stale/mistyped) -> EXIT 1
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=0
+baseline_check: variant = 0 red (no optional members red)
+
+baseline_check: OPTIONAL ID NOT PRESENT IN RUN — the exemption matches nothing (stale, mistyped, renamed or deselected); that is DRIFT:
+  ? tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  (declared reason=state-dependent)
+
+baseline_check: DRIFT
+
+=== PROBE a2 one-character typo of a live id -> EXIT 1
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: UNPINNED RED (a slice introduced this, or the baseline is stale):
+  + tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  [failure]
+
+baseline_check: OPTIONAL ID NOT PRESENT IN RUN — the exemption matches nothing (stale, mistyped, renamed or deselected); that is DRIFT:
+  ? tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stanc  (declared reason=state-dependent)
+
+baseline_check: DRIFT
+
+=== PROBE b  same node, different failure cause (regression) -> EXIT 1
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: OPTIONAL REASON MISMATCH — this red is not the red the pin declares, so the colour is not the exemption:
+  ! tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  [failure] reason=state-dependent expect='assert None is not None'
+    observed: E       KeyError: 'mindset'
+
+baseline_check: DRIFT
+
+=== PROBE b2 envelope key set changed -> EXIT 1
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=1
+baseline_check: variant = 1 red (no optional members red)
+
+baseline_check: OPTIONAL REASON MISMATCH — this red is not the red the pin declares, so the colour is not the exemption:
+  ! tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  [failure] reason=state-dependent expect='assert None is not None'
+    observed: E       AssertionError: assert {'scope', 'rigour', 'mood'} == {'scope', 'rigour'}
+
+baseline_check: DRIFT
+
+=== PROBE d  optional entry with no reason class -> EXIT 1
+baseline_check: PIN FILE INVALID — refusing to run against it:
+  ! /opt/data/profiles/coder/cache/scratch/tmplu5be89z/baseline.txt:1: optional entry tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance declares reason=''; must be one of state-dependent, env, order
+
+baseline_check: DRIFT
+
+=== PROBE e  optional entry with no failure signature -> EXIT 1
+baseline_check: PIN FILE INVALID — refusing to run against it:
+  ! /opt/data/profiles/coder/cache/scratch/tmplu5be89z/baseline.txt:1: optional entry tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance declares no expect="..." failure signature — an unexplained exemption is refused
+
+baseline_check: DRIFT
+
+=== PROBE f  optional entry green this run (still allowed, noted) -> EXIT 0
+
+baseline_check: pinned required=0 optional=1
+baseline_check: actual failures/errors=0
+baseline_check: variant = 0 red (no optional members red)
+  optional member green this run: tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+
+baseline_check: NOTE — every optional entry was green this run; the optional class is doing no work. Re-check the triage doc before removing the entry.
+
+baseline_check: OK — failure set equals the pinned baseline
+
+BATTERY: PASS

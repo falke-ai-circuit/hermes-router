@@ -46,21 +46,34 @@ with a checksum. So every line in the pin has a row here.
 
 `test_m1` (row 4) is the only entry pinned as `optional`. Stated exactly:
 
-- The brief's premise for this row was that it is **order-dependent** (fails
-  standalone, passes in-suite, count 7 or 8). **That did not reproduce here.**
-  Measured twice: standalone module run `1 failed, 16 passed in 39.45s`, and the
-  full suite `8 failed … 2 errors` — red in both. What the row actually depends
-  on is **state**, not order: the test never applies the fixture that patches
-  `anchor_exec._mindset_history`, so its result is a function of the live session
-  history DB. On a machine where that state exists it can go green; here it is
-  red. Order is one way state can differ between invocations, not the cause.
+- **Observed** at `0e4ce3a` (the S1 commit): the standalone module run fails
+  (`tests/decision_lane/test_r53_midturn_mindset.py` → `1 failed, 16 passed`,
+  `assert None is not None` at `:104`), while the **full suite at that HEAD
+  reports `test_m1` PASSING** (`7 failed, 2528 passed … 2 errors`), and
+  `baseline_check.py` prints `optional member green this run`. So the result is
+  **state-dependent**, not a fixed red: the test never applies the fixture that
+  patches `anchor_exec._mindset_history`, so its colour is a function of the live
+  session-history DB. On a machine (or in a run order) where that state exists it
+  goes green; here, standalone, it is red. Order is one way state can differ
+  between invocations, not the cause — an earlier draft of this doc claimed the
+  test was red on both invocations and that order-dependence "did not
+  reproduce"; that was an assumption, and the suite falsified it.
 - It is therefore pinned as `optional` — the honest encoding of "this test's
   colour is not a fact about the refactor" — rather than silently dropped from
   the pin (which would make a green run a lie) or pinned as `required` (which
   would fail the suite on any machine where it flips green).
-- `scripts/baseline_check.py` accepts either colour for an `optional` entry and
-  prints which variant it saw. It does **not** silently tolerate a superset: an
-  unexpected red fails the check, and a required red that goes green fails the
+- The exemption must explain itself, and the explanation is machine-checked:
+  the pinned line carries `reason=state-dependent` (printed whenever the red
+  occurs) and `expect="assert None is not None"` (the recorded failure
+  signature). A red at that node with a **different** cause — envelope stops
+  carrying `mindset`, key set changes, a new assertion fires — does not match the
+  signature and fails the check as `OPTIONAL REASON MISMATCH`. Colour alone is
+  never acceptance.
+- The entry must also **appear** in the run (red or green). An optional id that
+  never runs — typo, renamed test, deselected, module removed — fails the check
+  as `OPTIONAL ID NOT PRESENT IN RUN`. Green-but-present is allowed and noted.
+- `scripts/baseline_check.py` still does **not** silently tolerate a superset:
+  an unexpected red fails the check, and a required red that goes green fails the
   check (baseline drift must be re-pinned deliberately, in a commit that says so).
 
 ## Consequences for the slice gate

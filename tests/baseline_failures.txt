@@ -8,7 +8,11 @@
 #
 # Format: one node id per line; '#' starts a comment; blank lines ignored.
 #     <nodeid>            required — must be red
-#     optional <nodeid>   may be red or green (order/state-dependent class)
+#     optional <nodeid>   may be red, but only when it carries BOTH
+#                         reason=<state-dependent|env|order> and
+#                         expect="<substring of the recorded failure>"
+#                         (an unexplained exemption is refused; a red with a
+#                          different cause, or an id that never runs, is DRIFT)
 #
 # Every entry here has a row in docs/r76-p4-baseline-triage.md naming its
 # class (env / real / accepted-debt). Adding a line is a decision, not a
@@ -28,8 +32,11 @@ tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the
 # --- optional (1) ----------------------------------------------------------
 # State-dependent, NOT code-dependent: test_m1 does not request the module's
 # own `_env` fixture, so anchor_exec._mindset_history stays unpatched and the
-# stance is read from live session state. Red here on both invocations
-# (standalone module run AND full suite); it can go green where that state
-# exists, which is why it is declared optional rather than required.
+# stance is read from live session state. OBSERVED at 0e4ce3a: red standalone
+# (`1 failed, 16 passed`), PASSING in the full suite (`7 failed, 2528 passed`)
+# — the colour follows the state of the history DB, not the slice.
+# The exemption must explain itself: reason= names the class, and expect= is the
+# recorded failure signature. A red with any other cause is a regression, not
+# this exemption. A node id that never runs at all is DRIFT.
 # Row M1 in docs/r76-p4-baseline-triage.md.
-optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  reason=state-dependent  expect="assert None is not None"
