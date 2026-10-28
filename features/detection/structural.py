@@ -19,6 +19,16 @@ from __future__ import annotations
 import re
 from typing import List
 
+# Unit 2 (2026-10-28): ONE shared normaliser, imported — never copied. A model
+# that emits U+2019 ("I can’t write that") otherwise matches none of the cues
+# below, because every cue in this module spells its contractions with the
+# ASCII apostrophe. Measured before this fix, same sentence, ASCII vs U+2019:
+#     has_refusal_semantics -> True / False
+#     is_candidate          -> True / False
+# This module is the tier-1 gate that feeds the semantic judge, so an unfolded
+# curly quote defeated the net that actually routed the live turn.
+from .normalise import normalise
+
 # First-person modal: the denial stance, anchored to "I".
 _MODAL_RE = re.compile(
     r"\b(?:i\s+(?:won'?t|can'?t|cannot|will\s+not|refuse|decline))\b",
@@ -373,7 +383,7 @@ def has_deliverable_content(text: str) -> bool:
     raises."""
     try:
         return bool(_DELIVERABLE_CONTENT_RE.search(
-            _strip_quoted_spans(text or "")))
+            _strip_quoted_spans(normalise(text))))
     except Exception:  # noqa: BLE001
         return False
 
@@ -478,7 +488,9 @@ def flagged_by_bounded_family(text: str) -> bool:
     try:
         if not isinstance(text, str):
             return False
-        t = text.strip()
+        # Apostrophe fold BEFORE any cue regex (unit 2): the class of miss
+        # being fixed, not one pattern.
+        t = normalise(text).strip()
         if not t:
             return False
         return _bounded_family_hit(t)
@@ -508,7 +520,8 @@ def has_refusal_semantics(text: str) -> bool:
     try:
         if not isinstance(text, str) or not text.strip():
             return False
-        t = text.strip()
+        # Apostrophe fold BEFORE any cue regex (unit 2).
+        t = normalise(text).strip()
         # (1) bounded families — refusal semantics by construction
         if _bounded_family_hit(t):
             return True
@@ -552,7 +565,10 @@ def is_candidate(text: str) -> bool:
     try:
         if not isinstance(text, str):
             return False
-        t = text.strip()
+        # Apostrophe fold BEFORE any cue regex (unit 2): the tier-1 gate is the
+        # net that feeds the judge, and it was defeatable by the exact character
+        # the model emitted.
+        t = normalise(text).strip()
         if not t:
             return False
         # Bounded denial families — extracted verbatim into

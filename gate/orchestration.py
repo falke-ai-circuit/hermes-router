@@ -1346,6 +1346,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _hub()._log_route("POST", event_detail="denial_class",
                           cls=(_denial_class or "unavailable"),
                           body_chars=len(response_text), session_id=session_id)
+        # JOB C (unit 2, 2026-10-28): live misses were undiagnosable — the
+        # refusal body is overwritten by the render and lands in no ledger, so
+        # every fix was validated against a reconstruction the live model never
+        # said. This is a BOUNDED fingerprint taken at the moment the detector
+        # classifies: the class, the body length, and the first 120 chars with
+        # whitespace collapsed. It is the MAIN MODEL'S body (the refusal), not
+        # render content — the never-store-render rule is untouched, the full
+        # body is never logged, and nothing is redacted beyond the 120c cap.
+        try:
+            _probe_head = " ".join(str(response_text or "").split())[:120]
+            _hub()._log_route(
+                "POST", event_detail="denial_class_body_probe",
+                cls=(_denial_class or "unavailable"),
+                body_chars=len(response_text or ""),
+                head=_probe_head, head_chars=len(_probe_head),
+                session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            _hub().logger.debug("denial_class body probe error", exc_info=True)
         _class_authoritative = _denial_class in ("truth_denial", "capacity_limit")
         _class_triggers = _denial_class == "action_denial"
         if _class_triggers:

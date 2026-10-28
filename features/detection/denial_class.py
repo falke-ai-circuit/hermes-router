@@ -181,19 +181,13 @@ EMPTY_BODY_FAILURE = (
 # U+2019 constantly ("I can’t draft…") and every cue here spells its
 # contractions with the ASCII form, so an unfolded curly quote made a real
 # refusal match NO cue at all and fall through to not_a_denial (live,
-# 2026-10-28, session api_1793192476_881df1c5, 1595c body). Folding is 1:1 so
-# body length is unchanged; it is a spelling normalisation, not a heuristic —
-# no tone, length or hedging signal is consulted.
-_APOSTROPHE_FOLD = str.maketrans({
-    "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
-    "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
-    "\u02bc": "'",   # MODIFIER LETTER APOSTROPHE
-    "\uff07": "'",   # FULLWIDTH APOSTROPHE
-})
-
-
-def _normalise(body: str) -> str:
-    return str(body or "").replace("\r\n", "\n").translate(_APOSTROPHE_FOLD)
+# 2026-10-28, session api_1793192476_881df1c5, 1595c body).
+#
+# The fold now lives in ONE place (features/detection/normalise.py) and is
+# IMPORTED here — unit 2 moved it, it is not copied, so structural.py and this
+# module can never drift apart again. `_normalise` stays as the module-local
+# name for callers/tests that already reference it.
+from .normalise import APOSTROPHE_FOLD, normalise as _normalise  # noqa: F401
 
 
 def _object_of(text: str, cue_end: int) -> str:
