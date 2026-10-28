@@ -92,7 +92,6 @@ PATTERN_GROUPS: Dict[str, List[re.Pattern]] = {
 }
 
 PRE_GROUP_NAMES = frozenset(k for k in PATTERN_GROUPS if k != "refusal_phrases" and k != "line_hold_essay")
-POST_GROUP_NAMES = frozenset({"refusal_phrases", "line_hold_essay"})
 
 # ---------------------------------------------------------------------------
 # §12-A1 combined compiled matchers (2026-09-07 simplicity audit, luna-pro

@@ -89,7 +89,7 @@ def test_lane_enabled_requires_explicit_true(_reset, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# 2. detect fire-gate (level semantics mirror complexity LEVELS)
+# 2. detect fire-gate (level semantics mirror complexity's 0-3 intensity scale)
 # --------------------------------------------------------------------------
 
 def test_detect_two_family_gate_level2(_reset):

@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 # Intensity levels
 # ---------------------------------------------------------------------------
 
-LEVELS = {0: "off", 1: "manual_only", 2: "conservative", 3: "aggressive"}
-
 
 def normalize_level(value) -> int:
     """Coerce config level to 0-3. Never raises."""

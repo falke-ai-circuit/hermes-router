@@ -111,8 +111,6 @@ MODE_DECISION_SCORE = "decision_score"
 VALID_MODES = (MODE_FLASH_DIRECT, MODE_PLAN, MODE_CONSULT, MODE_DECISION_SCORE)
 
 # Struggle thresholds (locked v3.0.0 subset)
-SAME_FAILURE_ESCALATE_N = 3      # (a) refusals/failures on same task-hash
-TOOLLOOP_CALLS_N = 5             # (b) provider calls with no new tool-result content
 
 # Consult budget: a failed consultation followed by the same contradiction
 # promotes to OWNERSHIP (Astra: do not consult indefinitely).

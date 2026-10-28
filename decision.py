@@ -7,9 +7,9 @@ Design invariants (binding):
 - ONE dispatcher: a branch inside router_core.dispatch AFTER complexity; this
   module never rewrites user messages — advisory envelope only, non-binding.
 - detect() mirrors complexity.py stage-1 shape; requires >=2 marker families
-  at level 2 (analyst 1.3 FP budget). LEVELS: 0=off, 1=manual-only (user
+  at level 2 (analyst 1.3 FP budget). Levels: 0=off, 1=manual-only (user
   "decide this" phrasing only), 2=conservative (2+ families), 3=aggressive
-  (1 family) — mirrors complexity LEVELS.
+  (1 family) — the same 0-3 intensity scale complexity normalises.
 - build_frame(): state.db FTS top-8 (sqlite_master-guarded, read-only
   timeout 2.0 — mirrors canonical.py), same-git_repo_root preference,
   structured per-precedent timestamps, 90d age cap + explicit
@@ -208,7 +208,6 @@ def _enum_hit(text: str, cfg: Dict[str, Any]) -> bool:
 # 'decision' (cosmetic/structural only — ZERO behavior change). The lane
 # id stays 'decision' for route-log/ledger backcompat; reflex.py owns the
 # type registry.
-REFLEX_TYPE = "decision"
 
 
 def _cfg() -> Dict[str, Any]:

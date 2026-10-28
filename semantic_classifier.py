@@ -62,7 +62,6 @@ DEFAULT_BREAKER_FAILURES = 3
 DEFAULT_BREAKER_COOLDOWN_SECONDS = 600
 
 VALID_VERDICTS = ("refusal", "deflection", "moralizing_decline", "compliant")
-COMPLIANT = "compliant"
 
 # Tolerant parse: LAST occurrence of a valid enum token, case-insensitive
 # (M3 may emit reasoning before the label). \b guards against longer words;
