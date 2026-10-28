@@ -1,0 +1,92 @@
+{
+  "d4_suggestions": {
+    "clear_for_tests_ok": true,
+    "committed": [
+      1,
+      2,
+      3
+    ],
+    "committed_count": 3,
+    "committed_count_after_replay": 3,
+    "delivered": [
+      true,
+      true,
+      true
+    ],
+    "fired_seqs": [
+      1,
+      2,
+      3
+    ],
+    "ledger_events": [
+      "sugg_fired",
+      "sugg_fired",
+      "sugg_fired",
+      "sugg_delivered",
+      "sugg_delivered",
+      "sugg_delivered",
+      "turn_committed"
+    ],
+    "ledger_rows": 7,
+    "ledger_sha256_ts_stripped": "ad315230b678897be9113809566d565bdd11f678d919a4c56bb5c118fa3600dc",
+    "pending_map_len_after_clear": 0,
+    "symbols_present": {
+      "gate_delivered_count": true,
+      "mark_turn_pending": true,
+      "pending_task_for": true,
+      "record_sugg_skipped": true
+    },
+    "would_spend_after_commit": [
+      false,
+      "budget_exhausted"
+    ],
+    "would_spend_after_replay": [
+      false,
+      "budget_exhausted"
+    ],
+    "would_spend_before_commit": [
+      false,
+      "budget_exhausted"
+    ]
+  },
+  "d5_route_gate": {
+    "claim_after_clear_s1": {
+      "lane": "shadow",
+      "rendered": true,
+      "source": "declared_user"
+    },
+    "claim_after_clear_s2": {
+      "lane": "decision",
+      "source": "auto_lane"
+    },
+    "claim_after_executed": {
+      "lane": "shadow",
+      "source": "declared_user"
+    },
+    "claim_after_mark_rendered": {
+      "lane": "shadow",
+      "rendered": true,
+      "source": "declared_user"
+    },
+    "claim_after_register": {
+      "lane": "shadow",
+      "source": "declared_user"
+    },
+    "claim_after_stamp": {
+      "lane": "shadow",
+      "source": "declared_user"
+    },
+    "declared_claims_size": 2,
+    "equiv_via_record_turn_claim": {
+      "lane": "decision",
+      "source": "auto_lane"
+    },
+    "register_declared_1": true,
+    "symbols_present": {
+      "_TURN_CLAIMS": true,
+      "record_turn_claim": true
+    },
+    "turn_claim_registry_size": 1
+  },
+  "tree": "d4parent"
+}

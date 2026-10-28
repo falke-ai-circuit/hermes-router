@@ -1,0 +1,27 @@
+R76-P2-D4/D5 — reference census at HEAD 5859e65 (all file types; .git and __pycache__ excluded)
+
+mark_turn_pending        total=0    
+pending_task_for         total=0    
+record_sugg_skipped      total=0    
+gate_delivered_count     total=0    
+_TURN_CLAIMS             total=0    
+record_turn_claim        total=0    
+_pending_turns           total=2    ./suggestions.py:70:_pending_turns: Dict[Tuple[str, str], str] = {}|./suggestions.py:388:        _pending_turns.clear()|
+
+--- string-literal forms (quoted) ---
+"mark_turn_pending"      0
+"pending_task_for"       0
+"record_sugg_skipped"    0
+"gate_delivered_count"   0
+"_TURN_CLAIMS"           0
+"record_turn_claim"      0
+
+--- star imports in tree ---
+0
+--- __all__ in the two modules ---
+suggestions.py:0
+route_gate.py:0
+--- getattr sites in the two modules ---
+route_gate.py:406:        fn = getattr(_pkg(), name, None)
+route_gate.py:415:        return getattr(importlib.import_module("." + mod_name, __package__), attr)
+route_gate.py:1930:                _override = getattr(decision, "model_override", None)

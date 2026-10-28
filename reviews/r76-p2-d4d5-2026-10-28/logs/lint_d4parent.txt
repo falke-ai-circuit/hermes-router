@@ -1,0 +1,14 @@
+### tree=d4parent commit=99c995bb3ef2d1fa39cd78ec4aedd610a0913528
+-------------------------------------
+
+core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+gate may not import api (direct) KEPT (6 ignored imports)
+passes may not import api (direct) KEPT (1 ignored import)
+features may not import api/gate/passes (direct) KEPT
+lanes may not import api/gate/passes/features (direct) KEPT
+core may not import api/gate/passes/features/lanes (direct) KEPT
+features/lanes may not import the root package hermes_router (direct) KEPT (5 ignored imports)
+
+Contracts: 8 kept, 0 broken.
+exit=0
