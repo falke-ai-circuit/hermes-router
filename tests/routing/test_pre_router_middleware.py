@@ -71,8 +71,18 @@ def test_contested_message_is_not_rendered_at_pre():
     with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
         result = _run(req)
     assert not venice.called  # PRE is not a render trigger any more
-    assert result == {}
-    assert req["messages"][-1]["content"] == CONTESTED
+    # Contract pinned here is "PRE neither renders nor rewrites", not the exact
+    # carrier shape: dispatcher_pre legitimately returns a pass-through
+    # {"request": ...} on its skip paths and {} when it did nothing. Pinning
+    # `result == {}` made this test order-dependent (it read {} alone and the
+    # pass-through carrier when run after tests/classification/).
+    assert set(result) <= {"request"}, result
+    # The assimilation/seam frames are appended as role="system" at the tail, so the
+    # user turn is no longer messages[-1]. Pin the contract: the ask itself travels
+    # unmutated, and every appended turn is platform-internal (never a user turn).
+    user_turns = [m for m in req["messages"] if m["role"] == "user"]
+    assert [m["content"] for m in user_turns] == [CONTESTED]
+    assert all(m["role"] == "system" for m in req["messages"][len(user_turns) + 1:])
 
 
 def test_original_request_not_mutated():
