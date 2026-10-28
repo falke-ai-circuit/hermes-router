@@ -201,32 +201,6 @@ def _apply_replay(rec: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def mark_turn_pending(task_id: str, session_id: str, turn_key: str) -> None:
-    """Register (session_id, turn_key) -> task_id so the next dispatch on the
-    same turn (resume identity) can resolve the interrupted-turn rule.
-    In-memory only (task TTL bounds it); ledger replay covers restarts.
-    Never raises."""
-    try:
-        with _lock:
-            _load_locked()
-            _pending_turns[(str(session_id or ""), str(turn_key or ""))] = str(task_id or "")
-            while len(_pending_turns) > 512:
-                _pending_turns.pop(next(iter(_pending_turns)))
-    except Exception:  # noqa: BLE001
-        return
-
-
-def pending_task_for(session_id: str, turn_key: str) -> Optional[str]:
-    """Task id with uncommitted suggestions for this (session, turn), or None.
-    Never raises."""
-    try:
-        with _lock:
-            _load_locked()
-            return _pending_turns.get((str(session_id or ""), str(turn_key or "")))
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def record_sugg_fired(task_id: str, gate: str) -> Optional[int]:
     """Gate fired one suggestion: append `sugg_fired`, return the seq.
     Budget accounting happens at COMMIT (delivered terminal) — firing only
@@ -266,25 +240,6 @@ def record_sugg_delivered(task_id: str, gate: str, seq: int) -> bool:
                 st = _state[str(task_id or "")]
                 st["delivered"].add(int(seq))
                 st["fired"].discard(int(seq))
-        return ok
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def record_sugg_skipped(task_id: str, gate: str, seq: Optional[int],
-                        reason: str) -> bool:
-    """Frontier timeout / malformed / cap / outage — budget untouched (only
-    DELIVERED VALID suggestions count). Never raises."""
-    try:
-        gate = str(gate or "").lower()
-        if gate not in VALID_GATES:
-            return False
-        ok = _append({"event": "sugg_skipped", "task_id": str(task_id or ""),
-                      "gate": gate, "seq": int(seq or 0), "reason": str(reason or "")[:60],
-                      "ts": round(time.time(), 3)})
-        if ok and seq:
-            with _lock:
-                _state[str(task_id or "")]["skipped"].add(int(seq))
         return ok
     except Exception:  # noqa: BLE001
         return False
@@ -357,16 +312,6 @@ def committed_count(task_id: str) -> int:
         with _lock:
             _load_locked()
             return len(_state.get(str(task_id or ""), {}).get("delivered", ()))
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def gate_delivered_count(task_id: str, gate: str) -> int:
-    """Delivered suggestions on this task for ONE gate (one-per-gate rule —
-    gate-scoped counting lands with the gate registry in Phase 1; Phase 0
-    exposes the task-level read). Never raises."""
-    try:
-        return committed_count(task_id)
     except Exception:  # noqa: BLE001
         return 0
 
