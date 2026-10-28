@@ -1127,6 +1127,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         from .. import render_inbox as _rie_r
                         _rie_r.record_render("POST_EMPTY_BODY", session_id, 0,
                                              _rendered_empty)
+                        from .. import assimilation as _assim_e
+                        _assim_e.mark_turn_rendered(session_id)
                     except Exception:  # noqa: BLE001
                         _hub().logger.debug("empty-body render inbox error",
                                             exc_info=True)
@@ -1947,6 +1949,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # the agent's response at delivery. Without this, the agent's context
         # (raw response) and the user's screen (render) diverge silently.
         _hub().render_inbox.record_render("POST", session_id, len(response_text), rendered)
+        # FRAME unit (Goran 2026-10-28): this render IS the delivered turn, so
+        # the next request must carry the assimilation frame exactly once —
+        # one frame per lane, role="system", consumed by the PRE injection
+        # point. Marking is fail-quiet: a lost mark costs a frame, never a turn.
+        try:
+            from .. import assimilation as _assim_frame
+            _assim_frame.mark_turn_rendered(session_id)
+        except Exception:  # noqa: BLE001 — never breaks delivery
+            _hub().logger.debug("assimilation mark error", exc_info=True)
 
         _hub().state.loop_guard_mark_fired(guard_key)
         # v3.1.0 canonical-event commit: this render REPLACES the persisted

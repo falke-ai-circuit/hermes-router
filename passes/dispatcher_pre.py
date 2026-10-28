@@ -145,17 +145,32 @@ def _hs_inject_pass(request: Any, session_id: str = "") -> bool:
     RIDER 22: session_id (bound from the context kwargs by the caller) rides
     into frames.inject_higher_self_rule so the once-per-context latch keys
     per session — the gateway does not persist the injected system message
-    across turns, so the marker scan alone re-injected on every turn."""
+    across turns, so the marker scan alone re-injected on every turn.
+
+    FRAME unit (Goran 2026-10-28): the UNCENSORED-LANE assimilation frame
+    rides this same pass and the same role="system" channel — one frame per
+    lane, one injection point. It is fed by a mark the POST delivery seam
+    leaves when a render IS the delivered turn, and it consumes that mark, so
+    the frame appears once per rendered turn and never on a turn that had no
+    render. Body prose is untouched: this is a system message."""
+    injected = False
     try:
         from ..frames import higher_self_rule_enabled, inject_higher_self_rule  # R8h
 
         if higher_self_rule_enabled():
             _before = len((request or {}).get("messages") or [])
             inject_higher_self_rule(request, session_id=str(session_id or ""))
-            return len((request or {}).get("messages") or []) > _before
+            injected = len((request or {}).get("messages") or []) > _before
     except Exception:  # noqa: BLE001 - identity frame must never break routing
         logger.debug("higher-self rule injection error", exc_info=True)
-    return False
+    try:
+        from .. import assimilation as _assim
+
+        if _assim.inject_frame(request, str(session_id or "")):
+            injected = True
+    except Exception:  # noqa: BLE001 — the frame must never break routing
+        logger.debug("assimilation frame injection error", exc_info=True)
+    return injected
 
 
 def _audit_delivery_pass(request: Any, context: Dict[str, Any]) -> "Optional[dict]":
