@@ -268,10 +268,6 @@ def _purge_confirmations() -> None:
     return _commands_config._purge_confirmations()
 
 
-def _peek_confirmation(token: str) -> Optional[str]:
-    return _commands_config._peek_confirmation(token)
-
-
 # ---------------------------------------------------------------------------
 # Deploy invariant (6b.1): mutation arming = env gate + gateway authz posture
 # ---------------------------------------------------------------------------
@@ -366,10 +362,6 @@ def _parse_value(spec: Dict[str, object], raw: str) -> Tuple[bool, str, object]:
 # ---------------------------------------------------------------------------
 # Mutation executor — ONE chokepoint: config_writer
 # ---------------------------------------------------------------------------
-
-
-def _chain_entry_mut(knob_tail: str, value: object, entry_name: str):
-    return _commands_config._chain_entry_mut(knob_tail, value, entry_name)
 
 
 def _set_nested_value(section: Dict[str, Any], dotted: str, value: object) -> None:
@@ -597,25 +589,6 @@ def handle_router_command(raw_args: str) -> str:
         except Exception:  # noqa: BLE001
             sub = "unknown"
         return "error: %s: %s" % (sub, str(exc)[:200])
-
-
-async def handle_router_command_async(raw_args: str) -> str:
-    """Async-aware entry: bare/help/etc run sync; /router ping runs the async
-    curl path; everything else resolves the sync result."""
-    try:
-        tokens = (raw_args or "").split()
-        if tokens and tokens[0].lower().lstrip("/") == "ping":
-            rate = _rate_admit("ping")
-            if rate:
-                return rate
-            return await _cmd_ping()
-        result = handle_router_command(raw_args)
-        if asyncio.iscoroutine(result):
-            return await result
-        return result
-    except Exception as exc:  # noqa: BLE001 — 6b.3: always a string, never raise
-        logger.debug("router async command error", exc_info=True)
-        return "error: router: %s" % str(exc)[:200]
 
 
 def _lev(a: str, b: str) -> int:

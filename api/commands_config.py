@@ -756,38 +756,6 @@ def _config_rollback(rest: List[str]) -> str:
     except Exception as exc:  # noqa: BLE001
         return "error: rollback failed: %s" % str(exc)[:160]
 
-def _peek_confirmation(token: str) -> Optional[str]:
-    """Summary of a live pending token, or None (expired/unknown)."""
-    try:
-        _commands()._purge_confirmations()
-        rec = _commands()._pending_confirmations.get(str(token or ""))
-        if not rec:
-            return None
-        return str(rec.get("summary") or "")
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def _chain_entry_mut(knob_tail: str, value: object, entry_name: str):
-    def mut(section: Dict[str, Any]) -> None:
-        chain = section.get("chain")
-        chain = [e for e in chain if isinstance(e, dict)] if isinstance(chain, list) else []
-        hit = None
-        for e in chain:
-            if str(e.get("name") or e.get("model") or "") == entry_name:
-                hit = e
-                break
-        if hit is None:
-            raise ValueError("no chain entry named %r (existing: %s)" % (
-                entry_name, ", ".join(str(e.get("name") or e.get("model") or "?") for e in chain) or "none"))
-        if knob_tail not in ("max_tokens", "temperature", "timeout"):
-            raise ValueError("only max_tokens/temperature/timeout are chat-settable on chain entries")
-        e2 = dict(hit)
-        e2[knob_tail] = value
-        chain = [e2 if e is hit else e for e in chain]
-        section["chain"] = chain
-    return mut
-
 
 def _record_rollback(previous_section: Dict[str, Any], changed_keys: List[str]) -> None:
     """Append the pre-mutation section to the JSONL sidecar (keep last 10).

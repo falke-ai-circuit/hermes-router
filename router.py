@@ -81,12 +81,6 @@ def _load_router_config() -> Dict[str, Any]:
         return {}
 
 
-def _endpoint_cfg() -> Dict[str, Any]:
-    cfg = _load_router_config()
-    endpoint = cfg.get("endpoint")
-    return endpoint if isinstance(endpoint, dict) else {}
-
-
 def _as_int(value: Any, default: int, floor: Optional[int] = None) -> int:
     try:
         out = int(value)

@@ -181,11 +181,6 @@ def dispatched_aux_model() -> str:
         return ""
 
 
-def _endpoint_cfg(cls: Dict[str, Any]) -> Dict[str, Any]:
-    ep = cls.get("aux_endpoint")
-    return ep if isinstance(ep, dict) else {}
-
-
 def _as_int(value: Any, default: int) -> int:
     try:
         return int(value)
