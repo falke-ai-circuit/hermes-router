@@ -8,12 +8,13 @@
 #   `allow_indirect_imports` field (import-linter 2.15, contracts/layers.py).
 #   Declared on this tree at e846ae9 it reports 11 illegal pairs / 45 routes:
 #   hermes_router/__init__.py (the hub) imports api.* (l.44-49) and
-#   gate.registration (l.54), and 29 source modules import the hub
-#   (`from . import X`, 238 sites in 37 files) -> 32 distinct entry edges,
-#   31 of 43 route objects hub-mediated. With BOTH true upward edges exempted
+#   gate.registration (l.54), and 29 source modules import the hub -> 29
+#   distinct entry edges (re-measured at 7388ab2; the earlier "32 entry
+#   edges", "238 sites in 37 files" and "31 of 43 route objects" figures did
+#   not reproduce and are withdrawn). With BOTH true upward edges exempted
 #   STILL broken (11 pairs / 38 routes). Neutralising the hub entirely
-#   (all 58 hub-involved edges) still leaves 7 illegal pairs / 19 module
-#   pairs through top-level facility modules. A transitive ladder is not
+#   (all 58 hub-involved edges) still leaves 4 illegal pairs / 5 routes
+#   through top-level facility modules. A transitive ladder is not
 #   reachable by config, and not reachable by hub surgery alone.
 #   The ladder therefore ships as five DIRECT-edge `forbidden` contracts with
 #   `allow_indirect_imports = True` (without the flag, `forbidden` checks
@@ -134,9 +135,17 @@ ignore_imports =
 # `hermes_router.gate` covers gate.registration and gate.orchestration.
 #
 # Two exemptions, both live direct edges proven by the S2 liveness mutations:
-#   gate.registration -> api.*            the composition root's 6 handler binds
+#   gate.registration -> api.{commands, commands_config, commands_diag,
+#                              commands_runtime, config_writer, router_tools}
+#                                          the composition root's 6 handler binds
 #   passes.dispatcher_pre -> api.router_tools   one function-local late-bind
 # Every other direct upward edge is illegal. No third exemption exists.
+#
+# R76-P4-S2b: the gate exemption is SIX PAIR-EXACT entries, not
+# `hermes_router.api.*`. The wildcard absorbed every present and future api
+# submodule: adding `api/newthing.py` + `from ..api import newthing` left the
+# contract KEPT with 7 ignored imports. The intent was always a fixed set of six
+# (gate/registration.py:32), so the config now enforces exactly that.
 
 [importlinter:contract:gate-no-api]
 name = gate may not import api (direct)
@@ -145,7 +154,12 @@ source_modules = hermes_router.gate
 forbidden_modules = hermes_router.api
 allow_indirect_imports = True
 ignore_imports =
-    hermes_router.gate.registration -> hermes_router.api.*
+    hermes_router.gate.registration -> hermes_router.api.commands
+    hermes_router.gate.registration -> hermes_router.api.commands_config
+    hermes_router.gate.registration -> hermes_router.api.commands_diag
+    hermes_router.gate.registration -> hermes_router.api.commands_runtime
+    hermes_router.gate.registration -> hermes_router.api.config_writer
+    hermes_router.gate.registration -> hermes_router.api.router_tools
 
 [importlinter:contract:passes-no-api]
 name = passes may not import api (direct)
@@ -188,3 +202,45 @@ forbidden_modules =
     hermes_router.features
     hermes_router.lanes
 allow_indirect_imports = True
+
+# --- R76-P4-S2b: hub-spelling blind spot ------------------------------------
+# The five contracts above name layer PACKAGES. `from ... import router_tools`
+# in a features/lanes module is a direct upward import of api.router_tools at
+# runtime, but grimp records the edge against the ROOT package (`hermes_router`,
+# because no top-level module of that name exists), so none of the five saw it
+# -- both probes stayed KEPT on the aa1f846 tree.
+#
+# Shape notes (both forced by import-linter 2.15, not preference):
+#   * `as_packages = False` -- with the default True, every source/forbidden
+#     pair that NESTS is skipped (contracts/forbidden.py::_modules_overlap), and
+#     features/lanes live inside hermes_router, so the contract would be a no-op.
+#   * sources are ENUMERATED -- with as_packages=False only the named module is
+#     checked, and a wildcard expression (`hermes_router.features.*`) is not
+#     expanded by this version. Adding a module under features/ or lanes/ means
+#     adding it here; tests/test_import_guard_liveness.py fails if one is missing.
+# Current legit root edges are the four facility modules below (7 sites).
+[importlinter:contract:features-lanes-no-root]
+name = features/lanes may not import the root package hermes_router (direct)
+type = forbidden
+source_modules =
+    hermes_router.features
+    hermes_router.features.banners
+    hermes_router.features.banners.kinds
+    hermes_router.features.banners.lifecycle
+    hermes_router.features.detection
+    hermes_router.features.detection.semantic_judge
+    hermes_router.features.detection.structural
+    hermes_router.features.patterns
+    hermes_router.features.patterns.engine
+    hermes_router.lanes
+    hermes_router.lanes.builtins
+    hermes_router.lanes.registry
+forbidden_modules = hermes_router
+allow_indirect_imports = True
+as_packages = False
+ignore_imports =
+    hermes_router.features.banners.lifecycle -> hermes_router.debug_banner
+    hermes_router.features.banners.lifecycle -> hermes_router.render_inbox
+    hermes_router.features.banners.lifecycle -> hermes_router.advisory_consumption
+    hermes_router.features.detection.semantic_judge -> hermes_router.dispatcher_knobs
+    hermes_router.features.detection.semantic_judge -> hermes_router.advisory_consumption
