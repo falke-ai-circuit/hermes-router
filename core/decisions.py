@@ -54,9 +54,6 @@ _QUEUE_MAX = 512
 # §12-6 failure classes — dedicated enum, orthogonal to `action`/`outcome`.
 FAIL_CLASS_NONE = ""                    # no failure involved
 FAIL_CLASS_PROVIDER_TIMEOUT = "provider_timeout"
-FAIL_CLASS_TRANSPORT = "transport"
-FAIL_CLASS_HTTP = "http_status"
-FAIL_CLASS_INTERNAL = "internal"
 
 POLICY_VERSION = "advisory"   # Phase 0: nothing is rejected; advisory only
 

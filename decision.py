@@ -164,7 +164,6 @@ _p7_bind(globals(), "decision-families")
 # ---------------------------------------------------------------------------
 
 
-
 # Structural enumeration (battery 2026-09-27): numbered/bulleted list items.
 # Not a phrasing family — counted + length-gated inside detect().
 
@@ -1011,7 +1010,6 @@ def pending_workers() -> int:
 # the conductor flips. All public entries fail-open and never raise.
 # ===========================================================================
 
-REASON_SKIP = "skip_decision"
 STAND_DOWN_CHOICE = "stand_down"  # §7(d): lane-injected escape option
 TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
                  # R59L: the frontier lane shares THIS table, and until now its
@@ -1104,7 +1102,6 @@ REASON_BACKEND_AUTH = "backend_auth"
 REASON_BACKEND_QUOTA = "backend_quota"
 REASON_BACKEND_HTTP_FMT = "backend_http_%d"
 
-MANUAL_TRIGGER_PREFIX = "decide this"
 SKIP_TRIGGER_PREFIX = "skip decision"
 
 
@@ -2344,8 +2341,6 @@ def _ledger_priors(fork_cls: str, option_index: int, cfg: Dict[str, Any],
                                   option_index + 1, chosen, followed))
     except Exception:  # noqa: BLE001
         return None
-
-
 
 
 def _option_frame(label: str, ask: str, option_index: int, fork_cls: str,
@@ -4162,7 +4157,6 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
 # ---------------------------------------------------------------------------
 
 
-
 def extract_actual_choice(text: str) -> str:
     """Actual option id the agent ACTED on, if the response names one.
     '' when absent — unknown outcomes stay pending, never guessed (§5.8)."""
@@ -4504,7 +4498,6 @@ def capture_outcome(session_id: str, db_path: str = "",
                 conn.close()
         except Exception:  # noqa: BLE001
             pass
-
 
 
 def _record_actual(session_id: str, response_text: str, cfg: Dict[str, Any],

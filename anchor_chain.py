@@ -51,8 +51,6 @@ NOUS_BASE = "https://inference-api.nousresearch.com/v1"
 NOUS_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_DAILY_CAP_USD = 2.0
 
-_ROLES = ("primary", "judge")
-
 
 # ---------------------------------------------------------------------------
 # Resolved anchor endpoint

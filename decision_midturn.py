@@ -1538,8 +1538,6 @@ def _record_consumed(session_id: str, verdict: Dict[str, Any],
 # LEG 3 — aggregate banner at turn close (park/consume reuse)
 # -----------------------------------------------------------------------
 
-_HIST_BUCKETS = 4
-
 
 def close_turn(session_id: str) -> str:
     """Called from the POST/turn-close hook exactly once per turn. Returns

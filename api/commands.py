@@ -221,8 +221,6 @@ CONFIG_GET_MAX_LINES = 100
 DOCTOR_PING_MAX_TOKENS = 16
 DOCTOR_PING_TIMEOUT = 20
 
-TRUNCATION_NOTE = "... output truncated — use a narrower subcommand"
-
 
 def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
@@ -238,7 +236,6 @@ def _cap(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
 # Rate limits (6b.4 #6): sliding window per subcommand, released in finally
 # ---------------------------------------------------------------------------
 
-_RATE_LOCK = None  # created lazily to avoid import-order issues
 _RATE_WINDOWS: Dict[str, List[float]] = {}
 _RATE_LIMITS = {
     "default": 30,       # per 60s, per subcommand kind

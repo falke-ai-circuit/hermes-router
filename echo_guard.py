@@ -62,8 +62,6 @@ _STRUCTURAL = (
 # because a guard that keys on a retired vocabulary cannot see the projection it
 # is supposed to catch: on an isolated install the delivered body opened with
 # "explorer: 0.6 | ... verifier: 0.70 | ..." and every family check missed it.
-_POV_LABELS = ("explorer:", "verifier:", "skeptic:", "operator:",
-               "practitioner:", "outsider:")
 #: Two or more voice names carrying a numeric score is the projection's own
 #: shape, header or no header -- the model strips the bracketed header when it
 #: restates the note, which is exactly when the shape check matters.
@@ -80,7 +78,6 @@ _POV_HEAD_SCAN = 5
 
 #: Lines the projection emits around its voice block; router-authored, so the
 #: head cut takes them with the scores rather than leaving them stranded.
-_GATE_LINE_RE = re.compile(r"^\s*gates\s*:", re.I)
 
 
 def _scored_voice_line(line: str) -> bool:
@@ -352,7 +349,6 @@ def _report_value(obj) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return ""
-
 
 
 # R34-19f — two leak shapes the tail regexes miss, both seen live.

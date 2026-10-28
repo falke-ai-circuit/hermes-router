@@ -116,7 +116,6 @@ TOOLLOOP_CALLS_N = 5             # (b) provider calls with no new tool-result co
 
 # Consult budget: a failed consultation followed by the same contradiction
 # promotes to OWNERSHIP (Astra: do not consult indefinitely).
-_CONSULT_BUDGET = 1
 
 
 # ---------------------------------------------------------------------------
@@ -1048,8 +1047,6 @@ def _lane_enabled(lane: str) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return True
-
-
 
 
 # ---------------------------------------------------------------------------

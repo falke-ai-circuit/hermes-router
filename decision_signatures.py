@@ -149,7 +149,6 @@ _BARE_FILE_RE = re.compile(
     r"ts|tsx|js|jsx|sql|html|css|rs|java|rb|c|cc|cpp|h|hpp|txt|service|conf))\b",
     re.I)
 _TOOL_TOKEN_RE = re.compile(r"\b(" + "|".join(re.escape(t) for t in ALL_TOOLS) + r")\b")
-_SKILL_RE = re.compile(r"\b([a-z0-9][a-z0-9-]{4,})\b")
 
 _STOPWORDS = frozenset("""
 the and for with that this from into over under then than them they their there

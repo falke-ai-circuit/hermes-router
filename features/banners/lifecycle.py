@@ -23,8 +23,6 @@ from ...features.banners import kinds as _kinds
 
 logger = logging.getLogger(__name__)
 
-_MAX_BANNER_CHARS_IMPORT = None  # imported lazily from debug_banner
-
 
 def _db():
     """Late-bind the banner formatter module (owns the state dicts)."""

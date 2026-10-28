@@ -331,7 +331,6 @@ def clear(session_id: str = "") -> None:
 _THROTTLE_LOCK = threading.Lock()
 _LAST_FIRE: Dict[str, float] = {}
 MIN_INTERVAL_S = 12.0
-MAX_PER_SESSION = 40
 
 
 def _load_cfg() -> Dict[str, Any]:

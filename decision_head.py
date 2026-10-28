@@ -39,7 +39,6 @@ DEFAULT_THRESHOLD = 0.5
 DEFAULT_WEIGHTS_SUBPATH = os.path.join(".cache", "routellm", "mf_gpt4_augmented")
 
 # Conservative unpriced-model defaults mirror anchor_chain pricing fallbacks.
-_CONSULT_DEFAULT_MAX_TOKENS = 2000
 
 _LOCK = threading.Lock()
 _HEAD_STATE: Dict[str, Any] = {"backend": None, "model": None, "fallback_logged": False,

@@ -145,7 +145,6 @@ UNROUTED_BANNER = "router: direct provider call detected, unrouted"
 _TURN_TTL_SECONDS = 1800.0
 # Ledger fallback window: a render/anchor ledger record for this session
 # newer than the turn's first capture counts as 'routed this turn'.
-_LEDGER_WINDOW_SECONDS = 1800.0
 
 _LOCK = threading.Lock()
 # session_id -> list of turn records {"hosts": Set[str], "start": float,

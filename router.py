@@ -50,7 +50,6 @@ DEFAULT_TIMEOUT = 300
 MIN_MAX_TOKENS = 8000  # thinking-model floor — DO NOT go below (spec §7)
 RETRYABLE_5XX = {500, 502, 503, 504}
 RETRY_BACKOFF_SECONDS = 2.0
-MAX_TOKENS_FLOOR_LOGGED = False  # one-time log flag for floor enforcement
 
 STATUS_REASONS = {
     400: "bad_request",

@@ -348,7 +348,6 @@ _PARK_RECORDS_MAX = 64
 # event is `banner_park_dropped` with a reason.
 BANNER_PARK_DROPPED_EVENT = "banner_park_dropped"
 BANNER_PARK_RETAINED_EVENT = "banner_park_retained"
-BANNER_SEMAPHORE_EXPIRED_EVENT = BANNER_PARK_DROPPED_EVENT
 BANNER_OWNERSHIP_CLAIMED_EVENT = "banner_ownership_claimed"
 
 
@@ -513,7 +512,6 @@ from .features.banners.lifecycle import LIFECYCLE as _LIFECYCLE  # noqa: E402
 
 _CAPTURE_FB_LOCK = _LIFECYCLE._CAPTURE_FB_LOCK          # shared module lock
 _CAPTURE_FB_INFLIGHT = _LIFECYCLE._CAPTURE_FB_INFLIGHT  # shared semaphore
-
 
 
 # --- R19.11 FIX 1: decision-banner loss on two-lane turns ------------------
