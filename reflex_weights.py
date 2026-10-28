@@ -30,15 +30,10 @@ from typing import Any, Callable, Dict, List, Optional
 HEADER = "[reflex: read-only reading of the fork in front of you]"
 MAX_FORKS = 1
 MAX_OPTIONS = 3
-MAX_QUESTION = 90
-MAX_ACTION = 90
 MAX_BLOCK_CHARS = 400
 MIN_CONFIDENCE = 0.5
-SUM_TOLERANCE = 0.02
 DRIVES = ("scope", "rigour")
 
-_FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.M)
-_PCT = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*%\s*$")
 
 # Diagnostics for the last parse/render: what happened and why. Read by the fire path so a
 # silent drop is never mistaken for "there was no fork".
