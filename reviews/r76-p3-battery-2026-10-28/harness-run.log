@@ -1,0 +1,50 @@
+09:54:18 === router battery CORE start tier=deep inv=['I1', 'I2', 'I3', 'I4', 'I5', 'I6', 'I7', 'I8', 'I9', 'I10', 'I11', 'I12', 'I13'] ===
+09:54:43 [I1] operative PASS
+09:55:10 [I1] analyst PASS
+09:55:27 [I1] coder FAIL(banners=0,rows=0)
+09:56:07 [I1] architect PASS
+09:56:24 [I2] reviewer PASS
+09:56:53 [I2] valmet PASS
+09:57:14 [I2] operative PASS
+09:58:00 [I3] coder FAIL(first=FAIL(2 rows for identical ask),second=PASS)
+09:58:15 [I4] operative PASS
+09:58:37 [I4] analyst PASS
+09:59:23 [I5] operative PASS
+10:04:23 [I5] analyst ERROR(TimeoutError: timed out)
+10:05:16 [I5] coder PASS
+10:06:26 [I6] operative PASS
+10:06:58 [I6] valmet PASS
+10:09:04 [I7] analyst PASS
+10:12:00 [I7] analyst PASS
+10:16:15 [I7] analyst PASS
+10:17:56 [I7] architect PASS
+10:18:25 [I8] coder PASS
+10:18:25 [I9] operative PASS
+10:18:25 [I9] operative PASS
+10:18:25 [I9] analyst PASS
+10:18:25 [I9] analyst PASS
+10:19:31 [I10] analyst FAIL(banners=1,consults=0)
+10:19:48 [I10] operative PASS
+10:19:59 [I10] valmet PASS
+10:20:32 [I11] operative PARTIAL(no_explicit_choice)
+10:21:02 [I11] coder PARTIAL(no_explicit_choice)
+10:21:02 [I12] analyst PASS
+10:22:32 [I12] operative FAIL(parked_not_delivered: rows=1 ev=0)
+10:22:47 [I13] architect FAIL(no_midturn_row suppressed=none)
+10:23:03 [I13] orchestrator FAIL(no_midturn_row suppressed=none)
+10:23:03 === end; raw=/opt/data/plugins/hermes_router/reviews/r76-p3-battery-2026-10-28/raw-battery.jsonl ===
+{
+ "I1": "FAIL",
+ "I2": "PASS",
+ "I3": "FAIL",
+ "I4": "PASS",
+ "I5": "FAIL(skipped_or_error)",
+ "I6": "PASS",
+ "I7": "PASS",
+ "I8": "PASS",
+ "I9": "PASS",
+ "I10": "FAIL",
+ "I11": "PARTIAL",
+ "I12": "FAIL",
+ "I13": "FAIL"
+}

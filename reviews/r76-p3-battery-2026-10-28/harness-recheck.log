@@ -1,0 +1,3 @@
+I3 coder FAIL(first_rows=0,second_rows=0,second_banners=0) first_rows [] second_rows []
+I5retry analyst PASS I6: PASS lat 29.9 rows 2 banners 0
+BODY [router] no answer was delivered for this turn: the body was the router's own internal note, not the agent's reply, so it was withheld rather than shown as the answer. Re-send the ask to get a reply.
