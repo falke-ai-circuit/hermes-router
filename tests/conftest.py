@@ -51,6 +51,23 @@ def _isolate_daily_spend(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _reset_decision_lane_caches():
+    """DECISION-1(e): `decision._OPTION_SETS` is a process-level TTL cache
+    (option-set signature -> fire time) sitting beside `_RESCAN_SIGS`. Without
+    a per-test reset, a test that fires the same PRE option set twice in one
+    session is suppressed by a PREVIOUS test's fire — order-dependent reds that
+    look like regressions. Production keeps the cache warm; tests start cold.
+    """
+    try:
+        from hermes_router import decision as _d
+
+        _d._OPTION_SETS.clear()
+    except Exception:  # noqa: BLE001 — fixture must never fail a test
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _isolate_pending_audit_verdicts():
     """R37-1: the folded POST stashes its verdict whenever the consult could
     not deliver a text revision (`revised_response: null`) — that is the

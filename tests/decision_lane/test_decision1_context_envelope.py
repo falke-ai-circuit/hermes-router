@@ -96,14 +96,17 @@ def test_rendered_payload_carries_the_task():
 
 def test_option_set_repeat_suppresses_only_identical_sets():
     d._OPTION_SETS.clear()
-    first = d._option_set_repeat("s-ttl", ["redis", "memcached"])
-    repeat = d._option_set_repeat("s-ttl", ["redis", "memcached"])
-    other_set = d._option_set_repeat("s-ttl", ["redis", "memcached", "tile"])
-    other_session = d._option_set_repeat("s-other", ["redis", "memcached"])
-    # (e) first fire is allowed, the byte-identical repeat is suppressed
+    first = d._option_set_repeat("s-ttl", ["redis", "memcached"], "t1")
+    d._option_set_record("s-ttl", ["redis", "memcached"], "t1")
+    repeat = d._option_set_repeat("s-ttl", ["redis", "memcached"], "t1")
+    other_set = d._option_set_repeat("s-ttl", ["redis", "memcached", "tile"], "t1")
+    other_task = d._option_set_repeat("s-ttl", ["redis", "memcached"], "t2")
+    other_session = d._option_set_repeat("s-other", ["redis", "memcached"], "t1")
+    # (e) first fire is allowed, the identical repeat is suppressed
     assert first == ""
     assert repeat and len(repeat) == 12
     assert other_set == ""
+    assert other_task == ""          # different task = genuine new fork (r19_17)
     assert other_session == ""
 
 

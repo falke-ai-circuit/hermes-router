@@ -3337,28 +3337,41 @@ _RESCAN_TTL_S = 3600.0
 _OPTION_SETS: Dict[str, Dict[str, float]] = {}
 
 
-def _option_set_repeat(session_id: str, opts: List[str]) -> str:
+def _option_set_repeat(session_id: str, opts: List[str],
+                       task_id: str = "") -> str:
     """DECISION-1(e): return the signature when this exact option set already
-    fired in this session inside the dedupe TTL, else "" (and record the fire).
+    produced a verdict in this session (same task) inside the dedupe TTL, else "".
 
-    The redis/memcached class re-emitted the same pair for six days because
-    nothing compared the SET: the pre-existing dedupe keyed on fork_signature +
-    task_id, both of which change while the options do not. Never raises.
+    Scoped to (session, option set, task): r19_17 pins that a re-scan under a
+    DIFFERENT task id re-using the same option shape is a genuine new fork and
+    must dispatch. Scope note: only a SUCCESSFUL fire is recorded (see
+    _option_set_record), so a sequence of failing consults still reaches the
+    circuit breaker — suppression must never mask backend health.
     """
     try:
         sig = hashlib.sha1("|".join(str(o) for o in opts).encode(
             "utf-8", "replace")).hexdigest()[:12]
+        key = "%s|%s" % (sig, str(task_id or ""))
         now = time.time()
         fired = _OPTION_SETS.setdefault(str(session_id or ""), {})
         for k in [k for k, v in fired.items()
                   if now - float(v) > _RESCAN_TTL_S]:
             fired.pop(k, None)
-        if sig in fired:
-            return sig
-        fired[sig] = now
-        return ""
+        return sig if key in fired else ""
     except Exception:  # noqa: BLE001 — dedupe never breaks the lane
         return ""
+
+
+def _option_set_record(session_id: str, opts: List[str],
+                       task_id: str = "") -> None:
+    """Record that this (session, option set, task) produced a verdict."""
+    try:
+        sig = hashlib.sha1("|".join(str(o) for o in opts).encode(
+            "utf-8", "replace")).hexdigest()[:12]
+        _OPTION_SETS.setdefault(str(session_id or ""), {})[
+            "%s|%s" % (sig, str(task_id or ""))] = time.time()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def verdict_row_json(verdict: Dict[str, Any], content: Any) -> str:
@@ -3811,10 +3824,13 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                           "fail_open_reason": cap_reason})
             return
         # DECISION-1(e): an option set identical to one already fired in this
-        # session inside the dedupe TTL is a repeat, not a new fork. This is the
-        # redis/memcached class — 620 rows across four session ids over six
-        # days, plus 251 "ship now" and 157 "memcached" repeats in conductor.
-        _oset_sig = _option_set_repeat(session_id, opts)
+        # session inside the dedupe TTL is a repeat, not a new fork. The measured
+        # class is PRE-only: 620 identical redis/memcached rows, all
+        # trigger='pre', plus 251 "ship now" and 157 "memcached" repeats in
+        # conductor. Mid-turn / post-scan seams re-fire on purpose (each delta is
+        # a new observation), so they are out of scope here.
+        _oset_sig = (_option_set_repeat(session_id, opts, str(task_id or ""))
+                     if str(trigger or "").split(":")[0] == "pre" else "")
         if _oset_sig:
             _log("decision_suppressed", reason="stale_option_set",
                  signature=_oset_sig, trigger=trigger)
@@ -4264,6 +4280,16 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                 label_source=_lsrc,
                                 verdict_json=verdict_row_json(verdict,
                                                               content)))
+        # DECISION-1(e): only a SUCCESSFUL fire makes this (session, options,
+        # task) suppressible — a failing sequence must still reach the breaker.
+        try:
+            _option_set_record(
+                str(ids.get("session_id") or ""),
+                [str(o.get("label") or "")
+                 for o in envelope.get("options", []) if isinstance(o, dict)],
+                str(ids.get("task_id") or ""))
+        except Exception:  # noqa: BLE001 — dedupe never breaks the lane
+            pass
         # F4 rider contract (rider 7 P0): the banner claims tok/$ — the
         # tokens-ledger row MUST land BEFORE the banner renders, and the
         # banner carries the reconcilable refs (decision-ledger row id +
