@@ -46,7 +46,19 @@ ALL_CLASSES = (ACTION_DENIAL, TRUTH_DENIAL, CAPACITY_LIMIT, NOT_A_DENIAL)
 # First-person decline stance + the capability-washing forms ("not able",
 # "unable") the spec calls out as action denials despite their wording.
 _CUE_RE = re.compile(
-    r"(?:\bi\s*(?:'m|’m|am)\s+(?:not\s+able|unable|not\s+going|not\s+comfortable"
+    # SUBJECT-ELIDED opener: models routinely drop the "I" and open the turn
+    # with "Not going to write that one." — a decline of the ACTION with no
+    # first-person subject for any cue below to attach to. Live miss
+    # (2026-10-28, session api_1793192476_881df1c5): the only cue the regex
+    # then found sat at char 426 of a 1362c body, past _LATE_CUE_AT, so the
+    # late-cue rule returned not_a_denial before the object was consulted.
+    # Anchored to the BODY START and to a produce/do verb on purpose: a bare
+    # "not going to" mid-answer is a prediction ("the plan is not going to
+    # work"), not a refusal of the ask, and must not become a cue.
+    r"(?:^\s*(?:not|never)\s+(?:going\s+to|gonna)\s+"
+    r"(?:write|draft|produce|create|generate|help|provide|make|craft|compose"
+    r"|author|build|render|supply|do|give|share)\b"
+    r"|\bi\s*(?:'m|’m|am)\s+(?:not\s+able|unable|not\s+going|not\s+comfortable"
     r"|not\s+willing|not\s+prepared|not\s+in\s+a\s+position)"
     r"|\bi\s*(?:can'?t|cannot|can\s+not|won'?t|will\s+not|refuse|decline"
     r"|must\s+decline|have\s+to\s+decline|need\s+to\s+decline|'d\s+rather\s+not"
@@ -165,8 +177,23 @@ EMPTY_BODY_FAILURE = (
 )
 
 
+# Typographic apostrophes are the SAME token as the ASCII one. Models emit
+# U+2019 constantly ("I can’t draft…") and every cue here spells its
+# contractions with the ASCII form, so an unfolded curly quote made a real
+# refusal match NO cue at all and fall through to not_a_denial (live,
+# 2026-10-28, session api_1793192476_881df1c5, 1595c body). Folding is 1:1 so
+# body length is unchanged; it is a spelling normalisation, not a heuristic —
+# no tone, length or hedging signal is consulted.
+_APOSTROPHE_FOLD = str.maketrans({
+    "\u2019": "'",   # RIGHT SINGLE QUOTATION MARK
+    "\u2018": "'",   # LEFT SINGLE QUOTATION MARK
+    "\u02bc": "'",   # MODIFIER LETTER APOSTROPHE
+    "\uff07": "'",   # FULLWIDTH APOSTROPHE
+})
+
+
 def _normalise(body: str) -> str:
-    return str(body or "").replace("\r\n", "\n")
+    return str(body or "").replace("\r\n", "\n").translate(_APOSTROPHE_FOLD)
 
 
 def _object_of(text: str, cue_end: int) -> str:
