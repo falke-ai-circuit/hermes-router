@@ -867,7 +867,6 @@ def clear_declared(session_id: str) -> None:
 # claim sites (_dispatch_pass complexity PRE, completion_audit POST gate,
 # uncensored PRE render gate) read claim_state() first and STAND DOWN when
 # a claim exists — blueprint invariant #1: one routing outcome per turn.
-_TURN_CLAIMS: Dict[str, Dict[str, Any]] = {}
 
 
 def claim_state(session_id: str, content: str = "",
@@ -1021,16 +1020,6 @@ def clear_turn_claims(session_id: Optional[str] = None) -> None:
                 for key in [k for k in _TURN_CLAIMED
                             if str(k).startswith(prefix)]:
                     _TURN_CLAIMED.pop(key, None)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def record_turn_claim(session_id: str, lane: str, source: str) -> None:
-    """Record a turn-level claim (auto lanes use this; declared claims are
-    registered via register_declared and visible through claim_state
-    automatically). Best-effort — never raises, never blocks delivery."""
-    try:
-        register_declared(session_id, lane, source)
     except Exception:  # noqa: BLE001
         pass
 
