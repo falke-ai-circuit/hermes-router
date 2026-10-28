@@ -1,0 +1,364 @@
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+---------
+Contracts
+---------
+
+Analyzed 133 files, 843 dependencies.
+-------------------------------------
+
+layers ladder BROKEN
+
+Contracts: 0 kept, 1 broken.
+
+
+----------------
+Broken contracts
+----------------
+
+layers ladder
+-------------
+
+hermes_router.core is not allowed to import hermes_router.passes:
+
+- hermes_router.core.usage_ledger -> hermes_router.provider_prices (l.178)
+  hermes_router.provider_prices -> hermes_router (l.147, l.184, l.289, l.326)
+  hermes_router -> hermes_router.dispatcher_knobs (l.84)
+  hermes_router.dispatcher_knobs -> hermes_router.passes.dispatcher_knobs (l.9)
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.dispatcher_pre (l.85)
+  hermes_router.dispatcher_pre -> hermes_router.passes.dispatcher_pre (l.9)
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.dispatcher_post (l.91)
+  hermes_router.dispatcher_post -> hermes_router.passes.dispatcher_post (l.9)
+
+
+hermes_router.gate is not allowed to import hermes_router.api:
+
+- hermes_router.gate.registration -> hermes_router.api.commands_diag (l.32)
+
+- hermes_router.gate.registration -> hermes_router.api.config_writer (l.32)
+
+- hermes_router.gate.orchestration -> hermes_router.router_core (l.777)
+  hermes_router.router_core -> hermes_router (l.43, l.500)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.gate.registration -> hermes_router.api.router_tools (l.32)
+
+- hermes_router.gate.orchestration (l.543, l.749, l.996, l.1143, l.1351, l.1431,
+l.1956, l.1987)
+  & hermes_router.gate.registration -> hermes_router (l.107, l.118)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.gate.registration -> hermes_router.api.commands (l.32)
+
+- hermes_router.gate.orchestration -> hermes_router.reflex_lane (l.277)
+  hermes_router.reflex_lane -> hermes_router (l.971)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.gate.orchestration -> hermes_router.anchor_exec (l.166, l.776, 
+l.2212, l.2337)
+  hermes_router.anchor_exec -> hermes_router (l.242, l.554, l.729, l.776, l.969,
+l.1022, l.1370, l.1790, l.1815, l.1885)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.gate.registration -> hermes_router.api.commands_runtime (l.32)
+
+- hermes_router.gate.orchestration -> hermes_router.provenance_footer (l.1802)
+  hermes_router.provenance_footer -> hermes_router (l.97)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.gate.registration -> hermes_router.api.commands_config (l.32)
+
+
+hermes_router.passes is not allowed to import hermes_router.api:
+
+- hermes_router.passes.dispatcher_knobs (l.118)
+  & hermes_router.passes.dispatcher_pre -> hermes_router (l.34, l.39, l.119, 
+l.418)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.router_core (l.37)
+  hermes_router.router_core -> hermes_router (l.43, l.500)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.reflex_lane (l.185)
+  hermes_router.reflex_lane -> hermes_router (l.971)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.api.router_tools (l.38)
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.provenance_footer (l.651)
+  hermes_router.provenance_footer -> hermes_router (l.97)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.route_gate (l.361)
+  hermes_router.route_gate -> hermes_router (l.396, l.420, l.916, l.921)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+
+hermes_router.passes is not allowed to import hermes_router.gate:
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.completion_audit (l.169)
+  hermes_router.completion_audit -> hermes_router.gate.orchestration (l.2962)
+
+- hermes_router.passes.dispatcher_knobs (l.118)
+  & hermes_router.passes.dispatcher_pre -> hermes_router (l.34, l.39, l.119, 
+l.418)
+  hermes_router -> hermes_router.gate.registration (l.54)
+
+
+hermes_router.core is not allowed to import hermes_router.features:
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.route_gate (l.86)
+  hermes_router.route_gate -> hermes_router.features.banners.lifecycle (l.1057)
+
+- hermes_router.core.routing_caps -> hermes_router.debug_banner (l.415)
+  hermes_router.debug_banner -> hermes_router.features.banners.kinds (l.431, 
+l.452, l.476)
+                                & hermes_router.features.banners.lifecycle 
+(l.416, l.512)
+
+- hermes_router.core.routing_caps (l.203, l.212)
+  & hermes_router.core.usage_ledger -> hermes_router.anchor_chain (l.169)
+  hermes_router.anchor_chain -> hermes_router (l.106, l.163, l.252)
+  hermes_router -> hermes_router.router_core (l.43)
+  hermes_router.router_core -> hermes_router.debug_banner (l.790, l.804)
+  hermes_router.debug_banner -> hermes_router.features.banners.kinds (l.431, 
+l.452, l.476)
+                                & hermes_router.features.banners.lifecycle 
+(l.416, l.512)
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.classifier (l.23)
+  hermes_router.classifier -> hermes_router.features.patterns.engine (l.22)
+
+- hermes_router.core.usage_ledger -> hermes_router.provider_prices (l.178)
+  hermes_router.provider_prices -> hermes_router (l.147, l.184, l.289, l.326)
+  hermes_router -> hermes_router.anchor_exec (l.41)
+  hermes_router.anchor_exec -> hermes_router.decision (l.1010, l.1554, l.1699, 
+l.1842)
+  hermes_router.decision -> hermes_router.features.patterns.engine (l.158)
+
+
+hermes_router.core is not allowed to import hermes_router.lanes:
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.router_core (l.43)
+  hermes_router.router_core -> hermes_router.route_gate (l.1321)
+  hermes_router.route_gate -> hermes_router.lanes.builtins (l.70)
+                              & hermes_router.lanes.registry (l.71, l.72)
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.route_gate (l.86)
+  hermes_router.route_gate -> hermes_router.lanes.builtins (l.70)
+                              & hermes_router.lanes.registry (l.71, l.72)
+
+
+hermes_router.features is not allowed to import hermes_router.gate:
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.decision 
+(l.609)
+  hermes_router.decision -> hermes_router (l.221, l.789, l.4084, l.4092, l.4269)
+  hermes_router -> hermes_router.gate.registration (l.54)
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.anchor_exec 
+(l.375)
+  hermes_router.anchor_exec -> hermes_router.completion_audit (l.1570, l.1593, 
+l.1765)
+  hermes_router.completion_audit -> hermes_router.gate.orchestration (l.2962)
+
+
+hermes_router.features is not allowed to import hermes_router.passes:
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.anchor_exec 
+(l.375)
+  hermes_router.anchor_exec -> hermes_router (l.242, l.554, l.729, l.776, l.969,
+l.1022, l.1370, l.1790, l.1815, l.1885)
+  hermes_router -> hermes_router.dispatcher_post (l.91)
+  hermes_router.dispatcher_post -> hermes_router.passes.dispatcher_post (l.9)
+
+- hermes_router.features.detection.semantic_judge -> 
+hermes_router.dispatcher_pre (l.600)
+  hermes_router.dispatcher_pre -> hermes_router.passes.dispatcher_pre (l.9)
+
+- hermes_router.features.detection.semantic_judge -> 
+hermes_router.dispatcher_knobs (l.289)
+  hermes_router.dispatcher_knobs -> hermes_router.passes.dispatcher_knobs (l.9)
+
+
+hermes_router.core is not allowed to import hermes_router.gate:
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.gate.registration (l.54)
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.anchor_exec (l.41)
+  hermes_router.anchor_exec -> hermes_router.completion_audit (l.1570, l.1593, 
+l.1765)
+  hermes_router.completion_audit -> hermes_router.gate.orchestration (l.2962)
+
+
+hermes_router.core is not allowed to import hermes_router.api:
+
+- hermes_router.core.routing_caps (l.422)
+  & hermes_router.core.telemetry -> hermes_router (l.69)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.core.routing_caps (l.203, l.212)
+  & hermes_router.core.usage_ledger -> hermes_router.anchor_chain (l.169)
+  hermes_router.anchor_chain -> hermes_router (l.106, l.163, l.252)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.core.routing_caps -> hermes_router.debug_banner (l.415)
+  hermes_router.debug_banner -> hermes_router (l.77)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.core.canonical -> hermes_router.persona_card (l.132)
+  hermes_router.persona_card -> hermes_router (l.150, l.236)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.core.usage_ledger -> hermes_router.provider_prices (l.178)
+  hermes_router.provider_prices -> hermes_router (l.147, l.184, l.289, l.326)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+
+hermes_router.features is not allowed to import hermes_router.api:
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.decision 
+(l.609)
+  hermes_router.decision -> hermes_router (l.221, l.789, l.4084, l.4092, l.4269)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.features.detection.structural -> hermes_router.classifier 
+(l.537)
+  hermes_router.classifier -> hermes_router.frames (l.58)
+  hermes_router.frames -> hermes_router (l.505)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.features.banners.lifecycle -> hermes_router.debug_banner (l.31)
+  hermes_router.debug_banner -> hermes_router (l.77)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.anchor_exec 
+(l.375)
+  hermes_router.anchor_exec -> hermes_router (l.242, l.554, l.729, l.776, l.969,
+l.1022, l.1370, l.1790, l.1815, l.1885)
+  hermes_router -> hermes_router.api.commands (l.45)
+                   & hermes_router.api.commands_config (l.46)
+                   & hermes_router.api.commands_diag (l.47)
+                   & hermes_router.api.commands_runtime (l.48)
+                   & hermes_router.api.config_writer (l.44)
+                   & hermes_router.api.router_tools (l.49)
+
+

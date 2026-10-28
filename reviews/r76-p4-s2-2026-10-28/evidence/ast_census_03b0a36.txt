@@ -1,0 +1,7 @@
+total hermes_router-internal import statements: 553
+upward LAYER edges: 2
+  hermes_router.gate.registration:32 [local] gate -> api  (from ..api import commands, commands_config, commands_diag, commands_runtime, config_writer, router_tools)
+  hermes_router.passes.dispatcher_pre:38 [module] passes -> api  (from ..api import router_tools)
+
+ROOT(hub) import edges from layered modules: 90 in 10 modules
+by layer: Counter({'gate': 59, 'passes': 16, 'core': 8, 'features': 7})

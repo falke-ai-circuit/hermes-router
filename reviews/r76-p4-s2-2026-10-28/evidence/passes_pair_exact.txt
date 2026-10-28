@@ -1,0 +1,9 @@
+=== passes pair-exact control ===
+passes may not import api (direct)
+----------------------------------
+
+hermes_router.passes is not allowed to import hermes_router.api:
+
+-   hermes_router.passes.dispatcher_pre -> hermes_router.api.commands (l.737)
+
+

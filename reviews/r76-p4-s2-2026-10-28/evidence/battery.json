@@ -1,0 +1,203 @@
+[
+  {
+    "id": "CONTROL",
+    "rc": 0,
+    "contracts": {
+      "core/ must not import other hermes_router modules (L0)": [
+        "KEPT",
+        "8 ignored imports"
+      ],
+      "core/ must not import hermes_cli (except the config_access adapter)": [
+        "KEPT",
+        "1 ignored import"
+      ],
+      "gate may not import api (direct)": [
+        "KEPT",
+        "6 ignored imports"
+      ],
+      "passes may not import api (direct)": [
+        "KEPT",
+        "1 ignored import"
+      ],
+      "features may not import api/gate/passes (direct)": [
+        "KEPT",
+        ""
+      ],
+      "lanes may not import api/gate/passes/features (direct)": [
+        "KEPT",
+        ""
+      ],
+      "core may not import api/gate/passes/features/lanes (direct)": [
+        "KEPT",
+        ""
+      ]
+    },
+    "tail": [
+      "Contracts: 7 kept, 0 broken."
+    ]
+  },
+  {
+    "id": "M1-gate",
+    "file": "gate/orchestration.py",
+    "injected": "from hermes_router.api import routes  # MUT",
+    "rc": 1,
+    "target": {
+      "gate may not import api (direct)": [
+        "BROKEN",
+        "6 ignored imports"
+      ]
+    },
+    "all_broken": {
+      "gate may not import api (direct)": [
+        "BROKEN",
+        "6 ignored imports"
+      ]
+    },
+    "detail": [
+      "hermes_router.gate is not allowed to import hermes_router.api:",
+      "-   hermes_router.gate.orchestration -> hermes_router.api (l.2445)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "M2-passes",
+    "file": "passes/dispatcher_post.py",
+    "injected": "from hermes_router.api import router_tools  # MUT",
+    "rc": 1,
+    "target": {
+      "passes may not import api (direct)": [
+        "BROKEN",
+        "1 ignored import"
+      ]
+    },
+    "all_broken": {
+      "passes may not import api (direct)": [
+        "BROKEN",
+        "1 ignored import"
+      ]
+    },
+    "detail": [
+      "hermes_router.passes is not allowed to import hermes_router.api:",
+      "-   hermes_router.passes.dispatcher_post -> hermes_router.api.router_tools"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "M3-features",
+    "file": "features/patterns/__init__.py",
+    "injected": "from hermes_router.gate import registration  # MUT",
+    "rc": 1,
+    "target": {
+      "features may not import api/gate/passes (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "all_broken": {
+      "features may not import api/gate/passes (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "detail": [
+      "hermes_router.features is not allowed to import hermes_router.gate:",
+      "-   hermes_router.features.patterns -> hermes_router.gate.registration (l.3)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "M4-lanes",
+    "file": "lanes/registry.py",
+    "injected": "from hermes_router.passes import dispatcher_pre  # MUT",
+    "rc": 1,
+    "target": {
+      "lanes may not import api/gate/passes/features (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "all_broken": {
+      "lanes may not import api/gate/passes/features (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "detail": [
+      "hermes_router.lanes is not allowed to import hermes_router.passes:",
+      "-   hermes_router.lanes.registry -> hermes_router.passes.dispatcher_pre (l.75)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "M5-core",
+    "file": "core/state.py",
+    "injected": "from hermes_router.lanes import registry  # MUT",
+    "rc": 1,
+    "target": {
+      "core may not import api/gate/passes/features/lanes (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "all_broken": {
+      "core may not import api/gate/passes/features/lanes (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "detail": [
+      "hermes_router.core is not allowed to import hermes_router.lanes:",
+      "-   hermes_router.core.state -> hermes_router.lanes.registry (l.541)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "X1-gate-exempt",
+    "removed": "hermes_router.gate.registration -> hermes_router.api.*",
+    "rc": 1,
+    "target": {
+      "gate may not import api (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "detail": [
+      "-   hermes_router.gate.registration -> hermes_router.api.commands (l.32)",
+      "-   hermes_router.gate.registration -> hermes_router.api.commands_config (l.32)",
+      "-   hermes_router.gate.registration -> hermes_router.api.commands_diag (l.32)",
+      "-   hermes_router.gate.registration -> hermes_router.api.commands_runtime (l.32)",
+      "-   hermes_router.gate.registration -> hermes_router.api.config_writer (l.32)",
+      "-   hermes_router.gate.registration -> hermes_router.api.router_tools (l.32)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  },
+  {
+    "id": "X2-passes-exempt",
+    "removed": "hermes_router.passes.dispatcher_pre -> hermes_router.api.router_tools",
+    "rc": 1,
+    "target": {
+      "passes may not import api (direct)": [
+        "BROKEN",
+        ""
+      ]
+    },
+    "detail": [
+      "-   hermes_router.passes.dispatcher_pre -> hermes_router.api.router_tools (l.38)"
+    ],
+    "tail": [
+      "Contracts: 6 kept, 1 broken."
+    ]
+  }
+]

@@ -1,0 +1,11 @@
+=== hub escape (features+lanes via root) ===
+
+core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+gate may not import api (direct) KEPT (6 ignored imports)
+passes may not import api (direct) KEPT (1 ignored import)
+features may not import api/gate/passes (direct) KEPT
+lanes may not import api/gate/passes/features (direct) KEPT
+core may not import api/gate/passes/features/lanes (direct) KEPT
+
+Contracts: 7 kept, 0 broken.

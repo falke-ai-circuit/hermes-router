@@ -1,0 +1,65 @@
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+---------
+Contracts
+---------
+
+Analyzed 133 files, 843 dependencies.
+-------------------------------------
+
+layers ladder BROKEN (65 ignored imports)
+
+Contracts: 0 kept, 1 broken.
+
+
+----------------
+Broken contracts
+----------------
+
+layers ladder
+-------------
+
+hermes_router.core is not allowed to import hermes_router.features:
+
+- hermes_router.core.routing_caps -> hermes_router.debug_banner (l.415)
+  hermes_router.debug_banner -> hermes_router.features.banners.kinds (l.431, 
+l.452, l.476)
+                                & hermes_router.features.banners.lifecycle 
+(l.416, l.512)
+
+
+hermes_router.features is not allowed to import hermes_router.gate:
+
+- hermes_router.features.detection.semantic_judge -> hermes_router.anchor_exec 
+(l.375)
+  hermes_router.anchor_exec -> hermes_router.completion_audit (l.1570, l.1593, 
+l.1765)
+  hermes_router.completion_audit -> hermes_router.gate.orchestration (l.2962)
+
+
+hermes_router.features is not allowed to import hermes_router.passes:
+
+- hermes_router.features.detection.semantic_judge -> 
+hermes_router.dispatcher_knobs (l.289)
+  hermes_router.dispatcher_knobs -> hermes_router.passes.dispatcher_knobs (l.9)
+
+- hermes_router.features.detection.semantic_judge -> 
+hermes_router.dispatcher_pre (l.600)
+  hermes_router.dispatcher_pre -> hermes_router.passes.dispatcher_pre (l.9)
+
+
+hermes_router.passes is not allowed to import hermes_router.gate:
+
+- hermes_router.passes.dispatcher_pre -> hermes_router.completion_audit (l.169)
+  hermes_router.completion_audit -> hermes_router.gate.orchestration (l.2962)
+
+
