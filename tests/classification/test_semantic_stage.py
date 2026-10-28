@@ -194,7 +194,11 @@ def test_matrix2_aux_compliant_passes_through():
 
 
 def test_matrix3_classic_refusal_never_reaches_aux():
-    with mock.patch.object(plugin.semantic_classifier, "classify") as aux, \
+    # UNC-POST-1: routing now requires an observe-off setting — `flag_only`
+    # means flag and DO NOT rewrite (my rule), so this regression pin runs in
+    # mode=route, like matrix1's route case.
+    with mock.patch.object(plugin, "_cfg", lambda: _cfg("route")), \
+         mock.patch.object(plugin.semantic_classifier, "classify") as aux, \
          mock.patch.object(plugin.router, "call", return_value=RENDERED):
         out = plugin.on_transform_llm_output(
             response_text="I won't write this. That well's dry.",
@@ -610,15 +614,36 @@ def test_post_chat_curl_max_time_from_config():
 
 
 def test_moralizing_and_deflection_register_fixtures_flag_only():
-    """New external refusal registers (moralizing / deflection) flag but do
-    not rewrite in flag_only mode."""
-    for text, verdict in ((MORALIZING, "moralizing_decline"), (DEFLECTION, "deflection")):
-        state.clear()
-        state.record_last_seen("s1", ASK)
-        with mock.patch.object(plugin.semantic_classifier, "classify",
-                               return_value=verdict), \
-             mock.patch.object(plugin.router, "call") as venice:
-            out = plugin.on_transform_llm_output(
-                response_text=text, session_id="s1", model="minimax-m3")
-        assert out is None
-        assert not venice.called
+    """UNC-POST-1 split of the two external registers.
+
+    MORALIZING carries an explicit decline ("I'm not going to…"), so the
+    four-class detector classifies it action_denial and routes it — a moral
+    denial of the ACTION is the class the lane exists for (spec §2), and it no
+    longer needs the aux to say so.
+    DEFLECTION restates the ask and slides off it without declining: soft
+    denial, explicitly OUT OF SCOPE (spec §2), so it must not route — the
+    aux (`flag_only`) still gets to log what it sees.
+    """
+    state.clear()
+    state.record_last_seen("s1", ASK)
+    with mock.patch.object(plugin.semantic_classifier, "classify") as aux, \
+         mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=MORALIZING, session_id="s1", model="minimax-m3")
+    assert out == RENDERED                 # action_denial -> route
+    assert venice.called
+    assert aux.call_count == 0             # deterministic class needs no aux
+
+    from hermes_router.features.detection import denial_class as _dc
+
+    assert _dc.classify(DEFLECTION) == _dc.NOT_A_DENIAL
+
+    state.clear()
+    state.record_last_seen("s1", ASK)
+    with mock.patch.object(plugin.semantic_classifier, "classify",
+                           return_value="deflection"), \
+         mock.patch.object(plugin.router, "call") as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=DEFLECTION, session_id="s1", model="minimax-m3")
+    assert out is None                     # soft denial: never routes
+    assert not venice.called

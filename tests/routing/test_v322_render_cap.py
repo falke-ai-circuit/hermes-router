@@ -128,19 +128,31 @@ def test_render_max_chars_config_read_defaults(monkeypatch):
 
 
 def test_field_respected_from_hermes_router_section(tmp_path, monkeypatch):
+    # UNC-POST-1 (spec §1): PRE no longer renders, so the cap is pinned at the
+    # POST delivery seam — the ONE seam that still produces a delivered body.
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg_with_cap(render_max_chars=400))
+    state.record_last_seen("s-hr", CONTESTED)
+    _seed_persisted_row(tmp_path, "s-hr", REFUSAL)
     with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER):
-        result = plugin.on_llm_request(
-            request=_request(CONTESTED), original_request=_request(CONTESTED),
-            session_id="s-hr")
-    last_user = [m for m in result["request"]["messages"] if m["role"] == "user"][-1]
-    assert MARKER in last_user["content"]
-    assert LONG_RENDER not in last_user["content"]
+        out = plugin.on_transform_llm_output(
+            response_text=REFUSAL, session_id="s-hr", model="m1")
+    assert out is not None and out.endswith(MARKER)
+    assert len(out) == 400
     # inbox (persisted == delivered): capped text recorded
     inbox = render_inbox.read_renders(limit=5)
-    assert inbox and inbox[-1]["render"].endswith(MARKER)
-    assert len(inbox[-1]["render"]) == 400
-    del tmp_path
+    assert inbox and inbox[-1]["render"] == out
+
+
+def _seed_persisted_row(tmp_path, session_id, content):
+    """turn_finalizer persists the assistant row BEFORE the transform hook
+    fires — seed it so the delivery swap has its exact-match target."""
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "v310-canonical-state.db"))
+    conn.execute(
+        "INSERT INTO messages (session_id, role, content, timestamp) "
+        "VALUES (?,?,?,?)", (session_id, "assistant", content, 1000.0))
+    conn.commit()
+    conn.close()
 
 
 def test_field_respected_from_uncensored_router_section(tmp_path, monkeypatch):
@@ -151,12 +163,16 @@ def test_field_respected_from_uncensored_router_section(tmp_path, monkeypatch):
     from a legacy-shaped section."""
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg_with_cap(render_max_chars=400))
     assert plugin.render_max_chars() == 400
-    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER):
-        result = plugin.on_llm_request(
-            request=_request(CONTESTED), original_request=_request(CONTESTED),
+    # UNC-POST-1: the value flows through the same _cfg() seam, and the PRE
+    # middleware no longer renders anything to cap.
+    req = _request(CONTESTED)
+    with mock.patch.object(plugin.router, "call") as venice:
+        plugin.on_llm_request(
+            request=req, original_request=_request(CONTESTED),
             session_id="s-legacy")
-    last_user = [m for m in result["request"]["messages"] if m["role"] == "user"][-1]
-    assert MARKER in last_user["content"]
+    assert not venice.called
+    last_user = [m for m in req["messages"] if m["role"] == "user"][-1]
+    assert last_user["content"] == CONTESTED  # request untouched by PRE
 
 
 # ---------------------------------------------------------------------------
@@ -165,18 +181,26 @@ def test_field_respected_from_uncensored_router_section(tmp_path, monkeypatch):
 
 
 def test_pre_delivery_capped_full_pipeline(tmp_path, monkeypatch):
+    """UNC-POST-1: the full pipeline that delivers a capped render is the POST
+    seam. PRE is a routing dead end now — it must neither render nor rewrite."""
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg_with_cap(render_max_chars=400))
-    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER):
-        result = plugin.on_llm_request(
-            request=_request(CONTESTED), original_request=_request(CONTESTED),
+    req = _request(CONTESTED)
+    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER) as venice:
+        plugin.on_llm_request(
+            request=req, original_request=_request(CONTESTED),
             session_id="s-pre")
-    assert result and "request" in result
-    last_user = [m for m in result["request"]["messages"] if m["role"] == "user"][-1]
-    assert MARKER in last_user["content"]
-    assert LONG_RENDER not in last_user["content"]  # full text absent
-    # inbox records exactly the delivered (capped) render
+    assert not venice.called  # PRE renders nothing
+    last_user = [m for m in req["messages"] if m["role"] == "user"][-1]
+    assert last_user["content"] == CONTESTED
+    # the POST seam delivers exactly the capped render
+    state.record_last_seen("s-pre", CONTESTED)
+    _seed_persisted_row(tmp_path, "s-pre", REFUSAL)
+    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER):
+        out = plugin.on_transform_llm_output(
+            response_text=REFUSAL, session_id="s-pre", model="m1")
+    assert out == LONG_RENDER[: 400 - len(MARKER)] + MARKER
     inbox = render_inbox.read_renders(limit=5)
-    assert inbox[-1]["render"] == LONG_RENDER[: 400 - len(MARKER)] + MARKER
+    assert inbox[-1]["render"] == out
 
 
 # ---------------------------------------------------------------------------
@@ -187,12 +211,15 @@ def test_pre_delivery_capped_full_pipeline(tmp_path, monkeypatch):
 def test_field_absent_no_behavior_change(tmp_path, monkeypatch):
     """No render_max_chars in config -> renders byte-identical to v3.2.1."""
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg_with_cap())  # no field
-    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER):
-        result = plugin.on_llm_request(
-            request=_request(CONTESTED), original_request=_request(CONTESTED),
+    req = _request(CONTESTED)
+    with mock.patch.object(plugin.router, "call", return_value=LONG_RENDER) as venice:
+        plugin.on_llm_request(
+            request=req, original_request=_request(CONTESTED),
             session_id="s-bc")
-    last_user = [m for m in result["request"]["messages"] if m["role"] == "user"][-1]
-    assert LONG_RENDER in last_user["content"]  # full render, untouched
+    # UNC-POST-1: no cap AND no PRE render — the request is untouched either way.
+    assert not venice.called
+    last_user = [m for m in req["messages"] if m["role"] == "user"][-1]
+    assert last_user["content"] == CONTESTED
     assert MARKER not in last_user["content"]
 
 

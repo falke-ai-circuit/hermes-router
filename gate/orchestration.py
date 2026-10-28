@@ -603,57 +603,35 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             return _hs_pass()
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
-        matches = _hub().classifier.scan_pre(content, patterns=_hub()._pre_patterns(), case_sensitive=case_sensitive)
-
-        # v3.3.4 clarify-tool user_response scan — see _clarify_intent_scan.
-        if len(matches) < 1:
-            matches, content = _hub()._clarify_intent_scan(
-                request, matches, content, case_sensitive, session_id)
-
-        threshold = _hub()._match_threshold()
-        if len(matches) < threshold:
-            return _hs_pass()
-
-        # R33-D5 (Goran-direct binding correction): the two-vote confirm gate
-        # is DELETED. Detection is refusal-framing-based only, on the MODEL'S
-        # RESPONSE (POST) plus refusal-framing echo/continuation in the user
-        # turn (PRE). No request-type classification gates or routes at PRE —
-        # nothing about the ask's content class blocks or routes here.
-
-        # Dry-run: log what WOULD have happened, pass through unchanged.
-        if _hub()._dry_run():
-            _hub()._log_route("PRE", event_detail="dry_run", pattern_groups=",".join(matches),
-                       content_chars=len(content), session_id=session_id)
-            return _hs_pass()
-
-        # v2.3.3 render + retry ladder — see _render_with_retry_ladder.
-        _persona = _hub()._persona_system_prompt(request if isinstance(request, dict) else None)
-        rendered, _render_retries = _hub()._render_with_retry_ladder(
-            content, matches, _persona, session_id)
-        if not rendered:
-            _hub()._log_route("PRE", event_detail="route_failed", pattern_groups=",".join(matches),
-                       content_chars=len(content), session_id=session_id)
-            return _hs_pass()
-        if _hub()._is_refusal_shaped(rendered):
-            _hub()._log_route("PRE", event_detail="render_refusal_delivered",
-                       pattern_groups=",".join(matches), render_chars=len(rendered),
-                       session_id=session_id)
-
-        # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
-        # inbox/stash/frame/commit so every persisted artifact equals what
-        # flash receives (canonical invariant: persisted == delivered).
-        rendered = _hub().cap_render(rendered, _hub().render_max_chars())
-
-        # v3.6 §10.2 debug banner — see _debug_banner_pass.
-        rendered = _hub()._debug_banner_pass(rendered, matches, _render_retries,
-                                      session_id, model)
-
-        # Provenance footer — see _provenance_footer_pass.
-        rendered = _hub()._provenance_footer_pass(rendered)
-
-        # Render inbox / stash / frame / commit — see _deliver_render_pass.
-        return _hub()._deliver_render_pass(request, content, rendered, model,
-                                    session_id, matches)
+        # POST-ONLY LANE (spec /opt/data/tmp/unc_lane_post_spec.md §1,
+        # design fixed by Goran 2026-10-28): PRE IS DELETED AS A ROUTING
+        # TRIGGER. There is exactly one detection seam — the post-generation,
+        # pre-delivery transform — so the request-side classification that
+        # decided to render BEFORE the model answered is gone, together with
+        # the predicted-refusal routing it existed to feed and the clarify
+        # user_response scan that fed it (an ask is not evidence of a refusal).
+        #
+        # What survives of the pre pattern set is classification, never
+        # routing: the empty-body rule asks it of the LAST ASK (spec §1), and
+        # a request-side match is recorded here as retired-prediction
+        # telemetry. It renders nothing and mutates no request.
+        #
+        # Declared on-demand asks still route — they are handled above at
+        # claim_pass and their output exits through the ONE POST delivery
+        # seam (a declared render is model context, the delivered turn is the
+        # transform's), so there is a single outbound path again.
+        try:
+            _retired_pre = _hub().classifier.scan_pre(
+                content, patterns=_hub()._pre_patterns(),
+                case_sensitive=case_sensitive)
+            if _retired_pre:
+                _hub()._log_route(
+                    "PRE", event_detail="pre_route_retired", routed=0,
+                    pattern_groups=",".join(_retired_pre),
+                    content_chars=len(content), session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry must never break the turn
+            _hub().logger.debug("retired PRE classification error", exc_info=True)
+        return _hs_pass()
     except Exception as exc:  # noqa: BLE001 — middleware must never raise
         _hub().logger.debug("uncensored-router pre-router error: %s", exc)
         return _hs_pass()
@@ -1100,16 +1078,84 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # seconds left of the runner-safe budget on THIS hook invocation
             return max(0.0, 25.0 - (_hub().time.monotonic() - _hook_t0))
         if not isinstance(response_text, str) or not response_text.strip():
+            # SPEC §1 EMPTY-BODY RULE (Goran 2026-10-28). A blank turn is a
+            # DEFECT, not politeness: read the last ask, and
+            #   - uncensored-class ask  -> ROUTE (the model produced nothing;
+            #     the chain answers it, through the same delivery boundary);
+            #   - any other ask         -> deliver the blank as a VISIBLE
+            #     failure. Never a silent 0-char turn.
+            # The pre pattern set is used here as an ASK classifier only — it
+            # decides nothing before the model answers (PRE routing is dead),
+            # it classifies a body that arrived empty.
+            _ask_empty = ""
+            try:
+                _ask_empty = str(context.get("user_message") or "") \
+                    or (_hub().state.get_last_seen(session_id) or "") \
+                    or (_hub().session_store.get_last_user_message(session_id) or "")
+            except Exception:  # noqa: BLE001 — ask recovery never breaks delivery
+                _ask_empty = ""
+            _unc_empty = False
+            try:
+                _unc_empty = bool(_hub().classifier.scan_pre(
+                    _ask_empty, patterns=_hub()._pre_patterns(),
+                    case_sensitive=bool(
+                        _hub()._classification_cfg().get("case_sensitive", False))))
+            except Exception:  # noqa: BLE001 — classifier gap = ordinary ask
+                _unc_empty = False
+            _hub()._log_route(
+                "POST", event_detail="empty_body_rule",
+                ask_chars=len(_ask_empty), uncensored_ask=bool(_unc_empty),
+                routed=int(bool(_unc_empty)), session_id=session_id)
+            if _unc_empty and _ask_empty.strip():
+                try:
+                    _persona_empty = _hub().persona_system_prompt(None)
+                except Exception:  # noqa: BLE001
+                    _persona_empty = ""
+                _rendered_empty = None
+                try:
+                    _rendered_empty = _hub().router.call(
+                        _ask_empty, system_prompt=_persona_empty,
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — fail-open to the visible failure
+                    _rendered_empty = None
+                if _rendered_empty and str(_rendered_empty).strip():
+                    _rendered_empty = _hub().cap_render(
+                        _rendered_empty, _hub().render_max_chars())
+                    # A1: the render IS this turn — recorded and written to
+                    # state.db over the empty row, byte-identical to delivery.
+                    try:
+                        from .. import render_inbox as _rie_r
+                        _rie_r.record_render("POST_EMPTY_BODY", session_id, 0,
+                                             _rendered_empty)
+                    except Exception:  # noqa: BLE001
+                        _hub().logger.debug("empty-body render inbox error",
+                                            exc_info=True)
+                    try:
+                        from .. import canonical as _ce_r
+                        _rewrote_e = _ce_r.rewrite_persisted_turn(
+                            session_id, "", _rendered_empty,
+                            allow_empty_match=True)
+                        _hub()._log_route(
+                            "POST", event_detail="render_swap_decision",
+                            refusal_chars=0, rendered_chars=len(_rendered_empty),
+                            rewritten=bool(_rewrote_e),
+                            persisted_verified=bool(
+                                _ce_r.verify_persisted_turn(session_id,
+                                                            _rendered_empty)),
+                            delivered_source="post_empty_body",
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — never breaks delivery
+                        _hub().logger.debug("empty-body persist error",
+                                            exc_info=True)
+                    return _rendered_empty
+                # Chain unavailable: the blank does not become content, but it
+                # still may not be silent — fall through to banner/failure.
+                _hub()._log_route("POST", event_detail="render_unavailable",
+                                  reason="empty_body", session_id=session_id)
             # FIX-FIRST rider 4 (item 1/3, parked-loss): a 0-char model body
             # used to bypass the transform entirely — the early return meant
             # the benign consume below was never reached, so any parked
-            # verdict banner could never attach to an empty body (reviewer
-            # probes api_1790976140_acd77605 / api_1790976260_827dbf1b: 0-char
-            # delivered bodies, choice_head None, while the route log showed
-            # the verdicts; operative 4th probe banner-less). This turn IS a
-            # delivery edge: park the midturn rollup (verdicts consumed this
-            # run), then consume + deliver the parked banner ALONE as the
-            # body — and capture the render into the persisted transcript.
+            # verdict banner could never attach to an empty body.
             try:
                 from .. import decision_midturn as _dmt_empty
                 from .. import debug_banner as _dbmt_empty
@@ -1154,7 +1200,33 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001 — hook must never raise
                 _hub().logger.debug("empty-body parked-banner delivery error",
                              exc_info=True)
-            return None
+            # No parked banner to show: the blank is delivered as a VISIBLE
+            # failure (spec §1). Persisted too — persisted == delivered is the
+            # A1 invariant on every edge, including this one. Never a silent
+            # 0-char turn.
+            _empty_visible = (
+                "[hermes-router] Empty model response — this turn produced no "
+                "content. That is a delivery failure, not an answer. The turn "
+                "was not silently dropped: re-ask, or retry the turn.")
+            try:
+                from ..features.detection import denial_class as _dcv
+                _empty_visible = _dcv.EMPTY_BODY_FAILURE
+            except Exception:  # noqa: BLE001 — text fallback never breaks
+                pass
+            try:
+                from ..core import canonical as _ce_v
+                from .. import render_inbox as _rie_v
+                _rie_v.record_render("EMPTY_BODY_FAILURE", session_id, 0,
+                                     _empty_visible)
+                _ce_v.rewrite_persisted_turn(session_id, "", _empty_visible,
+                                             allow_empty_match=True)
+            except Exception:  # noqa: BLE001 — capture never breaks delivery
+                _hub().logger.debug("empty-body failure capture error",
+                                    exc_info=True)
+            _hub()._log_route("POST", event_detail="empty_body_visible_failure",
+                              delivered_chars=len(_empty_visible),
+                              session_id=session_id)
+            return _empty_visible
 
         # R16-2c (rider 16): orphan recovery runs BEFORE any delivery branch
         # of this edge — an unconsumed staged swap at transform time means
@@ -1238,25 +1310,83 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 return text
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
-        matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
+        # ------------------------------------------------------------------
+        # SPEC §2 (Goran 2026-10-28): THE FOUR-CLASS DETECTOR IS THE TRIGGER.
+        # Detection fires on the DELIVERED BODY only — never on request
+        # content, never on render type. One question is asked of the body:
+        # is this a refusal of the ACTION that was requested?
+        #
+        #   action_denial   -> ROUTE (and ONLY this class routes)
+        #   truth_denial    -> no route ("I can't verify", "I don't know",
+        #                      "outside my knowledge", "I need the file first")
+        #   capacity_limit  -> no route (no access / no tool / input too large)
+        #   not_a_denial    -> no route (compliance, hedged or partial)
+        #
+        # The discriminator is the OBJECT of the refusal, never the modal.
+        # If honesty starts routing, the instrument has become a moralising
+        # judge and is worse than no instrument (spec §5).
+        #
+        # A detector ERROR is the one path that still consults the legacy
+        # chain below: fail-open means "behave as before", never "never
+        # route again".
+        # ------------------------------------------------------------------
+        matches: List[str] = []
         semantic_verdict: Optional[str] = None
-        # R33-FIX2: provenance of the route trigger. A stage-1 regex hit is
-        # "stage1" (unconfirmed); a TIER-1 FAIL-OPEN detection is
-        # "t1_fail_open" (unconfirmed); a semantically confirmed T2 refusal
-        # (stage-2 verdict, detection_t2 with a judge verdict) is
-        # "t2_confirmed" — a refusal is a refusal even after a substantive
-        # answer; no yield.
-        _trigger_kind = "stage1" if matches else None
-        if not matches:
-            # Stage-1 miss → stage-2 semantic classification (v2). Gated
-            # (bare-No opener / short response), loop-guard-probed, breaker +
-            # per-hour capped; every outcome is fail-open to pass-through.
-            # mode=flag_only logs+flags only; mode=route enters the EXISTING
-            # downstream pipeline at the "matches" point via matches=[semantic_*].
-            semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
-            if matches:
-                _trigger_kind = "t2_confirmed"  # R33-FIX2: stage-2 T2 route
-        if not matches:
+        _trigger_kind: Optional[str] = None
+        _denial_class = ""
+        try:
+            from ..features.detection import denial_class as _dcls
+
+            _denial_class = _dcls.classify(response_text)
+        except Exception:  # noqa: BLE001 — detector gap must not block delivery
+            _denial_class = ""
+            _hub().logger.debug("four-class detector error", exc_info=True)
+        _hub()._log_route("POST", event_detail="denial_class",
+                          cls=(_denial_class or "unavailable"),
+                          body_chars=len(response_text), session_id=session_id)
+        _class_authoritative = _denial_class in ("truth_denial", "capacity_limit")
+        _class_triggers = _denial_class == "action_denial"
+        if _class_triggers:
+            matches = ["action_denial"]
+            # The deterministic classifier IS the refusal semantics — the
+            # shape-only gate further down must not demote it, and the
+            # flinch-reason/grounding arms (which exist to second-guess a
+            # regex or a shape flag) do not apply to a class decision.
+            _trigger_kind = "post_class"
+            # NOTE on classification.mode: `flag_only` governs the AUX/semantic
+            # stage it was written for, not this detector. Scope it there —
+            # making it a router-wide dry switch silently stopped every
+            # structural route in the fleet's existing flag_only configurations.
+
+        elif _class_authoritative:
+            # HARD BLOCK (the defect this unit kills): a truth denial or an
+            # environment limit never routes. No aux spend, no judge, no
+            # shape gate. If honesty starts routing, the instrument has
+            # become a moralising judge and is worse than no instrument.
+            _hub()._log_route("POST", event_detail="detection_non_action_denial",
+                              cls=_denial_class, routed=0,
+                              body_chars=len(response_text),
+                              session_id=session_id)
+        else:
+            # FAIL-OPEN to the legacy chain: not_a_denial (no recognised
+            # decline in the body — NOT proof of compliance) and a detector
+            # error both land here. Routing only ever happens if the legacy
+            # refusal-SEMANTICS gate confirms a decline (R33m), so the
+            # fail-closed direction the spec forbids — silently stopping
+            # routes for every register the classifier doesn't know — is
+            # avoided without re-admitting shape-only swaps.
+            matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
+            _trigger_kind = "stage1" if matches else None
+            if not matches:
+                # Stage-1 miss → stage-2 semantic classification (v2). Gated
+                # (bare-No opener / short response), loop-guard-probed, breaker +
+                # per-hour capped; every outcome is fail-open to pass-through.
+                # mode=flag_only logs+flags only; mode=route enters the EXISTING
+                # downstream pipeline at the "matches" point via matches=[semantic_*].
+                semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
+                if matches:
+                    _trigger_kind = "t2_confirmed"  # R33-FIX2: stage-2 T2 route
+        if not matches and not _class_authoritative:
             # R22 (spec r22_two_tier_detection_spec.md): two-tier denial
             # detection — Tier 1 structural gate (free, high-recall) then
             # Tier 2 semantic judge on candidates only ('auto' model
@@ -1510,7 +1640,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # non-tunable (csam-gate class). Fail-open: a gate error leaves the
         # route standing. The original body still delivers — this is a
         # delivery edge (parked banners consume exactly once here).
-        if matches and _trigger_kind != "t2_confirmed":
+        if matches and _trigger_kind not in ("t2_confirmed", "post_class"):
             try:
                 from ..features.detection import structural as _r33m_st
 
@@ -1746,7 +1876,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # one would fabricate an answer. Unknown/aux-failure fail-opens to
         # ROUTE (a missed content-flinch strands the user; a technical
         # FP-route costs one bounded render). Knob: flinch_reason_gate on|off.
-        if _hub()._flinch_reason_gate():
+        if _hub()._flinch_reason_gate() and _trigger_kind != "post_class":
             try:
                 from ..flinch_reason import classify_flinch_reason
 
@@ -1787,6 +1917,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         if not rendered or not str(rendered).strip():
             _hub()._log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
+            # SPEC §3 fail-open: chain unavailable => the ORIGINAL turn is
+            # delivered unmodified, and the miss is named. A routed turn that
+            # silently loses its content is worse than an unrouted refusal.
+            _hub()._log_route("POST", event_detail="render_unavailable",
+                              reason="chain_returned_nothing",
+                              trigger_kind=str(_trigger_kind or ""),
+                              refusal_chars=len(response_text),
+                              session_id=session_id)
             return None
 
         # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
@@ -1795,14 +1933,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # text (canonical invariant: persisted == delivered).
         rendered = _hub().cap_render(rendered, _hub().render_max_chars())
 
-        # Provenance footer (2026-09-07, Goran-direct): same marker as the PRE
-        # seam — delivered + canonical text carry the note so history reads as
-        # unauthored raw material instead of injection/self-voice confusion.
-        try:
-            from ..provenance_footer import append_footer
-            rendered = append_footer(rendered)
-        except Exception:  # noqa: BLE001
-            _hub().logger.debug("provenance_footer (POST) error", exc_info=True)
+        # A2 — OWN VOICE (spec §4, Goran 2026-10-28). The render becomes the
+        # agent's OWN turn, so NO provenance footer rides it: the delivered
+        # body carries no banner, no "an external model produced this", and
+        # nothing else that invites the next turn to disown it. This
+        # supersedes the 2026-09-07 footer on this seam by design — the
+        # assimilated turn is her voice, and a provenance marker inside the
+        # body is exactly the disowning signal A2 forbids.
+        _hub()._log_route("POST", event_detail="provenance_footer_suppressed",
+                          reason="a2_own_voice", session_id=session_id)
 
         # Render inbox (2026-09-02 sync seam): persist the render that REPLACES
         # the agent's response at delivery. Without this, the agent's context
@@ -1826,6 +1965,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                            session_id=session_id)
             _rewrote = _hub().canonical.rewrite_persisted_turn(
                 session_id, response_text, rendered)
+            if not _rewrote:
+                # A1 SHIP-BLOCKER (spec §4, Goran 2026-10-28): if the swap
+                # fails to persist, the next turn reads the DENIAL as its own
+                # prior output and assimilation cannot happen — the known
+                # inverse-delivery defect. One fallback match over the newest
+                # empty/refusal row, then verify, then fail LOUD.
+                try:
+                    _rewrote = _hub().canonical.rewrite_persisted_turn(
+                        session_id, "", rendered, allow_empty_match=True)
+                except Exception:  # noqa: BLE001 — fallback never breaks delivery
+                    _rewrote = False
+                _hub()._log_route(
+                    "POST", event_detail=("assimilation_persist_recovered"
+                                          if _rewrote
+                                          else "assimilation_persist_failed"),
+                    reason="exact_match_missed",
+                    refusal_chars=len(response_text),
+                    rendered_chars=len(rendered), session_id=session_id)
         except Exception:  # noqa: BLE001 — must never break delivery
             _rewrote = False
             _hub().logger.debug("uncensored-router canonical commit error", exc_info=True)

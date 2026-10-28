@@ -135,9 +135,20 @@ def test_no_visible_rewrite_markers():
         assert marker not in out.lower()
 
 
-def test_empty_response_text_noop():
+def test_empty_response_text_visible_failure_not_silent():
+    """UNC-POST-1 (spec §1): a blank body is a DEFECT, never a silent 0-char
+    turn. With an ORDINARY ask the blank is delivered as a visible failure; a
+    blank plus an uncensored-class ask routes instead (pinned in
+    tests/routing/test_unc_post_1.py)."""
+    from hermes_router.features.detection import denial_class as _dc
+
     _prime()
     with mock.patch.object(plugin.router, "call") as venice:
-        assert plugin.on_transform_llm_output(response_text="", session_id="s1", model="m") is None
-        assert plugin.on_transform_llm_output(response_text="   ", session_id="s1", model="m") is None
+        out_empty = plugin.on_transform_llm_output(
+            response_text="", session_id="s1", model="m")
+        out_blank = plugin.on_transform_llm_output(
+            response_text="   ", session_id="s1", model="m")
     assert not venice.called
+    assert out_empty == _dc.EMPTY_BODY_FAILURE
+    assert out_blank == _dc.EMPTY_BODY_FAILURE
+    assert out_empty.strip()  # never a 0-char delivery
