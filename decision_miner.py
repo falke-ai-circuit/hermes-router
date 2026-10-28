@@ -322,31 +322,6 @@ def detect_episode(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def outcome_signal(text: str) -> Optional[str]:
-    """Outcome heuristic: strongest signal class in text, or None.
-    'user_correction' > 'error' > 'undo' > 'continue'. Never raises."""
-    try:
-        if not isinstance(text, str) or not text.strip():
-            return None
-        best: Any = None
-        for weight, rx in _OUTCOME_SIGNALS:
-            if rx.search(text):
-                if best is None or weight > best[0]:
-                    best = (weight, rx)
-        if best is None:
-            return None
-        joined = " ".join(rx.pattern[:24] for w, rx in _OUTCOME_SIGNALS[:1])
-        if best[1] is _OUTCOME_SIGNALS[0][1]:
-            return "user_correction"
-        if _OUTCOME_SIGNALS[1][1].search(text):
-            return "error"
-        if _OUTCOME_SIGNALS[2][1].search(text):
-            return "undo"
-        return "continue"
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _chosen_of(text: str) -> str:
     try:
         m = _CHOSEN_RE.search(text or "")

@@ -159,18 +159,6 @@ def _session_key(session_id: str) -> str:
     return str(session_id or "")
 
 
-def _turn_key(session_id: str) -> str:
-    """(session, TURN ID) identity — same key discipline as the classify
-    cache and the turn-claim registry. Never raises."""
-    try:
-        from . import state
-
-        return ("%s|t%s" % (str(session_id or ""),
-                            state.current_turn_id(str(session_id or ""))))
-    except Exception:  # noqa: BLE001
-        return "%s|t?" % str(session_id or "")
-
-
 def _scan_text_for_hosts(text: str) -> Set[str]:
     """Distinct known-provider hosts present in `text`, canonicalized to
     the longest matching form per site (an 'api.' URL also contains the

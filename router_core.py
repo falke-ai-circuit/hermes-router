@@ -320,16 +320,6 @@ def task_state(task_id: str) -> Dict[str, Any]:
         return dict(_TASK_STATE.get(task_id, {}))
 
 
-def _bump_task(task_id: str, **fields: Any) -> Dict[str, Any]:
-    with _LOCK:
-        now = time.time()
-        rec = _TASK_STATE.setdefault(task_id, {"fail_count": 0, "consult_count": 0,
-                                               "escalated": False, "created_at": now})
-        rec.update(fields)
-        _prune_locked(now)
-        return dict(rec)
-
-
 # ---------------------------------------------------------------------------
 # Struggle detection (router-owned)
 # ---------------------------------------------------------------------------

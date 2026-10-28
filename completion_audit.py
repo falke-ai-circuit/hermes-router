@@ -535,21 +535,6 @@ def _confirmed_gist(note: str, cap: int = 160) -> str:
         return ""
 
 
-def audit_revision_min_seconds() -> float:
-    """Budget floor below which the in-hook revision is not attempted.
-
-    The revision is a FRONTIER call at reasoning_effort max; under a contended
-    hook it must be SKIPPED rather than attempted with crumbs. Never raises.
-    """
-    try:
-        from .router_core import _complexity_cfg
-
-        v = float((_complexity_cfg() or {}).get("audit_revision_min_seconds") or 20)
-        return max(0.0, min(180.0, v))
-    except Exception:  # noqa: BLE001
-        return 20.0
-
-
 def audit_revision_seconds() -> float:
     try:
         from .router_core import _complexity_cfg
@@ -893,16 +878,6 @@ def _is_audit_artifact(text: str) -> bool:
         return any(marker in (text or "") for marker in _AUDIT_ARTIFACT_MARKERS)
     except Exception:  # noqa: BLE001
         return False
-
-
-def substantive_turn_bump(session_id: str) -> int:
-    """Counter bump for the substantive-turn cadence. Audit-artifact
-    responses (verdict envelopes / banners) are handled by audit_gate,
-    which resets the counter instead of counting them."""
-    try:
-        return state.bump_substantive_turn(session_id)
-    except Exception:  # noqa: BLE001
-        return 0
 
 
 def audit_gate(session_id: str, response_text: str, model: str = "",

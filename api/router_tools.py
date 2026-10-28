@@ -202,14 +202,6 @@ def _resolve_endpoint_from_model(model_ref: str) -> Optional[str]:
         return None
 
 
-def _set_nested(section: Dict[str, Any], block: str, key: str, value: Any) -> None:
-    sub = section.get(block)
-    if not isinstance(sub, dict):
-        sub = {}
-        section[block] = sub
-    sub[key] = value
-
-
 def router_control(action: str = "", lane: str = "", level: Any = None,
                    role: str = "", model: str = "", cap: Any = None,
                    backend: str = "", session_id: str = "") -> str:

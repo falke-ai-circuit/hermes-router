@@ -661,15 +661,6 @@ def fence(block: str) -> str:
         return ""
 
 
-def _acc_reset(session_id: str) -> None:
-    """Drop one session's turn accumulator. Never raises (delivery state)."""
-    try:
-        with _ACC_LOCK:
-            _ACC.pop(str(session_id or ""), None)
-    except Exception:  # noqa: BLE001 — a reset must never raise
-        pass
-
-
 def _turn_no(session_id: str) -> int:
     """Current turn number (0 when unknown). Never raises."""
     try:

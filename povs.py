@@ -368,21 +368,6 @@ def reflection_lines(target: Optional[Mapping[str, Optional[float]]],
     return lines
 
 
-def post_view(verdict: Mapping[str, object]) -> Dict[str, object]:
-    """Bundle a POST projection into the shape the caller needs.
-
-    Returns target (if given), observed dials, signed delta, and the prose the
-    agent reads -- with the note from whichever voice is furthest from the
-    target on each drive, so the correction carries a reason.
-    """
-    claims = verdict.get("claims") or {}
-    notes = verdict.get("notes") or {}
-    gates = verdict.get("gates") or {}
-    observed = dials_from_claims(claims)  # type: ignore[arg-type]
-    return {"observed": observed, "notes": notes, "gates": gates,
-            "claims": claims, "win": winning_voice(claims)}  # type: ignore[arg-type]
-
-
 # ---------------------------------------------------------------------------
 # Parsing + dial derivation
 # ---------------------------------------------------------------------------

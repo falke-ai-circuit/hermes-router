@@ -111,16 +111,6 @@ def _maybe_rotate(path: str) -> None:
         logger.debug("uncensored-router render-inbox rotate failed: %s", exc)
 
 
-def last_unseen_marker() -> Optional[int]:
-    """Convenience: timestamp of the newest render, or None when inbox empty.
-    The agent compares this against its last-known value to detect new
-    deliveries between turns."""
-    recs = read_renders(limit=1)
-    if not recs:
-        return None
-    ts = recs[-1].get("ts")
-    return int(ts) if isinstance(ts, (int, float)) else None
-
 # ---------------------------------------------------------------------------
 # Consumption tracking (FIX 1 shim, 2026-09-02): ledger of which POST renders
 # have already been reconciled into model history.

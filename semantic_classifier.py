@@ -206,11 +206,6 @@ _CONSECUTIVE_FAILURES: int = 0
 _BREAKER_OPENED_AT: Optional[float] = None
 
 
-def _breaker_cooldown(cls: Dict[str, Any]) -> float:
-    return _as_float(cls.get("aux_breaker_cooldown_seconds"),
-                     DEFAULT_BREAKER_COOLDOWN_SECONDS)
-
-
 def breaker_is_open() -> bool:
     """True while the breaker cooldown is running (stage-2 silently off)."""
     global _BREAKER_OPENED_AT
@@ -359,8 +354,6 @@ def _usage_from_response(data: Dict[str, Any]) -> "tuple[Optional[int], Optional
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-
 
 
 # ---------------------------------------------------------------------------

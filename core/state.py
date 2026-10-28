@@ -327,18 +327,6 @@ def mark_post_audited(session_id: str) -> None:
         pass
 
 
-def post_audited_this_turn(session_id: str, window_s: float = 120.0) -> bool:
-    """True when a POST completion audit ran for this session recently —
-    the PRE lane stands down on the NEXT turn of the same exchange."""
-    try:
-        now = time.time()
-        with _TURN_FLAG_LOCK:
-            ts = _POST_AUDITED_TURN.get(session_id or "")
-        return bool(ts and now - ts <= window_s)
-    except Exception:  # noqa: BLE001
-        return False
-
-
 # R34-19 (Goran-direct, PRE->POST pairing): the PRE orientation advisory is
 # the thing the POST confirmation answers. The record exists ONLY when the
 # PRE consult actually produced text (cap-blocked / failed / never staged =>
@@ -419,7 +407,6 @@ def clear_pre_advisory(session_id: str) -> None:
             _PRE_ADVISORY.pop(session_id or "", None)
     except Exception:  # noqa: BLE001
         pass
-
 
 
 def last_staged_consult(session_id: str) -> Tuple[Optional[float], str]:
