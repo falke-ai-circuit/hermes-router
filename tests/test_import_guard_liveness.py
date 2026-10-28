@@ -88,6 +88,28 @@ def _run(tmp_parent: pathlib.Path):
     return proc
 
 
+def _copy_tree(tmp_parent: pathlib.Path) -> pathlib.Path:
+    """Copy the package to a throwaway parent and assert the copy is what binds.
+
+    A green run against the live tree would satisfy every assertion below for
+    the wrong reason, so the binding check is not optional.
+    """
+    copy = tmp_parent / "hermes_router"
+    shutil.copytree(
+        PLUGIN_DIR, copy,
+        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache",
+                                      "reviews", "tests", "docs"),
+    )
+    bound = _REAL_RUN(
+        [sys.executable, "-c", "import hermes_router; print(hermes_router.__file__)"],
+        cwd=copy, env=dict(os.environ, PYTHONPATH=str(tmp_parent)),
+        capture_output=True, text=True, timeout=120,
+    )
+    assert bound.returncode == 0, bound.stderr
+    assert bound.stdout.strip().startswith(str(copy)), bound.stdout
+    return copy
+
+
 def _enumerated_sources():
     """Modules listed under the hub contract's source_modules.
 
@@ -140,22 +162,7 @@ def test_every_contract_fails_on_a_real_violation(tmp_path_factory):
 
     # 2. One copy of the tree, one control run, then one mutation per contract.
     tmp_parent = tmp_path_factory.mktemp("import_guard")
-    copy = tmp_parent / "hermes_router"
-    shutil.copytree(
-        PLUGIN_DIR, copy,
-        ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache",
-                                      "reviews", "tests", "docs"),
-    )
-
-    # The probe must bind the copy, not the live tree -- a live import here would
-    # make every BROKEN assertion below meaningless.
-    bound = _REAL_RUN(
-        [sys.executable, "-c", "import hermes_router; print(hermes_router.__file__)"],
-        cwd=copy, env=dict(os.environ, PYTHONPATH=str(tmp_parent)),
-        capture_output=True, text=True, timeout=120,
-    )
-    assert bound.returncode == 0, bound.stderr
-    assert bound.stdout.strip().startswith(str(copy)), bound.stdout
+    copy = _copy_tree(tmp_parent)
 
     control = _run(tmp_parent)
     assert control.returncode == 0, control.stdout + control.stderr
@@ -180,3 +187,47 @@ def test_every_contract_fails_on_a_real_violation(tmp_path_factory):
             f"{name}: run failed but this contract was not the one broken by "
             f"{injected!r} in {relpath}\n{combined}"
         )
+
+
+@pytest.mark.skipif(LINTER is None, reason="lint-imports is not installed")
+def test_gate_exemption_is_pair_exact_not_a_wildcard(tmp_path_factory):
+    """A SEVENTH api submodule bound at the exemption site must break the contract.
+
+    The battery above proves the gate contract is load-bearing, but its probe
+    spells `from ..api import routes` -- a name that is not a submodule, so grimp
+    records it against `hermes_router.api` itself. That probe would stay BROKEN
+    even under the old `hermes_router.api.*` wildcard, so it cannot detect the
+    regression this test exists for: reinstating the wildcard silently absorbs
+    any present or future api submodule.
+    """
+    tmp_parent = tmp_path_factory.mktemp("import_guard_pairs")
+    copy = _copy_tree(tmp_parent)
+
+    control = _run(tmp_parent)
+    assert control.returncode == 0, control.stdout + control.stderr
+    assert "gate may not import api (direct) KEPT (6 ignored imports)" in control.stdout, (
+        "the six pair-exact exemptions no longer match six live edges\n"
+        + control.stdout + control.stderr)
+
+    # A real module under api/ (not a made-up name) plus a bind at the exact
+    # module the six exemptions describe.
+    (copy / "api" / "newthing.py").write_text("VALUE = 1\n", encoding="utf-8")
+    registration = copy / "gate" / "registration.py"
+    original = registration.read_bytes()
+    try:
+        with open(registration, "a", encoding="utf-8") as handle:
+            handle.write("\n    from ..api import newthing  # seventh-bind probe\n")
+        result = _run(tmp_parent)
+    finally:
+        registration.write_bytes(original)
+        (copy / "api" / "newthing.py").unlink()
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1, (
+        "a seventh real api submodule was absorbed silently -- the exemption is "
+        f"a wildcard again (exit {result.returncode})\n{combined}")
+    assert "gate may not import api (direct) BROKEN (6 ignored imports)" in combined, (
+        "the gate contract did not break on the seventh bind\n" + combined)
+    assert "api.newthing" in combined, (
+        "the broken edge does not name the new submodule\n" + combined)
+
