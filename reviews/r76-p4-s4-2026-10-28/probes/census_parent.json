@@ -1,0 +1,38 @@
+{
+ "root": "wt_parent",
+ "census": {
+  "parse": [
+   "reflex_weights.py:291: bare-name(inside module)"
+  ],
+  "render": [],
+  "build_request": [
+   "reflex_weights.py:291: bare-name(inside module)"
+  ],
+  "extract": [],
+  "summarise": [],
+  "_as_prob": [
+   "reflex_weights.py:158: bare-name(inside module)",
+   "reflex_weights.py:178: bare-name(inside module)"
+  ],
+  "_clip": [
+   "reflex_weights.py:240: bare-name(inside module)",
+   "reflex_weights.py:192: bare-name(inside module)",
+   "reflex_weights.py:199: bare-name(inside module)",
+   "reflex_weights.py:245: bare-name(inside module)"
+  ],
+  "min_gap": [
+   "reflex_lane.py:120"
+  ],
+  "reflex_weights_module_mentions": [
+   "decision_midturn.py",
+   "reflex_weights.py",
+   "reflex_lane.py",
+   "tests/decision_lane/test_r66_frame_outcome_correlation.py",
+   "tests/decision_lane/test_r72_behavioural_integration.py",
+   "tests/decision_lane/test_r64_reflex_weighted_options.py",
+   "tests/decision_lane/test_r65_extraction_measured.py",
+   "tests/decision_lane/test_r73_p2_envelope.py"
+  ]
+ },
+ "dynamic": []
+}

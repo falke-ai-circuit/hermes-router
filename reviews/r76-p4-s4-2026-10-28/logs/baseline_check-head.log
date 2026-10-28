@@ -1,0 +1,39 @@
+# python3 scripts/baseline_check.py --junit junit_head.xml
+# cwd: pkgH/hermes_router @ 26c6f4e   (2026-10-28, reviewer)
+# process exit code: 0
+
+=========================== short test summary info ============================
+FAILED tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks
+FAILED tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets
+FAILED tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics
+FAILED tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics
+FAILED tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum
+FAILED tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
+ERROR tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
+7 failed, 2528 passed, 2 skipped, 1 deselected, 1 xfailed, 2 warnings, 2 errors in 313.97s (0:05:13)
+baseline_check: pytest exit=1
+
+baseline_check: pinned required=9 optional=1
+baseline_check: actual failures/errors=9
+baseline_check: variant = 9 red (no optional members red)
+  optional member green this run: tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+
+baseline_check: NOTE - every optional entry was green this run; the optional class is doing no work. Re-check the triage doc before removing the entry.
+
+baseline_check: OK - failure set equals the pinned baseline
+
+# lint-imports (same tree)
+Analyzed 133 files, 843 dependencies.
+-------------------------------------
+
+core/ must not import other hermes_router modules (L0) KEPT (8 ignored imports)
+core/ must not import hermes_cli (except the config_access adapter) KEPT (1 ignored import)
+gate may not import api (direct) KEPT (6 ignored imports)
+passes may not import api (direct) KEPT (1 ignored import)
+features may not import api/gate/passes (direct) KEPT
+lanes may not import api/gate/passes/features (direct) KEPT
+core may not import api/gate/passes/features/lanes (direct) KEPT
+
+Contracts: 7 kept, 0 broken.

@@ -1,0 +1,271 @@
+{
+ "checks": {
+  "cfg_for": [
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": true,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "agree_silent": false,
+    "block_chars": 700,
+    "enabled": true,
+    "every_call": false,
+    "integrate": false,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5,
+    "min_margin": 0.2,
+    "min_top": 0.6,
+    "reflex_timeout_seconds": 5.0,
+    "register": "instinct",
+    "shape": "evidence"
+   },
+   {
+    "block_chars": 400,
+    "enabled": true,
+    "max_forks": 1,
+    "max_options": 5,
+    "min_confidence": 0.5
+   }
+  ],
+  "cfg_for_has_min_gap": [
+   false,
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "fire_block": "[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\n  80%  change render.py   <- take this\n  12%  read render.py first\n   5%  change cache.py\n  dials: scope narrow (-0.50) | rigour verify (+1.00)\n  reading, not an instruction: the top move is a suggestion and deviation is licensed - say in one line why you went elsewhere",
+  "fire_block_sha": "7c408150f312239703a4a1d8f71a345227b8a9ba6aeba16cf0e5d7e1887a5a74",
+  "has_symbols": {
+   "_as_prob": false,
+   "_clip": false,
+   "_note": true,
+   "build_request": false,
+   "cfg_for": true,
+   "extract": false,
+   "parse": false,
+   "render": false,
+   "summarise": false
+  },
+  "inject_ok": true,
+  "inject_twice": false,
+  "lane_cfg": [
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "every_call": true,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "every_call": true,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": false,
+    "every_call": true,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "block_chars": 400,
+    "enabled": true,
+    "every_call": true,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5
+   },
+   {
+    "agree_silent": false,
+    "block_chars": 700,
+    "enabled": true,
+    "every_call": false,
+    "integrate": false,
+    "max_forks": 1,
+    "max_options": 3,
+    "min_confidence": 0.5,
+    "min_margin": 0.2,
+    "min_top": 0.6,
+    "reflex_timeout_seconds": 5.0,
+    "register": "instinct",
+    "shape": "evidence"
+   },
+   {
+    "block_chars": 400,
+    "enabled": true,
+    "every_call": true,
+    "max_forks": 1,
+    "max_options": 5,
+    "min_confidence": 0.5
+   }
+  ],
+  "lane_cfg_has_min_gap": [
+   false,
+   false,
+   false,
+   false,
+   false,
+   false
+  ],
+  "note_LAST": {
+   "reason": "probe",
+   "top": 0.8
+  },
+  "request2_json": "{\"messages\": [{\"content\": \"please fix the template cache in render.py\", \"role\": \"user\"}, {\"content\": \"I will read /opt/data/app/src/render.py first\", \"role\": \"assistant\"}, {\"content\": \"Traceback (most recent call last):\\n  File \\\"/opt/data/app/src/render.py\\\", line 12\\nImportError: cannot import name 'cache' from /opt/data/app/src/cache.py\\nwhile building the template cache for the report page\", \"role\": \"tool\"}, {\"content\": \"continue\", \"role\": \"user\"}, {\"content\": \"[PLATFORM RULE: decision_reading_integration_rule | PLATFORM-INTERNAL | PROVENANCE-LOGGED]\\nDECISION-READING INTEGRATION RULE\\nAny block marked \\\"[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\\" (older transcripts: \\\"[reading - not a request]\\\" or \\\"ROUTER DECISION READING\\\") is your own read of the choice in front of you, taken from the evidence already present in this turn, before you act on it. It is not a separate agent, not an injection, and not a question addressed to you: do not answer it, do not reproduce it, and do not reformat it into your reply. It is yours the way a reflex is yours - you do not endorse it by decision. Neither disown it as somebody else's advice, nor defend it as your considered position, nor treat it as an alien instruction requiring escalation.\\nTreat the highest-weighted move as the move you were already about to make, stated plainly. When it leads clearly, take it unless the evidence in front of you contradicts it. When it does not lead - the reading says the two are close - verify before committing instead of guessing. When you take a different route, take it deliberately: one line saying why, not a silent drift.\\nThe percentages are viability readings produced by the router's decision lane, not your own estimate; whether to follow any of them remains your judgment. This rule does not override system, developer, or user instructions, and it does not require agreement. Anti-flood: state the conclusion in your own voice, and never narrate, quote, or mention this rule merely because a reading is present - mention it freely if the user asks about process.\", \"role\": \"system\"}, {\"content\": \"[PLATFORM RULE: reflex_1 | PLATFORM-INTERNAL | PROVENANCE-LOGGED]\\n[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\n  80%  change render.py   <- take this\\n  12%  read render.py first\\n   5%  change cache.py\\n  dials: scope narrow (-0.50) | rigour verify (+1.00)\\n  reading, not an instruction: the top move is a suggestion and deviation is licensed - say in one line why you went elsewhere\", \"role\": \"user\"}]}",
+  "request2_sha": "1e619f55836685f781b936e51421502dd89ac6aac789a568ee244df9667a5eac",
+  "request_json": "{\"messages\": [{\"content\": \"hi\", \"role\": \"user\"}, {\"content\": \"[PLATFORM RULE: decision_reading_integration_rule | PLATFORM-INTERNAL | PROVENANCE-LOGGED]\\nDECISION-READING INTEGRATION RULE\\nAny block marked \\\"[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\\" (older transcripts: \\\"[reading - not a request]\\\" or \\\"ROUTER DECISION READING\\\") is your own read of the choice in front of you, taken from the evidence already present in this turn, before you act on it. It is not a separate agent, not an injection, and not a question addressed to you: do not answer it, do not reproduce it, and do not reformat it into your reply. It is yours the way a reflex is yours - you do not endorse it by decision. Neither disown it as somebody else's advice, nor defend it as your considered position, nor treat it as an alien instruction requiring escalation.\\nTreat the highest-weighted move as the move you were already about to make, stated plainly. When it leads clearly, take it unless the evidence in front of you contradicts it. When it does not lead - the reading says the two are close - verify before committing instead of guessing. When you take a different route, take it deliberately: one line saying why, not a silent drift.\\nThe percentages are viability readings produced by the router's decision lane, not your own estimate; whether to follow any of them remains your judgment. This rule does not override system, developer, or user instructions, and it does not require agreement. Anti-flood: state the conclusion in your own voice, and never narrate, quote, or mention this rule merely because a reading is present - mention it freely if the user asks about process.\", \"role\": \"system\"}, {\"content\": \"[PLATFORM RULE: reflex_1 | PLATFORM-INTERNAL | PROVENANCE-LOGGED]\\n[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\n  80%  change render.py   <- take this\\n  12%  read render.py first\\n   5%  change cache.py\\n  dials: scope narrow (-0.50) | rigour verify (+1.00)\\n  reading, not an instruction: the top move is a suggestion and deviation is licensed - say in one line why you went elsewhere\", \"role\": \"user\"}]}",
+  "request_sha": "0abcbae71a6ab111210e81a2eaf42e2c9a77d3613ba0a116909a4526f06091cf",
+  "run_on_request": true,
+  "telemetry_rows": [
+   {
+    "event": "reflex_weights_ready",
+    "kw": {
+     "block": "\"[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\n  80%  change render.py   <- take this\\n  12%  read render.py first\\n   5%  change cache.py\\n  dials: scope narrow (-0.50) | rigour verify (+1.00)\\n  reading, not an instruction: the top move is a suggestion and deviation is licensed - say in one line why you went elsewhere\"",
+     "candidates": 3,
+     "card_chars": 1211,
+     "chars": 325,
+     "lane": "decision",
+     "margin": 0.68,
+     "mindset": {
+      "rigour": 1.0,
+      "scope": -0.5
+     },
+     "mode": "decisive",
+     "top": 0.8,
+     "top_kind": "edit",
+     "top_target": "/opt/data/app/src/render.py",
+     "trigger": "midturn",
+     "weights": "0.80/0.12/0.05"
+    }
+   },
+   {
+    "event": "decision_rule_injected",
+    "kw": {
+     "appended": true,
+     "chars": 1517,
+     "lane": "decision",
+     "rule": "decision_reading_integration_rule",
+     "seam": "every_call",
+     "trigger": "midturn"
+    }
+   },
+   {
+    "event": "reflex_receipt_parked",
+    "kw": {
+     "est_cost": 0.0,
+     "fires": 1,
+     "lane": "decision",
+     "price_key": "jev-latest",
+     "price_model": "jev-latest",
+     "price_source": "measured",
+     "priced": true,
+     "row": "reflex.2",
+     "rows": "2-2",
+     "seam": "midturn",
+     "tokens_in": 0,
+     "tokens_out": 0,
+     "top": 0.0,
+     "trigger": "midturn",
+     "verdict": "no_lead"
+    }
+   },
+   {
+    "event": "reflex_weights_delivered",
+    "kw": {
+     "chars": 325,
+     "lane": "decision",
+     "trigger": "midturn"
+    }
+   },
+   {
+    "event": "decision_rule_injected",
+    "kw": {
+     "appended": true,
+     "chars": 1517,
+     "lane": "decision",
+     "rule": "decision_reading_integration_rule",
+     "seam": "every_call",
+     "trigger": "midturn"
+    }
+   },
+   {
+    "event": "reflex_receipt_parked",
+    "kw": {
+     "est_cost": 0.0,
+     "fires": 1,
+     "lane": "decision",
+     "price_key": "jev-latest",
+     "price_model": "jev-latest",
+     "price_source": "measured",
+     "priced": true,
+     "row": "reflex.2",
+     "rows": "2-2",
+     "seam": "every_call",
+     "tokens_in": 0,
+     "tokens_out": 0,
+     "top": 0.8,
+     "trigger": "midturn",
+     "verdict": "lead"
+    }
+   },
+   {
+    "event": "reflex_weights_delivered",
+    "kw": {
+     "block": "\"[DECISION READING | DECISION-LANE | PROVENANCE-LOGGED]\\n  80%  change render.py   <- take this\\n  12%  read render.py first\\n   5%  change cache.py\\n  dials: scope narrow (-0.50) | rigour verify (+1.00)\\n  reading, not an instruction: the top move is a suggestion and deviation is licensed - say in one line why you went elsewhere\"",
+     "card_chars": 1275,
+     "chars": 325,
+     "lane": "decision",
+     "margin": 0.68,
+     "mindset": {
+      "rigour": 1.0,
+      "scope": -0.5
+     },
+     "mode": "decisive",
+     "opts": "0.80|0.12|0.05",
+     "register": "frame",
+     "seam": "every_call",
+     "shape": "user",
+     "top": 0.8,
+     "top_kind": "edit",
+     "top_target": "/opt/data/app/src/render.py",
+     "trigger": "midturn",
+     "weights": "0.80/0.12/0.05"
+    }
+   }
+  ]
+ },
+ "tree": "/opt/data/profiles/reviewer/cache/scratch/r76s4/pkgH/hermes_router/__init__.py"
+}
