@@ -3,15 +3,24 @@
 #     PYTHONPATH=/opt/data/plugins lint-imports
 # (parent dir must be importable — grimp locates the package through sys.path).
 #
-# NOTE (P1): the TARGET layers contract (api > gate > passes > features > lanes
-# > core) cannot be declared active yet — import-linter requires every layer
-# package to exist, and api/gate/passes/features/lanes are created in P3a/P4.
-# When those land, replace the forbidden contracts below with:
-#
-#     [importlinter:contract:layers-target]
-#     name = L0-L4 target layering
-#     type = layers
-#     layers = hermes_router.api,hermes_router.gate,hermes_router.passes,hermes_router.features,hermes_router.lanes,hermes_router.core
+# NOTE (R76-P4-S2, measured by the architect at e846ae9 — re-measure, do not re-derive):
+#   `type = layers` checks TRANSITIVE routes, not direct imports, and has no
+#   `allow_indirect_imports` field (import-linter 2.15, contracts/layers.py).
+#   Declared on this tree at e846ae9 it reports 11 illegal pairs / 45 routes:
+#   hermes_router/__init__.py (the hub) imports api.* (l.44-49) and
+#   gate.registration (l.54), and 29 source modules import the hub
+#   (`from . import X`, 238 sites in 37 files) -> 32 distinct entry edges,
+#   31 of 43 route objects hub-mediated. With BOTH true upward edges exempted
+#   STILL broken (11 pairs / 38 routes). Neutralising the hub entirely
+#   (all 58 hub-involved edges) still leaves 7 illegal pairs / 19 module
+#   pairs through top-level facility modules. A transitive ladder is not
+#   reachable by config, and not reachable by hub surgery alone.
+#   The ladder therefore ships as five DIRECT-edge `forbidden` contracts with
+#   `allow_indirect_imports = True` (without the flag, `forbidden` checks
+#   indirect routes too and 4 of the 5 fail on the untouched tree).
+#   Re-measured at 03b0a36 before this slice landed: 92 modules / 320 edges and
+#   exactly SEVEN direct upward edges (6 gate.registration -> api.*,
+#   1 passes.dispatcher_pre -> api.router_tools); features/lanes/core direct 0.
 #
 # Active NOW:
 [importlinter]
@@ -116,3 +125,66 @@ forbidden_modules = hermes_cli
 # is unchanged; only the module form is repaired.
 ignore_imports =
     hermes_router.core.config_access -> hermes_cli
+
+# --- R76-P4-S2: the ladder as five DIRECT-edge contracts ----------------------
+# Measured, not aspirational: `allow_indirect_imports = True` is what makes these
+# check the seven direct edges only (see the NOTE at the top of this file for why
+# a `type = layers` contract cannot express this tree). Descendants of each
+# source/forbidden module are included by import-linter's own semantics, so
+# `hermes_router.gate` covers gate.registration and gate.orchestration.
+#
+# Two exemptions, both live direct edges proven by the S2 liveness mutations:
+#   gate.registration -> api.*            the composition root's 6 handler binds
+#   passes.dispatcher_pre -> api.router_tools   one function-local late-bind
+# Every other direct upward edge is illegal. No third exemption exists.
+
+[importlinter:contract:gate-no-api]
+name = gate may not import api (direct)
+type = forbidden
+source_modules = hermes_router.gate
+forbidden_modules = hermes_router.api
+allow_indirect_imports = True
+ignore_imports =
+    hermes_router.gate.registration -> hermes_router.api.*
+
+[importlinter:contract:passes-no-api]
+name = passes may not import api (direct)
+type = forbidden
+source_modules = hermes_router.passes
+forbidden_modules = hermes_router.api
+allow_indirect_imports = True
+ignore_imports =
+    hermes_router.passes.dispatcher_pre -> hermes_router.api.router_tools
+
+[importlinter:contract:features-no-upward]
+name = features may not import api/gate/passes (direct)
+type = forbidden
+source_modules = hermes_router.features
+forbidden_modules =
+    hermes_router.api
+    hermes_router.gate
+    hermes_router.passes
+allow_indirect_imports = True
+
+[importlinter:contract:lanes-no-upward]
+name = lanes may not import api/gate/passes/features (direct)
+type = forbidden
+source_modules = hermes_router.lanes
+forbidden_modules =
+    hermes_router.api
+    hermes_router.gate
+    hermes_router.passes
+    hermes_router.features
+allow_indirect_imports = True
+
+[importlinter:contract:core-no-layers]
+name = core may not import api/gate/passes/features/lanes (direct)
+type = forbidden
+source_modules = hermes_router.core
+forbidden_modules =
+    hermes_router.api
+    hermes_router.gate
+    hermes_router.passes
+    hermes_router.features
+    hermes_router.lanes
+allow_indirect_imports = True
