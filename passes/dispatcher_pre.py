@@ -177,42 +177,46 @@ def _hs_inject_pass(request: Any, session_id: str = "") -> bool:
     return injected
 
 
+def declaration_contract_text() -> str:
+    """The declaration contract's literal text (empty when unavailable)."""
+    try:
+        from ..features.detection.declaration import CONTRACT_TEXT
+        return CONTRACT_TEXT or ""
+    except Exception:  # noqa: BLE001 — a missing contract is not a crash
+        return ""
+
+
 def declaration_inject_pass(request: Any) -> bool:
-    """SPEC §2a.4 — deliver the TURN DECLARATION CONTRACT to the model.
+    """SPEC §2a.4 — decide whether this turn needs the TURN DECLARATION CONTRACT.
 
     The declaration is the trigger, so the model has to be TOLD to emit it.
     Nothing else in the plugin volunteered that instruction, which meant a
     parser with perfect recall still saw UNKNOWN on 100% of production turns.
 
-    Delivered as a SYSTEM platform rule through the single platform-rule
-    boundary (frames.inject_platform_rule): platform channel, per-rule marker,
-    deduped in-context so a replayed message list never carries it twice.
-    Returns True when a message was appended. Never raises.
+    This pass only DECIDES. Delivery happens in the returned envelope (see
+    gate/orchestration.py `_hs_pass`), because the caller's request object must
+    not be mutated by an injection the caller never asked for — the reconcile
+    path owns in-place mutation, and mixing the two made the two contracts
+    indistinguishable. Returns True when the contract still needs delivering.
+    Never raises.
     """
     try:
-        from ..frames import (inject_platform_rule, platform_rule_present,
-                              mark_platform_rule)
-        from ..features.detection.declaration import CONTRACT_TEXT
+        from ..frames import platform_rule_present
 
-        # PLACEMENT IS THE MECHANISM (measured live 2026-10-29). Appended as a
-        # trailing platform rule the model READ the contract and still emitted
-        # nothing over 14 turns: with a heavy in-voice persona, a metadata
-        # instruction parked after the user turn is discounted. Prepending it
-        # to the FIRST system message puts the instruction before the persona,
-        # where an opening-line rule is the one a strong voice still honours.
-        msgs = request.get("messages")
-        if not isinstance(msgs, list) or not msgs:
-            return bool(inject_platform_rule(
-                request, DECLARATION_RULE_ID, CONTRACT_TEXT, role="system"))
-        if platform_rule_present(msgs, DECLARATION_RULE_ID):
+        if not declaration_contract_text():
             return False
-        body = mark_platform_rule(DECLARATION_RULE_ID, CONTRACT_TEXT)
-        for m in msgs:
-            if isinstance(m, dict) and m.get("role") == "system":
-                m["content"] = body + "\n\n" + str(m.get("content") or "")
-                return True
-        msgs.insert(0, {"role": "system", "content": body})
+        # A malformed request is NOT a reason to inject: fail open means "do
+        # nothing", never "deliver into a payload we cannot read".
+        if not isinstance(request, dict):
+            return False
+        msgs = request.get("messages")
+        if msgs is not None and not isinstance(msgs, list):
+            return False
+        if isinstance(msgs, list) and platform_rule_present(msgs, DECLARATION_RULE_ID):
+            return False
         return True
+    except Exception:  # noqa: BLE001 — injection must never break the seam
+        return False
     except Exception:  # noqa: BLE001 — the contract must never break a turn
         logger.debug("declaration contract injection error", exc_info=True)
         return False

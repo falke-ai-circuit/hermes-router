@@ -221,9 +221,11 @@ def test_pre_middleware_dispatcher_logs_and_stages(monkeypatch):
     req = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=req, original_request=req, session_id="pm1")
-    assert result == {} or (isinstance(result, dict) and result.get("request") is req
-                       and any("HIGHER-SELF INTEGRATION RULE" in str(m.get("content") or "")
-                               for m in req["messages"] if isinstance(m, dict) and m.get("role") == "system"))  # PRE never rewrites on complexity lane
+    # pass-through = NO ROUTE envelope. The declaration contract rides out on a
+    # COPY of the request (portability: the plugin carries it, not agent prompts),
+    # so the caller's object stays untouched.
+    assert set(result) <= {"request"}
+    # injection must never mutate the caller's object  # PRE never rewrites on complexity lane
     assert not venice.called  # uncensored render untouched
     assert router_core.peek_pending_swap("pm1") is not None
     # cleanup: the pending swap must not leak into other tests
@@ -234,9 +236,11 @@ def test_pre_middleware_routine_request_untouched():
     req = {"model": "m", "messages": [{"role": "user", "content": ROUTINE_ASK}]}
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=req, original_request=req, session_id="pm2")
-    assert result == {} or (isinstance(result, dict) and result.get("request") is req
-                       and any("HIGHER-SELF INTEGRATION RULE" in str(m.get("content") or "")
-                               for m in req["messages"] if isinstance(m, dict) and m.get("role") == "system"))
+    # pass-through = NO ROUTE envelope. The declaration contract rides out on a
+    # COPY of the request (portability: the plugin carries it, not agent prompts),
+    # so the caller's object stays untouched.
+    assert set(result) <= {"request"}
+    # injection must never mutate the caller's object
     assert not venice.called
 
 

@@ -185,6 +185,41 @@ def mark_platform_rule(rule_id: Any, text: Any) -> str:
     return marker + "\n" + body
 
 
+def prepend_rule_to_first_system(messages: Any, rule_id: Any, text: Any) -> Any:
+    """Return a COPY of `messages` whose first system message carries the rule
+    at its HEAD (before the persona), or a new leading system message when the
+    list has none. The caller's list is never mutated.
+
+    Placement is the mechanism: appended after the persona a platform rule was
+    read and ignored; an opening-line instruction is the one a strong in-voice
+    persona still honours. Content-part lists ([{type:text,...}]) are handled as
+    lists — stringifying one destroys multimodal structure. Never raises: on any
+    failure the original list is returned unchanged.
+    """
+    try:
+        body = mark_platform_rule(rule_id, text)
+        if not body:
+            return messages
+        if not isinstance(messages, list) or not messages:
+            return [{"role": "system", "content": body}]
+        out = [dict(m) if isinstance(m, dict) else m for m in messages]
+        for m in out:
+            if not isinstance(m, dict) or m.get("role") != "system":
+                continue
+            content = m.get("content")
+            if isinstance(content, list):
+                m["content"] = [{"type": "text", "text": body}] + [
+                    dict(part) if isinstance(part, dict) else part for part in content]
+            elif isinstance(content, str):
+                m["content"] = body + "\n\n" + content
+            else:
+                m["content"] = body
+            return out
+        return [{"role": "system", "content": body}] + out
+    except Exception:  # noqa: BLE001
+        return messages
+
+
 def platform_rule_present(messages: Any, rule_id: Any) -> bool:
     """True when this message list already carries the rule (ANY role, any
     position). Deliberately role-agnostic: a platform rule replayed under a

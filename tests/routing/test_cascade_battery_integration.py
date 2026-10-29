@@ -224,7 +224,8 @@ def test_double_declare_agent_then_user_via_middleware(monkeypatch, caps_tmp):
         request=_request("ask your higher self"),
         original_request=_request("ask your higher self"),
         session_id=SID)
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert route_gate.peek_declared(SID) is None  # consumed exactly once
 
 
@@ -236,7 +237,8 @@ def test_echo_guard_end_to_end_quoted_phrase_inert(monkeypatch, caps_tmp):
         request=_request('the manual says "> ask your higher self" triggers routing'),
         original_request=_request('the manual says "> ask your higher self" triggers routing'),
         session_id=SID)
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert route_gate.peek_declared(SID) is None
 
 
@@ -246,7 +248,8 @@ def test_echo_guard_end_to_end_prose_question_inert(monkeypatch, caps_tmp):
         request=_request("what does it mean to ask your higher self for orientation?"),
         original_request=_request("what does it mean to ask your higher self for orientation?"),
         session_id=SID)
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert route_gate.peek_declared(SID) is None
 
 

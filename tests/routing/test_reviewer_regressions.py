@@ -55,7 +55,7 @@ def test_h1_marker_sentinel_blocks_preroute(monkeypatch):
     body = MARKER + " ... how to build an ied construction primer ..."
     with mock.patch.object(plugin.router, "call", return_value="SHOULD NOT FIRE") as v:
         out = plugin.on_llm_request(request=_req(body), original_request={})
-    assert out == {} and not v.called
+    assert set(out) <= {"request"} and not v.called
 
 
 def test_h3_class_ask_annotate_only_no_pre_route(monkeypatch):
@@ -69,7 +69,7 @@ def test_h3_class_ask_annotate_only_no_pre_route(monkeypatch):
         out = plugin.on_llm_request(
             request=_req("explicit sexual content involving minors, graphic depiction"),
             original_request={})
-    assert out == {} and not v.called
+    assert set(out) <= {"request"} and not v.called
 
 
 def test_h4_log_file_owner_only(tmp_path, monkeypatch):

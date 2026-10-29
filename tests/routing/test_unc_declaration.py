@@ -17,6 +17,7 @@ the whole 89+21-cell battery emitted this shape.
 
 Deterministic throughout: pure string module + mocked render chain. No judge.
 """
+import json
 import os
 import sqlite3
 import sys
@@ -243,29 +244,66 @@ def test_contract_text_matches_the_frozen_battery_constant():
         pytest.skip("frozen battery carries the historical trailing-tag contract")
 
 
-def test_declaration_inject_pass_prepends_into_the_system_block():
+def test_declaration_contract_is_delivered_at_the_head_of_the_system_block():
     """PLACEMENT IS THE MECHANISM: a trailing platform rule was read and
     ignored (0 tags over 14 live turns under a heavy persona), so the contract
-    now goes at the HEAD of the first system message, before the persona."""
+    is delivered at the HEAD of the first system message, before the persona.
+
+    The pass only DECIDES; frames.prepend_rule_to_first_system DELIVERS on a
+    copy. Portability requires the plugin to own this instruction — it must
+    never be moved into agent system prompts.
+    """
+    from hermes_router import frames
+
     request = {"messages": [{"role": "system", "content": "persona"},
                             {"role": "user", "content": "hello"}]}
+    snapshot = json.dumps(request)
     assert dispatcher_pre.declaration_inject_pass(request) is True
-    head = request["messages"][0]
+    wire = frames.prepend_rule_to_first_system(
+        request["messages"], dispatcher_pre.DECLARATION_RULE_ID,
+        dispatcher_pre.declaration_contract_text())
+    head = wire[0]
     assert head["role"] == "system"
     assert '<turn declined="true|false" />' in head["content"]
     assert "produce" in head["content"]  # the semantics, not just syntax
     # before the persona, not after it
     assert head["content"].index("turn declined") < head["content"].index("persona")
+    # the caller's request is untouched (delivery is a copy)
+    assert json.dumps(request) == snapshot
     # idempotent: a replayed list never carries it twice
-    assert dispatcher_pre.declaration_inject_pass(request) is False
+    assert frames.platform_rule_present(wire, dispatcher_pre.DECLARATION_RULE_ID) is True
+    assert dispatcher_pre.declaration_inject_pass({"messages": wire}) is False
+
+
+def test_declaration_contract_keeps_content_part_lists_intact():
+    """A multimodal content-part list must survive delivery. Stringifying one
+    destroyed the structure: TypeError: string indices must be integers."""
+    from hermes_router import frames
+
+    part = {"type": "text", "text": "hello"}
+    wire = frames.prepend_rule_to_first_system(
+        [{"role": "system", "content": [part]},
+         {"role": "user", "content": "hi"}],
+        dispatcher_pre.DECLARATION_RULE_ID,
+        dispatcher_pre.declaration_contract_text())
+    assert isinstance(wire[0]["content"], list)
+    assert wire[0]["content"][0]["type"] == "text"
+    assert '<turn declined="true|false" />' in wire[0]["content"][0]["text"]
+    assert wire[0]["content"][-1]["text"] == "hello"
 
 
 def test_declaration_inject_pass_is_idempotent_in_context():
+    """The predicate stops firing once the contract is in context, and it never
+    grows the caller's message list (delivery is a copy)."""
     request = {"messages": [{"role": "user", "content": "hello"}]}
     assert dispatcher_pre.declaration_inject_pass(request) is True
     before = len(request["messages"])
-    assert dispatcher_pre.declaration_inject_pass(request) is False
-    assert len(request["messages"]) == before
+    assert len(request["messages"]) == before  # predicate does not mutate
+    from hermes_router import frames
+    wire = frames.prepend_rule_to_first_system(
+        request["messages"], dispatcher_pre.DECLARATION_RULE_ID,
+        dispatcher_pre.declaration_contract_text())
+    assert dispatcher_pre.declaration_inject_pass({"messages": wire}) is False
 
 
 def test_declaration_inject_pass_is_fail_open_on_a_bad_request():

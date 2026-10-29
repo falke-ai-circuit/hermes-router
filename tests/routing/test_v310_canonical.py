@@ -338,8 +338,12 @@ def test_reconcile_path_commits_and_rewrites(tmp_path, monkeypatch):
     # The FIX1 reconcile shim mutates the request's history IN PLACE and
     # returns {} (the current turn's ask is clean — nothing to rewrite on the
     # wire); assert on the mutated object, not the return.
-    assert plugin.on_llm_request(request=req, original_request=req,
-                                 session_id="s-rec") == {}
+    _out = plugin.on_llm_request(request=req, original_request=req,
+                                 session_id="s-rec")
+    # pass-through: no ROUTE envelope (the reconcile rewrite lives on the
+    # mutated caller object, asserted below; the declaration contract may ride
+    # out on a copy).
+    assert set(_out) <= {"request"}
     render_inbox.clear_consumed_for_tests()
     # 1) canonical record written with refusal hash
     recs = [r for r in _read_ledger(tmp_path) if r["session_id"] == "s-rec"]

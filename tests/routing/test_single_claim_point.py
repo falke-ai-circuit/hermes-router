@@ -399,7 +399,8 @@ def test_midturn_tool_claim_binds_rotated_content_passes(monkeypatch):
     LOGGED.clear()
     out2 = plugin.on_llm_request(request=req2, original_request=req2,
                                  session_id=SID)
-    assert out2 == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(out2) <= {"request"}
     assert not [f for _, f in LOGGED
                 if f.get("event_detail") == "anchor_route_fired"]
     assert any(f.get("event_detail") == "claim_standdown" for _, f in LOGGED)
@@ -492,7 +493,8 @@ def test_leg7c_auto_then_midturn_tool_claim_no_second_consult(monkeypatch):
     LOGGED.clear()
     out2 = plugin.on_llm_request(request=p2, original_request=p2,
                                  session_id=SID)
-    assert out2 == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(out2) <= {"request"}
     assert not [f for _, f in LOGGED
                 if f.get("event_detail") in
                 ("anchor_route_fired", "request_routing_executed")]

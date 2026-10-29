@@ -169,7 +169,7 @@ def test_declare_then_gate_same_turn_via_middleware(monkeypatch, caps_tmp):
     result = plugin.on_llm_request(request=_request("do the thing"),
                                    original_request=_request("do the thing"),
                                    session_id=SID)
-    assert result == {}  # gate claimed -> pass-through envelope
+    assert set(result) <= {"request"}  # pass-through envelope, no route
     assert not dispatch_calls
     # Claim consumed exactly once:
     assert route_gate.peek_declared(SID) is None

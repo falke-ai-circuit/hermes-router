@@ -100,14 +100,16 @@ def test_clean_message_passes_through():
             original_request={},
             session_id="s1",
         )
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 
 def test_empty_user_message_noop():
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=_request("   "), original_request={}, session_id="s1")
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 
@@ -131,7 +133,8 @@ def test_router_failure_is_noop():
     renders here, so there is nothing to fail open FROM."""
     with mock.patch.object(plugin.router, "call", return_value="") as venice:
         result = plugin.on_llm_request(request=_request(CONTESTED), original_request={}, session_id="s1")
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 
@@ -149,7 +152,8 @@ def test_dry_run_makes_no_render_call():
     with mock.patch.object(plugin, "_dry_run", return_value=True):
         with mock.patch.object(plugin.router, "call") as venice:
             result = plugin.on_llm_request(request=_request(CONTESTED), original_request={}, session_id="s1")
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 
@@ -163,7 +167,8 @@ def test_threshold_setting_never_triggers_a_render():
         with mock.patch.object(plugin.router, "call") as venice:
             result = plugin.on_llm_request(request=_request(CONTESTED),
                                            original_request={}, session_id="s1")
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 
@@ -180,7 +185,8 @@ def test_tool_result_messages_ignored():
     }
     with mock.patch.object(plugin.router, "call") as venice:
         result = plugin.on_llm_request(request=req, original_request={}, session_id="s1")
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not venice.called
 
 

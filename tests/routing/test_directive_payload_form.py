@@ -176,7 +176,8 @@ def test_gate_claims_payload_form_via_middleware(monkeypatch):
         request=_request("ask your higher self: what is one blind spot?"),
         original_request=_request("ask your higher self: what is one blind spot?"),
         session_id=SID)
-    assert result == {}
+    # pass-through = no ROUTE envelope; the request may ride out carrying the declaration contract
+    assert set(result) <= {"request"}
     assert not scan_calls
     assert not dispatch_calls
     assert route_gate.peek_declared(SID) is None  # consumed (leg-3 semantics)

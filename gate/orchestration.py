@@ -287,9 +287,20 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     # contract was absent from its instructions — 0 tags emitted over 14 turns
     # while the pass reported success in isolation. The flag below carries the
     # injection out through _hs_pass(), the single propagation point.
+    # IN-PLACE, DELIBERATELY: every pass below (contract append, higher-self
+    # rule, reflex reading, history reconcile) mutates this same request, and
+    # the reconcile tests read the caller's object, so the established
+    # mechanism must be preserved. What is new is that the mutated request is
+    # also RETURNED -- an in-place append that is not carried out in the
+    # envelope never reaches the model (measured: the contract was absent from
+    # the instructions while the pass reported success).
     _decl_injected = False
     try:
-        _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
+        # No contract when the router is off: a disabled plugin must be a
+        # genuine no-op (pinned), and the contract is only useful if something
+        # reads the tag.
+        if _hub()._enabled() and bool(_hub()._classification_cfg().get("pre_classify", True)):
+            _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
     except Exception:  # noqa: BLE001 — injection must never break the seam
         pass
 
@@ -322,7 +333,35 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             propagates on its own flag: an in-place append that is not carried
             out here never reaches the model.
             """
-            return {"request": request} if (_hs_rule_injected or _decl_injected) else {}
+            if not (_hs_rule_injected or _decl_injected):
+                return {}
+
+            def _deliver(payload):
+                """DELIVER the declaration contract on a COPY of the payload.
+
+                Portability rule: the plugin must carry its whole behaviour, so
+                the contract cannot live in agent system prompts — it ships
+                here. But the caller's request object belongs to the caller
+                (the reconcile path mutates it in place, and that contract is
+                asserted), so the contract is written onto a copy handed back
+                through the envelope. Head placement, part-list safe.
+                """
+                if not _decl_injected:
+                    return payload
+                try:
+                    from ..frames import prepend_rule_to_first_system
+                    from ..features.detection.declaration import (
+                        CONTRACT_TEXT, DECLARATION_RULE_ID)
+                    if not isinstance(payload, dict):
+                        return payload
+                    out = dict(payload)
+                    out["messages"] = prepend_rule_to_first_system(
+                        payload.get("messages"), DECLARATION_RULE_ID, CONTRACT_TEXT)
+                    return out
+                except Exception:  # noqa: BLE001 — delivery must never break
+                    return payload
+
+            return {"request": _deliver(request)}
 
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("pre_classify", True)):
             return _hs_pass()
