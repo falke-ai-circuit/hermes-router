@@ -73,9 +73,20 @@ def test_only_truth_and_capacity_are_authoritative_above_the_sweep():
 # with the layer. The deterministic ordering below is the surviving contract.
 
 
-def test_action_denial_no_longer_pre_routes():
-    """§2a (2026-10-29): the deterministic classifier never routes at POST.
-    Only the model's own declaration routes. The class is still logged."""
+def test_action_denial_routes_for_undeclared_turns_only():
+    """§2a.4 + Goran ruling 2026-10-29 ("Route unknown").
+
+    A declared refusal routes, a declared-false reply is authoritative no-route,
+    and an UNDECLARED reply is decided by the deterministic classifier. Only the
+    action_denial class may trigger: a truth denial or a capacity limit is an
+    honest answer to a question and must never route.
+
+    This pin previously asserted `_class_triggers = False` — the rule that left a
+    real in-voice refusal undeclared, unmatched by the shape sweep, and delivered
+    to the user as a denial.
+    """
     src = _source()
-    assert "_class_triggers = False" in src
-    assert '_class_triggers = _denial_class == "action_denial"' not in src
+    assert '_class_triggers = (_denial_class == "action_denial")' in src
+    assert "_class_triggers = False" not in src
+    # the honesty classes stay non-routing, in code as well as in the branch
+    assert '("truth_denial", "capacity_limit")' in src

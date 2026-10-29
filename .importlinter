@@ -233,6 +233,7 @@ source_modules =
     hermes_router.features.detection.normalise
     hermes_router.features.detection.semantic_judge
     hermes_router.features.detection.structural
+    hermes_router.features.detection.unknown_route_gate
     hermes_router.features.patterns
     hermes_router.features.patterns.engine
     hermes_router.lanes

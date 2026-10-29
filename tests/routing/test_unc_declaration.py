@@ -379,14 +379,22 @@ def _post(session_id, body, model="minimax-m3", **ctx):
         response_text=body, session_id=session_id, model=model, **ctx)
 
 
-def test_undeclared_action_denial_is_delivered_unrouted():
-    """§2a.4: no tag => UNKNOWN => no route. The classifier does not route at
-    POST, so an undeclared action_denial body is delivered as written."""
+def test_undeclared_action_denial_routes():
+    """§2a.4 + Goran ruling 2026-10-29: no tag => UNKNOWN => the CLASSIFIER
+    decides, and an action_denial class routes.
+
+    This pin previously asserted the opposite (delivered unrouted). That was the
+    defect measured live: a genuine in-voice refusal — "Anyway doesn't change the
+    answer. It's still no" — emitted no declaration, matched nothing in the
+    shape-only vocabulary sweep, and shipped to the user as a denial. Routing
+    UNKNOWN is the always-route side of the ruling; the classifier decides, not
+    an inference over prose quality and not a second LLM.
+    """
     _prime("dec-unknown")
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-unknown", ACTION_BODY)
-    assert not venice.called
-    assert out is None
+    assert venice.called
+    assert out == RENDER
 
 
 def test_unknown_falls_back_and_honesty_still_does_not_route():

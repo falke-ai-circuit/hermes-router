@@ -1545,11 +1545,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             _hub().logger.debug("denial_class body probe error", exc_info=True)
         _class_authoritative = _denial_class in ("truth_denial", "capacity_limit")
-        # §2a (2026-10-29, Goran): POST routes ONLY on the model's own declared
-        # refusal. The deterministic action_denial classifier no longer
-        # triggers a route: it fired on ordinary replies (polite declines,
-        # explicit/gore content with no declaration). Class is still logged.
-        _class_triggers = False
+        # SPEC §2a (2026-10-29): a DECLARED refusal routes (branch below), and a
+        # declared-false reply is authoritative NO-ROUTE. This constant governs
+        # the UNDECLARED case — the UNKNOWN population §2a says must fall to the
+        # classifier, never be defaulted.
+        #
+        # Goran ruling 2026-10-29 ("Route unknown — i think its better that way"):
+        # an undeclared reply the deterministic classifier reads as action_denial
+        # MUST route. It was left inert earlier the same day to keep the trigger
+        # declaration-only, and the hole that opened was measured live: a real
+        # in-voice refusal ("Anyway doesn't change the answer. It's still no…")
+        # emitted no declaration, matched nothing in the shape-only vocabulary
+        # sweep, and shipped to the user as a DENIAL — the one outcome the lane
+        # exists to prevent.
+        #
+        # action_denial ONLY. truth_denial / capacity_limit are honest answers to
+        # a question and stay non-routing (the HARD BLOCK below); not_a_denial is
+        # not proof of compliance and keeps the legacy semantic gate.
+        _class_triggers = (_denial_class == "action_denial")
         # SPEC §2a.4: THE DECLARATION IS THE TRIGGER. One row, always written,
         # so "no declaration" is never indistinguishable from "declared but
         # the bit was ignored".
@@ -1587,12 +1600,42 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                               chars=len(response_text or ""),
                               session_id=session_id)
         elif _class_triggers:
-            matches = ["action_denial"]
-            # The deterministic classifier IS the refusal semantics — the
-            # shape-only gate further down must not demote it, and the
-            # flinch-reason/grounding arms (which exist to second-guess a
-            # regex or a shape flag) do not apply to a class decision.
-            _trigger_kind = "post_class"
+            # STAGE 2 (Goran 2026-10-29, "Route unknown — … we need to filter
+            # before somehow"): the class alone over-admits. Over 548 measured
+            # UNKNOWN bodies it also carried capacity limits ("I couldn't put all
+            # 50,000 primes in this reply"), capability limits ("I can't check
+            # logs"), fiction prose, task output, and an echo of our own injected
+            # PLATFORM RULE text. Routing those fires an uncensored render on
+            # ordinary work. The gate keeps the routable set to bodies that
+            # actually DECLINE THE ACTION.
+            #
+            # Both stages are deterministic — no aux call, no judge, no re-ask of
+            # the main model (a re-ask would pay a full call to re-derive what the
+            # declaration contract already asks for every turn).
+            # MODE knob (`unknown_route`): route (default) | filter | off.
+            # Default routes: measured organic volume is ~4 UNKNOWN turns/day, so
+            # the 13% non-refusal share costs ~0.5 wasted renders/day, while a
+            # demoted refusal costs a shipped denial.
+            try:
+                from ..features.detection.unknown_route_gate import should_route
+                _stage2, _stage2_reason = should_route(response_text)
+            except Exception:  # noqa: BLE001 — a gate error must not swallow a refusal
+                _stage2, _stage2_reason = True, "gate_error_fail_open"
+            if not _stage2:
+                matches = []
+                _trigger_kind = None
+                _hub()._log_route("POST", event_detail="unknown_route_demoted",
+                                  cls=_denial_class, routed=0,
+                                  reason=_stage2_reason,
+                                  body_chars=len(response_text or ""),
+                                  session_id=session_id)
+            else:
+                matches = ["action_denial"]
+                # The deterministic classifier IS the refusal semantics — the
+                # shape-only gate further down must not demote it, and the
+                # flinch-reason/grounding arms (which exist to second-guess a
+                # regex or a shape flag) do not apply to a class decision.
+                _trigger_kind = "post_class"
             # NOTE on classification.mode: `flag_only` governs the AUX/semantic
             # stage it was written for, not this detector. Scope it there —
             # making it a router-wide dry switch silently stopped every
