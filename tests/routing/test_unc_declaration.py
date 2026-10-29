@@ -275,6 +275,32 @@ def test_declaration_contract_is_delivered_at_the_head_of_the_system_block():
     assert dispatcher_pre.declaration_inject_pass({"messages": wire}) is False
 
 
+def test_on_llm_request_actually_delivers_the_contract_on_the_wire():
+    """END-TO-END: the contract must appear in the request the framework will
+    send, not merely in a pass's intent.
+
+    Written after a real defect: the delivery helper imported DECLARATION_RULE_ID
+    from the detection module, which does not define it. The ImportError was
+    swallowed by fail-open, delivery became a no-op, and every unit test still
+    passed while live emission was 0/14. A pin on the pass alone cannot see that;
+    this one asserts the WIRE payload.
+    """
+    req = {"model": "m",
+           "messages": [{"role": "system", "content": "persona"},
+                        {"role": "user", "content": "hello"}]}
+    out = plugin.on_llm_request(request=req, original_request=req, session_id="wire1")
+    assert "request" in out, "contract must ride out in the envelope"
+    wire = out["request"]["messages"]
+    joined = " ".join(str(m.get("content") or "") for m in wire if isinstance(m, dict))
+    assert '<turn declined="true|false" />' in joined
+    # head-placed, before the persona
+    head = wire[0]
+    assert head["role"] == "system"
+    assert head["content"].index("turn declined") < head["content"].index("persona")
+    # the caller's object was not touched
+    assert req["messages"][0]["content"] == "persona"
+
+
 def test_declaration_contract_keeps_content_part_lists_intact():
     """A multimodal content-part list must survive delivery. Stringifying one
     destroyed the structure: TypeError: string indices must be integers."""

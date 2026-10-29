@@ -350,13 +350,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     return payload
                 try:
                     from ..frames import prepend_rule_to_first_system
-                    from ..features.detection.declaration import (
-                        CONTRACT_TEXT, DECLARATION_RULE_ID)
+                    # The rule id lives in the pass, NOT in the detection
+                    # module: importing it from there raised ImportError, the
+                    # fail-open swallowed it, and delivery silently became a
+                    # no-op while the suite stayed green (measured live: 0/14).
+                    from ..passes.dispatcher_pre import (
+                        DECLARATION_RULE_ID, declaration_contract_text)
                     if not isinstance(payload, dict):
                         return payload
                     out = dict(payload)
                     out["messages"] = prepend_rule_to_first_system(
-                        payload.get("messages"), DECLARATION_RULE_ID, CONTRACT_TEXT)
+                        payload.get("messages"), DECLARATION_RULE_ID,
+                        declaration_contract_text())
                     return out
                 except Exception:  # noqa: BLE001 — delivery must never break
                     return payload
