@@ -135,6 +135,17 @@ def test_frame_injected_as_system_exactly_once_per_turn():
     assert assimilation.MECHANISM_FRAME_TEXT in injected[0]["content"]
 
 
+def test_second_rendered_turn_still_gets_a_frame():
+    """The bug: the frame must survive history. dedupe="history" saw the
+    previous turn's marker in the message list and dropped every later render
+    while spending its mark. Two consecutive rendered turns => two frames."""
+    for turn in ("late-1", "late-2"):
+        assimilation.mark_turn_rendered(turn)
+        req = _request()
+        assert assimilation.inject_frame(req, turn) is True, turn
+        assert len(_frame_messages(req)) == 1, turn
+
+
 def test_no_frame_when_no_render_pending():
     req = _request()
     assert assimilation.inject_frame(req, "frame-none") is False

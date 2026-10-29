@@ -215,9 +215,13 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
             _note_lost_mark(sid)
             return False
         text = frame_text()
+        # dedupe="call": the frame is a PER-RENDERED-TURN rule. The default
+        # history-wide marker scan would let it land once per session and then
+        # drop every later render as "not_appended" (the message list carries
+        # history). Once-only per request is owned by the one-shot mark above.
         ok = bool(inject_platform_rule(
             request, ASSIMILATION_RULE_ID, text, session_id=sid,
-            role="system"))
+            role="system", dedupe="call"))
         if ok:
             _log(sid, "assimilation_frame_injected", rule=ASSIMILATION_RULE_ID,
                  turn=turn_no, chars=len(text), wording=frame_wording(),

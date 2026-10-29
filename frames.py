@@ -674,7 +674,8 @@ def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
                          session_id: str = "", header_prefix: str = "",
                          required_markers: tuple = (),
                          legacy_markers: tuple = (),
-                         role: str = "system") -> bool:
+                         role: str = "system",
+                         dedupe: str = "history") -> bool:
     """THE platform-rule delivery boundary (R41).
 
     One rule id, one marked append, at most once:
@@ -703,7 +704,14 @@ def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
         msgs = (request or {}).get("messages")
         if not isinstance(msgs, list):
             return False
-        if platform_rule_present(msgs, rule_id):
+        # dedupe="history" (default) is the boundary for standing platform
+        # rules: never append a rule whose marker is already anywhere in the
+        # message list. dedupe="call" is for PER-TURN rules (the assimilation
+        # frame): the history-wide scan would otherwise let the frame land once
+        # per session and drop every later rendered turn, because the message
+        # list carries history. The caller owns the once-only guarantee via its
+        # own one-shot mark, so (a) and (b) are skipped for that class.
+        if dedupe == "history" and platform_rule_present(msgs, rule_id):
             return False  # (a) already carried in-context (any role)
         if _legacy_rule_present(msgs, legacy_markers):
             return False  # (a') pre-R41 carrier in context — never duplicate
@@ -718,7 +726,7 @@ def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
             _suppress_rule_delivery(rule_id, rule_text, False)
             return False
         key = _rule_context_key(msgs, session_id)
-        latch_key = ("%s|rule:%s" % (key, rule_id)) if key else ""
+        latch_key = ("%s|rule:%s" % (key, rule_id)) if (key and dedupe == "history") else ""
         if latch_key and _rule_already_delivered(latch_key, stamped):
             return False  # (b) previous-turn append not duplicated
         msgs.append({"role": role, "content": stamped})
