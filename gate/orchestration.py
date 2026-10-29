@@ -870,6 +870,20 @@ _PASS_COUNT: Dict[str, int] = {}
 # they see; a `false` declaration that decayed to UNKNOWN would re-open the
 # classifier fallback the declaration exists to close. Bounded, fail-open.
 _DECLARATION_CACHE: Dict[tuple, str] = {}
+# SAME-TURN GUARD. A body hash alone is not turn identity: a later turn in the
+# same session can repeat a body verbatim, and recalling its declaration would
+# route (or suppress) a turn that declared nothing. `_DECLARATION_LAST` records
+# which body this session processed LAST, so a recalled bit is only ever valid
+# for a pass of the turn that just ran. A different body in between moves the
+# pointer and the stale entry can never be recalled.
+_DECLARATION_LAST: Dict[str, tuple] = {}   # session -> (body_hash, monotonic ts)
+_DECLARATION_TTL_S = 300.0
+
+
+def _reset_declaration_state() -> None:
+    """Clear the declaration recall state (test isolation + turn boundary)."""
+    _DECLARATION_CACHE.clear()
+    _DECLARATION_LAST.clear()
 
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
@@ -993,12 +1007,23 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             try:
                 _decl_key = (str(session_id or ""),
                              _hub().canonical.hash_text(str(response_text or "")))
+                _decl_body_hash = _decl_key[1]
+                _decl_now = _hub().time.monotonic()
                 if _decl_value is None:
-                    _declaration = _DECLARATION_CACHE.get(_decl_key, "UNKNOWN")
+                    # Recall ONLY if this session's most recent body is this
+                    # exact body, and recently: otherwise the hit belongs to an
+                    # earlier turn (or another test) and would route a turn
+                    # that declared nothing.
+                    _last = _DECLARATION_LAST.get(str(session_id or ""))
+                    if (_last is not None and _last[0] == _decl_body_hash
+                            and (_decl_now - _last[1]) <= _DECLARATION_TTL_S):
+                        _declaration = _DECLARATION_CACHE.get(_decl_key, "UNKNOWN")
                 elif _declaration in ("true", "false"):
                     _DECLARATION_CACHE[_decl_key] = _declaration
+                    _DECLARATION_LAST[str(session_id or "")] = (
+                        _decl_body_hash, _decl_now)
                     if len(_DECLARATION_CACHE) > 512:  # bounded, like _PASS_COUNT
-                        _DECLARATION_CACHE.clear()
+                        _reset_declaration_state()
             except Exception:  # noqa: BLE001 — cache is an optimisation only
                 pass
         except Exception:  # noqa: BLE001 — strip never breaks delivery

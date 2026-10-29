@@ -355,13 +355,27 @@ def _isolate_router_config(monkeypatch, request):
     # still live for every test after it, handing later POSTs a PRE they never
     # had (41 order-dependent failures, each passing in isolation). Same
     # isolation class as the pins above: every test starts with no pairing.
+    # §2a self-declaration recall is the SAME class: keyed on
+    # (session_id, stripped-body hash), so a declaration stored by one test is
+    # recalled by an unrelated later test that reuses a session id and an
+    # identical body string — and that turn routes when it must not.
     try:
         from hermes_router.core import state as _st
         _st._PRE_ADVISORY.clear()
     except Exception:  # noqa: BLE001 — store absent => nothing to isolate
         pass
+    try:
+        from hermes_router.gate import orchestration as _orch
+        _orch._reset_declaration_state()
+    except Exception:  # noqa: BLE001 — cache absent => nothing to isolate
+        pass
     yield
     _dbg._LAST_GOOD_SECTION.clear()
+    try:
+        from hermes_router.gate import orchestration as _orch
+        _orch._reset_declaration_state()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         _st._PRE_ADVISORY.clear()
     except Exception:  # noqa: BLE001

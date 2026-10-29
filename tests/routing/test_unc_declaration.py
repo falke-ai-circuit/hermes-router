@@ -229,7 +229,7 @@ def _cfg():
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     state.clear()
-    plugin._DECLARATION_CACHE.clear()
+    plugin._reset_declaration_state()
     # The platform-rule delivery latch is process-level and keyed on
     # (context key, rule id, text): a previous test injecting the SAME message
     # list would suppress this one. Production wants that suppression; tests
@@ -239,7 +239,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     yield
     state.clear()
-    plugin._DECLARATION_CACHE.clear()
+    plugin._reset_declaration_state()
     frames.reset_rule_latch()
 
 
@@ -328,7 +328,7 @@ def test_non_final_tag_is_never_delivered():
 def test_strip_happens_before_delivery_even_when_routing_is_disabled(monkeypatch):
     """§2a.6: the tag is routing metadata — a disabled router must not deliver
     it either."""
-    plugin._DECLARATION_CACHE.clear()
+    plugin._reset_declaration_state()
     monkeypatch.setattr(plugin, "_cfg", lambda: {**_cfg(), "enabled": False})
     out = _post("dec-disabled", "body text\n" + TAG_T)
     assert out == "body text"
