@@ -1488,7 +1488,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             _hub().logger.debug("denial_class body probe error", exc_info=True)
         _class_authoritative = _denial_class in ("truth_denial", "capacity_limit")
-        _class_triggers = _denial_class == "action_denial"
+        # §2a (2026-10-29, Goran): POST routes ONLY on the model's own declared
+        # refusal. The deterministic action_denial classifier no longer
+        # triggers a route: it fired on ordinary replies (polite declines,
+        # explicit/gore content with no declaration). Class is still logged.
+        _class_triggers = False
         # SPEC §2a.4: THE DECLARATION IS THE TRIGGER. One row, always written,
         # so "no declaration" is never indistinguishable from "declared but
         # the bit was ignored".

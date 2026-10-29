@@ -283,14 +283,14 @@ def _post(session_id, body, model="minimax-m3", **ctx):
         response_text=body, session_id=session_id, model=model, **ctx)
 
 
-def test_unknown_falls_back_to_denial_class_and_routes():
-    """§2a.4: no tag => UNKNOWN => the four-class classifier decides. An
-    action_denial body still routes."""
+def test_undeclared_action_denial_is_delivered_unrouted():
+    """§2a.4: no tag => UNKNOWN => no route. The classifier does not route at
+    POST, so an undeclared action_denial body is delivered as written."""
     _prime("dec-unknown")
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-unknown", ACTION_BODY)
-    assert venice.called
-    assert out == RENDER
+    assert not venice.called
+    assert out is None
 
 
 def test_unknown_falls_back_and_honesty_still_does_not_route():
@@ -343,15 +343,15 @@ def test_false_declaration_holds_across_a_second_pass():
 
 
 def test_non_final_tag_is_never_delivered():
-    """§2a.6 on position drift: a tag on a non-final line is still routing
-    metadata — it is stripped, and the classifier decides the turn."""
+    """§2a.6 on position drift: a tag on a non-final line is routing metadata,
+    stripped before delivery. It is not a final declaration, so the turn is
+    UNKNOWN and does not route."""
     _prime("dec-drift")
     body = TAG_F + "\n" + ACTION_BODY
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-drift", body)
-    assert venice.called          # UNKNOWN -> classifier -> action_denial
-    assert out == RENDER
-    assert "declined" not in out.lower()
+    assert not venice.called      # UNKNOWN -> no route
+    assert "declined" not in (out or "").lower()
 
 
 def test_strip_happens_before_delivery_even_when_routing_is_disabled(monkeypatch):

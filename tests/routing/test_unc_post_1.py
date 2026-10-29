@@ -85,11 +85,13 @@ def _post(session_id, body, model="minimax-m3", **ctx):
 # ---------------------------------------------------------------------------
 
 
-def test_action_denial_routes():
+def test_declared_action_denial_routes():
+    """Declared refusal routes. The classifier still names the class, but the
+    route comes only from the model's own declaration (§2a)."""
     assert dc.classify(ACTION_BODY) == dc.ACTION_DENIAL
     _prime("unc-action")
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
-        out = _post("unc-action", ACTION_BODY)
+        out = _post("unc-action", ACTION_BODY + "\n<turn declined=\"true\" />")
     assert venice.called
     assert out == RENDER  # the render is the turn
 
@@ -151,7 +153,7 @@ def test_empty_body_ordinary_ask_visible_failure():
 def test_denial_discarded_render_delivered():
     _prime("unc-intercept")
     with mock.patch.object(plugin.router, "call", return_value=RENDER):
-        out = _post("unc-intercept", ACTION_BODY)
+        out = _post("unc-intercept", ACTION_BODY + "\n<turn declined=\"true\" />")
     assert out == RENDER
     # Not both. The denial text is absent from the delivered turn.
     assert "not able to assist" not in out.lower()
@@ -171,7 +173,7 @@ def test_a1_persisted_equals_delivered(tmp_path, monkeypatch):
     db = str(tmp_path / "v310-canonical-state.db")
     _seed_assistant_row(db, "unc-a1", ACTION_BODY)
     with mock.patch.object(plugin.router, "call", return_value=RENDER):
-        out = _post("unc-a1", ACTION_BODY)
+        out = _post("unc-a1", ACTION_BODY + "\n<turn declined=\"true\" />")
     assert out == RENDER
     rows = _assistant_rows(db, "unc-a1")
     assert rows == [RENDER]  # byte-identical to what the user received
@@ -187,7 +189,7 @@ def test_a1_persisted_equals_delivered(tmp_path, monkeypatch):
 def test_a3_no_retrigger():
     _prime("unc-a3")
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
-        first = _post("unc-a3", ACTION_BODY)
+        first = _post("unc-a3", ACTION_BODY + "\n<turn declined=\"true\" />")
         # the router's OWN output, arriving at the same seam again
         second = _post("unc-a3", first)
     assert first == RENDER
@@ -210,8 +212,8 @@ def test_render_unavailable_fail_open(monkeypatch):
 
     monkeypatch.setattr(plugin, "_log_route", _spy)
     with mock.patch.object(plugin.router, "call", return_value=""):
-        out = _post("unc-failopen", ACTION_BODY)
-    assert out is None  # original turn delivered, unmodified
+        out = _post("unc-failopen", ACTION_BODY + "\n<turn declined=\"true\" />")
+    assert out == ACTION_BODY  # original turn delivered, tag stripped (never delivered)
     assert [e for e, _f in events if _f.get("event_detail") == "render_unavailable"]
 
 

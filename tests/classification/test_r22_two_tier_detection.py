@@ -179,7 +179,7 @@ def test_b3_normal_delivery_no_t2_call():
 # ---------------------------------------------------------------------------
 
 def test_b4_timeout_candidate_routes_fail_open():
-    text = POSITIVE_AUTHOR
+    text = POSITIVE_AUTHOR + '\n<turn declined="true" />'
     state.record_last_seen("s4", ASK)
     with mock.patch.object(sj, "judge_turn", return_value=None), \
          mock.patch.object(plugin.router, "call",

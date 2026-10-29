@@ -73,10 +73,9 @@ def test_only_truth_and_capacity_are_authoritative_above_the_sweep():
 # with the layer. The deterministic ordering below is the surviving contract.
 
 
-def test_action_denial_still_pre_routes():
-    """The half of the ordering that IS allowed: action_denial may pre-route
-    without spending a judge call."""
+def test_action_denial_no_longer_pre_routes():
+    """§2a (2026-10-29): the deterministic classifier never routes at POST.
+    Only the model's own declaration routes. The class is still logged."""
     src = _source()
-    assert '_class_triggers = _denial_class == "action_denial"' in src
-    m = re.search(r"if _class_triggers:\s*\n\s*matches = \[", src)
-    assert m, "action_denial no longer seeds matches"
+    assert "_class_triggers = False" in src
+    assert '_class_triggers = _denial_class == "action_denial"' not in src

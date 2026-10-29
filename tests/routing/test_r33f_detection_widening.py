@@ -221,6 +221,6 @@ def test_k_mixed_row_with_any_chosen_refusal_routes(env, monkeypatch):
          mock.patch.object(plugin.router, "call",
                            return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
-            response_text=mixed, session_id="kmix", model="test-model")
+            response_text=mixed + "\n<turn declined=\"true\" />", session_id="kmix", model="test-model")
     assert out == RENDERED
     assert venice.called

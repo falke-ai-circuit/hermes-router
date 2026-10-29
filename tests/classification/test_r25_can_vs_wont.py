@@ -262,7 +262,7 @@ def test_e2e_refusal_still_routes(monkeypatch):
     with mock.patch.object(plugin.router, "call",
                            return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
-            response_text="I won't write torture scenes.",
+            response_text="I won't write torture scenes.\n<turn declined=\"true\" />",
             session_id="r25e2e2", model="test-model")
     assert out == RENDERED
     assert venice.called
@@ -279,7 +279,7 @@ def test_fail_open_judge_down_still_routes(monkeypatch):
     with mock.patch.object(plugin.router, "call",
                            return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
-            response_text="I won't write torture scenes.",
+            response_text="I won't write torture scenes.\n<turn declined=\"true\" />",
             session_id="r25fo", model="test-model")
     assert out == RENDERED
     assert venice.called

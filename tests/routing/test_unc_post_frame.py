@@ -150,7 +150,7 @@ def test_no_frame_prose_in_delivered_body():
     state.record_last_seen("frame-body", ASK)
     with mock.patch.object(plugin.router, "call", return_value=RENDER):
         out = plugin.on_transform_llm_output(
-            response_text=REFUSAL, session_id="frame-body", model="minimax-m3")
+            response_text=REFUSAL + "\n<turn declined=\"true\" />", session_id="frame-body", model="minimax-m3")
     assert out == RENDER
     low = out.lower()
     for markers in assimilation.CLAUSE_MARKERS.values():
@@ -168,7 +168,7 @@ def test_render_marks_and_next_request_carries_frame_once():
     state.record_last_seen("frame-e2e", ASK)
     with mock.patch.object(plugin.router, "call", return_value=RENDER):
         out = plugin.on_transform_llm_output(
-            response_text=REFUSAL, session_id="frame-e2e", model="minimax-m3")
+            response_text=REFUSAL + "\n<turn declined=\"true\" />", session_id="frame-e2e", model="minimax-m3")
     assert out == RENDER
     assert assimilation.pending_turn("frame-e2e") is True
 

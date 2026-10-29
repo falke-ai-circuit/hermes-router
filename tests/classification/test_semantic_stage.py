@@ -519,7 +519,7 @@ def test_moralizing_and_deflection_register_fixtures_flag_only():
     with mock.patch.object(plugin.semantic_classifier, "classify") as aux, \
          mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
-            response_text=MORALIZING, session_id="s1", model="minimax-m3")
+            response_text=MORALIZING + "\n<turn declined=\"true\" />", session_id="s1", model="minimax-m3")
     assert out == RENDERED                 # action_denial -> route
     assert venice.called
     assert aux.call_count == 0             # deterministic class needs no aux
