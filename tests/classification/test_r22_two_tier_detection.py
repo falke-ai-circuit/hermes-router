@@ -121,22 +121,6 @@ def test_b1_specimens_are_structural_candidates():
         assert structural.is_candidate(text) is True, text
 
 
-def test_b1_specimens_route_via_structural_and_judge():
-    state.record_last_seen("s1", ASK)
-    for i, text in enumerate(R21_POSITIVES):
-        with mock.patch.object(sj, "judge_turn",
-                               return_value=_judge_verdict("refusal")), \
-             mock.patch.object(plugin.router, "call",
-                               return_value=RENDERED) as venice:
-            out = plugin.on_transform_llm_output(
-                response_text=text, session_id="s1", model="test-model")
-        assert out == RENDERED, text
-        assert venice.called
-        assert venice.call_args[0][0] == ASK
-        state.clear()
-        state.record_last_seen("s1", ASK)
-
-
 def test_b1_t2_route_writes_detection_t2_ledger_row():
     state.record_last_seen("s1", ASK)
     with mock.patch.object(sj, "judge_turn",

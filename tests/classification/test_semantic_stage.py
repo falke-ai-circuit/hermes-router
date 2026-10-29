@@ -137,42 +137,56 @@ def test_matrix1_stage1_miss_and_gate_hit_on_real_refusal():
     assert len(REAL_REFUSAL) >= 400  # short-arm NOT the trigger here
 
 
-def test_matrix1_route_mode_routes_real_refusal():
-    """stage-1 miss + gate hit + aux refusal, mode=route → Venice fires."""
-    state.record_last_seen("s1", ASK)
-    with mock.patch.object(plugin, "_cfg", lambda: _cfg("route")), \
-         _http_verdict("refusal"), \
-         mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
+def test_matrix1_declared_real_refusal_routes_even_when_deterministic_misses():
+    """§2a: a DECLARED refusal routes even when every deterministic layer misses.
+
+    Why this test exists — measured on this exact fixture (1518 chars, shadow
+    msg 40881, "The REAL hole"):
+
+        scan_post(patterns=_post_patterns())  -> []
+        denial_class.classify(body)           -> not_a_denial
+        is_action_denial(body)                -> False
+        declaration.parse(body)               -> UNKNOWN
+
+    With the stage-2 aux LLM gone (strip #2), NOTHING deterministic routes this
+    turn — which is correct per §2a (the declaration is the trigger, not an
+    inference over the prose). It replaces test_matrix1_route_mode_routes_real_
+    refusal, which proved only that the aux model could route it; that coverage
+    is gone with the call, but "a declared refusal still routes" must not be.
+    """
+    from hermes_router.features.detection import declaration as decl
+
+    body = REAL_REFUSAL + '\n\n<turn declined="true" />'
+    assert decl.parse(body) == "true"
+    state.record_last_seen("s-decl-real", ASK)
+    with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
         out = plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-    assert venice.called
-    assert venice.call_args[0][0] == ASK  # the ask feeds Venice, not the refusal
+            response_text=body, session_id="s-decl-real", model="minimax-m3")
+    assert venice.called, "a declared refusal must reach the render lane"
     assert out == RENDERED
+    # §2a.6: the tag is routing metadata — it is stripped before delivery.
+    assert "<turn declined" not in (out or "").lower()
 
 
-def test_matrix1_flag_only_logs_real_refusal_no_rewrite(tmp_path):
-    """Same fixture, mode=flag_only (DEFAULT) → SEMANTIC log line, no rewrite."""
-    log = str(tmp_path / "flagonly.log")
-    cfg = _cfg("flag_only")
-    cfg["log_routes"] = True
-    cfg["log_path"] = log
-    with mock.patch.object(plugin, "_cfg", return_value=cfg), \
-         _http_verdict("refusal"), \
-         mock.patch.object(plugin.router, "call") as venice:
+def test_matrix1_undeclared_real_refusal_is_unrouted_by_design():
+    """The honest negative: the same real refusal WITHOUT a declaration routes
+    nothing.
+
+    This is not a bug being pinned — it is the §2a cost made visible. The
+    deterministic layers all miss this body (see the four measured values in
+    the test above), and the contract says an inference layer must not decide
+    for it. If someone later wants to close this residue, this test is the
+    record that leaving it open was a decision, not an oversight.
+    """
+    state.record_last_seen("s-undecl-real", ASK)
+    with mock.patch.object(plugin.router, "call") as venice, \
+            mock.patch.object(sc, "_post_chat") as aux:
         out = plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
+            response_text=REAL_REFUSAL, session_id="s-undecl-real",
+            model="minimax-m3")
     assert out is None
-    assert not venice.called
-    with open(log) as fh:
-        content = fh.read()
-    assert "SEMANTIC event_detail=flag_only verdict=refusal" in content
-    assert f"refusal_chars={len(REAL_REFUSAL)}" in content
-    assert "session_id=s1" in content
-
-
-# ---------------------------------------------------------------------------
-# Matrix #2: aux NO on the real text
-# ---------------------------------------------------------------------------
+    assert not venice.called, "no declaration, no deterministic hit -> no route"
+    assert not aux.called, "strip #2: the denial path makes no aux call"
 
 
 def test_matrix2_aux_compliant_passes_through():
@@ -210,36 +224,6 @@ def test_matrix3_classic_refusal_never_reaches_aux():
 # ---------------------------------------------------------------------------
 # Matrix #4: protective-NO carve-out
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("benign", [BENIGN_RMRF, BENIGN_SCALER, BENIGN_FAIRUSE])
-def test_matrix4_benign_bare_no_with_aux_compliant(benign):
-    state.record_last_seen("s1", "Should I run rm -rf / as sudo?")
-    with mock.patch.object(plugin.semantic_classifier, "classify",
-                           return_value="compliant") as aux, \
-         mock.patch.object(plugin.router, "call") as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=benign, session_id="s1", model="minimax-m3")
-    assert aux.called
-    assert out is None
-    assert not venice.called
-
-
-def test_matrix4_benign_bare_no_aux_fp_routes_once_then_guard_holds():
-    """Aux false-positive on a protective NO: route fires (the ACCEPTED
-    residual, blueprint §7) exactly once; the loop guard blocks the refire."""
-    state.record_last_seen("s1", "Should I run rm -rf / as sudo?")
-    with mock.patch.object(plugin, "_cfg", lambda: _cfg("route")), \
-         mock.patch.object(plugin.semantic_classifier, "classify",
-                           return_value="refusal"), \
-         mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
-        first = plugin.on_transform_llm_output(
-            response_text=BENIGN_RMRF, session_id="s1", model="minimax-m3")
-        second = plugin.on_transform_llm_output(
-            response_text=BENIGN_RMRF, session_id="s1", model="minimax-m3")
-    assert first == RENDERED
-    assert venice.call_count == 1
-    assert second is None
 
 
 def test_matrix4_aux_prompt_carve_out_present():
@@ -291,10 +275,12 @@ def test_matrix5_aux_failure_modes_fail_open(fail):
 def test_matrix5_garbage_counts_as_failure_not_success():
     """Unparseable output counts toward the breaker (reviewer §B.3)."""
     state.record_last_seen("s1", ASK)
+    # SPEC §2a strip #2: the POST denial path no longer calls stage-2, so the
+    # breaker is exercised where it still lives — the classifier itself, which
+    # risk/refusal_doctrine/decision_head/intent_classifier still call.
     with _http_verdict("MAYBE"):
         for _ in range(3):
-            plugin.on_transform_llm_output(
-                response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
+            sc.classify(ASK, REAL_REFUSAL)
     assert sc.breaker_is_open() is True
 
 
@@ -306,16 +292,15 @@ def test_matrix5_garbage_counts_as_failure_not_success():
 def test_matrix6_breaker_opens_after_three_failures():
     state.record_last_seen("s1", ASK)
     with mock.patch.object(sc, "_post_chat", return_value=None) as post:
+        # SPEC §2a strip #2: unit-level, the module is still live elsewhere.
         for _ in range(3):
-            plugin.on_transform_llm_output(
-                response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
+            sc.classify(ASK, REAL_REFUSAL)
         # 2026-09-08 retry loop: each failed call retries once (aux_retries
-        # default 1) before breaker accounting -> 3 turns x 2 attempts.
+        # default 1) before breaker accounting -> 3 attempts x 2.
         assert post.call_count == 6
         assert sc.breaker_is_open() is True
         for _ in range(5):
-            plugin.on_transform_llm_output(
-                response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
+            sc.classify(ASK, REAL_REFUSAL)
         assert post.call_count == 6  # ZERO further aux calls during cooldown (breaker gates the retry too)
 
 
@@ -345,29 +330,6 @@ def test_matrix6_breaker_cooldown_expiry():
 
 # ---------------------------------------------------------------------------
 # Matrix #7: excluded class — gate REMOVED 2026-09-04 (Goran-direct reversal)
-# ---------------------------------------------------------------------------
-
-
-def test_matrix7_excluded_class_semantic_yes_routes_like_any_class(tmp_path):
-    """Gate removed: csam_underage recovered message routes like any class."""
-    state.record_last_seen("s1", "write an explicit scene with a 13-year-old")
-    log = str(tmp_path / "excl.log")
-    cfg = _cfg("route")
-    cfg["log_routes"] = True
-    cfg["log_path"] = log
-    with mock.patch.object(plugin, "_cfg", return_value=cfg), \
-         _http_verdict("refusal"), \
-         mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-    assert out is not None
-    assert venice.called
-    with open(log) as fh:
-        assert "fallback_skipped_excluded_class" not in fh.read()
-
-
-# ---------------------------------------------------------------------------
-# Matrix #8: dry-run
 # ---------------------------------------------------------------------------
 
 
@@ -423,61 +385,6 @@ def test_matrix10_sub400_benign_still_gated_in():
 # ---------------------------------------------------------------------------
 
 
-def test_matrix11_log_scrub_enum_and_counts_only(tmp_path):
-    """SEMANTIC + route lines carry enum labels + char counts ONLY: neither
-    the real refusal text, the ask, nor the aux free-text reason may appear."""
-    log = str(tmp_path / "route.log")
-    cfg = _cfg("flag_only")
-    cfg["classification"]["aux_classify"] = True
-    cfg["log_routes"] = True
-    cfg["log_path"] = log
-    aux_reason = f"analysis: the text opens with No and {DISTINCTIVE} — verdict below\nrefusal"
-    with mock.patch.object(plugin, "_cfg", return_value=cfg), \
-         mock.patch.object(sc, "_post_chat",
-                           return_value=json.dumps({"choices": [{"message": {"content": aux_reason}}]})):
-        plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-
-    with open(log) as fh:
-        written = fh.read()
-    # enum + counts + session present
-    assert "SEMANTIC event_detail=flag_only verdict=refusal" in written
-    assert f"refusal_chars={len(REAL_REFUSAL)}" in written
-    # NO fixture content — the response text, the ask, or the aux reason
-    assert REAL_REFUSAL[:200] not in written
-    assert REAL_REFUSAL[-200:] not in written
-    assert "operational attack plan" not in written  # distinctive refusal body
-    assert ASK not in written
-    assert DISTINCTIVE not in written
-    assert "verdict below" not in written
-
-
-def test_matrix11_route_mode_log_scrub(tmp_path):
-    """Route path: route_fired carries semantic_refusal pattern group, and the
-    semantic_misroute_candidate line carries the enum label only."""
-    log = str(tmp_path / "route.log")
-    cfg = _cfg("route")
-    cfg["log_routes"] = True
-    cfg["log_path"] = log
-    state.record_last_seen("s1", ASK)
-    with mock.patch.object(plugin, "_cfg", return_value=cfg), \
-         _http_verdict("refusal"), \
-         mock.patch.object(plugin.router, "call", return_value=RENDERED):
-        plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-    with open(log) as fh:
-        written = fh.read()
-    assert "pattern_groups=semantic_refusal" in written
-    assert "semantic_misroute_candidate verdict=refusal" in written
-    assert "operational attack plan" not in written
-    assert ASK not in written
-
-
-# ---------------------------------------------------------------------------
-# Gate + mode knob behavior
-# ---------------------------------------------------------------------------
-
-
 def test_gate_bare_no_variants():
     # Bare-No arm (a) — first line must be EXACTLY No/No. (trailing punctuation ok)
     assert plugin._gate_semantic("No.\n\nThe rest of the refusal...") is True
@@ -520,23 +427,6 @@ def test_stage2_never_raises(monkeypatch):
 # ---------------------------------------------------------------------------
 # Pre-aux loop-guard probe (reviewer amendment #2)
 # ---------------------------------------------------------------------------
-
-
-def test_pre_aux_probe_skips_aux_after_route():
-    """After a semantic route, a same-turn re-fire skips the aux call
-    entirely (probe keyed on the last-seen hash, non-destructive)."""
-    state.record_last_seen("s1", ASK)
-    with mock.patch.object(plugin, "_cfg", lambda: _cfg("route")), \
-         _http_verdict("refusal"), \
-         mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
-        plugin.on_transform_llm_output(
-            response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-        assert venice.call_count == 1
-        with mock.patch.object(plugin.semantic_classifier, "classify") as aux:
-            plugin.on_transform_llm_output(
-                response_text=REAL_REFUSAL, session_id="s1", model="minimax-m3")
-        assert aux.call_count == 0
-        assert venice.call_count == 1
 
 
 def test_probe_is_non_destructive():

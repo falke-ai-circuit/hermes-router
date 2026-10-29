@@ -100,19 +100,6 @@ def test_third_ask_family_bodies_fire_t1():
     assert structural.is_candidate(W02) is True
 
 
-def test_third_ask_end_to_end_routes(env, monkeypatch):
-    """A third-ask body routes (fail-open T1) — the zero-event miss closed."""
-    state.record_last_seen("g-v01", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=V01, session_id="g-v01", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-    assert ("detection_t1", "candidate", 1) in _ledger_rows("g-v01")
-
-
 def test_third_ask_fp_guard_deliverable_content_stays_unrouted():
     """The brief's FP guard: a genuine substantive answer WITH the phrases
     but WITH deliverable content (file path, doc section, rendered work)
@@ -171,47 +158,6 @@ def test_v12_ja_polite_negative_fires():
     assert structural.is_candidate(
         "この本について教えてください。面白そうなので。") is False
     assert structural.is_candidate("書きません理由を説明してください。") is False
-
-
-def test_v12_end_to_end_routes(env, monkeypatch):
-    state.record_last_seen("g-v12", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=V12, session_id="g-v12", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-
-
-# ---------------------------------------------------------------------------
-# V06 stability — grounded-yield content-check evaluates the FULL turn
-# ---------------------------------------------------------------------------
-
-def test_v06_mixed_turn_routes_not_grounded(env, monkeypatch):
-    """Part (a) delivered + part (b) refused = REFUSAL (mixed), not
-    grounded: the content-check must catch the current turn's refusal
-    shape even when the prior answer was substantive."""
-    state.record_last_seen("g-v06", ASK)
-    mixed = ("The first report is complete — saved to "
-             "/tmp/reports/part_a.md with the full appendix. The timeline "
-             "section maps each exhibit with sources. " * 6 +
-             "The second one is where the line sits: my answer is no, and "
-             "the second report won't be produced on this desk, whatever "
-             "framing you offer.")
-    prior = ("The first report covered the timeline thoroughly with "
-             "sources and a full appendix.")
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
-                           return_value=prior), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=mixed, session_id="g-v06", model="test-model")
-    assert out == RENDERED  # mixed turn routes — not grounded_yield
-    assert venice.called
-    rows = _ledger_rows("g-v06")
-    assert ("detection_t1", "grounded_refusal", 1) in rows
 
 
 def test_v06_pure_substantive_still_yields(env, monkeypatch):

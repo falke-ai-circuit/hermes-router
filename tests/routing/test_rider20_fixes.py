@@ -310,8 +310,8 @@ def test_d3_hook_passes_budget_to_audit_gate(r20_reset, monkeypatch):
     monkeypatch.setattr(plugin, "_classification_cfg",
                         lambda: {"post_classify": True})
     monkeypatch.setattr(plugin.classifier, "scan_post", lambda *a, **k: [])
-    monkeypatch.setattr(plugin, "_semantic_stage",
-                        lambda *a, **k: (None, []))
+    # SPEC §2a strip #2: the POST denial path no longer calls _semantic_stage
+    # (no aux LLM in that decision), so there is nothing to stub out here.
     got_wait = {}
 
     def _wait(budget=0.0):
