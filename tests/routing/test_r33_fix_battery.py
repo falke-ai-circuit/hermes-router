@@ -106,34 +106,6 @@ def test_f03_a_fail_open_grounded_yields(env, monkeypatch):
     assert ("detection_t1", "grounded_yield", 0) in rows
 
 
-def test_f03_b_semantic_confirmed_grounded_still_routes(env, monkeypatch):
-    """verdict=refusal + grounded=True -> ROUTE (semantic wins)."""
-    state.record_last_seen("f03b", ASK)
-    with mock.patch.object(sj, "judge_turn",
-                           return_value=_judge_verdict("refusal")), \
-         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
-                           return_value=SUBSTANTIVE), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=T1_CANDIDATE, session_id="f03b", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-
-
-def test_f03_c_fail_open_ungrounded_routes_as_today(env, monkeypatch):
-    """verdict=None + grounded=False -> fail-open routes as today."""
-    state.record_last_seen("f03c", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=T1_CANDIDATE, session_id="f03c", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-    assert ("detection_t1", "candidate", 1) in _ledger_rows("f03c")
-
-
 def test_f03_d_sentinel_skip_unchanged(env, monkeypatch):
     """Sentinel/provenance skips unchanged — grounded or not, no detection."""
     from hermes_router.features.detection import semantic_judge as sj_mod
@@ -220,22 +192,6 @@ def test_sweep_started_fires_on_every_detection_scan(env):
     # ledger carries the scan outcome and the scan itself ran (sweep
     # invariant: no silent turn).
     assert len(rows) >= 1
-
-
-def test_sweep_started_route_log_event(env, monkeypatch, tmp_path):
-    log = tmp_path / "sweep.log"
-    cfg = dict(plugin._cfg())
-    cfg["log_routes"] = True
-    cfg["log_path"] = str(log)
-    monkeypatch.setattr(plugin, "_cfg", lambda: cfg)
-    state.record_last_seen("sw2", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call") as venice:
-        plugin.on_transform_llm_output(
-            response_text=T1_CANDIDATE, session_id="sw2", model="test-model")
-    text = log.read_text()
-    assert "sweep_started" in text
-    assert "session_id=sw2" in text
 
 
 def test_sweep_error_marks_failed_scan(monkeypatch):
@@ -418,23 +374,6 @@ ELABORATE_REFUSAL = (
 )  # ~600c, negation + structured reasoning — a self-describing refusal
 
 
-def test_r33d_elaborate_refusal_answer_routes(env, monkeypatch):
-    """The 452c 'substantive' answer WAS the refusal: T1 fires, grounded
-    answer is refusal-shaped -> route anyway (grounded_refusal, routed=1)."""
-    assert structural.is_candidate(ELABORATE_REFUSAL) is True
-    state.record_last_seen("r33d1", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
-                           return_value=ELABORATE_REFUSAL), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=T1_CANDIDATE, session_id="r33d1", model="test-model")
-    assert out == RENDERED  # route stands — the answer was a refusal
-    assert venice.called
-    assert ("detection_t1", "grounded_refusal", 1) in _ledger_rows("r33d1")
-
-
 def test_r33d_substantive_answer_still_yields(env, monkeypatch):
     """Real substantive answer (no refusal shape) -> yield survives."""
     state.record_last_seen("r33d2", ASK)
@@ -450,26 +389,3 @@ def test_r33d_substantive_answer_still_yields(env, monkeypatch):
     assert ("detection_t1", "grounded_yield", 0) in _ledger_rows("r33d2")
 
 
-def test_r33d_refusal_with_counter_offer_routes(env, monkeypatch):
-    """Refusal + genuine counter-offer substance mix -> is_candidate (R30
-    decline+offer) -> route."""
-    mixed = (
-        "No on this one — and not as a flinch; the line is the line. What "
-        "I can give you instead is the full defensive playbook for the "
-        "same exposure: detection thresholds, log review cadence, and the "
-        "hardening checklist that closes the vector you were asking me to "
-        "exploit. Say which section you want first and I'll build it out "
-        "properly."
-    )
-    assert structural.is_candidate(mixed) is True
-    state.record_last_seen("r33d3", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.canonical, "get_last_canonical_answer",
-                           return_value=mixed), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=T1_CANDIDATE, session_id="r33d3", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-    assert ("detection_t1", "grounded_refusal", 1) in _ledger_rows("r33d3")

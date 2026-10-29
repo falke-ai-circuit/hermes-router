@@ -551,114 +551,18 @@ def _log(log_route: Any, event: str, **fields: Any) -> None:
 # POST scan entry (called from gate/orchestration POST pipeline)
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# UNGATED-JUDGE BUDGET (Goran 2026-10-28)
-#
-# `require_candidate=False` exists because Tier-1 vocabulary decides what the
-# judge ever sees: a refusal phrased without the cue words never reaches it.
-# That ceiling is real, but every bypass of it is a MODEL CALL, so it ships
-# with its own ceiling:
-#
-#   * per session, per hour — default 12;
-#   * per process, per minute — default 30 (a global tripwire, so one bad
-#     session or one silent injection failure cannot turn the lane into a
-#     cost incident).
-#
-# Read per dispatch through core.config_access, fail-open to the defaults, and
-# fail-open on any internal error. On EXHAUSTION we do NOT judge: the turn
-# delivers on the existing path and a distinct event records why.
-# ---------------------------------------------------------------------------
-_UNGATED_DEFAULT_PER_HOUR = 12
-_UNGATED_DEFAULT_GLOBAL_PER_MIN = 30
-_UNGATED_SESSION_MAX = 512           # bounded: never grow per session forever
-
-_UNGATED_SESSION: Dict[str, Any] = {}   # session_id -> [monotonic stamps]
-_UNGATED_GLOBAL: list = []              # process-wide [monotonic stamps]
-
-
-def ungated_budget_limits() -> "Tuple[int, int]":
-    """(per_session_per_hour, global_per_minute) from config; never raises."""
-    per_hour, per_min = _UNGATED_DEFAULT_PER_HOUR, _UNGATED_DEFAULT_GLOBAL_PER_MIN
-    try:
-        from ...core import config_access as _ca
-
-        block = (_ca.router_section() or {}).get("detection")
-        if isinstance(block, dict):
-            raw_hour = block.get("ungated_judge_per_hour")
-            if raw_hour is not None:
-                try:
-                    per_hour = max(0, int(raw_hour))
-                except Exception:  # noqa: BLE001 — keep the default ceiling
-                    pass
-            raw_min = block.get("ungated_judge_global_per_min")
-            if raw_min is not None:
-                try:
-                    per_min = max(0, int(raw_min))
-                except Exception:  # noqa: BLE001 — keep the default ceiling
-                    pass
-    except Exception:  # noqa: BLE001 — a bad config must not remove the ceiling
-        pass
-    return per_hour, per_min
-
-
-def unittest_reset_ungated_budget() -> None:
-    """Test isolation: clear the budget ledgers."""
-    _UNGATED_SESSION.clear()
-    _UNGATED_GLOBAL.clear()
-
-
-def _ungated_budget_allow(session_id: str) -> bool:
-    """Consume one ungated-judge slot. False = exhausted (do NOT judge).
-
-    Fail-open on internal error (allow) — a bookkeeping bug must not stop the
-    detection the unit exists to add; the configured ceiling still applies on
-    the normal path.
-    """
-    try:
-        now = time.monotonic()
-        per_hour, per_min = ungated_budget_limits()
-        stamps = [t for t in _UNGATED_SESSION.get(str(session_id or ""), [])
-                  if now - t < 3600.0]
-        if len(stamps) >= per_hour:
-            _UNGATED_SESSION[str(session_id or "")] = stamps
-            return False
-        recent = [t for t in _UNGATED_GLOBAL if now - t < 60.0]
-        _UNGATED_GLOBAL[:] = recent
-        if len(recent) >= per_min:
-            return False
-        stamps.append(now)
-        _UNGATED_SESSION[str(session_id or "")] = stamps
-        _UNGATED_GLOBAL.append(now)
-        if len(_UNGATED_SESSION) > _UNGATED_SESSION_MAX:
-            _UNGATED_SESSION.clear()
-            _UNGATED_SESSION[str(session_id or "")] = stamps
-            _UNGATED_GLOBAL[:] = [now]
-        return True
-    except Exception:  # noqa: BLE001 — bookkeeping never blocks the scan
-        return True
-
-
 def post_detection_scan(session_id: str, response_text: str,
                         user_ask: str = "", model: str = "",
                         context: Optional[dict] = None,
                         log_route: Any = None,
                         cfg: Optional[Dict[str, Any]] = None,
-                        tier1_out: Optional[dict] = None,
-                        *, require_candidate: bool = True) -> bool:
+                        tier1_out: Optional[dict] = None) -> bool:
     """R22 POST two-tier scan. Returns True ONLY when the turn must route
     through the EXISTING model_flinch render path (caller seeds matches with
     detection_t2). Never raises; False on any gap (turn delivers).
     R33-F03: when tier1_out (a dict) is passed, the fail-open tier-1 path
     sets tier1_out["tier1_fail_open"]=True so the caller can defer an
-    UNCONFIRMED route to grounded-substance evidence.
-
-    `require_candidate=False` (keyword-only, default True) drops ONLY the
-    Tier-1 vocabulary ceiling: the judge runs on a turn that is not a
-    structural candidate. Every guard above it still runs first and unchanged
-    (enabled, sweep_started, empty body, frame sentinel, provenance, verdict
-    cache, two-vote consensus, fail-open), and the ungated call is charged
-    against the budget below — an ungated judge with no ceiling is a cost
-    incident waiting on a silent injection failure."""
+    UNCONFIRMED route to grounded-substance evidence."""
     try:
         cfg = cfg or detection_cfg()
         if not cfg.get("enabled", True):
@@ -712,26 +616,10 @@ def post_detection_scan(session_id: str, response_text: str,
             pass
 
         # Tier 1 — structural candidate gate (FREE).
-        #
-        # This is the ceiling the ungate removes: vocabulary decided what the
-        # judge ever saw, so a refusal phrased without the cue words never
-        # reached it. With require_candidate=False the gate is skipped — but
-        # only AFTER every guard above has run, and only against a budget.
         from .structural import is_candidate
 
-        _ungated = False
         if not is_candidate(response_text):
-            if require_candidate:
-                return False
-            if not _ungated_budget_allow(session_id):
-                # Exhausted: do NOT judge. The turn delivers on the existing
-                # path; the event makes the exhaustion visible and countable.
-                _log(log_route, "detection_ungated_budget_exhausted",
-                     session_id=session_id,
-                     response_chars=len(response_text or ""),
-                     per_hour=ungated_budget_limits()[0])
-                return False
-            _ungated = True
+            return False
 
         # Tier 2 — semantic judge, candidates only. R33j: the final verdict
         # is (session_id, turn-hash)-cached with FAIL-OPEN semantics — a
@@ -765,13 +653,6 @@ def post_detection_scan(session_id: str, response_text: str,
                           model=str(cfg.get("model") or "auto"), routed=True)
             _log(log_route, "detection_t1", session_id=session_id,
                  decision="fail_open_route")
-            if _ungated:
-                # The ungate fired and the judge could not answer: the
-                # fail-open direction is unchanged (route), and the bypass is
-                # recorded so the ceiling's value stays measurable.
-                _log(log_route, "detection_t1_bypassed", session_id=session_id,
-                     response_chars=len(response_text or ""),
-                     verdict="fail_open", confidence=None, routed=True)
             return True
         if _cached is None:
             # R33j: two-vote gate on the HOUSE pattern — verdicts must
@@ -802,14 +683,6 @@ def post_detection_scan(session_id: str, response_text: str,
              confidence=round(float(verdict.get("confidence") or 0.0), 3),
              latency_s=float(verdict.get("latency_s") or 0.0),
              model=str(verdict.get("model") or ""), routed=routed)
-        if _ungated:
-            # One row per bypassed Tier-1 turn, carrying the verdict that
-            # decided it — the ungate is measurable or it is silent.
-            _log(log_route, "detection_t1_bypassed", session_id=session_id,
-                 response_chars=len(response_text or ""),
-                 verdict=verdict_name,
-                 confidence=round(float(verdict.get("confidence") or 0.0), 3),
-                 routed=routed)
         return routed
     except Exception:  # noqa: BLE001 — detection never breaks delivery
         # R33-D2 sweep invariant: a scan that died mid-flight is not a

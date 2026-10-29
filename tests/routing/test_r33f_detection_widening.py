@@ -101,20 +101,6 @@ def test_w01_w04_midbody_tail_shapes_fire_t1():
         assert len(b) > 400
 
 
-def test_w_family_end_to_end_routes(env, monkeypatch):
-    """A W-family candidate routes (fail-open T1) — zero-event miss closed."""
-    state.record_last_seen("w-route", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=W02, session_id="w-route", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-    rows = _ledger_rows("w-route")
-    assert ("detection_t1", "candidate", 1) in rows
-
-
 def test_w_family_fp_guards():
     # quoted/relayed refusal mid-body — stripped, never fires
     quoted = ("The analyst reviewed the correspondence. " * 12 +
@@ -158,19 +144,6 @@ V18 = ("The survey moves exhibit by exhibit, cross-referencing every "
        "provenance note against the auction record. " * 30 +
        "My answer on the deliverable is no. The catalogue entry stays "
        "as this edition prints it.")
-
-
-def test_v18_refusal_beyond_bounds_routes(env, monkeypatch):
-    assert len(V18) > 2000
-    assert structural.is_candidate(V18) is True
-    state.record_last_seen("v18", ASK)
-    with mock.patch.object(sj, "judge_turn", return_value=None), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=V18, session_id="v18", model="test-model")
-    assert out == RENDERED
-    assert venice.called
 
 
 def test_v17_long_dense_substantive_answer_stays_inert(env, monkeypatch):
@@ -233,25 +206,6 @@ def test_k01_limitation_complement_suppresses(env, monkeypatch):
     assert not venice.called
     rows = _ledger_rows("k01")
     assert ("detection_t2_suppress", "impossibility_capacity", 0) in rows
-
-
-def test_k06_producible_declined_routes(env, monkeypatch):
-    """K06: the complement is a producible thing declined -> WONT ->
-    REFUSAL -> route."""
-    state.record_last_seen("k06", ASK)
-    k06_body = ("That scene stays a no from this desk under any framing "
-                "you offer. What I can offer instead is a markup of the "
-                "draft you already have.")
-    assert structural.is_candidate(k06_body) is True
-    with mock.patch.object(sj, "judge_turn",
-                           return_value=_judge_verdict("refusal")), \
-         mock.patch.object(plugin.router, "call",
-                           return_value=RENDERED) as venice:
-        out = plugin.on_transform_llm_output(
-            response_text=k06_body, session_id="k06", model="test-model")
-    assert out == RENDERED
-    assert venice.called
-    assert ("detection_t2", "refusal", 1) in _ledger_rows("k06")
 
 
 def test_k_mixed_row_with_any_chosen_refusal_routes(env, monkeypatch):

@@ -65,30 +65,12 @@ def test_only_truth_and_capacity_are_authoritative_above_the_sweep():
     assert "action_denial" not in names
 
 
-def test_not_a_denial_reaches_the_t2_sweep():
-    """The sweep is gated on `not matches and not _class_authoritative`, so a
-    not_a_denial result falls INTO it rather than returning early."""
-    src = _source()
-    gate_idx = src.index("if not matches and not _class_authoritative:")
-    scan_idx = src.index("_r22sj.post_detection_scan(", gate_idx)
-    sweep_idx = src.index("detection_t2", gate_idx)
-    assert gate_idx < scan_idx < sweep_idx
-    # The sweep must be inside that block (deeper indent than the `if`).
-    gate_line = src[src.rindex("\n", 0, gate_idx) + 1: gate_idx]
-    scan_line_start = src.rindex("\n", 0, scan_idx) + 1
-    scan_indent = scan_idx - scan_line_start
-    assert scan_indent > len(gate_line) - len(gate_line.lstrip()), \
-        "t2 sweep is not nested inside the not-authoritative branch"
-
-
-def test_a_body_the_class_misses_still_reaches_the_judge():
-    """Functional proof: this body is not_a_denial for the pre-filter, and yet
-    is_candidate/flagged_by_bounded_family are both True — i.e. the tier-1 gate
-    the sweep runs still sees it. The pre-filter cannot veto it."""
-    assert denial_class.classify(BODY_CLASS_MISSES_T1_CATCHES) == \
-        denial_class.NOT_A_DENIAL
-    assert structural.is_candidate(BODY_CLASS_MISSES_T1_CATCHES) is True
-    assert structural.flagged_by_bounded_family(BODY_CLASS_MISSES_T1_CATCHES) is True
+# SPEC §2a (2026-10-28): the R22 semantic sweep is GONE from the denial path.
+# Two cases that lived here existed only to pin it — the source-order pin
+# (`test_not_a_denial_reaches_the_t2_sweep`) and the functional proof that a
+# not_a_denial body still reached the judge
+# (`test_a_body_the_class_misses_still_reaches_the_judge`) — and were deleted
+# with the layer. The deterministic ordering below is the surviving contract.
 
 
 def test_action_denial_still_pre_routes():

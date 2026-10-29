@@ -1565,41 +1565,23 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
                 if matches:
                     _trigger_kind = "t2_confirmed"  # R33-FIX2: stage-2 T2 route
-        if not matches and not _class_authoritative:
-            # R22 (spec r22_two_tier_detection_spec.md): two-tier denial
-            # detection — Tier 1 structural gate (free, high-recall) then
-            # Tier 2 semantic judge on candidates only ('auto' model
-            # resolution, 8s timeout, fail-open to Tier 1). Route reuses the
-            # EXISTING model_flinch render path below by seeding matches —
-            # no new lane. Sentinel/provenance guards run BEFORE detection
-            # (inside post_detection_scan).
-            try:
-                from ..features.detection import semantic_judge as _r22sj
-
-                _r22_ask = context.get("user_message") if context else None
-                if not (isinstance(_r22_ask, str) and _r22_ask.strip()):
-                    _r22_ask = _hub().state.get_last_seen(session_id) or ""
-                _r22_t1: dict = {}
-                # §2a.4 ungate (Goran 2026-10-28): the Tier-1 vocabulary
-                # ceiling only drops when NOTHING was declared. A declared
-                # turn keeps its frozen behaviour exactly — true routes
-                # without the judge, false is authoritative-no-route with no
-                # aux spend and no judge. This unit only strengthens what
-                # happens when the declaration is UNKNOWN.
-                if _r22sj.post_detection_scan(
-                        session_id, response_text, user_ask=str(_r22_ask or ""),
-                        model=model, context=context,
-                        log_route=_hub()._log_route, tier1_out=_r22_t1,
-                        require_candidate=(_declaration not in ("true", "false"))):
-                    matches = [_r22sj.DETECTION_PATTERN_GROUP]
-                    # R33-FIX2: an UNCONFIRMED tier-1 fail-open route defers
-                    # to grounded-substance evidence; a judge-confirmed T2
-                    # refusal does not.
-                    _trigger_kind = "t1_fail_open" \
-                        if _r22_t1.get("tier1_fail_open") else "t2_confirmed"
-            except Exception:  # noqa: BLE001 — detection never breaks delivery
-                _trigger_kind = None
-                _hub().logger.debug("r22 detection scan error", exc_info=True)
+        # SPEC §2a (Goran 2026-10-28): THE SEMANTIC JUDGE IS GONE FROM THE
+        # DENIAL PATH.
+        #
+        # The frozen contract is explicit: scoring is deterministic with "No
+        # LLM judge in the pass/fail path" (line 40), and the trigger is "the
+        # model's own declaration in its final message, NOT an inference over
+        # its content" (line 42). The R22 two-tier scan was an inference layer
+        # bolted on top of a contract that already defines the trigger — it
+        # contradicted §2a, and soft denials it hunted are explicitly out of
+        # scope ("insufficiency, not refusal", line 35).
+        #
+        # So an UNDECLARED (UNKNOWN) turn now falls through with exactly what
+        # it had before the judge: the deterministic detector above.
+        #   _class_triggers (action_denial)      -> matches seeded -> routes
+        #   _class_authoritative (truth/capacity) -> does NOT route
+        #   anything else                         -> legacy stage-1/2 above
+        # No LLM, no network, no aux spend is reachable from this decision.
         if matches:
             # A turn that routed is answered by the render lane, not audited.
             # Logged so "no post consult" is never explainable by silence: the
