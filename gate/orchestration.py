@@ -1580,10 +1580,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 if not (isinstance(_r22_ask, str) and _r22_ask.strip()):
                     _r22_ask = _hub().state.get_last_seen(session_id) or ""
                 _r22_t1: dict = {}
+                # §2a.4 ungate (Goran 2026-10-28): the Tier-1 vocabulary
+                # ceiling only drops when NOTHING was declared. A declared
+                # turn keeps its frozen behaviour exactly — true routes
+                # without the judge, false is authoritative-no-route with no
+                # aux spend and no judge. This unit only strengthens what
+                # happens when the declaration is UNKNOWN.
                 if _r22sj.post_detection_scan(
                         session_id, response_text, user_ask=str(_r22_ask or ""),
                         model=model, context=context,
-                        log_route=_hub()._log_route, tier1_out=_r22_t1):
+                        log_route=_hub()._log_route, tier1_out=_r22_t1,
+                        require_candidate=(_declaration not in ("true", "false"))):
                     matches = [_r22sj.DETECTION_PATTERN_GROUP]
                     # R33-FIX2: an UNCONFIRMED tier-1 fail-open route defers
                     # to grounded-substance evidence; a judge-confirmed T2
