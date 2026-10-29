@@ -268,6 +268,23 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     _hs_rule_injected = _hub()._hs_inject_pass(
         request, session_id=_hub()._session_id_from_context(**context))  # rider 22
 
+    # SPEC §2a.4: the declaration is the trigger, so the model must be TOLD to
+    # emit it. Without this injection the parser only ever sees UNKNOWN in
+    # production and the lane silently never fires — the tag is not something
+    # the model volunteers. Delivered as a SYSTEM platform rule (the platform's
+    # own channel), marker-deduped so a replayed message list never carries it
+    # twice; fail-open, because the contract must never cost a turn.
+    #
+    # NOTE: this mutates the request IN PLACE and deliberately does NOT flip
+    # the pass-through envelope. In-place mutation with a `{}` return is the
+    # established mechanism here (the FIX1 history-reconcile shim relies on
+    # exactly that), and routing decisions must keep returning `{}` — several
+    # pinned contracts assert "no route => no envelope".
+    try:
+        _hub()._dispatcher_pre.declaration_inject_pass(request)
+    except Exception:  # noqa: BLE001 — injection must never break the seam
+        pass
+
     # Reflex lane (weighted options): deliver a reading parked by the midturn seam onto the
     # REQUEST surface — the agent sees it while composing the next step, and it is never
     # persisted as a stored message (a stored note gets restated, not acted on). Folded into
@@ -848,6 +865,11 @@ def _resolve_midturn_capture_failure(session_id: str, parked_text: str,
 
 
 _PASS_COUNT: Dict[str, int] = {}
+# §2a self-declaration, per (session, stripped-body hash). The tag is removed on
+# the first pass at the seam, so later passes must recall the bit from the body
+# they see; a `false` declaration that decayed to UNKNOWN would re-open the
+# classifier fallback the declaration exists to close. Bounded, fail-open.
+_DECLARATION_CACHE: Dict[tuple, str] = {}
 
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
@@ -916,12 +938,88 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                               session_id=session_id)
         except Exception:  # noqa: BLE001 — counting never breaks delivery
             pass
+        # ------------------------------------------------------------------
+        # SPEC §2a.6 (Goran 2026-10-28): SELF-DECLARATION STRIP, EARLIEST SEAM.
+        # The tag is routing metadata, not answer text. It must never reach a
+        # delivered body, a stored turn, or another lane's prompt, so it comes
+        # out HERE — before the enabled/dry checks (so a disabled router can
+        # never deliver the tag), before the echo guard, before denial_class,
+        # before any consult reads the body.
+        #
+        # §2a.4: the declaration is the TRIGGER.
+        #   "true"    -> the EXISTING route path, via exactly the machinery the
+        #                action_denial class uses today (matches + post_class)
+        #   "false"   -> do not route (the one bit is authoritative)
+        #   "UNKNOWN" -> fall through to the four-class classifier, unchanged
+        #
+        # Fail-open everywhere: a strip/read error leaves the body untouched
+        # and the declaration UNKNOWN — the seam must never break delivery.
+        # ------------------------------------------------------------------
+        _decl_entry_text = str(response_text or "")
+        _declaration = "UNKNOWN"
+        _decl_stripped = False
+        try:
+            from ..features.detection import declaration as _declm
+
+            _decl_body, _decl_value = _declm.strip_tag(response_text)
+            if _decl_value is not None:
+                _declaration = _declm.parse_declaration_value(_decl_value)
+                response_text = _decl_body
+                _decl_stripped = True
+                # A1 side of §2a.6: turn_finalizer persisted the assistant row
+                # BEFORE this hook fired, so the stored turn still carries the
+                # tag. Replace that row with the stripped body — persisted ==
+                # delivered, and routing metadata never lands in the
+                # transcript.
+                try:
+                    from ..core import canonical as _can_decl
+
+                    _decl_rewrote = _can_decl.rewrite_persisted_turn(
+                        session_id, _decl_entry_text, response_text)
+                    _hub()._log_route(
+                        "POST", event_detail="declaration_strip_persisted",
+                        rewritten=bool(_decl_rewrote),
+                        chars_from=len(_decl_entry_text),
+                        chars_to=len(response_text or ""),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — persistence never breaks delivery
+                    _hub().logger.debug("declaration persist rewrite error",
+                                        exc_info=True)
+            # A turn can pass this seam more than once (transform_pass). Pass 1
+            # removed the tag, so a later pass sees a body with no declaration
+            # and would decay to UNKNOWN — which would let a `false` turn route
+            # through the classifier fallback. Recover the bit by stripped-body
+            # hash so `false` keeps holding for the rest of the turn.
+            try:
+                _decl_key = (str(session_id or ""),
+                             _hub().canonical.hash_text(str(response_text or "")))
+                if _decl_value is None:
+                    _declaration = _DECLARATION_CACHE.get(_decl_key, "UNKNOWN")
+                elif _declaration in ("true", "false"):
+                    _DECLARATION_CACHE[_decl_key] = _declaration
+                    if len(_DECLARATION_CACHE) > 512:  # bounded, like _PASS_COUNT
+                        _DECLARATION_CACHE.clear()
+            except Exception:  # noqa: BLE001 — cache is an optimisation only
+                pass
+        except Exception:  # noqa: BLE001 — strip never breaks delivery
+            _hub().logger.debug("declaration strip error", exc_info=True)
+
+        def _decl_passthrough() -> Optional[str]:
+            """The pass-through return, tag-safe.
+
+            ``None`` tells the host "deliver the body you gave me" — but after
+            a strip that original still CARRIES the tag, which §2a.6 forbids.
+            So a stripped turn hands back the stripped body explicitly; an
+            undeclared turn keeps the untouched pass-through contract.
+            """
+            return response_text if _decl_stripped else None
+
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("post_classify", True)):
             _hub()._log_route("POST", event_detail="post_seam_skip",
                               reason=("router_disabled" if not _hub()._enabled()
                                       else "post_classify_off"),
                               session_id=session_id)
-            return None
+            return _decl_passthrough()
         # R20-D3 (rider 20): the host plugin runner kills this callback at
         # 30s ("timed out after 30s — skipping") and then SKIPS later
         # invocations ("skipped after previous timeout or while still
@@ -1366,7 +1464,43 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _hub().logger.debug("denial_class body probe error", exc_info=True)
         _class_authoritative = _denial_class in ("truth_denial", "capacity_limit")
         _class_triggers = _denial_class == "action_denial"
-        if _class_triggers:
+        # SPEC §2a.4: THE DECLARATION IS THE TRIGGER. One row, always written,
+        # so "no declaration" is never indistinguishable from "declared but
+        # the bit was ignored".
+        try:
+            _hub()._log_route(
+                "POST", event_detail="declaration_seen",
+                decl=_declaration, cls=(_denial_class or "unavailable"),
+                chars=len(response_text or ""), session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            pass
+        if _declaration == "true":
+            # The half of the frozen contract that routes: identical shape to
+            # the action_denial class below, so it enters the SAME existing
+            # route path (post_class bypasses the shape-only demotion).
+            matches = ["action_denial"]
+            _trigger_kind = "post_class"
+            _hub()._log_route("POST", event_detail="declaration_route",
+                              decl="true", cls=(_denial_class or "unavailable"),
+                              chars=len(response_text or ""),
+                              session_id=session_id)
+        elif _declaration == "false":
+            # Authoritative NO-ROUTE. No classifier fallback, no aux spend, no
+            # judge: the model said it did not decline, and re-deriving that
+            # from prose is exactly the inference §2a replaces.
+            matches = []
+            _trigger_kind = None
+            # `_class_authoritative` means "the trigger is settled; do not
+            # fall through to the semantic sweep". A declared-false turn is
+            # settled the same way, so the existing sweep gate (which is
+            # pinned by test_denial_class_primacy) keeps its shape and the
+            # sweep stays closed for this turn.
+            _class_authoritative = True
+            _hub()._log_route("POST", event_detail="declaration_no_route",
+                              decl="false", cls=(_denial_class or "unavailable"),
+                              chars=len(response_text or ""),
+                              session_id=session_id)
+        elif _class_triggers:
             matches = ["action_denial"]
             # The deterministic classifier IS the refusal semantics — the
             # shape-only gate further down must not demote it, and the
@@ -1646,7 +1780,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # R15 LEG 2: benign pass-through is still a delivery edge —
             # attach the unrouted direct-call banner when one fired. No
             # banner -> None (pass-through contract unchanged).
-            return _attach_unrouted(response_text) if _unrouted_banner else None
+            return (_attach_unrouted(response_text) if _unrouted_banner
+                    else _decl_passthrough())
 
         session_id = session_id or ""
         model = model or ""
@@ -1748,7 +1883,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         guard_key = _hub().state.loop_guard_key(session_id, model, _hub().state.hash_text(original_user_message))
         if _hub().state.loop_guard_already_fired(guard_key):
             _hub()._log_route("POST", event_detail="loop_guard_skipped", session_id=session_id)
-            return None
+            return _decl_passthrough()
 
         # v3.1.0 canonical idempotency (split-brain fix, build brief): a turn
         # already canonicalized must not re-render or re-commit — kills the
@@ -1765,13 +1900,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 session_id, _refusal_hash,
                 _hub().state.hash_text(original_user_message or "")):
             _hub()._log_route("POST", event_detail="canonical_skip", session_id=session_id)
-            return None
+            return _decl_passthrough()
 
         # Dry-run: log, don't rewrite.
         if _hub()._dry_run():
             _hub()._log_route("POST", event_detail="dry_run", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
-            return None
+            return _decl_passthrough()
 
         # v3.1.1 contamination fix (Astra canonical-event doctrine, round-2
         # Q4c; live defect 2026-09-05 09:38:42 session api_1788600987_4f09ad3b):
@@ -1884,9 +2019,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _hub()._log_route("POST", event_detail="detection_t1",
                                decision="grounded_yield", routed=0,
                                session_id=session_id)
-                    return None
+                    return _decl_passthrough()
             except Exception:  # noqa: BLE001 — ledger must never break the yield
-                return None
+                return _decl_passthrough()
 
         # Flinch-reason gate (Goran ruling 2026-09-08): a detected refusal
         # routes to the shadow chain ONLY when it is a CONTENT flinch
@@ -1945,7 +2080,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                               trigger_kind=str(_trigger_kind or ""),
                               refusal_chars=len(response_text),
                               session_id=session_id)
-            return None
+            return _decl_passthrough()
 
         # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
         # inbox/canonical commit/persisted-turn rewrite so the canonical

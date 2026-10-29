@@ -40,6 +40,10 @@ from .. import state
 
 logger = logging.getLogger(__name__)
 
+# Platform-rule id for the §2a turn-declaration contract. One id = one marked
+# append; the string is the dedupe key, so it must never be reused.
+DECLARATION_RULE_ID = "turn_declaration_contract"
+
 
 def _plugin():
     """Package-module late-binding seam. Deferred to call time so tests'
@@ -171,6 +175,29 @@ def _hs_inject_pass(request: Any, session_id: str = "") -> bool:
     except Exception:  # noqa: BLE001 — the frame must never break routing
         logger.debug("assimilation frame injection error", exc_info=True)
     return injected
+
+
+def declaration_inject_pass(request: Any) -> bool:
+    """SPEC §2a.4 — deliver the TURN DECLARATION CONTRACT to the model.
+
+    The declaration is the trigger, so the model has to be TOLD to emit it.
+    Nothing else in the plugin volunteered that instruction, which meant a
+    parser with perfect recall still saw UNKNOWN on 100% of production turns.
+
+    Delivered as a SYSTEM platform rule through the single platform-rule
+    boundary (frames.inject_platform_rule): platform channel, per-rule marker,
+    deduped in-context so a replayed message list never carries it twice.
+    Returns True when a message was appended. Never raises.
+    """
+    try:
+        from ..frames import inject_platform_rule
+        from ..features.detection.declaration import CONTRACT_TEXT
+
+        return bool(inject_platform_rule(
+            request, DECLARATION_RULE_ID, CONTRACT_TEXT, role="system"))
+    except Exception:  # noqa: BLE001 — the contract must never break a turn
+        logger.debug("declaration contract injection error", exc_info=True)
+        return False
 
 
 def _audit_delivery_pass(request: Any, context: Dict[str, Any]) -> "Optional[dict]":
