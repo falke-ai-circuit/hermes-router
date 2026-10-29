@@ -243,13 +243,21 @@ def test_contract_text_matches_the_frozen_battery_constant():
         pytest.skip("frozen battery carries the historical trailing-tag contract")
 
 
-def test_declaration_inject_pass_appends_one_system_message():
-    request = {"messages": [{"role": "user", "content": "hello"}]}
+def test_declaration_inject_pass_prepends_into_the_system_block():
+    """PLACEMENT IS THE MECHANISM: a trailing platform rule was read and
+    ignored (0 tags over 14 live turns under a heavy persona), so the contract
+    now goes at the HEAD of the first system message, before the persona."""
+    request = {"messages": [{"role": "system", "content": "persona"},
+                            {"role": "user", "content": "hello"}]}
     assert dispatcher_pre.declaration_inject_pass(request) is True
-    appended = request["messages"][-1]
-    assert appended["role"] == "system"
-    assert '<turn declined="true|false" />' in appended["content"]
-    assert "produce" in appended["content"]  # the semantics, not just syntax
+    head = request["messages"][0]
+    assert head["role"] == "system"
+    assert '<turn declined="true|false" />' in head["content"]
+    assert "produce" in head["content"]  # the semantics, not just syntax
+    # before the persona, not after it
+    assert head["content"].index("turn declined") < head["content"].index("persona")
+    # idempotent: a replayed list never carries it twice
+    assert dispatcher_pre.declaration_inject_pass(request) is False
 
 
 def test_declaration_inject_pass_is_idempotent_in_context():

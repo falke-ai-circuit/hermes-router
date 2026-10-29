@@ -190,11 +190,29 @@ def declaration_inject_pass(request: Any) -> bool:
     Returns True when a message was appended. Never raises.
     """
     try:
-        from ..frames import inject_platform_rule
+        from ..frames import (inject_platform_rule, platform_rule_present,
+                              mark_platform_rule)
         from ..features.detection.declaration import CONTRACT_TEXT
 
-        return bool(inject_platform_rule(
-            request, DECLARATION_RULE_ID, CONTRACT_TEXT, role="system"))
+        # PLACEMENT IS THE MECHANISM (measured live 2026-10-29). Appended as a
+        # trailing platform rule the model READ the contract and still emitted
+        # nothing over 14 turns: with a heavy in-voice persona, a metadata
+        # instruction parked after the user turn is discounted. Prepending it
+        # to the FIRST system message puts the instruction before the persona,
+        # where an opening-line rule is the one a strong voice still honours.
+        msgs = request.get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            return bool(inject_platform_rule(
+                request, DECLARATION_RULE_ID, CONTRACT_TEXT, role="system"))
+        if platform_rule_present(msgs, DECLARATION_RULE_ID):
+            return False
+        body = mark_platform_rule(DECLARATION_RULE_ID, CONTRACT_TEXT)
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                m["content"] = body + "\n\n" + str(m.get("content") or "")
+                return True
+        msgs.insert(0, {"role": "system", "content": body})
+        return True
     except Exception:  # noqa: BLE001 — the contract must never break a turn
         logger.debug("declaration contract injection error", exc_info=True)
         return False
