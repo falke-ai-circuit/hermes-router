@@ -275,7 +275,17 @@ def test_gate_fires_before_classification_inside_on_llm_request(monkeypatch):
         session_id="s-gate")
     # Gate claimed the turn -> pass-through envelope, and NOTHING downstream
     # of the gate (classification scan, complexity dispatch) executed.
-    assert result == {}
+    #
+    # "Pass-through" means NO ROUTE ENVELOPE, not literally {}. The request
+    # itself must still ride out, because the declaration contract is appended
+    # in place and an in-place append that is not returned is discarded by the
+    # framework (measured: the model confirmed the contract was absent from its
+    # instructions while the pass reported success). Carrying the same request
+    # object back changes no routing decision.
+    assert set(result) <= {"request"}
+    if result:
+        # the same request object, carried out with the contract appended
+        assert result["request"]["messages"]
     assert not scan_calls
     assert not dispatch_calls
     # Leg 3 consume-on-claim semantics: the declared claim is CONSUMED by

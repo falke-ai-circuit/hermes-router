@@ -280,8 +280,16 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     # established mechanism here (the FIX1 history-reconcile shim relies on
     # exactly that), and routing decisions must keep returning `{}` — several
     # pinned contracts assert "no route => no envelope".
+    # NOTE: the pass mutates the request IN PLACE, so that mutation only
+    # survives if this function ALSO returns {"request": ...}. Returning {}
+    # here discards it: measured live, the model could quote the
+    # decision-reading rule (delivered via the envelope) and confirmed the
+    # contract was absent from its instructions — 0 tags emitted over 14 turns
+    # while the pass reported success in isolation. The flag below carries the
+    # injection out through _hs_pass(), the single propagation point.
+    _decl_injected = False
     try:
-        _hub()._dispatcher_pre.declaration_inject_pass(request)
+        _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
     except Exception:  # noqa: BLE001 — injection must never break the seam
         pass
 
@@ -308,8 +316,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     try:
         def _hs_pass():
             """Propagate an in-place rule injection through the framework's
-            {"request": ...} return contract; {} when nothing was injected."""
-            return {"request": request} if _hs_rule_injected else {}
+            {"request": ...} return contract; {} when nothing was injected.
+
+            The declaration contract is REQUIRED for the lane's trigger, so it
+            propagates on its own flag: an in-place append that is not carried
+            out here never reaches the model.
+            """
+            return {"request": request} if (_hs_rule_injected or _decl_injected) else {}
 
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("pre_classify", True)):
             return _hs_pass()
