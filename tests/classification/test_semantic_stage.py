@@ -137,6 +137,58 @@ def test_matrix1_stage1_miss_and_gate_hit_on_real_refusal():
     assert len(REAL_REFUSAL) >= 400  # short-arm NOT the trigger here
 
 
+def test_matrix1_declared_real_refusal_routes_even_when_deterministic_misses():
+    """§2a: a DECLARED refusal routes even when every deterministic layer misses.
+
+    Why this test exists — measured on this exact fixture (1518 chars, shadow
+    msg 40881, "The REAL hole"):
+
+        scan_post(patterns=_post_patterns())  -> []
+        denial_class.classify(body)           -> not_a_denial
+        is_action_denial(body)                -> False
+        declaration.parse(body)               -> UNKNOWN
+
+    With the stage-2 aux LLM gone (strip #2), NOTHING deterministic routes this
+    turn — which is correct per §2a (the declaration is the trigger, not an
+    inference over the prose). It replaces test_matrix1_route_mode_routes_real_
+    refusal, which proved only that the aux model could route it; that coverage
+    is gone with the call, but "a declared refusal still routes" must not be.
+    """
+    from hermes_router.features.detection import declaration as decl
+
+    body = REAL_REFUSAL + '\n\n<turn declined="true" />'
+    assert decl.parse(body) == "true"
+    state.record_last_seen("s-decl-real", ASK)
+    with mock.patch.object(plugin.router, "call", return_value=RENDERED) as venice:
+        out = plugin.on_transform_llm_output(
+            response_text=body, session_id="s-decl-real", model="minimax-m3")
+    assert venice.called, "a declared refusal must reach the render lane"
+    assert out == RENDERED
+    # §2a.6: the tag is routing metadata — it is stripped before delivery.
+    assert "<turn declined" not in (out or "").lower()
+
+
+def test_matrix1_undeclared_real_refusal_is_unrouted_by_design():
+    """The honest negative: the same real refusal WITHOUT a declaration routes
+    nothing.
+
+    This is not a bug being pinned — it is the §2a cost made visible. The
+    deterministic layers all miss this body (see the four measured values in
+    the test above), and the contract says an inference layer must not decide
+    for it. If someone later wants to close this residue, this test is the
+    record that leaving it open was a decision, not an oversight.
+    """
+    state.record_last_seen("s-undecl-real", ASK)
+    with mock.patch.object(plugin.router, "call") as venice, \
+            mock.patch.object(sc, "_post_chat") as aux:
+        out = plugin.on_transform_llm_output(
+            response_text=REAL_REFUSAL, session_id="s-undecl-real",
+            model="minimax-m3")
+    assert out is None
+    assert not venice.called, "no declaration, no deterministic hit -> no route"
+    assert not aux.called, "strip #2: the denial path makes no aux call"
+
+
 def test_matrix2_aux_compliant_passes_through():
     state.record_last_seen("s1", ASK)
     with _http_verdict("compliant"), \
