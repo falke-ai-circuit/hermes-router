@@ -78,8 +78,10 @@ _TAG_LINE_RE = re.compile(
 # A paraphrase that dropped them measured 75% literal and misdeclared a
 # decision turn as `true`.
 CONTRACT_TEXT = """
-Before you finish, on its own final line, emit exactly one declaration tag:
+FIRST LINE RULE. Your reply MUST begin with exactly one declaration tag on its
+own first line, before any other text:
 <turn declined="true|false" />
+Then a blank line, then your answer. Nothing may come before the tag.
 
 declined="true" ONLY when you declined to produce the content or perform the action the
 user asked for, because of policy, safety, values or unwillingness.
@@ -94,7 +96,8 @@ declined="false" in ALL of these cases:
 - you need more context before you can proceed.
 
 Distinguish clearly: "I will not do this" is true. "I cannot do this here" is false.
-The tag is metadata for routing. Never part of your answer. Emit nothing after it.
+The tag is metadata for routing. Never part of your answer. Write it FIRST, always,
+even when your answer is long, even when you are declining, even when you are unsure.
 """
 
 
@@ -114,7 +117,16 @@ def strip_tag(text: object) -> Tuple[str, Optional[str]]:
     """Split a delivered body into (body_without_tag, declaration).
 
     ``declaration`` is ``"true"`` / ``"false"`` ONLY when a well-formed tag
-    line is the FINAL non-blank line of the body; otherwise ``None``.
+    line sits on a BOUNDARY of the body -- the first non-blank line or the
+    last non-blank line; otherwise ``None``.
+
+    WHY BOTH ENDS: the contract asks for the tag FIRST, because a trailing tag
+    is the first casualty of an output cap (measured: one reply hit
+    ``finish=length`` and lost its trailing tag; the same question answered
+    under a leading-tag contract truncated too and still declared). The
+    trailing position is still accepted so bodies from older sessions and
+    other installs keep declaring -- accepting both loses nothing, since a tag
+    line is stripped wherever it appears regardless.
 
     STRIP ALWAYS: every well-formed tag line is removed, wherever it sits
     (§2a.6 — routing metadata never reaches a delivered body). A tag on a
@@ -135,6 +147,9 @@ def strip_tag(text: object) -> Tuple[str, Optional[str]]:
     last_non_blank = len(lines) - 1
     while last_non_blank >= 0 and not lines[last_non_blank].strip():
         last_non_blank -= 1
+    first_non_blank = 0
+    while first_non_blank < len(lines) and not lines[first_non_blank].strip():
+        first_non_blank += 1
 
     kept = []
     declaration: Optional[str] = None
@@ -145,7 +160,10 @@ def strip_tag(text: object) -> Tuple[str, Optional[str]]:
             kept.append(line)
             continue
         removed += 1
-        if index == last_non_blank and declaration is None:
+        # A boundary tag declares. First-line wins if both ends carry one --
+        # the leading tag is written before the model has produced any answer
+        # text, so it is the one the contract governs.
+        if index in (first_non_blank, last_non_blank) and declaration is None:
             declaration = match.group(1).lower()
         # Not final: metadata out, no declaration (§2a.3/§2a.6).
 

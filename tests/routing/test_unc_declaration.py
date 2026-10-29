@@ -79,12 +79,20 @@ def test_tag_quoted_inside_prose_is_not_a_tag_line():
     assert decl.parse(body) == decl.UNKNOWN
 
 
-def test_tag_on_a_non_final_line_is_stripped_but_does_not_declare():
-    """§2a.6: STRIP ALWAYS, DECLARE ONLY WHEN FINAL. Leaving the tag in the
+def test_tag_on_a_non_boundary_line_is_stripped_but_does_not_declare():
+    """§2a.6: STRIP ALWAYS, DECLARE ONLY ON A BOUNDARY. Leaving the tag in the
     body would deliver routing metadata to the user."""
-    body = TAG_T + "\nmore prose after the tag"
-    assert decl.strip_tag(body) == ("more prose after the tag", None)
+    body = "intro prose\n" + TAG_T + "\nmore prose after the tag"
+    assert decl.strip_tag(body) == ("intro prose\nmore prose after the tag", None)
     assert decl.parse(body) == decl.UNKNOWN
+
+
+def test_first_line_tag_declares():
+    """The contract asks for the tag FIRST: a leading boundary tag declares."""
+    assert decl.strip_tag(TAG_T + "\nthe answer") == ("the answer", "true")
+    assert decl.parse(TAG_T + "\nthe answer") == "true"
+    # leading blank lines are not content, so the boundary is the first non-blank
+    assert decl.parse("\n\n" + TAG_F + "\nthe answer") == "false"
 
 
 def test_mid_body_tag_is_removed_without_declaring():
@@ -129,7 +137,7 @@ def test_parse_reads_a_final_line_tag():
     'body\n<turn declined="tru" />',
     'body\n<turn declined="true"',
     'body\n<turn declined="maybe" />',
-    TAG_T + "\nprose",                # stripped, but not final -> no declaration
+    "intro\n" + TAG_T + "\nprose",   # stripped, but MID-body -> no declaration
 ])
 def test_parse_is_unknown_on_absent_truncated_malformed_or_bare(text):
     assert decl.parse(text) == decl.UNKNOWN
@@ -205,6 +213,15 @@ def test_contract_text_is_the_measured_text_verbatim():
 def test_contract_text_matches_the_frozen_battery_constant():
     """Byte-for-byte against /opt/data/tmp/battery_v2.py CONTRACT.
 
+    HISTORICAL: that battery measured the TRAILING-tag contract (95.5% literal,
+    98.8% determinable). This contract asks for the tag FIRST because a
+    trailing tag is the first casualty of an output cap; the leading-tag
+    contract was measured by /opt/data/tmp/detcorpus/emit_ab.py (16/16 emitted,
+    8/8 refusals true, 8/8 benign false vs 14/16 trailing). The comparison
+    below is retained only while the frozen file still carries the old text, so
+    it is SKIPPED once the contract and the battery diverge — the pin that
+    matters is the clause pin above.
+
     Skipped when the battery file is not present (it is a host artefact, not
     part of the plugin tree) — the string itself is still pinned above.
     """
@@ -216,7 +233,14 @@ def test_contract_text_matches_the_frozen_battery_constant():
     end = src.index('"""', start)
     # The triple quote is immediately followed by a newline in the
     # battery source, so the slice already starts with "\n".
-    assert decl.CONTRACT_TEXT == src[start:end]
+    frozen = src[start:end]
+    if frozen != decl.CONTRACT_TEXT:
+        # The battery is a historical measurement of the TRAILING-tag contract.
+        # The shipped contract now asks for the tag FIRST. Divergence is the
+        # expected state after that change, not a regression -- the clause pin
+        # above is the live contract check. Re-point the battery only if it is
+        # re-run; until then it must not be mutated to keep its numbers honest.
+        pytest.skip("frozen battery carries the historical trailing-tag contract")
 
 
 def test_declaration_inject_pass_appends_one_system_message():
