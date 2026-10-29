@@ -1556,15 +1556,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # avoided without re-admitting shape-only swaps.
             matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
             _trigger_kind = "stage1" if matches else None
-            if not matches:
-                # Stage-1 miss → stage-2 semantic classification (v2). Gated
-                # (bare-No opener / short response), loop-guard-probed, breaker +
-                # per-hour capped; every outcome is fail-open to pass-through.
-                # mode=flag_only logs+flags only; mode=route enters the EXISTING
-                # downstream pipeline at the "matches" point via matches=[semantic_*].
-                semantic_verdict, matches = _hub()._semantic_stage(response_text, session_id, model, context)
-                if matches:
-                    _trigger_kind = "t2_confirmed"  # R33-FIX2: stage-2 T2 route
+            # SPEC §2a (Goran 2026-10-28) — STRIP #2: no second LLM.
+            #
+            # A stage-1 miss used to fall into stage-2 here:
+            # _semantic_stage -> semantic_classifier.classify(), an AUX LLM
+            # deciding whether to route. It was live in the fleet on every
+            # profile (classification.aux_classify=true, mode=route), so any
+            # turn the regex missed was judged by a model.
+            #
+            # Goran: "we dont need semantic judge and llms. main model is asked
+            # to define denial and if its triggered route is activated. keep it
+            # simple."
+            #
+            # scan_post above is now the ONLY fallback. The denial decision
+            # surface is exactly two things:
+            #   (a) the model's own declaration (declined="true" -> route);
+            #   (b) deterministic vocabulary — scan_post + denial_class
+            #       (action_denial routes; truth_denial/capacity_limit do not).
+            # semantic_classifier.py itself stays: four other consumers (risk,
+            # refusal_doctrine, decision_head, intent_classifier) still call it.
+            # Only this call site is gone.
         # SPEC §2a (Goran 2026-10-28): THE SEMANTIC JUDGE IS GONE FROM THE
         # DENIAL PATH.
         #
