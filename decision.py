@@ -3585,6 +3585,148 @@ def get_counter(name: str, db_path: str = "") -> int:
         return 0
 
 
+# Measurement surface: the ledger persists the option BOARD, not just its
+# names. A row that carried {"id","label"} alone could never be re-audited for
+# ranking quality or calibration — the fork's own causal frame was in the
+# envelope at write time and thrown away one line later.
+_OPTION_PERSIST_KEYS = ("cause_effect", "cost", "priors", "risk")
+_OPTION_JSON_CAP = 8000
+
+
+def _option_probability_map(verdict: Optional[Dict[str, Any]]
+                            ) -> Dict[str, float]:
+    """Per-option probability, keyed by option id, ONLY when the verdict
+    actually carries such a distribution.
+
+    Today's `validate_verdict` verdict is {choice, confidence, alternatives,
+    mindset} — no per-option distribution — so this returns {} for every row
+    the lane writes, and the key is omitted rather than invented. It is read
+    defensively because the ranking belongs in the record wherever a verdict
+    does provide it. `confidence` is NOT promoted to a probability here: it is
+    the model's confidence in ONE pick, not a distribution, and writing it as
+    a per-option number would corrupt exactly the calibration audit this
+    column exists to serve. Never raises.
+    """
+    out: Dict[str, float] = {}
+    try:
+        v = verdict if isinstance(verdict, dict) else {}
+        probs = v.get("probabilities")
+        if isinstance(probs, dict):
+            for k, val in probs.items():
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    continue
+                out[str(k)] = float(val)
+        opts = v.get("options")
+        if isinstance(opts, list):
+            for o in opts:
+                if not isinstance(o, dict):
+                    continue
+                oid = str(o.get("id") or "")
+                p = o.get("p", o.get("probability"))
+                if oid and not isinstance(p, bool) and isinstance(p, (int, float)):
+                    out.setdefault(oid, float(p))
+    except Exception:  # noqa: BLE001 — persistence never breaks a turn
+        return {}
+    return out
+
+
+def _option_margin(verdict: Optional[Dict[str, Any]]) -> Optional[float]:
+    """The verdict's own margin (lead over the runner-up), when it states one.
+    Absent => None => key omitted; a made-up 0.0 would read as a dead heat."""
+    try:
+        v = verdict if isinstance(verdict, dict) else {}
+        m = v.get("margin")
+        if isinstance(m, bool) or not isinstance(m, (int, float)):
+            return None
+        return float(m)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _option_objects(opts: Any, verdict: Optional[Dict[str, Any]] = None
+                    ) -> List[Dict[str, Any]]:
+    """The option objects to persist. `id`/`label` are always present (they
+    are what every reader joins on); every other field rides along only when
+    the source actually carries it — absent means OMITTED, never null and
+    never 0.0, which is indistinguishable from a real zero-probability pick."""
+    probs = _option_probability_map(verdict)
+    margin = _option_margin(verdict)
+    out: List[Dict[str, Any]] = []
+    for o in (opts or []):
+        if isinstance(o, str):
+            o = {"label": o}
+        if not isinstance(o, dict):
+            continue
+        item: Dict[str, Any] = {"id": str(o.get("id") or ""),
+                                "label": str(o.get("label") or "")}
+        for k in _OPTION_PERSIST_KEYS:
+            v = o.get(k)
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            item[k] = v
+        oid = item["id"]
+        if oid in probs:
+            item["probability"] = probs[oid]
+        if margin is not None:
+            item["margin"] = margin
+        out.append(item)
+    return out
+
+
+def _options_json_fits(items: List[Dict[str, Any]], cap: int) -> Optional[str]:
+    try:
+        s = json.dumps(items, default=str)
+    except Exception:  # noqa: BLE001
+        return None
+    return s if len(s) <= cap else None
+
+
+def ledger_options_json(opts: Any, verdict: Optional[Dict[str, Any]] = None,
+                        cap: int = _OPTION_JSON_CAP) -> str:
+    """Serialize the option board for decision_ledger.options_json.
+
+    PERSISTENCE ONLY — no routing, gating or delivery read this back at write
+    time. The column is parsed as JSON (an array of objects, each with at
+    least `label`) by capture_outcome and the measurement tooling, so
+    truncation must never emit a half-serialized array: whole options are
+    dropped from the TAIL first (the board is ranked, so the loss is the
+    weakest end), and if even one full option overflows, the whole set falls
+    back to `id`+`label`. Never raises; returns "[]" at worst.
+    """
+    try:
+        full = _option_objects(opts, verdict)
+        if not full:
+            return "[]"
+        s = _options_json_fits(full, cap)
+        if s is not None:
+            return s
+        for n in range(len(full) - 1, 0, -1):
+            s = _options_json_fits(full[:n], cap)
+            if s is not None:
+                return s
+        lean = [{"id": o["id"], "label": o["label"]} for o in full]
+        s = _options_json_fits(lean, cap)
+        if s is not None:
+            return s
+        for n in range(len(lean) - 1, 0, -1):
+            s = _options_json_fits(lean[:n], cap)
+            if s is not None:
+                return s
+        # One label alone is over the cap: keep the payload parseable.
+        one = dict(lean[0])
+        room = cap - len(json.dumps([dict(one, label="")], default=str))
+        if room > 0:
+            one["label"] = one["label"][:room]
+            s = _options_json_fits([one], cap)
+            if s is not None:
+                return s
+        return "[]"
+    except Exception:  # noqa: BLE001 — persistence never breaks a turn
+        return "[]"
+
+
 def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
     """Append-only INSERT into decision_ledger + bounded eviction. Never
     raises; returns the row id (None => unusable store)."""
@@ -4141,9 +4283,7 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                           o.get("cause_effect", ""),
                                           o.get("cost", ""), o.get("risk", ""))
                      for o in _opts if isinstance(o, dict)]
-            base_row["options_json"] = json.dumps(
-                [{"id": o.get("id", ""), "label": o.get("label", "")}
-                 for o in _opts if isinstance(o, dict)], default=str)[:8000]
+            base_row["options_json"] = ledger_options_json(_opts, verdict)
             base_row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
             # R59j: SAY WHETHER THE FORK WAS EVER REPRESENTABLE.
             #
