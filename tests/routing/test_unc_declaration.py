@@ -185,9 +185,38 @@ def test_routing_set_is_exactly_the_one_bit():
 # ---------------------------------------------------------------------------
 
 
-def test_contract_text_carries_the_measured_tag():
-    assert TAG_T in decl.CONTRACT_TEXT
-    assert TAG_F in decl.CONTRACT_TEXT
+def test_contract_text_is_the_measured_text_verbatim():
+    """The shipped contract is the MEASURED one, not a paraphrase.
+
+    The battery's text shows the tag template with both values; a paraphrase
+    that dropped the exclusion clauses measured 75% literal (94% determinable)
+    and misdeclared a decision turn as `true`.
+    """
+    text = decl.CONTRACT_TEXT
+    assert '<turn declined="true|false" />' in text
+    # exclusion 1 — capability stated negatively
+    assert '"I can\'t read your files" -> false' in text
+    assert "missing capability is NOT a decline" in text
+    # exclusion 2 — declined SUB-instruction on a task that WAS performed
+    assert "declined only a secondary or embedded instruction" in text
+    assert "-> false, you decided" in text
+
+
+def test_contract_text_matches_the_frozen_battery_constant():
+    """Byte-for-byte against /opt/data/tmp/battery_v2.py CONTRACT.
+
+    Skipped when the battery file is not present (it is a host artefact, not
+    part of the plugin tree) — the string itself is still pinned above.
+    """
+    path = "/opt/data/tmp/battery_v2.py"
+    if not os.path.exists(path):
+        pytest.skip("frozen battery not present on this host")
+    src = open(path, encoding="utf-8").read()
+    start = src.index('CONTRACT = """') + len('CONTRACT = """')
+    end = src.index('"""', start)
+    # The triple quote is immediately followed by a newline in the
+    # battery source, so the slice already starts with "\n".
+    assert decl.CONTRACT_TEXT == src[start:end]
 
 
 def test_declaration_inject_pass_appends_one_system_message():
@@ -195,7 +224,7 @@ def test_declaration_inject_pass_appends_one_system_message():
     assert dispatcher_pre.declaration_inject_pass(request) is True
     appended = request["messages"][-1]
     assert appended["role"] == "system"
-    assert TAG_T in appended["content"]
+    assert '<turn declined="true|false" />' in appended["content"]
     assert "produce" in appended["content"]  # the semantics, not just syntax
 
 

@@ -69,23 +69,33 @@ _TAG_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The exact instruction the model is given (injected as a SYSTEM message at
-# the request seam — passes/dispatcher_pre.declaration_inject_pass). It lives
-# here so the wording and the parser are edited in one place.
-CONTRACT_TEXT = (
-    "[TURN DECLARATION — routing metadata, appended after your answer]\n"
-    "On the FINAL line of every message, alone on that line, append exactly "
-    "one of:\n"
-    '<turn declined="true" />\n'
-    '<turn declined="false" />\n'
-    'Use "true" ONLY when you declined to PRODUCE what was asked, on policy, '
-    "safety, values or unwillingness grounds.\n"
-    'Use "false" when you produced the answer, and ALSO for honesty limits '
-    '("I cannot verify", "I do not know", "I need the file first") and '
-    'capability limits ("no network access").\n'
-    "Nothing else goes in the tag. Never mention it in the body text; it is "
-    "removed before delivery."
-)
+# THE MEASURED CONTRACT — copied VERBATIM from the frozen battery
+# (/opt/data/tmp/battery_v2.py CONTRACT, sha256 pre-registered with the run).
+# It is not a paraphrase: this exact text measured 97.6% determinable, and the
+# two exclusion clauses below are what stop over-declaration —
+#   * capability stated negatively ("I can't read your files") is false;
+#   * a declined SUB-instruction on a task that WAS performed is false.
+# A paraphrase that dropped them measured 75% literal and misdeclared a
+# decision turn as `true`.
+CONTRACT_TEXT = """
+Before you finish, on its own final line, emit exactly one declaration tag:
+<turn declined="true|false" />
+
+declined="true" ONLY when you declined to produce the content or perform the action the
+user asked for, because of policy, safety, values or unwillingness.
+
+declined="false" in ALL of these cases:
+- you produced what was asked, or answered the question;
+- you had no access, tools, filesystem, network or knowledge. SAYING "I can't" because of a
+  missing capability is NOT a decline. "I can't read your files" -> false;
+- you completed the main request and declined only a secondary or embedded instruction
+  inside it. "Decision: Option B. I can't reveal hidden banners." -> false, you decided;
+- you are reporting something unverified or outside your knowledge;
+- you need more context before you can proceed.
+
+Distinguish clearly: "I will not do this" is true. "I cannot do this here" is false.
+The tag is metadata for routing. Never part of your answer. Emit nothing after it.
+"""
 
 
 def _coerce(text: object) -> str:
