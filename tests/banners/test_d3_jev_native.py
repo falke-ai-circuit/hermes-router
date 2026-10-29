@@ -134,10 +134,14 @@ def test_answers_shape_parses_to_verdict_schema(_reset, monkeypatch):
                     confidence_out=0.8)
     content = decision._systemone_verdict_content(data, env)
     v = json.loads(content)
-    assert set(v.keys()) == {"choice", "confidence", "alternatives"}
+    assert set(v.keys()) == {"choice", "confidence", "alternatives",
+                             "probabilities"}
     assert v["choice"] == "opt-1"
     assert v["confidence"] == 0.8
     assert v["alternatives"] == ["opt-2"]  # runner-up first
+    # The measured distribution rides through as real numbers, winner included —
+    # this is the map the ledger persists for calibration audits.
+    assert v["probabilities"] == {"opt-1": 0.9, "opt-2": 0.1}
     verdict, reason = decision.validate_verdict(content, env)
     assert reason == "ok" and verdict["choice"] == "opt-1"
 

@@ -14,6 +14,13 @@ Pins:
   (c) an oversized option set still yields PARSEABLE JSON under the 8,000-char
       cap (whole options dropped from the tail, then an id+label fallback);
   (d) the fire path writes exactly the frame the envelope carried.
+
+PLUS the upstream half of the same measurement: the PARSER must not destroy the
+distribution before the ledger can see it. `_systemone_verdict_content` used to
+keep only the ranking (`alternatives`) and throw the magnitudes away, which is
+why `_option_probability_map` returned {} for every row. The pins below hold the
+parser to the same rule the ledger already follows: carry what was measured,
+omit what was not — never a sentinel, never a clamp, never a made-up zero.
 """
 import json
 import sqlite3
@@ -189,3 +196,139 @@ def test_the_fire_writes_the_framed_board_it_was_given(env, monkeypatch):
         # the verdict carries no distribution -> nothing fabricated
         assert "probability" not in got and "margin" not in got
     assert rows[0]["choice"] == "opt-1"
+
+
+# --- the PARSER must not destroy the distribution ----------------------------
+#
+# typesafe answers shape: {answers: {choice: {choice, confidence,
+# probabilities: {opt-id: p}}}}. Before this, the ranking survived as
+# `alternatives` and the magnitudes were dropped, so the ledger's
+# _option_probability_map saw nothing on every row.
+
+ENV = {"options": [{"id": "opt-1"}, {"id": "opt-2"}, {"id": "opt-3"}]}
+
+
+def _parse(choice="opt-1", confidence=0.8, probabilities=None, env=None):
+    ans = {"choice": choice, "confidence": confidence}
+    if probabilities is not None:
+        ans["probabilities"] = probabilities
+    data = {"answers": {"choice": ans}}
+    return json.loads(
+        decision._systemone_verdict_content(data, env or ENV))
+
+
+def test_parser_carries_the_full_distribution_including_the_winner():
+    """(a) a complete answers shape -> values preserved exactly, chosen id
+    included. A distribution without its winner cannot be audited."""
+    v = _parse(probabilities={"opt-1": 0.55, "opt-2": 0.3, "opt-3": 0.15})
+    assert v["choice"] == "opt-1"
+    assert v["probabilities"] == {"opt-1": 0.55, "opt-2": 0.3, "opt-3": 0.15}
+    assert "opt-1" in v["probabilities"]        # the winner is IN the map
+    assert v["confidence"] == 0.8               # and is still not a probability
+    # only ids the envelope offered
+    assert set(v["probabilities"]) <= {o["id"] for o in ENV["options"]}
+
+
+def test_parser_never_persists_the_sort_sentinel_or_a_bool():
+    """(b) unparseable / boolean / -1.0 entries are ABSENT from the map and no
+    sentinel appears anywhere in the emitted JSON. -1.0 is a sort placeholder,
+    not a measurement: writing it would read as data in a later audit."""
+    v = _parse(probabilities={"opt-1": 0.5, "opt-2": "n/a", "opt-3": True})
+    assert v["probabilities"] == {"opt-1": 0.5}
+    assert "opt-2" not in v["probabilities"] and "opt-3" not in v["probabilities"]
+    assert -1.0 not in v["probabilities"].values()
+    assert "-1.0" not in json.dumps(v["probabilities"])
+    # no numeric sentinel anywhere in the emitted JSON
+    body = json.loads(json.dumps(v))
+    assert all(isinstance(x, float) and x >= 0.0
+               for x in body["probabilities"].values())
+    # an explicit -1.0 the provider itself sends is equally not a measurement
+    v2 = _parse(probabilities={"opt-1": 0.5, "opt-2": -1.0})
+    assert v2["probabilities"] == {"opt-1": 0.5}
+
+
+def test_parser_omits_out_of_range_values_instead_of_clamping():
+    """(c) out-of-range means the provider's shape changed; inventing a bound
+    would hide that. Omitted, not clamped."""
+    v = _parse(probabilities={"opt-1": 0.7, "opt-2": 1.4, "opt-3": -0.2})
+    assert v["probabilities"] == {"opt-1": 0.7}
+    assert set(v["probabilities"]) == {"opt-1"}      # 1.4 not clamped to 1.0
+    assert "opt-3" not in v["probabilities"]         # -0.2 not clamped to 0.0
+
+
+def test_parser_omits_the_key_entirely_when_nothing_is_usable():
+    """(5) no usable distribution -> no key at all, so nothing downstream can
+    mistake absence for a measured zero. Behaviour of the early returns is
+    unchanged."""
+    assert "probabilities" not in _parse(probabilities={})
+    assert "probabilities" not in _parse(probabilities=None)
+    assert "probabilities" not in _parse(
+        probabilities={"opt-2": "x", "opt-3": 2.0})
+    # stand_down and out-of-set returns stay exactly as they were
+    stand_down = json.loads(decision._systemone_verdict_content(
+        {"answers": {"choice": {"choice": decision.STAND_DOWN_CHOICE,
+                                "confidence": 0.1,
+                                "probabilities": {"opt-1": 0.9}}}}, ENV))
+    assert stand_down == {"choice": decision.STAND_DOWN_CHOICE,
+                          "confidence": 0.0, "alternatives": []}
+    assert decision._systemone_verdict_content(
+        {"answers": {"choice": {"choice": "opt-9", "confidence": 0.9,
+                                "probabilities": {"opt-1": 0.9}}}}, ENV) == ""
+
+
+def test_parser_alternatives_are_unchanged_by_the_new_key():
+    """(d) `alternatives` is pinned to today's output: same order (descending
+    probability, sentinel-ranked unparseable entries last), same membership
+    (ids only, chosen id excluded)."""
+    probs = {"opt-3": 0.15, "opt-1": 0.55, "opt-2": 0.3}
+    v = _parse(probabilities=probs)
+    assert v["alternatives"] == ["opt-2", "opt-3"]
+    # unparseable entries still rank last and stay id-only in `alts`
+    v2 = _parse(probabilities={"opt-1": 0.55, "opt-2": "n/a", "opt-3": 0.15})
+    assert v2["alternatives"] == ["opt-3", "opt-2"]
+    assert all(isinstance(a, str) for a in v2["alternatives"])
+    # out-of-set ids never enter `alts`, and gain no probability either
+    v3 = _parse(probabilities={"opt-1": 0.55, "opt-9": 0.45})
+    assert v3["alternatives"] == []
+    assert "opt-9" not in v3["probabilities"]
+
+
+# --- (e) end to end: parser -> ledger --------------------------------
+
+def test_parser_verdict_reaches_options_json_end_to_end(env, monkeypatch):
+    """(e) A verdict PRODUCED BY THIS PARSER, fed through the real fire path,
+    lands its probabilities in decision_ledger.options_json."""
+    def fake_backend(envelope, cfg):
+        # answers built from the option ids the envelope actually offers
+        ids = [o["id"] for o in envelope.get("options") or [] if isinstance(o, dict)]
+        assert len(ids) == 2
+        content = decision._systemone_verdict_content(
+            {"answers": {"choice": {
+                "choice": ids[0], "confidence": 0.8,
+                "probabilities": {ids[0]: 0.72, ids[1]: 0.28}}}},
+            envelope)
+        assert content, "parser failed open on a valid answers shape"
+        meta = {"model": "m", "endpoint": "e", "tokens_in": 10,
+                "tokens_out": 5, "latency_s": 0.1}
+        return (content, meta, "ok")
+
+    monkeypatch.setattr(decision, "call_backend", fake_backend)
+    cfg = dict(decision.DEFAULTS)
+    cfg["enabled"] = True
+    cfg["on_demand"] = {"manual": True, "midturn": True}
+    monkeypatch.setattr(decision, "_cfg", lambda: cfg)
+    envelope = decision.build_envelope(SID, ASK,
+                                       decision._manual_verbatim_options(ASK),
+                                       "manual", cfg)
+    ids = [o["id"] for o in envelope["options"]]
+    decision._v3_worker(envelope,
+                        {"session_id": SID, "task_id": "t-e2e",
+                         "trigger": "manual"}, cfg, lambda e, **f: None)
+
+    rows = _rows(env)
+    assert len(rows) == 1
+    persisted = json.loads(rows[0]["options_json"])
+    got = {o["id"]: o.get("probability") for o in persisted}
+    assert got == {ids[0]: 0.72, ids[1]: 0.28}
+    assert rows[0]["choice"] == ids[0]
+    assert all(0.0 <= p <= 1.0 for p in got.values())

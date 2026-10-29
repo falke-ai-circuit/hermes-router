@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 import os
 import re
 import threading
@@ -2630,10 +2631,40 @@ def render_prompt(envelope: Dict[str, Any]) -> str:
 # Typed verdict validation (§5.4) — strict schema, enumerated ids only
 # ---------------------------------------------------------------------------
 
+def _measured_probability_map(raw: Any, ids: Any) -> Dict[str, float]:
+    """The per-option distribution a backend actually MEASURED, keyed by
+    option id, filtered down to what the envelope offered.
+
+    Omission is the rule, not clamping. A value that is not a real finite
+    number in [0.0, 1.0] is a shape change (or a provider's placeholder), and
+    inventing a bound — or a 0.0 nobody measured — would read as data in the
+    calibration audit this map exists to serve. Booleans are not numbers here.
+    Never raises; returns {} when nothing usable was measured.
+    """
+    out: Dict[str, float] = {}
+    try:
+        if not isinstance(raw, dict):
+            return {}
+        allowed = {str(i) for i in (ids or [])}
+        for k, v in raw.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            f = float(v)
+            if not math.isfinite(f) or f < 0.0 or f > 1.0:
+                continue
+            key = str(k)
+            if key in allowed:
+                out[key] = f
+    except Exception:  # noqa: BLE001 — measurement never breaks a turn
+        return {}
+    return out
+
+
 def validate_verdict(body: str, envelope: Dict[str, Any]
                      ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Validate a backend verdict against the lane-built CLOSED option set:
-    strict schema {choice, confidence, alternatives}; unknown keys rejected;
+    strict schema {choice, confidence, alternatives, probabilities}; unknown
+    keys rejected;
     choice must be an enumerated option id; confidence a real number in
     [0,1]; alternatives ⊆ remaining ids. Any mismatch => (None, reason)
     — FAIL-OPEN. Never raises."""
@@ -2647,7 +2678,8 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
             return None, REASON_PARSE_FAIL
         if not isinstance(data, dict):
             return None, REASON_PARSE_FAIL
-        allowed = {"choice", "confidence", "alternatives", "mindset"}
+        allowed = {"choice", "confidence", "alternatives", "mindset",
+                   "probabilities"}
         if set(data.keys()) - allowed:
             return None, REASON_MALFORMED  # strict schema: unknown keys rejected
         # R53: mindset = ADJUSTMENTS relative to the envelope's stance.
@@ -2726,6 +2758,15 @@ def validate_verdict(body: str, envelope: Dict[str, Any]
             return None, REASON_MALFORMED
         verdict: Dict[str, Any] = {"choice": choice, "confidence": conf,
                                    "alternatives": [str(a) for a in alts_raw]}
+        # The measured distribution rides through validation ONLY when the
+        # backend actually sent usable per-option numbers. It is filtered by
+        # the same rule the parser uses (measured, in-range, in-set) and the
+        # key is omitted rather than invented — a malformed distribution must
+        # never turn a routable verdict into a parse failure, and it routes
+        # nothing: choice/alternatives/gating read exactly as before.
+        _probs = _measured_probability_map(data.get("probabilities"), ids)
+        if _probs:
+            verdict["probabilities"] = _probs
         # R53: attached only when there IS an adjustment, so the verdict shape
         # for every pre-existing caller is byte-identical (no new key, no
         # behaviour change); consumers read verdict.get("mindset") or {}.
@@ -2973,10 +3014,12 @@ def _systemone_native_payload(envelope: Dict[str, Any],
 def _systemone_verdict_content(data: Any, envelope: Dict[str, Any]) -> str:
     """D3 (v4.13.2): parse a systemone answers shape
     {answers: {choice: {choice, confidence, probabilities}}} back into the
-    shared verdict JSON {choice, confidence, alternatives} — confidence from
-    the answer's confidence field, alternatives from the probabilities
-    ranking (runner-up first, option ids only). stand_down passthrough.
-    Returns "" (caller fails open) on any shape mismatch. Never raises."""
+    shared verdict JSON {choice, confidence, alternatives, probabilities} —
+    confidence from the answer's confidence field, alternatives from the
+    probabilities ranking (runner-up first, option ids only), and the
+    distribution itself carried through as {option_id: probability}.
+    stand_down passthrough. Returns "" (caller fails open) on any shape
+    mismatch. Never raises."""
     try:
         answers = (data or {}).get("answers") or {}
         ans = answers.get("choice") if isinstance(answers, dict) else None
@@ -3005,9 +3048,35 @@ def _systemone_verdict_content(data: Any, envelope: Dict[str, Any]) -> str:
             ranked = sorted(((str(k), _pval(v)) for k, v in probs.items()),
                             key=lambda kv: kv[1], reverse=True)
             alts = [k for k, _ in ranked if k in ids and k != ch]
+        # The measured distribution itself, not just its ranking. `confidence`
+        # is NOT a distribution — it is the model's confidence in ONE pick —
+        # so it is never promoted into this map; when nothing usable survives
+        # the key is OMITTED rather than invented, and this never raises.
+        # The -1.0 in _pval above is a SORT PLACEHOLDER for unparseable
+        # entries, not a measurement: persisting it (or clamping, or zeroing a
+        # value nobody measured) would read as data in a later calibration
+        # audit, which is worse than a missing key. So every entry whose raw
+        # value is not a real finite number in [0.0, 1.0] is dropped entirely
+        # — out-of-range means the provider's shape changed, and inventing a
+        # bound would hide exactly that. Only ids the envelope actually
+        # offered are kept; the winner is carried whenever it was measured.
+        # Persistence only: `alts`, routing, gating and validate_verdict are
+        # untouched by this key.
+        prob_map: Dict[str, float] = {}
+        if isinstance(probs, dict):
+            for k, raw in probs.items():
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    continue
+                val = float(raw)
+                if not math.isfinite(val) or not 0.0 <= val <= 1.0:
+                    continue
+                if str(k) in ids:
+                    prob_map[str(k)] = val
         out: Dict[str, Any] = {"choice": ch,
                                "confidence": max(0.0, min(1.0, conf)),
                                "alternatives": alts}
+        if prob_map:
+            out["probabilities"] = prob_map
         # R58: the mindset answers arrive in the SAME response under the names
         # we asked for. Absent/unreadable => no key at all, so the lane behaves
         # exactly as before rather than emitting a zero it did not measure.
