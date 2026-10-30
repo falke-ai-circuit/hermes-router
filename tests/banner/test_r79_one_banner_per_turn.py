@@ -16,28 +16,83 @@ from hermes_router import debug_banner as db
 from hermes_router import reflex_lane as rl
 
 
-def _lane_state():
-    """Every module-level store this lane keys by session id."""
-    stores = [getattr(rl, "_ACC", None)]
-    for name in ("_ANCHOR_BANNERS", "_CONSUMED_DECISION", "_DECISION_HOLDS"):
-        stores.append(getattr(db, name, None))
-    return [s for s in stores if isinstance(s, dict)]
+# The stores the delivery edge keys by session id (verified against the module
+# namespaces). Clearing is explicit because some module dicts are load-bearing
+# containers, not session state; the GUARD below is generic, so a store that is
+# missing here cannot stay silently dirty — it fails the test and names itself.
+_SESSION_STORES = (
+    ("rl._PENDING", lambda: rl._PENDING),
+    ("rl._SEQ", lambda: rl._SEQ),
+    ("rl._ACC", lambda: rl._ACC),
+    ("rl._LAST_FIRE", lambda: getattr(rl, "_LAST_FIRE", {})),
+    ("rl._DELIVERED_AT", lambda: getattr(rl, "_DELIVERED_AT", {})),
+    ("rl._LAST_BLOCK", lambda: getattr(rl, "_LAST_BLOCK", {})),
+    ("rl._LAST_FRAME", lambda: getattr(rl, "_LAST_FRAME", {})),
+    ("db._ANCHOR_BANNERS", lambda: db._ANCHOR_BANNERS),
+    ("db._ANCHOR_TASKS", lambda: getattr(db, "_ANCHOR_TASKS", {})),
+    ("db._ANCHOR_SEGS", lambda: getattr(db, "_ANCHOR_SEGS", {})),
+    ("db._PARK_RECORDS", lambda: getattr(db, "_PARK_RECORDS", {})),
+    ("db._HELD_DECISIONS", lambda: getattr(db, "_HELD_DECISIONS", {})),
+)
+
+
+def _sweep_lane_stores():
+    for _name, get in _SESSION_STORES:
+        store = get()
+        if isinstance(store, (dict, set, list)):
+            store.clear()
+
+
+def _dirty_lane_stores():
+    """Generic: every underscore dict/set in either module that still has state.
+
+    This is the guard, and it is deliberately NOT the clear-list — it derives
+    from the namespace, so a store added tomorrow shows up by name instead of
+    poisoning a later test file.
+    """
+    dirty = []
+    for mod in (rl, db):
+        short = mod.__name__.rsplit(".", 1)[-1]
+        for name, val in list(vars(mod).items()):
+            if not name.startswith("_") or name.startswith("__") or not isinstance(val, (dict, set)):
+                continue
+            if "CACHE" in name.upper() or "DEFAULT" in name.upper():
+                continue      # module-level caches/consts, not per-session state
+            if val:
+                dirty.append("%s.%s (%d)" % (short, name, len(val)))
+    return dirty
 
 
 @pytest.fixture(autouse=True)
 def _isolate_lane_state():
     """Test-isolation defect guard, not a product guard.
 
-    This file exercises the delivery edge, which reads module-level stores keyed
-    by session id. Clear them on the way IN (a leftover from another file must
-    not decide this file's result) and again on the way OUT (our entries must
-    never reach rider16/rider18, which assert on those same slots).
+    Sweep on the way IN (a leftover from another file must not decide this
+    file's result) and on the way OUT (our entries must never reach
+    rider16/rider18), then assert nothing is left and NAME what is: an
+    under-clearing fixture fails here, not ten minutes into a gate.
     """
-    for store in _lane_state():
-        store.clear()
+    _sweep_lane_stores()
     yield
-    for store in _lane_state():
-        store.clear()
+    _sweep_lane_stores()
+    dirty = _dirty_lane_stores()
+    assert not dirty, "lane store not cleared by this test: " + ", ".join(dirty)
+
+
+def _line(n, leads, holds, ti, to, cost, r1, r2, star=False):
+    head = "%s impulse (decision)" % db.BANNER_HEAD
+    if n > 1:
+        head += " x%d" % n
+    classes = []
+    if leads:
+        classes.append("%d lead" % leads)
+    if holds:
+        classes.append("%d hold" % holds)
+    cost_s = ("$%.5f" % cost) if cost > 0 else ("$0.00000*" if star or ti else "$0.00000")
+    row = ("rows %d-%d" % (r1, r2)) if r2 > r1 else ("row %d" % r1)
+    return " | ".join([head, " · ".join(classes), "jev @ typesafe",
+                       "%d/%d tok" % (ti, to), cost_s, row])
+
 
 HEAD = "· router · impulse (decision)"
 
