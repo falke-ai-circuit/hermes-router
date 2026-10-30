@@ -111,6 +111,12 @@ SCHEMA: Tuple[Key, ...] = (
     _k("detection.model", str, "auto"),
     # --- budgets (proposal §2.4 — config overlay for core/budgets.py) ---
     _k("budgets", dict, {}),
+    # --- unified lane envelope (features/envelope/unified.py) ---
+    # chars_cap: the request envelope budget. drop_order: slot paths emptied
+    # (in order) until the envelope fits; every drop is recorded in `trimmed`.
+    _k("envelope.chars_cap", int, 8000),
+    _k("envelope.drop_order", list, ["slice", "agent_card.history",
+                                     "context.session_context"]),
     _k("budgets.consult.max_tokens", int, 512),
     _k("budgets.verdict.max_tokens", int, 512),
     _k("budgets.completion_audit.max_tokens", int, 12000),

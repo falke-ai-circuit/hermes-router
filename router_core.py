@@ -1993,9 +1993,28 @@ def build_frontier_envelope(kind: str, producer: str, decision: RouteDecision,
                             limitations: Optional[str] = None) -> Dict[str, Any]:
     """Provenance envelope for frontier outputs entering as TOOL RESULTS
     (never rewrites the user message). kind: consultation|
-    verification. Never raises."""
+    verification. Never raises.
+
+    Thin adapter (Goran directive 2026-10-30): the assimilation template
+    (lane-assimilation/1) is built by features/envelope/unified.py. Every key
+    this lane already published — kind, producer, route_id, task_id, answer,
+    evidence_refs, limitations, ts — maps 1:1 onto it, so consumers keep
+    reading the same fields; schema/lane/verdict/revised are additive.
+    """
     try:
-        return {
+        from .features.envelope import unified as _uenv
+
+        return _uenv.build_assimilation(
+            lane="frontier",
+            producer=producer,
+            route_id=getattr(decision, "route_id", ""),
+            task_id=getattr(decision, "task_id", ""),
+            answer=answer,
+            evidence_refs=evidence_refs or [],
+            limitations=limitations or "",
+            ts=time.time(),
+            kind=kind,
+        ) or {
             "kind": kind,
             "producer": producer,
             "route_id": decision.route_id,

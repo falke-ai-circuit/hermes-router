@@ -2514,54 +2514,34 @@ def build_envelope(session_id: str, ask: str, options: List[str],
                       "confidence=%s fork=%s outcome=%s"
                       % (causal, traj["choice"], traj["confidence"],
                          traj["fork_class"], traj["outcome"]))[:1600]
-        envelope: Dict[str, Any] = {
-            "schema": ENVELOPE_SCHEMA,
-            "agent_frame": _agent_frame(cfg),
-            # R76 GOAL 2: the session ANCHOR rides FIRST in the payload —
-            # objective, current task, recent turns — so the structured path
-            # and reflex_lane's flat state describe the same session with the
-            # same names and the same truncation (session_anchor owns both).
-            "final_objective": _anchor.get("final_objective", ""),
-            "rolling_task": _anchor.get("rolling_task", ""),
-            "session_context": _anchor.get("session_context", ""),
-            "scope": {"risk_class": rc,
-                      "advice_only": rc == "high"},  # §5.2 high-stakes: advice only
-            "causal_context": causal,
-            "options": framed,
-            # SPEC-impulse-lane-v1.md §3: weighting block — weights per
-            # option (normalized), band, evidence[] (<=3), basis.
-            "weighting": _impulse_weighting(ask, ids, framed, fc),
-            # R53: the current stance rides the envelope so the verdict can
-            # express an ADJUSTMENT rather than absolute numbers.
-            "mindset": _current_mindset(session_id),
-            "question": {
-                "type": "choose_one_with_confidence",
-                "text": ("Choose exactly one option id. Respond with ONLY JSON: "
-                         '{"choice": "<option id>" | "stand_down", '
-                         '"confidence": <0..1>, '
-                         '"alternatives": [<runner-up option ids>], '
-                         '"mindset": {"scope": <-1..1>, "rigour": <-1..1>}}. '
-                         'If no decision is actually requested by this fork, '
-                         'respond {"choice": "stand_down", "confidence": 0, '
-                         '"alternatives": []}. '
-                         "Alternatives must be option ids other than the choice "
-                         "(why-not runner-up ordering); use [] when none apply. "
-                         "mindset values are ADJUSTMENTS relative to the stance "
-                         "given in this envelope: + increases, - decreases, 0 "
-                         "means no change needed; each bounded to [-1, 1]. Omit "
-                         "mindset (or send nulls) when no change is needed."),
-            },
-            "slice": [],
-            "trigger": str(trigger or "pre"),
-            "fork_class": fork_class(ask, opts),
+        # SPEC-impulse-lane-v1.md §3: weighting block — weights per option
+        # (normalized), band, evidence[] (<=3), basis.
+        _weighting = _impulse_weighting(ask, ids, framed, fc)
+        # R53: the current stance rides the envelope so the verdict can
+        # express an ADJUSTMENT rather than absolute numbers.
+        _mindset = _current_mindset(session_id)
+        _question = {
+            "type": "choose_one_with_confidence",
+            "text": ("Choose exactly one option id. Respond with ONLY JSON: "
+                     '{"choice": "<option id>" | "stand_down", '
+                     '"confidence": <0..1>, '
+                     '"alternatives": [<runner-up option ids>], '
+                     '"mindset": {"scope": <-1..1>, "rigour": <-1..1>}}. '
+                     'If no decision is actually requested by this fork, '
+                     'respond {"choice": "stand_down", "confidence": 0, '
+                     '"alternatives": []}. '
+                     "Alternatives must be option ids other than the choice "
+                     "(why-not runner-up ordering); use [] when none apply. "
+                     "mindset values are ADJUSTMENTS relative to the stance "
+                     "given in this envelope: + increases, - decreases, 0 "
+                     "means no change needed; each bounded to [-1, 1]. Omit "
+                     "mindset (or send nulls) when no change is needed."),
         }
         # DECISION-1(b): the TASK rides the envelope. `task_id` is a hash used
         # for caps and dedupe — it never told the lane what job the turn
         # belongs to, so the only human text was the single fork sentence.
         # Absent component -> field omitted, never invented.
         _task_txt = str(task or "").strip()[:200]
-        if _task_txt:
-            envelope["task"] = _task_txt
         # DECISION-1(d): bounded digest of what we actually SENT. The verdict
         # alone was persisted, so "which context did the lane see" was
         # unanswerable after the fact. Counts only — no text, no ledger blowup.
@@ -2572,25 +2552,125 @@ def build_envelope(session_id: str, ask: str, options: List[str],
             "sctx_rows": sctx.count("\n") + 1 if sctx else 0,
             "causal_rows": causal.count(" | ") + 1 if causal else 0,
         }
-        envelope["digest"] = _digest
-        if sctx:
-            envelope["frame_context_chars_used"] = len(sctx)
+        _slice: List[Dict[str, Any]] = []
         if bool(cfg.get("slice", True)):
             db = _db_path()
             repo = _session_repo(db, session_id)
             precedents = _fts_precedents(db, ask, cfg, repo)
-            if sctx:
-                envelope["surrounding_context"] = sctx
-                envelope["frame_context_chars_used"] = len(sctx)
-            envelope["slice"] = [
+            _slice = [
                 {"provenance": PROVENANCE_TAG,  # stamped: excluded from retrieval
                  "id": str(p["id"]), "ts": str(p.get("ts") or ""),
                  "snippet": str(p.get("snippet") or "")}
                 for p in precedents
             ]
-        return envelope
+        # ONE builder owns schema, validation and truncation (Goran directive
+        # 2026-10-30). This adapter keeps the lane's domain computation, hands
+        # it to the unified builder, then projects the result back to the
+        # legacy flat shape 40+ pinned tests import — consumers see no new key.
+        from .features.envelope import unified as _uenv
+
+        request = _uenv.build_request(
+            lane="decision",
+            trigger=str(trigger or "pre"),
+            session_id=session_id,
+            agent_card={"persona": _agent_frame(cfg)},
+            ask={"text": ask, "kind": "user"},
+            context={"final_objective": _anchor.get("final_objective", ""),
+                     "rolling_task": _anchor.get("rolling_task", ""),
+                     "session_context": _anchor.get("session_context", "")},
+            stance={"mindset": _mindset,
+                    "scope": {"risk_class": rc,
+                              "advice_only": rc == "high"}},
+            extras={"decision": {
+                "options": _unified_options(framed),
+                "causal_context": causal,
+                "question": _question,
+                "guidance": {"max_options": max(2, min(6, len(framed))),
+                             "decision_kind": _decision_kind(rc, fc)},
+                "weighting": _weighting,
+                "fork_class": fc,
+                "slice": _slice,
+                "task": _task_txt,
+                "digest": _digest,
+                "surrounding_context": sctx,
+                "frame_context_chars_used": len(sctx) if sctx else 0,
+            }},
+            cfg=cfg,
+        )
+        return _envelope_from_request(request)
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _decision_kind(risk: str, fork_cls: str) -> str:
+    """guidance.decision_kind: what KIND of decision this is (fork|risk|plan).
+
+    Derived from the lane's own classifiers — never an extra model call.
+    """
+    if risk == "high":
+        return "risk"
+    if "plan" in str(fork_cls or ""):
+        return "plan"
+    return "fork"
+
+
+def _unified_options(framed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Legacy option dicts -> the unified option shape (cause_effect is
+    published as `causal_frame`; the other typed fields keep their names)."""
+    out: List[Dict[str, Any]] = []
+    for opt in framed or []:
+        if not isinstance(opt, dict):
+            continue
+        out.append({
+            "id": str(opt.get("id") or ""),
+            "label": opt.get("label"),
+            "causal_frame": opt.get("cause_effect"),
+            "cost": opt.get("cost"),
+            "priors": opt.get("priors"),
+            "risk": opt.get("risk"),
+        })
+    return out
+
+
+def _envelope_from_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Unified request -> the decision lane's legacy envelope (same fields,
+    same names, same omission rules: absent component omitted, never "")."""
+    if not request:
+        return {}
+    ext = (request.get("extras") or {}).get("decision") or {}
+    card = request.get("agent_card") or {}
+    ctx = request.get("context") or {}
+    stance = request.get("stance") or {}
+    envelope: Dict[str, Any] = {
+        "schema": ENVELOPE_SCHEMA,
+        "agent_frame": card.get("persona", ""),
+        "final_objective": ctx.get("final_objective", ""),
+        "rolling_task": ctx.get("rolling_task", ""),
+        "session_context": ctx.get("session_context", ""),
+        "scope": dict(stance.get("scope") or {}),
+        "causal_context": ext.get("causal_context", ""),
+        "options": [
+            {"id": str(o.get("id") or ""), "label": o.get("label"),
+             "cause_effect": o.get("causal_frame"), "cost": o.get("cost"),
+             "priors": o.get("priors"), "risk": o.get("risk")}
+            for o in (ext.get("options") or []) if isinstance(o, dict)
+        ],
+        "weighting": ext.get("weighting") or {},
+        "mindset": stance.get("mindset", ""),
+        "question": ext.get("question") or {},
+        "slice": ext.get("slice") or [],
+        "trigger": request.get("trigger", "pre"),
+        "fork_class": ext.get("fork_class", ""),
+    }
+    if ext.get("task"):
+        envelope["task"] = ext["task"]
+    if ext.get("digest"):
+        envelope["digest"] = ext["digest"]
+    if ext.get("surrounding_context"):
+        envelope["surrounding_context"] = ext["surrounding_context"]
+    if ext.get("frame_context_chars_used"):
+        envelope["frame_context_chars_used"] = ext["frame_context_chars_used"]
+    return envelope
 
 
 def _ledger_priors(fork_cls: str, option_index: int, cfg: Dict[str, Any],

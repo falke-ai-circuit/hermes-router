@@ -228,18 +228,39 @@ def build_pre_prompt(ask: str, agent: str = "agent", role: str = "",
 
     `agent`/`role`/`context` condition the projection on WHO is working: the
     dials are a function of (ask, persona), not of the ask alone.
+
+    Thin adapter (Goran directive 2026-10-30): the request is assembled by the
+    ONE builder (features/envelope/unified.py) as a lane-request/1 envelope;
+    this function only renders that envelope into the (system, messages) pair
+    this lane's callers already consume.
     """
+    from .features.envelope import unified as _uenv
+
+    sctx = str(context or "").strip()[:1200]
+    env = _uenv.build_request(
+        lane="uncensored",
+        trigger="pre",
+        agent_card={"persona": str(agent or ""), "procedures": str(role or "")},
+        ask={"text": str(ask or "").strip(), "kind": "user"},
+        context={"session_context": sctx},
+        extras={"uncensored": {"leg": "pre", "work_text": "",
+                               "voice_mode": "voice_stems", "close_class": ""}},
+    ) or {}
+    card = env.get("agent_card") or {"persona": agent, "procedures": role}
+    ask_text = (env.get("ask") or {}).get("text", str(ask or "").strip())
+    sctx_out = (env.get("context") or {}).get("session_context", sctx)
     joined = "\n\n".join(p.disposition for p in POV_SET)
     system = (
         "You are a projection made of four fixed voices. They are prototypes at "
         "the corners of a space, not personalities to choose between -- several "
         "can claim one ask.\n\n"
-        + _PERSONA_FRAME.format(agent=agent, role=role or "unspecified")
+        + _PERSONA_FRAME.format(agent=card.get("persona", agent),
+                                role=card.get("procedures") or "unspecified")
         + "\n" + joined
     )
-    body = _PRE_ASK.format(ask=ask.strip())
-    if context.strip():
-        body += "\n\nSITUATION SO FAR:\n" + context.strip()[:1200]
+    body = _PRE_ASK.format(ask=ask_text)
+    if sctx_out:
+        body += "\n\nSITUATION SO FAR:\n" + sctx_out
     return system, [{"role": "user", "content": body + _CLAIM_INSTRUCTION}]
 
 
