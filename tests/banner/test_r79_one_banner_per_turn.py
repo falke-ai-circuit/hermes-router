@@ -10,7 +10,34 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from hermes_router import debug_banner as db
+from hermes_router import reflex_lane as rl
+
+
+def _lane_state():
+    """Every module-level store this lane keys by session id."""
+    stores = [getattr(rl, "_ACC", None)]
+    for name in ("_ANCHOR_BANNERS", "_CONSUMED_DECISION", "_DECISION_HOLDS"):
+        stores.append(getattr(db, name, None))
+    return [s for s in stores if isinstance(s, dict)]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_lane_state():
+    """Test-isolation defect guard, not a product guard.
+
+    This file exercises the delivery edge, which reads module-level stores keyed
+    by session id. Clear them on the way IN (a leftover from another file must
+    not decide this file's result) and again on the way OUT (our entries must
+    never reach rider16/rider18, which assert on those same slots).
+    """
+    for store in _lane_state():
+        store.clear()
+    yield
+    for store in _lane_state():
+        store.clear()
 
 HEAD = "· router · impulse (decision)"
 
