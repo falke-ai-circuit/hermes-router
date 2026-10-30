@@ -14,7 +14,7 @@ def test_override_wins(tmp_path, monkeypatch):
 
 
 def test_fail_open_no_home(monkeypatch):
-    monkeypatch.setattr(method_card, "_hermes_home", lambda: "")
+    monkeypatch.setattr(method_card, "profile_home", lambda: "")
     card = method_card.build_method_context(force_refresh=True)
     assert card == ""
 

@@ -39,12 +39,7 @@ _FMT_HINT_MARKERS = (
 )
 
 
-def _hermes_home() -> str:
-    try:
-        from hermes_constants import get_hermes_home
-        return str(get_hermes_home())
-    except Exception:  # noqa: BLE001
-        return os.environ.get("HERMES_HOME", "")
+from .persona_card import profile_home  # THE single DNA-home resolver (no local copy)
 
 
 def _lift_skill_hint(md_text: str, max_chars: int = 900) -> str:
@@ -151,7 +146,7 @@ def build_method_context(hermes_home: Optional[str] = None,
     """Compact method card from the loading profile's skills. Never raises.
     When ask is given, only skills scoring keyword-overlap with the ask lift."""
     try:
-        home = hermes_home or _hermes_home()
+        home = hermes_home or profile_home()
         if not home:
             return ""
         newest = 0.0

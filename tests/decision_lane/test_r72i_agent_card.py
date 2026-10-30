@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 
+from hermes_router import persona_card as pc
 from hermes_router import reflex_lane as rl
 
 
@@ -33,7 +34,7 @@ def test_card_is_prose_not_frontmatter(tmp_path, monkeypatch):
                      "# Coder\nI repair code and never trust a claim I have not run.\n")
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "cardtest")
-    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(pc, "_card_cache", {})
     card = rl._agent_card()
     assert "I repair code" in card
     # metadata is not a role description
@@ -52,7 +53,7 @@ def test_bold_prose_is_a_card_not_noise(tmp_path, monkeypatch):
                      "**Trait tags:** conservation-first\n")
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "boldcard")
-    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(pc, "_card_cache", {})
     card = rl._agent_card()
     assert "clinical precision" in card
     assert "conservation-first" in card
@@ -65,7 +66,7 @@ def test_missing_identity_yields_empty_card(tmp_path, monkeypatch):
     no longer enough to produce a cardless profile (it would borrow the real profile's card)."""
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "nocards")
-    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(pc, "_card_cache", {})
     monkeypatch.setattr(rl, "_profile_home", lambda: str(tmp_path))
     assert rl._agent_card() == ""
 
@@ -75,7 +76,7 @@ def test_card_is_cached_per_profile_size_bound(tmp_path, monkeypatch):
     ident.write_text("x " * 2000)
     monkeypatch.setenv("HERMES_PROFILE_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "bigcard")
-    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(pc, "_card_cache", {})
     card = rl._agent_card()
     assert 0 < len(card) <= rl.CARD_CHARS
     assert os.path.isfile(str(ident))

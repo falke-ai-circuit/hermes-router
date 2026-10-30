@@ -32,7 +32,7 @@ def _reset(monkeypatch, tmp_path):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     # doctrine card source: tiny DNA in tmp home
     (tmp_path / "SOUL.md").write_text("# L\n## Lines I Hold\n- never do X\n")
-    monkeypatch.setattr(refusal_doctrine, "_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(refusal_doctrine, "profile_home", lambda: str(tmp_path))
     yield
     state.clear()
 

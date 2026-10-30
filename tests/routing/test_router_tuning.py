@@ -162,7 +162,8 @@ def test_persona_card_enriched_contains_identity_head_and_respects_cap(monkeypat
                                                                        tmp_path):
     ident = tmp_path / "IDENTITY.md"
     ident.write_text("# Header\n" + ("X" * 3000), encoding="utf-8")
-    monkeypatch.setattr(persona_card, "_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(persona_card, "profile_home",
+                        lambda home=None: str(tmp_path))
     monkeypatch.setattr(persona_card, "persona_card_chars_budget", lambda: 2500)
     monkeypatch.setattr(persona_card, "_scrub", lambda t: t)  # keep chars exact
     persona_card._card_cache.clear()
@@ -178,7 +179,8 @@ def test_persona_card_zero_is_legacy_compact(monkeypatch, tmp_path):
                      encoding="utf-8")
     soul = tmp_path / "SOUL.md"
     soul.write_text("voice: steady\n", encoding="utf-8")
-    monkeypatch.setattr(persona_card, "_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(persona_card, "profile_home",
+                        lambda home=None: str(tmp_path))
     monkeypatch.setattr(persona_card, "persona_card_chars_budget", lambda: 0)
     persona_card._card_cache.clear()
     card = persona_card.build_persona_context()

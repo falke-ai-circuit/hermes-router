@@ -54,7 +54,7 @@ def test_agent_card_is_the_shared_lane_card_without_the_render_mandate(tmp_path,
     (tmp_path / "SOUL.md").write_text("## Character\n| Voice | direct |\n")
     monkeypatch.setattr(pc, "_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(pc, "_card_cache", {})
-    monkeypatch.setattr(rl, "_CARD_CACHE", {})
+    monkeypatch.setattr(pc, "_card_cache", {})
 
     msgs = [{"role": "user", "content": "fix the decision lane card so it carries the task"}]
     card = rl._agent_card(msgs)

@@ -69,12 +69,7 @@ def _doctrine_knob() -> str:
         return "always_route"
 
 
-def _hermes_home() -> str:
-    try:
-        from hermes_constants import get_hermes_home
-        return str(get_hermes_home())
-    except Exception:  # noqa: BLE001
-        return os.environ.get("HERMES_HOME", "")
+from .persona_card import profile_home  # THE single DNA-home resolver (no local copy)
 
 
 def _read_text(path: str, max_chars: int) -> str:
@@ -93,7 +88,7 @@ def build_doctrine_card(hermes_home: Optional[str] = None,
     persona_card._soul_rows. Returns "" when nothing lifts (fail-open).
     mtime-cached per profile home.
     """
-    home = hermes_home or _hermes_home()
+    home = hermes_home or profile_home()
     if not home:
         return ""
     try:

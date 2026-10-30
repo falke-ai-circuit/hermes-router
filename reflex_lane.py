@@ -42,8 +42,18 @@ from . import reflex_weights as _rw
 # their tests — reach for them, and because _profile_home must remain a module-global
 # name here: the wrapper calls it through globals, so patching it patches the resolver
 # that actually runs.
-_CARD_CACHE: Dict[str, Any] = _pc._card_cache
+#
+# R78-p2: NO module-level alias of the cache. `_CARD_CACHE = _pc._card_cache` bound the
+# dict OBJECT at import, so a test (or any caller) that rebinds pc._card_cache left this
+# module writing into the ORIGINAL dict — cards keyed on tmp homes survived teardown and
+# later tests read a persona that belonged to a fixture. The cache is read through the
+# module attribute at each use site; see card_cache() below.
 CARD_CHARS = _pc.CARD_CHARS
+
+
+def card_cache() -> Dict[str, Any]:
+    """The live persona card cache — always the CURRENT attribute, never a stale alias."""
+    return _pc._card_cache
 
 logger = logging.getLogger("hermes_router.reflex_lane")
 

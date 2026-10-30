@@ -1,21 +1,27 @@
 """Dynamic persona-context builder for uncensored routing (2026-09-02, Goran directive).
 
-Builds a compact persona card from the DNA of the agent profile the plugin is
-loaded under (HERMES_HOME), so Venice renders in the AGENT'S voice and holds
-the agent's authorial lines. NOT hand-curated, NOT a snapshot — derived from
-the live DNA at call time, cached by mtime.
+Builds a compact card from the DNA of the agent profile the plugin is loaded
+under — the agent COMPRESSED, not a snapshot and not a hand-curated blurb:
 
-Extraction surface (deliberately narrow):
-  IDENTITY.md  -> personhood anchor: first PERSONA_MAX_ANCHOR chars
-  SOUL.md      -> Character table + voice/line doctrine rows (marker-driven)
+  PERSONA    <- IDENTITY.md : role lens, adversarial assumption, what it
+                              optimises for
+  PROCEDURES <- AGENTS.md   : hard gates / non-negotiables that change which
+                              move is correct (SOUL.md Hard Rules as fallback)
+  HISTORY    <- MEMORY.md   : recent operational lessons + standing corrections
+                              (capped, recent-biased — never the whole file)
 
-NEVER included (by design): MEMORY.md (operational history), AGENTS.md
-(workflow), config.yaml, secrets, .env, session content.
+All three are extracted deterministically at call time (no LLM, no aux call, no
+network), memoized by file mtime and TTL-cached, clause-bounded (never a
+mid-word cut), and secret-scrubbed on the final string. The read card is
+~1200 chars at a 45/30/25 split and always ranks BELOW the session objective
+blocks: build_state places FINAL OBJECTIVE/CURRENT TASK first, and the card has
+its own hard ceiling so history can never displace the objective.
 
-Secret scrubbing runs on the final card regardless of source.
+The render lane still gets the voice card (build_persona_context); the read
+lane gets the three-section card.
 
 Card target: <= PERSONA_MAX_CHARS chars (~1-1.5K tokens with the continuity
-stub). Persona-bearing only — everything else is noise to a small renderer.
+stub) for the render card, PERSONA_READ_CARD_MAX for the read card.
 """
 from __future__ import annotations
 
@@ -142,6 +148,504 @@ def _strip_md_headers(text: str) -> str:
         return ""
 
 
+# ---------------------------------------------------------------------------
+# R77/R78 — the read card is the AGENT COMPRESSED, and it is install-agnostic.
+#
+# Goran spec (2026-10-30): PERSONA <- IDENTITY.md, PROCEDURES <- AGENTS.md,
+# HISTORY <- MEMORY.md, deterministic extraction only (line/section selection +
+# bounded trim — no LLM, no aux, no network at fire time), mtime-cached, ~1200
+# chars at 45/30/25, labelled sections, clause-bounded truncation. The render
+# lane keeps its voice card; only the READ card changes shape.
+#
+# Every source name, the budget, the split and the TTL are config keys with
+# defaults, so this works on a vanilla Hermes install and in a profile called
+# anything. No fleet knowledge (no absolute profile paths, no agent roster).
+# ---------------------------------------------------------------------------
+
+CARD_BUDGET_DEFAULT = 1200         # total read-card chars (config: card_budget_chars)
+CARD_SPLIT_DEFAULT = (45, 30, 25)  # PERSONA / PROCEDURES / HISTORY
+CARD_TTL_DEFAULT = 300.0           # seconds (config: card_cache_ttl)
+CARD_SOURCE_DEFAULTS = {
+    "persona": "IDENTITY.md",
+    "persona_fallback": "SOUL.md",
+    "procedures": "AGENTS.md",
+    "history": "MEMORY.md",
+}
+
+_CARD_SECTION_LABELS = ("PERSONA", "PROCEDURES", "HISTORY")
+
+
+def _card_cfg() -> Dict[str, Any]:
+    """Source names, budget, split and TTL from the router config, with defaults.
+
+    Never raises; a missing key, a bad type or a missing config module all fall
+    back to the documented default. No literal profile path is ever involved.
+    """
+    rs: Dict[str, Any] = {}
+    try:
+        from . import config_access
+
+        rs = dict(config_access.router_section() or {})
+    except Exception:  # noqa: BLE001
+        rs = {}
+    out: Dict[str, Any] = {}
+    for k, default in CARD_SOURCE_DEFAULTS.items():
+        val = str(rs.get(k) or default).strip()
+        out[k] = os.path.basename(val) or default
+    try:
+        budget = int(rs.get("card_budget_chars") or CARD_BUDGET_DEFAULT)
+    except (TypeError, ValueError):
+        budget = CARD_BUDGET_DEFAULT
+    out["budget"] = max(400, min(4000, budget))
+    split = rs.get("card_split") or CARD_SPLIT_DEFAULT
+    try:
+        if isinstance(split, str):
+            split = [int(x) for x in re.findall(r"\d+", split)]
+        parts = [max(0, int(x)) for x in list(split)[:3]]
+        total = sum(parts)
+        if len(parts) != 3 or total <= 0:
+            raise ValueError
+        out["split"] = tuple(p / float(total) for p in parts)
+    except Exception:  # noqa: BLE001
+        out["split"] = tuple(s / 100.0 for s in CARD_SPLIT_DEFAULT)
+    try:
+        ttl = float(rs.get("card_cache_ttl") or CARD_TTL_DEFAULT)
+    except (TypeError, ValueError):
+        ttl = CARD_TTL_DEFAULT
+    out["ttl"] = ttl if ttl > 0 else CARD_TTL_DEFAULT
+    return out
+
+
+def _dna_names(cfg: Optional[Dict[str, Any]] = None) -> Tuple[str, ...]:
+    c = cfg or _card_cfg()
+    seen: list = []
+    for key in ("persona", "persona_fallback", "procedures", "history"):
+        name = c.get(key)
+        if name and name not in seen:
+            seen.append(name)
+    return tuple(seen)
+
+
+def _holds_dna(directory: str, names: Optional[Tuple[str, ...]] = None) -> bool:
+    """True when directory holds at least one configured DNA file."""
+    try:
+        d = str(directory or "")
+        if not d or not os.path.isdir(d):
+            return False
+        return any(os.path.isfile(os.path.join(d, n)) for n in (names or _dna_names()))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+PERSONA_READ_IDENTITY_CHARS = 1200 # legacy name: persona share is now budget-driven
+PERSONA_READ_CARD_MAX = CARD_BUDGET_DEFAULT  # back-compat alias for the ceiling
+PERSONA_READ_DOCTRINE_CHARS = 520  # SOUL Hard Rules fallback for PROCEDURES
+PERSONA_READ_DOCTRINE_ROWS = 3     # constraints lifted when PROCEDURES is absent
+
+_YAML_FRONTMATTER_RE = re.compile(r"\A\ufeff?---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
+
+# A constraint "decides a move" when it names one of these; ranked, not filtered:
+# every Hard Rules row is doctrine, this only orders which three fit the budget.
+_MOVE_MARKERS = (
+    "verif", "evidence", "test", "check", "read", "understand", "commit",
+    "deploy", "stop", "report", "prove", "measure", "honest", "nothing is done",
+    "gate", "scope", "budget", "frame", "repo", "anchor",
+)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Drop a leading YAML frontmatter block. Metadata is not a role. Never raises."""
+    try:
+        t = str(text or "")
+        m = _YAML_FRONTMATTER_RE.match(t)
+        return t[m.end():] if m else t
+    except Exception:  # noqa: BLE001
+        return str(text or "")
+
+
+def _truncate_clause(text: str, limit: int, marker: str = " …") -> str:
+    """Cut at a clause boundary — sentence, then ';', then ',' — never mid-word.
+
+    A card that ends "I am Falke, the circuit-se" teaches the model that the
+    role description is unfinished garbage. The ellipsis says the slice is
+    bounded, and the last boundary keeps the grammar intact. Never raises.
+    """
+    try:
+        t = str(text or "").rstrip()
+        limit = int(limit)
+        if limit <= 0:
+            return ""
+        if len(t) <= limit:
+            return t
+        head = t[:limit]
+        cut = -1
+        for marks in ((". ", "! ", "? ", "\n"), ("; ",), (", ",)):
+            for mk in marks:
+                pos = head.rfind(mk)
+                if pos > cut:
+                    cut = pos + (0 if mk == "\n" else len(mk) - 1)
+            if cut > 0:
+                break
+        if cut <= 0:
+            # last resort: whitespace, so a word is never split
+            pos = head.rfind(" ")
+            cut = pos if pos > 0 else limit
+        head = head[:cut].rstrip(" ,;:-—")
+        return (head + marker).strip() if head else t[:limit].rstrip() + marker
+    except Exception:  # noqa: BLE001
+        return str(text or "")[:max(0, int(limit))]
+
+
+def _prose_slice(path: str, max_chars: int) -> str:
+    """Prose lines from one DNA file: frontmatter, headings, blockquote preamble,
+    table rows and horizontal rules out; clause-bounded. Never raises."""
+    try:
+        if not path or not os.path.isfile(path):
+            return ""
+        raw = _strip_frontmatter(_read_slice(path, PERSONA_MAX_CHARS))
+        lines: list = []
+        for ln in raw.splitlines():
+            s = " ".join(ln.split())
+            if not s or s.startswith(("#", ">", "|", "---")):
+                continue
+            lines.append(s)
+        return _truncate_clause("\n".join(lines), max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _persona_substance(home: str, max_chars: int = PERSONA_READ_IDENTITY_CHARS) -> str:
+    """PERSONA slice: IDENTITY.md prose, SOUL.md when IDENTITY is absent.
+
+    The first two prose paragraphs are the role lens (who it is, then the
+    role-level doctrine that says what it optimises for) — selected as
+    paragraphs, not as a character window, so two agents do not converge on the
+    same slice length. Degradation ladder: no IDENTITY -> SOUL; neither -> ""
+    (the lane runs cardless).
+    """
+    try:
+        cfg = _card_cfg()
+        base = str(home or "")
+        if not base:
+            return ""
+        out = _prose_paragraphs(os.path.join(base, cfg["persona"]), max_chars, 2)
+        if not out.strip():
+            out = _prose_paragraphs(os.path.join(base, cfg["persona_fallback"]), max_chars, 2)
+        return out
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _prose_paragraphs(path: str, max_chars: int, keep: int = 2) -> str:
+    """First `keep` prose paragraphs from one DNA file, clause-bounded.
+
+    Frontmatter, headings, blockquote preamble, table rows and horizontal rules
+    never survive; paragraphs are the unit, so the slice ends where the agent's
+    own thought ends. Never raises.
+    """
+    try:
+        if not path or not os.path.isfile(path):
+            return ""
+        raw = _strip_frontmatter(_read_slice(path, PERSONA_MAX_CHARS))
+        paras: list = []
+        cur: list = []
+        for ln in raw.splitlines():
+            s = " ".join(ln.split())
+            if not s:
+                if cur:
+                    paras.append(" ".join(cur))
+                    cur = []
+                continue
+            if s.startswith(("#", ">", "|", "---")):
+                continue
+            cur.append(s)
+        if cur:
+            paras.append(" ".join(cur))
+        out = "\n".join(p for p in paras[:keep] if p)
+        return _truncate_clause(out, max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _doctrine_constraints(home: str, max_chars: int = PERSONA_READ_DOCTRINE_CHARS,
+                          max_rows: int = PERSONA_READ_DOCTRINE_ROWS) -> str:
+    """The two or three SOUL.md Hard Rules that shape which move is correct.
+
+    Marker-ranked, order-preserving: a constraint that names verify/evidence/
+    read/commit/deploy/stop is the kind that changes a decision. Never raises.
+    """
+    try:
+        path = os.path.join(str(home or ""), "SOUL.md") if home else ""
+        if not path or not os.path.isfile(path):
+            return ""
+        soul = _strip_frontmatter(_read_slice(path, 200000))
+        blocks: list = []
+        in_rules = False
+        for ln in soul.splitlines():
+            s = ln.strip()
+            if s.startswith("#"):
+                low = s.lstrip("#").strip().lower()
+                in_rules = low in ("hard rules", "hard constraints")
+                continue
+            if not in_rules or not s.startswith("|"):
+                continue
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            name, detail = cells[0], cells[1]
+            if not name or not detail:
+                continue
+            if set(name) <= set("-: ") or name.lower() in ("rule", "constraint"):
+                continue
+            blocks.append("%s: %s" % (name, detail))
+        if not blocks:
+            return ""
+
+        def rank(item):
+            i, b = item
+            low = b.lower()
+            hits = sum(1 for m in _MOVE_MARKERS if m in low)
+            return (-hits, i)
+
+        picked = []
+        used = 0
+        for _i, b in sorted(enumerate(blocks), key=rank):
+            row = _truncate_clause(b, min(170, max_chars - used))
+            if not row:
+                continue
+            picked.append((_i, row))
+            used += len(row) + 3
+            if len(picked) >= max_rows or used >= max_chars:
+                break
+        picked.sort(key=lambda x: x[0])  # keep SOUL.md order once selected
+        return _truncate_clause("\n".join("- " + r for _i, r in picked), max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _table_rows(text: str, header_rx: str, max_rows: int = 3,
+                max_chars: int = 360) -> str:
+    """Rows from the markdown table under the first header matching header_rx.
+
+    Deterministic: section scan + cell split + marker ranking, no model. Every
+    row is trimmed at a clause boundary; the block never exceeds max_chars.
+    """
+    try:
+        lines = str(text or "").splitlines()
+        rows: list = []
+        in_section = False
+        for ln in lines:
+            s = ln.strip()
+            if s.startswith("#"):
+                low = s.lstrip("#").strip().lower()
+                in_section = bool(re.search(header_rx, low))
+                continue
+            if not in_section or not s.startswith("|"):
+                continue
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            name, detail = cells[0], cells[-1]
+            if not name or not detail:
+                continue
+            if set(name) <= set("-: ") or name.lower() in ("gate", "rule", "constraint", "setting"):
+                continue
+            rows.append((name.strip("* ").strip(), detail))
+        if not rows:
+            return ""
+
+        def rank(item):
+            i, (name, detail) = item
+            low = (name + " " + detail).lower()
+            return (-sum(1 for m in _MOVE_MARKERS if m in low), i)
+
+        picked, used = [], 0
+        for i, (name, detail) in sorted(enumerate(rows), key=rank):
+            row = _truncate_clause("%s: %s" % (name, detail),
+                                   min(150, max_chars - used))
+            if not row:
+                continue
+            picked.append((i, row))
+            used += len(row) + 3
+            if len(picked) >= max_rows or used >= max_chars:
+                break
+        picked.sort(key=lambda x: x[0])
+        return _truncate_clause("\n".join("- " + r for _i, r in picked), max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _procedures_gates(home: str, max_chars: int = 360,
+                      max_rows: int = 3) -> str:
+    """PROCEDURES slice: the AGENTS.md gate rows that change which move is right.
+
+    Falls back to SOUL.md Hard Rules when AGENTS.md is absent or carries no gate
+    table (degradation ladder), then to "" — never invented text.
+    """
+    try:
+        cfg = _card_cfg()
+        base = str(home or "")
+        if not base:
+            return ""
+        out = _table_rows(_read_slice(os.path.join(base, cfg["procedures"]), 200000),
+                          r"gate|non-negotiable|hard rule", max_rows, max_chars)
+        if not out.strip():
+            out = _doctrine_constraints(base, max_chars,
+                                        min(max_rows, PERSONA_READ_DOCTRINE_ROWS))
+        return out
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+_HISTORY_MARKERS = (
+    "wrong", "reframe", "lesson", "correction", "refut", "vindicat", "root cause",
+    "defect", "regression", "doctrine", "banned", "verified", "audit",
+)
+
+
+def _history_lessons(home: str, max_chars: int = 300, max_rows: int = 3) -> str:
+    """HISTORY slice: recent operational lessons + standing corrections.
+
+    Recent-biased by construction: MEMORY.md blocks are scanned from the END
+    (newest entries live there) and only blocks that carry a lesson/correction
+    marker are kept. The structured-heading sections (infrastructure facts,
+    rosters) are skipped whole so facts never masquerade as lessons. Capped,
+    never the whole file. Deterministic — no summariser.
+    """
+    try:
+        cfg = _card_cfg()
+        base = str(home or "")
+        if not base:
+            return ""
+        raw = _strip_frontmatter(_read_slice(os.path.join(base, cfg["history"]), 400000))
+        blocks: list = []
+        cur: list = []
+        skip_section = False
+        for ln in raw.splitlines():
+            s = " ".join(ln.split())
+            if s.startswith("#"):
+                # a heading opens a structured section: its rows are facts, not lessons
+                if cur:
+                    blocks.append(" ".join(cur))
+                    cur = []
+                skip_section = True
+                continue
+            if not s or s.startswith(">"):
+                if cur:
+                    blocks.append(" ".join(cur))
+                    cur = []
+                skip_section = False
+                continue
+            if skip_section:
+                continue
+            if s.startswith("§"):
+                if cur:
+                    blocks.append(" ".join(cur))
+                    cur = []
+                s = s.lstrip("§ ").strip()
+            cur.append(s)
+        if cur:
+            blocks.append(" ".join(cur))
+        cleaned = []
+        for b in blocks:
+            b = b.strip()
+            while b.startswith(("-", "§", "*", " ")):
+                b = b[1:].strip()
+            if len(b) > 40:
+                cleaned.append(b)
+        if not cleaned:
+            return ""
+        scored = []
+        for idx, b in enumerate(cleaned):
+            low = b.lower()
+            hits = sum(1 for m in _HISTORY_MARKERS if m in low)
+            if hits:
+                scored.append((hits, idx, b))
+        if not scored:
+            scored = [(0, idx, b) for idx, b in enumerate(cleaned[-max_rows:])]
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        row_cap = max(60, int(max_chars) // max(1, max_rows))
+        picked, used = [], 0
+        for _h, idx, b in scored:
+            if used >= max_chars:
+                break
+            row = _truncate_clause(b, min(row_cap, max_chars - used))
+            if not row:
+                continue
+            picked.append((idx, row))
+            used += len(row) + 3
+            if len(picked) >= max_rows:
+                break
+        picked.sort(key=lambda x: x[0])
+        return _truncate_clause("\n".join("- " + r for _i, r in picked), max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _src_sig(home: str, cfg: Optional[Dict[str, Any]] = None) -> Tuple:
+    """(path, mtime, size) per source file — the cache key that notices edits."""
+    c = cfg or _card_cfg()
+    sig: list = []
+    for name in _dna_names(c):
+        p = os.path.join(str(home or ""), name)
+        try:
+            st = os.stat(p)
+            sig.append((p, round(st.st_mtime, 6), st.st_size))
+        except OSError:
+            sig.append((p, 0, 0))
+    return tuple(sig)
+
+
+def card_sections(home: Optional[str] = None,
+                  budget: Optional[int] = None) -> Dict[str, str]:
+    """The three labelled read-card sections, each already trimmed to its share.
+
+    Returns {"PERSONA": ..., "PROCEDURES": ..., "HISTORY": ...} with "" for any
+    source that is absent (an empty section is reported, never invented).
+    """
+    cfg = _card_cfg()
+    base = profile_home(home)
+    total = int(budget if budget is not None else cfg["budget"])
+    total = max(400, min(4000, total))
+    headers = {"PERSONA": "=== PERSONA ===",
+               "PROCEDURES": "=== PROCEDURES ===",
+               "HISTORY": "=== HISTORY ==="}
+    usable = max(0, total - sum(len(h) + 2 for h in headers.values()) - 4)
+    shares = dict(zip(_CARD_SECTION_LABELS, cfg["split"]))
+    if not base:
+        return {k: "" for k in _CARD_SECTION_LABELS}
+    return {
+        "PERSONA": _persona_substance(base, int(usable * shares["PERSONA"])),
+        "PROCEDURES": _procedures_gates(base, int(usable * shares["PROCEDURES"]),
+                                        PERSONA_READ_DOCTRINE_ROWS),
+        "HISTORY": _history_lessons(base, int(usable * shares["HISTORY"]),
+                                    PERSONA_READ_DOCTRINE_ROWS),
+    }
+
+
+def build_read_card(home: Optional[str] = None,
+                    budget: Optional[int] = None) -> str:
+    """The compressed-agent card: PERSONA / PROCEDURES / HISTORY, <= budget.
+
+    Sections are assembled in a fixed order and each already sits inside its
+    share; the final clause-bound trim is a safety net, not the mechanism. The
+    objective blocks stay in build_state and rank above this card.
+    """
+    secs = card_sections(home, budget)
+    headers = {"PERSONA": "=== PERSONA ===",
+               "PROCEDURES": "=== PROCEDURES ===",
+               "HISTORY": "=== HISTORY ==="}
+    parts = ["%s\n%s" % (headers[k], secs[k]) for k in _CARD_SECTION_LABELS if secs.get(k)]
+    if not parts:
+        return ""
+    out = "\n\n".join(parts)
+    ceiling = int(budget if budget is not None else _card_cfg()["budget"])
+    ceiling = max(400, min(4000, ceiling))
+    if len(out) > ceiling:
+        out = _truncate_clause(out, ceiling)
+    return _scrub(out)
+
+
 def persona_card_chars_budget() -> int:
     """persona_card_chars (int, default 2500; 0 = legacy compact card).
     Enriched-card budget. Reads via config_access (live-read, dual-section).
@@ -153,24 +657,46 @@ def persona_card_chars_budget() -> int:
         return 2500
 
 
-def _build_enriched_persona_context(budget: int, messages: Optional[list] = None) -> str:
-    """Enriched persona card (B1, 2026-09-09): compact card + role line from
-    profile IDENTITY.md head (first 1200 chars, markdown headers stripped) +
-    current-task line (thread digest head). Budget-bounded, TTL-cached like
-    the compact card. Fail-open: any read problem => falls back to the
-    compact card. Never raises."""
+def _build_enriched_persona_context(budget: int, messages: Optional[list] = None,
+                                    include_mandate: bool = False) -> str:
+    """Budget-bounded card, cached by (home + per-source mtime/size) and TTL.
+
+    include_mandate=False -> the READ card (default): PERSONA / PROCEDURES /
+                             HISTORY, i.e. the agent compressed (Goran spec).
+    include_mandate=True  -> the render lane's voice card; build_persona_context
+                             asks for it explicitly.
+    Fail-open: any read problem falls back to the compact card. Never raises.
+    """
     try:
-        home = _hermes_home()
-        key = (home, budget, bool(messages))
+        home = profile_home()
+        cfg = _card_cfg()
+        if not include_mandate:
+            sig = _src_sig(home, cfg)
+            key = ("read", home, sig, int(budget))
+            now = time.time()
+            cached = _card_cache.get(key)
+            if cached and now - cached[0] < cfg["ttl"]:
+                return cached[1]
+            card = build_read_card(home, min(int(budget), cfg["budget"]))
+            logger.info("persona_card_read chars=%d home=%s", len(card), bool(home))
+            _card_cache[key] = (now, card)
+            return card
+        key = (home, budget, bool(messages), bool(include_mandate))
         now = time.time()
         cached = _card_cache.get(key)
-        if cached and now - cached[0] < PERSONA_CACHE_TTL:
+        if cached and now - cached[0] < cfg["ttl"]:
             return cached[1]
         card = _build_compact_persona_context()
         if budget <= 0:
             return card
-        ident_head = _strip_md_headers(_read_slice(
-            os.path.join(home, "IDENTITY.md"), 1200)) if home else ""
+        ceiling = min(int(budget), PERSONA_MAX_CHARS)
+        ident_head = _persona_substance(home, PERSONA_READ_IDENTITY_CHARS) if home else ""
+        doctrine = ""
+        if home:
+            _left = ceiling - len(ident_head) - 140
+            if _left > 120:
+                doctrine = _doctrine_constraints(
+                    home, min(PERSONA_READ_DOCTRINE_CHARS, _left), PERSONA_READ_DOCTRINE_ROWS)
         task_line = ""
         if isinstance(messages, list):
             try:
@@ -183,13 +709,16 @@ def _build_enriched_persona_context(budget: int, messages: Optional[list] = None
         parts = [card.strip()] if card.strip() else []
         if ident_head:
             parts.append("=== ROLE ===\n" + ident_head)
+        if doctrine:
+            parts.append("=== DOCTRINE (constraints that decide the move) ===\n" + doctrine)
         if task_line:
             parts.append("=== CURRENT TASK ===\n" + task_line)
         enriched = "\n\n".join(parts)
-        if len(enriched) > budget:
-            enriched = enriched[:budget] + "\n[card truncated]"
+        if len(enriched) > ceiling:
+            enriched = _truncate_clause(enriched, ceiling)
         enriched = _scrub(enriched)
-        logger.info("persona_card_enriched chars=%d budget=%d", len(enriched), budget)
+        logger.info("persona_card_enriched chars=%d budget=%d ceiling=%d identity=%d doctrine=%d",
+                    len(enriched), budget, ceiling, len(ident_head), len(doctrine))
         _card_cache[key] = (now, enriched)
         return enriched
     except Exception:  # noqa: BLE001
@@ -207,7 +736,7 @@ def build_persona_context(messages: Optional[list] = None) -> str:
         budget = 0
     if budget > 0:
         try:
-            return _build_enriched_persona_context(budget, messages)
+            return _build_enriched_persona_context(budget, messages, include_mandate=True)
         except Exception:  # noqa: BLE001
             pass
     return _build_compact_persona_context()
@@ -215,7 +744,7 @@ def build_persona_context(messages: Optional[list] = None) -> str:
 
 def _build_compact_persona_context() -> str:
     """Compact persona card (legacy 634c behavior, persona_card_chars=0)."""
-    home = _hermes_home()
+    home = profile_home()
     key = home
     now = time.time()
     cached = _card_cache.get(key)
@@ -229,7 +758,7 @@ def _build_compact_persona_context() -> str:
     # v2.3.1 (battery audit 2026-09-03, Goran ruling): voice_only mode strips the
     # "VOICE & LINES" doctrine extract — the renderer exists to deliver what the
     # agent could not, and doctrine rows (settled lines, lane boundaries, escalation
-    # discipline) made Venice render refusals in-voice (orchestrator probe: 5/5
+    # discipline) made the renderer refuse in-voice (live probe: 5/5
     # refusal-renders even under explicit render mandate). Voice comes from the
     # identity anchor; boundaries belong to the agent, not the uncensored channel.
     try:
@@ -241,7 +770,7 @@ def _build_compact_persona_context() -> str:
         persona_mode = os.environ.get("HERMES_ROUTER_PERSONA_MODE", "voice_stems")
 
     if persona_mode == "none":
-        # v2.3.9 (orchestrator-lane evidence): even voice-stems continuity makes the
+        # v2.3.9 (live-lane evidence): even voice-stems continuity makes the
         # renderer roleplay the coordinator and refuse execution. "none" = zero role
         # material; the render is a pure content channel with the mandate as system.
         return ""
@@ -264,7 +793,7 @@ def _build_compact_persona_context() -> str:
         ident_clean = identity
         if persona_mode == "voice_only":
             # v2.3.4: boundary-anchor sentences inside IDENTITY (refusal/decline/never-
-            # executes vocabulary) are stripped line-wise. Live-caught: orchestrator's
+            # executes vocabulary) are stripped line-wise. Live-caught: a profile's
             # "refusing two others" + "Never executes the solution" anchors alone made
             # Venice refuse in-voice even with an explicit render mandate.
             _keep = []
@@ -323,26 +852,62 @@ CARD_CHARS = 400                  # role-only slice cap (was reflex_lane.CARD_CH
 _PERSONA_SECTION_RE = re.compile(r"^=== .*? ===$", re.M)
 
 
-def profile_home() -> str:
-    """The PROFILE directory this plugin instance lives in.
+def profile_home(home: Optional[str] = None) -> str:
+    """THE resolver — the one chain every card builder uses.
 
-    Gateways run with HERMES_HOME=/opt/data (the install root), not the profile
-    dir, so a naive IDENTITY read looks in the wrong place and finds nothing —
-    the card came back as a task line with no role. The plugin is physically
-    inside the profile (<profile>/plugins/hermes_router/), which is the same
-    anchor config_access uses for the active config, so resolve from there:
-    env override -> plugin location -> install root.
+    Order, first hit wins:
+      (a) explicit argument (caller/config override) that holds a DNA file,
+      (b) HERMES_PROFILE_HOME that holds a DNA file,
+      (c) walk UP from this module's directory to the first dir holding a DNA
+          file — this is what makes <profile>/plugins/hermes_router/ work
+          without anyone telling us the profile path,
+      (d) get_hermes_home() when it holds a DNA file,
+      (e) HERMES_HOME when it holds one,
+      (f) ~/.hermes when it holds one.
+    Nothing holds a DNA file -> "" (empty card, fail-open, never raises).
+
+    get_hermes_home() is NOT redefined here: DB/ledger paths are install-scoped
+    and correct as they are. This resolver answers one question only — where do
+    this agent's DNA files live?
     """
-    env = os.environ.get("HERMES_PROFILE_HOME") or ""
-    if env and os.path.isfile(os.path.join(env, "IDENTITY.md")):
-        return env
+    names = _dna_names()
     try:
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if root and os.path.isfile(os.path.join(root, "IDENTITY.md")):
-            return root
+        if home and _holds_dna(str(home), names):
+            return str(home)
     except Exception:  # noqa: BLE001
         pass
-    return os.environ.get("HERMES_HOME") or ""
+    env = os.environ.get("HERMES_PROFILE_HOME") or ""
+    if env and _holds_dna(env, names):
+        return env
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+        for _ in range(8):
+            if _holds_dna(d, names):
+                return d
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from hermes_constants import get_hermes_home
+
+        h = str(get_hermes_home())
+        if h and _holds_dna(h, names):
+            return h
+    except Exception:  # noqa: BLE001
+        pass
+    h = os.environ.get("HERMES_HOME") or ""
+    if h and _holds_dna(h, names):
+        return h
+    try:
+        h = os.path.join(os.path.expanduser("~"), ".hermes")
+        if _holds_dna(h, names):
+            return h
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _strip_render_mandate(card: str) -> str:
@@ -376,7 +941,7 @@ def _identity_slice(home: Optional[str] = None, max_chars: int = CARD_CHARS) -> 
     Used only when the shared builder yields no usable identity. The card is
     prose, not metadata: YAML frontmatter, headings, blockquote preamble and
     tables stay out — but NOT bullet/bold prose, because most of the fleet
-    writes its role as `**Coder — ...**` and filtering bold lines emptied the
+    writes its role as `**Role — ...**` and filtering bold lines emptied the
     card exactly where it was needed. Never raises.
     """
     try:
@@ -420,9 +985,19 @@ def role_card(purpose: str = "read", messages: Optional[list] = None,
                          prose slice with a "=== CURRENT TASK ===` line.
     Never raises.
     """
-    raw = build_persona_context(messages)
     if purpose == "render":
-        return raw
+        return build_persona_context(messages)
+    # R77: a READ card never spends its ceiling on the RENDER MANDATE — that
+    # section is stripped below anyway, so including it only pushed the persona
+    # substance (and the doctrine block) out of the budget. The render lane
+    # above is byte-identical to before.
+    raw = ""
+    try:
+        _budget = persona_card_chars_budget()
+        if _budget > 0:
+            raw = _build_enriched_persona_context(_budget, messages, include_mandate=False)
+    except Exception:  # noqa: BLE001
+        raw = ""
     card = _strip_render_mandate(str(raw or "")).strip()
     if len(card) > 60:
         return card[:4000]
@@ -549,7 +1124,7 @@ def build_thread_digest(messages: Optional[list], max_chars: int = _THREAD_DIGES
     # v2.3.5 (battery audit 2026-09-03, Goran ruling): prior refusal turns are
     # NEVER fed to the renderer as "declined" — that label made Venice continue
     # its own refusal across retries (self-reinforcing loop, live-caught on
-    # orchestrator: 5-render session where each refusal-render seeded the next).
+    # live: a 5-render session where each refusal-render seeded the next).
     # Refusal-shaped prior turns are EXCLUDED from the digest entirely; the
     # renderer sees only the asks (the arc) — never a refusal as its own voice.
     for t in turns[-2:]:
