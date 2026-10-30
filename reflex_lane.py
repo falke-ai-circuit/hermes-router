@@ -252,22 +252,26 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         # R73 P3: the ask is passed SEPARATELY - concatenating it into the window made the
         # ask's own objects score as scenery, and the top move drifted to whatever a listing
         # printed earlier. Window and ask stay distinguishable all the way down.
-        cands = _dx.candidate_set((text or ""), cap=int(c.get("max_options") or 7),
-                                  ask=(ask or ""))
-        if not cands:
-            _rw._note(reason="no_candidates")
-            return ""
-        # Same card as the every-call path and the other two lanes: without it the midturn
-        # read scores moves for a role it cannot name.
-        # R76 GOAL 2: the ANCHOR is read here too, and the card is handed the
-        # session's stated task so its CURRENT TASK line is populated from the
-        # real objective instead of being assumed absent.
+        # R76 GOAL 2 / R77: the ANCHOR is read FIRST now, because the objective it carries
+        # is also a candidate source — a board mined only from the window gave four different
+        # agents the same top move, since objective-level moves were never on it to contest.
         try:
             from . import decision as _dec
 
             _anchor = _dec.session_anchor(session_id)
         except Exception:  # noqa: BLE001 — anchor is additive
             _anchor = {}
+        cands = _dx.candidate_set((text or ""), cap=int(c.get("max_options") or 7),
+                                  ask=(ask or ""),
+                                  objective=str(_anchor.get("final_objective") or ""),
+                                  rolling_task=str(_anchor.get("rolling_task") or ""))
+        if not cands:
+            _rw._note(reason="no_candidates")
+            return ""
+        # Same card as the every-call path and the other two lanes: without it the midturn
+        # read scores moves for a role it cannot name.
+        # R76 GOAL 2: the card is handed the session's stated task so its CURRENT TASK line
+        # is populated from the real objective instead of being assumed absent.
         _msgs = ([{"role": "user", "content": _anchor["rolling_task"]}]
                  if _anchor.get("rolling_task") else None)
         _card = _agent_card(_msgs)
@@ -1128,8 +1132,18 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             return False
         from . import decision_extract as _dx
 
+        # R76 GOAL 2 / R77: read the anchor before the board — its objective is a
+        # candidate source now, not just state text.
+        try:
+            from . import decision as _rdec
+
+            _ranchor = _rdec.session_anchor(sid)
+        except Exception:  # noqa: BLE001 — anchor is additive
+            _ranchor = {}
         # R73 P3: ask scored as its own term, never concatenated into the window
-        cands = _dx.candidate_set(window, cap=int(c.get("max_options") or 7), ask=ask)
+        cands = _dx.candidate_set(window, cap=int(c.get("max_options") or 7), ask=ask,
+                                  objective=str(_ranchor.get("final_objective") or ""),
+                                  rolling_task=str(_ranchor.get("rolling_task") or ""))
         if not cands:
             _rw._note(reason="no_candidates")
             return False

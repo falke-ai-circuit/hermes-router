@@ -135,11 +135,11 @@ def salient_paths(text: str, cap: int = 4, ask: str = "") -> List[str]:
     return [p for p, _r in sorted(hits.items(), key=score)[:cap]]
 
 
-def candidate_set(window: str, cap: int = 7, ask: str = "") -> List[Dict[str, str]]:
-    """Target-bearing actions first (the object of the next move), then the move classes.
+def _window_board(window: str, cap: int = 7, ask: str = "") -> List[Dict[str, str]]:
+    """The measured board: target-bearing actions first, then the move classes.
 
-    The proof used file-choice among visible paths and scored 0.764 top-1; the generic classes
-    ride alongside so the block still says WHICH KIND of move when no file is in play.
+    This is the pre-R77 behaviour, unchanged and still the fallback when the
+    session anchor contributes nothing usable.
     """
     out: List[Dict[str, str]] = []
     seen = set()
@@ -200,6 +200,199 @@ def candidate_set(window: str, cap: int = 7, ask: str = "") -> List[Dict[str, st
         out.append({"move": "run_check", "kind": "run", "target": "",
                     "label": "run the check or tests now and read the result"})
     return out[:cap] if len(out) >= 3 else []
+
+
+# ---------------------------------------------------------------------------
+# R77 — objective-anchored candidates.
+#
+# Measured live (board_differential, 2026-10-30): identical ask + identical tool
+# window on four agents produced the SAME top move ("read reflex_lane.py first"
+# for all four, that filename being in the window). The card and the anchor moved
+# confidence, never selection, because the candidates were mined only from the
+# window — objective-level moves were not on the board to win a selection they
+# never contested.
+#
+# So the anchor contributes its own candidates now: actions phrased against the
+# stated objective, classified by the objective's own verb, and prefixed with a
+# short gist of the objective so two agents with different sessions get different
+# labels (not four paraphrases of one instruction). Objective-derived first, then
+# the window board, deduped on meaning. No thresholds or weights change, and if
+# the objective yields nothing usable the window board is returned exactly as
+# before.
+# ---------------------------------------------------------------------------
+
+_OBJECTIVE_HOLD_RE = re.compile(
+    r"\b(?:do not|don't|never|no)\s+(commit|deploy|push|ship|patch|edit|fix|"
+    r"code changes?|changes?|proposals?|fixes)\b", re.I)
+_OBJECTIVE_RUN_RE = re.compile(
+    r"\b(verify|verified|prove|proven|gate|tests?|check|measure|confirm|evidence|"
+    r"regression|failed|failing)\b", re.I)
+_OBJECTIVE_REPORT_RE = re.compile(
+    r"\b(diagnos\w*|analys\w*|analyz\w*|audit|trace|conclude|conclusion|"
+    r"root cause|review)\b", re.I)
+_OBJECTIVE_EDIT_RE = re.compile(
+    r"\b(finish|implement|build|refactor|write|ship|deliver|envelope)\b", re.I)
+_OBJECTIVE_RESUME_RE = re.compile(r"\b(resume|interrupted|continue|restart)\b", re.I)
+
+# Words that carry no meaning for duplicate detection ("run the check" vs "run
+# the check the objective requires" are the same move, differently padded).
+_STOPWORDS = frozenset((
+    "the", "a", "an", "and", "or", "of", "to", "for", "with", "on", "in", "it",
+    "its", "this", "that", "is", "be", "as", "at", "by", "from", "not", "then",
+    "now", "first", "read", "what",
+))
+
+
+def _clip_clause(text: str, limit: int = 54) -> str:
+    """Short, clause-bounded gist — never mid-word, never a lone conjunction."""
+    t = " ".join(str(text or "").split())
+    if len(t) <= limit:
+        return t
+    head = t[:limit]
+    cut = -1
+    for mk in (". ", "; ", ", ", " "):
+        cut = head.rfind(mk)
+        if cut > 8:
+            break
+    return (head[:cut] if cut > 8 else head).rstrip(" ,;:-—") + " …"
+
+
+def _label_tokens(label: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9_]{3,}", str(label or "").lower())
+            if w not in _STOPWORDS}
+
+
+def _same_move(a: Dict[str, str], b: Dict[str, str]) -> bool:
+    """Normalise + token overlap, but only WITHIN one move class.
+
+    "read reflex_lane.py first" and "change reflex_lane.py" share every token
+    that matters but are different moves — collapsing them deleted the read
+    option from the board. Same class + overlapping wording is a paraphrase.
+    """
+    if str(a.get("kind") or "") != str(b.get("kind") or ""):
+        return False
+    la, lb = a.get("label"), b.get("label")
+    ta, tb = _label_tokens(str(la or "")), _label_tokens(str(lb or ""))
+    if not ta or not tb:
+        return str(la or "").strip().lower() == str(lb or "").strip().lower()
+    return len(ta & tb) / float(min(len(ta), len(tb))) >= 0.6
+
+
+def _objective_candidates(objective: str, rolling_task: str = "",
+                          cap: int = 7) -> List[Dict[str, str]]:
+    """Up to three actions aimed at the session objective, '' when nothing usable.
+
+    Deterministic and weight-free: the objective's own language selects the
+    class (hold / settle / conclude / advance / resume), and the classes are
+    ordered by where the objective says them — the leading instruction decides
+    what comes first. The gist keeps two agents' boards distinguishable instead
+    of four copies of one template.
+    """
+    try:
+        fo = " ".join(str(objective or "").split())
+        rt = " ".join(str(rolling_task or "").split())
+        # Defect 3 (single-dominant-ask collapse) is REPORTED, not fixed here: when
+        # the two are the same string there is still one objective, so collapse to
+        # it once rather than emitting a duplicate candidate for each field.
+        primary = rt or fo
+        if not primary:
+            return []
+        gist = _clip_clause(primary, 54)
+        scope = (fo + " \n " + rt) if (fo and rt and fo != rt) else primary
+        want = max(0, min(3, int(cap)))
+        if want <= 0:
+            return []
+
+        def _pos(rx):
+            m = rx.search(primary)
+            if m:
+                return m.start()
+            m = rx.search(scope)
+            return (len(primary) + 1 + m.start()) if m else None
+
+        ranked: List[Tuple[int, Dict[str, str]]] = []
+        m = _OBJECTIVE_HOLD_RE.search(scope)
+        if m:
+            ranked.append((-1, {"move": "hold", "kind": "none", "target": "",
+                                "label": "hold the %s the objective forbids — re-read what "
+                                         "it turns on: %s" % (m.group(1).lower(), gist)}))
+        for pos, cand in (
+            (_pos(_OBJECTIVE_RESUME_RE),
+             {"move": "inspect", "kind": "read", "target": "",
+              "label": "resume the work the objective names: %s" % gist}),
+            (_pos(_OBJECTIVE_RUN_RE),
+             {"move": "run_check", "kind": "run", "target": "",
+              "label": "settle the check the objective turns on: %s" % gist}),
+            (_pos(_OBJECTIVE_REPORT_RE),
+             {"move": "stop_report", "kind": "none", "target": "",
+              "label": "conclude the reading the objective asks for: %s" % gist}),
+            (_pos(_OBJECTIVE_EDIT_RE),
+             {"move": "edit_minimal", "kind": "edit", "target": "",
+              "label": "advance the change the objective names: %s" % gist}),
+        ):
+            if pos is not None:
+                ranked.append((pos, cand))
+        ranked.sort(key=lambda x: x[0])
+
+        kept: List[Dict[str, str]] = []
+        for _posn, c in ranked:
+            if any(_same_move(c, k) for k in kept):
+                continue
+            kept.append(c)
+            if len(kept) >= want:
+                break
+        return kept
+    except Exception:  # noqa: BLE001 — additive: never break a consult
+        return []
+
+
+def _merge_boards(objective_cands: List[Dict[str, str]],
+                  window_cands: List[Dict[str, str]], cap: int) -> List[Dict[str, str]]:
+    """Objective first, window after, one candidate per meaning, cap unchanged."""
+    out: List[Dict[str, str]] = []
+    for c in list(objective_cands) + list(window_cands):
+        if any(_same_move(c, o) for o in out):
+            continue
+        out.append(c)
+    # Same contract the window board carries: a verification move, and enough
+    # options for the choice question to be a choice.
+    if not any(o["kind"] == "run" for o in out):
+        out.append({"move": "run_check", "kind": "run", "target": "",
+                    "label": "run the check or tests now and read the result"})
+    if len(out) < 3:
+        for mv, cls, lab in MOVES:
+            if len(out) >= 3 or len(out) >= cap:
+                break
+            if any(_same_move({"kind": cls, "label": lab}, o) for o in out):
+                continue
+            if not any(o["kind"] == cls for o in out):
+                out.append({"move": mv, "kind": cls, "target": "", "label": lab})
+    return out[:cap] if len(out) >= 3 else []
+
+
+def candidate_set(window: str, cap: int = 7, ask: str = "",
+                  objective: str = "", rolling_task: str = "") -> List[Dict[str, str]]:
+    """Target-bearing actions first (the object of the next move), then the move classes,
+    plus objective-level actions when the session anchor supplies one.
+
+    The proof used file-choice among visible paths and scored 0.764 top-1; the generic classes
+    ride alongside so the block still says WHICH KIND of move when no file is in play. The
+    objective candidates exist because a board mined only from the window gave four different
+    agents the same top move — an objective-level move cannot win a selection it does not
+    contest. Deduped on meaning, capped; fallback is the pre-R77 window board exactly.
+    """
+    try:
+        cap = int(cap)
+    except (TypeError, ValueError):
+        cap = 7
+    if cap < 1:
+        return []
+    obj = _objective_candidates(objective, rolling_task, cap=cap)
+    win = _window_board(window, cap=cap, ask=ask)
+    if not obj:
+        return win
+    return _merge_boards(obj, win, cap)
+
 
 
 def payload(state: str, cands: List[Dict[str, str]], model: str = "jev-latest") -> Dict[str, Any]:
