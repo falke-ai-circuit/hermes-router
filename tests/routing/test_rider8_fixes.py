@@ -93,27 +93,6 @@ def test_post_nondecision_frame_suppresses():
         "decide this: Option A x. Option B y. Pick.") is False
 
 
-def test_post_fork_scan_suppressed_on_nondecision_ask(monkeypatch):
-    from hermes_router import state as rstate
-
-    calls = {"consult": 0}
-
-    class _RS:
-        @staticmethod
-        def get_last_seen(sid):
-            return "agree with me and move on, no decision to make here."
-
-    monkeypatch.setattr(rstate, "get_last_seen", _RS.get_last_seen)
-    monkeypatch.setattr(dec, "_invoke",
-                        lambda *a, **k: calls.__setitem__("consult",
-                                                          calls["consult"] + 1))
-    body = ("counter-case: (1) templated per path\n(2) cost asymmetry\n"
-            "1. give me the file\n2. you tell me where")
-    dec.post_fork_scan("r8sess-nonde", body, model="m",
-                       log_route=lambda *a, **k: None)
-    assert calls["consult"] == 0
-
-
 # --------------------------- R8-4 ---------------------------
 
 def test_manual_trigger_midline_colon():

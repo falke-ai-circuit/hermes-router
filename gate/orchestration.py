@@ -1447,19 +1447,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — POST leg never breaks delivery
             _hub().logger.debug("decision post-audit error", exc_info=True)
 
-        # R19 v3 (user-locked §2 addendum): POST fork-scan leg — scan the
-        # turn for enumerated options / open decision points; options found
-        # -> backend verdict APPENDED as advisory steering (parked-banner
-        # mechanics, never replaces delivery); no options -> no call. Also
-        # maintains the §5.7 tape-recorder tail (actual_choice). Gated
-        # (decision.enabled AND decision.post) — no-op in the dark default.
-        try:
-            from .. import decision as _dlane3
-
-            _dlane3.post_fork_scan(session_id, response_text, model=model,
-                                   log_route=_hub()._log_route)
-        except Exception:  # noqa: BLE001 — POST leg never breaks delivery
-            _hub().logger.debug("decision post-fork-scan error", exc_info=True)
+        # R76 (2026-10-30): the POST decision fork-scan leg is DELETED. It was
+        # the third firing point of the same lane: it re-consulted on option
+        # shapes found in the turn's own prose, billed the user for forks the
+        # response merely discussed, and needed two gates (nondecision frame,
+        # benign brief frame) to keep its pseudo-fires down. One firing point
+        # at midturn/pre-LLM replaces it -- a decision the lane sees BEFORE
+        # the call is worth more than a scan of what the model already wrote.
+        # decision_miner.post_audit_scan above is record-only (no consult);
+        # it stays, gated dark as it always was.
 
         # R19.2 LEG 3: midturn decision hook — aggregate banner at turn
         # close. Midturn verdicts NEVER emit their own banner mid-run (no

@@ -1707,7 +1707,7 @@ def _decision_lane_claim(content: str, session_id: str, model: str) -> None:
             session_id=session_id, task_id=task_id, task_text=content,
             model=str(model or ""),
             log_route=_pkg_fn("_log_route"), initiator="agent",
-            trigger="pre")
+            trigger="on_demand")
     except Exception:  # noqa: BLE001 — the gate NEVER raises into a turn
         logger.debug("decision lane claim error", exc_info=True)
 

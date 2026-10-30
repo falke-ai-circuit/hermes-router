@@ -170,10 +170,22 @@ def test_dispatch_skip_decision_bypass(_reset, monkeypatch):
     assert d.reason == "decision_skipped"
 
 
-def test_dispatch_routes_decision_when_enabled(_reset, monkeypatch):
+def test_dispatch_does_not_route_a_heuristic_fork(_reset, monkeypatch):
+    """R76 (2026-10-30): the automatic PRE-time decision detection is DELETED.
+    An ask that merely carries an enumerated fork no longer routes the decision
+    lane at PRE -- the lane's one firing point is midturn/pre-LLM."""
     _enable(monkeypatch)
-    # structural §2: the ask carries the enumerated fork
     d = router_core.dispatch(ASK, session_id=SID, model="m")
+    assert d.lane != router_core.LANE_DECISION
+
+
+def test_dispatch_still_routes_an_explicit_decide_request(_reset, monkeypatch):
+    """The request path survives: an explicit 'decide this:' line still routes."""
+    _enable(monkeypatch)
+    d = router_core.dispatch(
+        "decide this:\nOption 1: redis, because latency matters here\n"
+        "Option 2: memcached, because simplicity wins", session_id=SID,
+        model="m")
     assert d.lane == router_core.LANE_DECISION
 
 
@@ -335,7 +347,7 @@ def test_backend_nous_pipeline(_reset, monkeypatch):
     row = rows[0]
     assert row["choice"] == "opt-1"
     assert row["outcome"] == "pending"
-    assert row["trigger"] == "pre"
+    assert row["trigger"] == "manual"
     # R76-P1-U2e (D2): the mocked aux transport reports no dispatched model, so
     # the row's name cell stays '' — the cfg default is not provenance for a
     # call nobody dispatched (this assertion used to pin the fabricated id).
@@ -491,54 +503,6 @@ def test_ledger_row_cap_eviction(_reset, monkeypatch):
     assert max(r["id"] for r in rows) == 30  # newest kept (append-only trim)
 
 
-def test_post_audit_records_actual(_reset, monkeypatch):
-    _enable(monkeypatch)
-    _mock_nous(monkeypatch, choice="opt-1", confidence=0.9)
-    decision.handle_decision_v3(session_id=SID, task_id=TASK_ID,
-                                task_text=ASK,
-                                log_route=lambda e, **f:
-                                LOGGED.append((e, dict(f))))
-    assert _wait_parked()
-    rid = decision.ledger_recent()[0]["id"]
-    decision.post_audit_v3(SID, "went with opt-2 in the end",
-                           log_route=lambda e, **f:
-                           LOGGED.append((e, dict(f))))
-    row = [r for r in decision.ledger_recent() if r["id"] == rid][0]
-    assert row["actual_choice"] == "opt-2"
-    assert row["outcome"] == "recorded"
-    assert decision.get_counter("wrong_and_confident") >= 1  # 0.9 conf, wrong
-
-
-def test_post_audit_no_signal_stays_pending(_reset):
-    decision.ledger_write({"session_id": SID, "task_id": TASK_ID,
-                           "trigger": "pre", "choice": "opt-1",
-                           "confidence": 0.9})
-    decision.post_audit_v3(SID, "the work continues, nothing chosen")
-    row = decision.ledger_recent()[0]
-    assert row["outcome"] == "pending"  # never guessed
-    assert row["actual_choice"] == ""
-
-
-def test_post_audit_dark_noop(_reset):
-    # enabled false (dark default): the POST leg is a total no-op
-    decision.ledger_write({"session_id": SID, "task_id": TASK_ID,
-                           "trigger": "pre", "choice": "opt-1",
-                           "confidence": 0.9})
-    decision.post_audit_v3(SID, "went with opt-2")
-    row = decision.ledger_recent()[0]
-    assert row["outcome"] == "pending"
-
-
-def test_post_audit_low_conf_not_wrong_and_confident(_reset, monkeypatch):
-    _enable(monkeypatch)
-    decision.ledger_write({"session_id": SID, "task_id": TASK_ID,
-                           "trigger": "pre", "choice": "opt-1",
-                           "confidence": 0.30})
-    n_before = decision.get_counter("wrong_and_confident")
-    decision.post_audit_v3(SID, "went with opt-2")
-    assert decision.get_counter("wrong_and_confident") == n_before
-
-
 def test_extract_actual_choice_forms(_reset):
     assert decision.extract_actual_choice("picked opt-2") == "opt-2"
     assert decision.extract_actual_choice("went with option 3") == "opt-3"
@@ -643,84 +607,6 @@ POST_TURN = ("Two paths from here:\n"
              "each step stays independently reversible at a small cost\n")
 
 
-def test_post_fork_scan_options_in_turn_appends_verdict(_reset, monkeypatch):
-    _enable(monkeypatch)
-    _mock_nous(monkeypatch, choice="opt-1", confidence=0.8)
-    decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
-                            LOGGED.append((e, dict(f))))
-    assert _wait_parked()
-    parked = debug_banner.consume_parked_banner(SID)
-    # R19.15 / v1.1: verdict APPENDED as advisory with the human-readable
-    # label (label truncated to 60 chars in the frame)
-    assert "migrate the store now" in parked
-    assert "· router · impulse (decision) |" in parked   # banner-marked
-    assert "initiator=model" in parked         # steering, not user ask
-    row = decision.ledger_recent()[0]
-    assert row["trigger_kind"] == "post_fork_scan"
-
-
-def test_post_fork_scan_no_options_no_call(_reset, monkeypatch):
-    _enable(monkeypatch)
-    called = []
-    monkeypatch.setattr(
-        "hermes_router.semantic_classifier._hermes_aux_call",
-        lambda payload, timeout: called.append(1))
-    decision.post_fork_scan(SID, "the migration completed without incident",
-                            log_route=lambda e, **f:
-                            LOGGED.append((e, dict(f))))
-    assert called == []          # structural default-deny: NO backend call
-    assert debug_banner.consume_parked_banner(SID) == ""
-    ev = _logged("decision_post_fork_scan")
-    # R19.12 FIX 2: the POST gate fires BEFORE extraction on ordinary
-    # turns — the reason is now post_gate_insufficient_structure.
-    assert ev and ev[-1]["outcome"] == "post_gate_insufficient_structure"
-
-
-def test_post_fork_scan_dark_noop(_reset):
-    decision.post_fork_scan(SID, POST_TURN)
-    assert debug_banner.consume_parked_banner(SID) == ""
-
-
-def test_post_scan_misfire_high_conf_counts_against_breaker(_reset, monkeypatch):
-    # §7(e): high-conf answers on POST scans count against the breaker
-    # even when the output is well-formed.
-    cfg = _enable(monkeypatch, breaker_fails=2)
-    _mock_nous(monkeypatch, choice="opt-1", confidence=0.97)
-    for _ in range(2):
-        decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
-                                LOGGED.append((e, dict(f))))
-    deadline = time.time() + 5
-    while time.time() < deadline and len(_logged("decision_misfire")) < 2:
-        time.sleep(0.02)
-    assert decision.get_counter("misfire") >= 2
-    # the second misfire's breaker penalty lands inside its worker
-    deadline = time.time() + 5
-    while time.time() < deadline and not decision.breaker_state()["open"]:
-        time.sleep(0.02)
-    assert decision.breaker_state()["open"]
-    # third POST scan hits the opened breaker
-    decision.post_fork_scan(SID, POST_TURN, log_route=lambda e, **f:
-                            LOGGED.append((e, dict(f))))
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        sup = [f for f in _logged("decision_suppressed")
-               if f["reason"] == decision.REASON_BREAKER_OPEN]
-        if sup:
-            break
-        time.sleep(0.02)
-    assert [f for f in _logged("decision_suppressed")
-            if f["reason"] == decision.REASON_BREAKER_OPEN]
-
-
-def test_post_scan_low_conf_not_misfire(_reset, monkeypatch):
-    _enable(monkeypatch)
-    n = decision.get_counter("misfire")
-    _mock_nous(monkeypatch, choice="opt-1", confidence=0.5)
-    decision.post_fork_scan(SID, POST_TURN)
-    assert _wait_parked()
-    assert decision.get_counter("misfire") == n
-
-
 def test_stand_down_escape_no_advisory(_reset, monkeypatch):
     # §7(d): lane-injected escape — backend stands down, nothing appended
     _enable(monkeypatch)
@@ -772,7 +658,8 @@ def test_ledger_trigger_kinds(_reset, monkeypatch):
                                 LOGGED.append((e, dict(f))))
     assert _wait_parked()
     kinds = {r["trigger_kind"] for r in decision.ledger_recent()}
-    assert kinds == {"pre_fork"}
+    # R76: an explicit-request consult can no longer be labelled a PRE fork.
+    assert kinds == {"on_demand"}
     decision.ledger_write({"session_id": SID, "task_id": "tm",
                            "trigger": "manual"})
     decision.ledger_write({"session_id": SID, "task_id": "tp",

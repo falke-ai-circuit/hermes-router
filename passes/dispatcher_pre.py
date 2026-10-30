@@ -518,13 +518,13 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
             if _hv3 is not None:
                 _hv3(session_id=session_id, task_id=_decision.task_id,
                      task_text=content, model=model,
-                     log_route=_plugin()._log_route, trigger="pre")
+                     log_route=_plugin()._log_route, trigger="manual")
                 _esc = None
             else:
                 _esc = _dm.handle_decision(
                     session_id=session_id, task_id=_decision.task_id,
                     task_text=content, model=model,
-                    log_route=_plugin()._log_route, trigger="pre")
+                    log_route=_plugin()._log_route)
             if _esc == "escalate":
                 # sync level-3 opt-in, low confidence: escalate into the
                 # EXISTING MODE_CONSULT flow (single threshold, no dead zone).

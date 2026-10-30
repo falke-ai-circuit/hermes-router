@@ -110,17 +110,18 @@ def test_detect_level_semantics(_reset):
     assert decision.detect("a tradeoff exists", 3) is not None    # aggressive
 
 
-def test_dispatch_routes_decision_when_enabled(_reset, monkeypatch):
+def test_dispatch_no_longer_routes_a_heuristic_fork(_reset, monkeypatch):
+    """R76 (2026-10-30): the automatic PRE-time detection path is DELETED.
+    An ask carrying an enumerated fork does not route the decision lane at
+    PRE any more — the lane fires at midturn/pre-LLM, and an explicit ask is
+    a REQUEST (see test_dispatch_still_routes_an_explicit_decide_request)."""
     _enable(monkeypatch)
-    # v3 structural detection (§2, user-locked): the ask must carry the
-    # enumerated fork — family words alone no longer route the lane.
     d = router_core.dispatch(
         "which approach should we take: a) kafka or b) rabbitmq? "
         "weigh the tradeoffs",
         session_id=SID, model="m")
-    assert d.lane == router_core.LANE_DECISION
-    assert d.mode == router_core.MODE_DECISION_SCORE
-    assert d.reason.startswith("decision_detected:")
+    assert d.lane != router_core.LANE_DECISION
+    assert d.mode == router_core.MODE_FLASH_DIRECT
 
 
 # --------------------------------------------------------------------------

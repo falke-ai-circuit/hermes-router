@@ -99,10 +99,12 @@ DEFAULTS: Dict[str, Any] = {
     "enum_min_items": 4,
     "enum_min_chars": 600,
     "provenance_window_chars": 80,  # R19.1 LEG 1: marker scan window
-    # R19.2 midturn decision hook (on_llm_execution seam): off | shadow | on.
-    # Ships DARK fleet-wide (off = fully silent). shadow = detect+log+ledger
-    # (calibration data, first-class rows). on = dispatch + advisory append.
-    "midturn": "off",
+    # NOTE (2026-10-30): the `midturn` on/off knob is GONE from this block.
+    # It never selected a firing point here — the lane has exactly one
+    # (midturn / pre-LLM) and the automatic PRE and POST triggers are deleted,
+    # not switched. A config key that implies otherwise is a lie with a
+    # maintenance cost: coder carried `midturn: off` while the lane delivered
+    # 1,454 readings, because nothing in this module ever read it.
     # R8-2 (rider 8): bounded wait for in-flight decision consult workers
     # to park their banner before a POST delivery edge consumes (seconds;
     # 0 disables — pre-rider consume-immediately behavior).
@@ -1107,6 +1109,12 @@ TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
                  "frontier_adversarial_parse_fail": "frontier_adversarial_parse_fail",
                  "pre_cooldown": "pre_cooldown",
                  "manual": "on_demand", "midturn": "on_demand",
+                 # R76: the explicitly-requested claim path (agent declared
+                 # lane="decision" claim, co-fire stacks) passes trigger
+                 # "on_demand"; without this it fell through to the
+                 # "pre_fork" kind and its rows read as PRE fires the lane
+                 # no longer has.
+                 "on_demand": "on_demand",
                  # R19.2: the midturn HOOK (on_llm_execution seam) gets its
                  # own ledger trigger kind — distinct from the declared
                  # midturn on_demand claim.
@@ -1123,7 +1131,8 @@ TRIGGER_KINDS = {"pre": "pre_fork", "post": "post_fork_scan",
 # interpreted: it described a polluted denominator, not a broken capture path.
 #
 # These are the triggers that represent an actual fork between named options.
-FORK_TRIGGERS = ("pre", "midturn", "midturn_hook", "post", "manual")
+FORK_TRIGGERS = ("pre", "midturn", "midturn_hook", "post", "manual",
+                 "on_demand")
 _NON_FORK_TRIGGERS = ("frontier_consult", "frontier_post",
                       "frontier_adversarial_parse_fail", "pre_cooldown")
 
@@ -3965,10 +3974,6 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
             except Exception:  # noqa: BLE001
                 pass
 
-        pre_mode = str(cfg.get("pre") or "shadow")
-        if trigger == "pre" and pre_mode == "off":
-            _log("decision_suppressed", reason=REASON_PRE_OFF)
-            return
         if trigger in ("manual", "midturn") and \
                 not on_demand_allowed(trigger, cfg):
             _log("decision_suppressed", reason=REASON_ON_DEMAND_DISABLED)
@@ -4096,41 +4101,9 @@ def _invoke(session_id: str, task_id: str, ask_text: str, trigger: str,
                   cfg, _log),
             daemon=True)
         t.start()
-        _log("decision_v3_dispatched", mode="async", trigger=trigger,
-             pre_mode=pre_mode)
+        _log("decision_v3_dispatched", mode="async", trigger=trigger)
     except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
         logger.debug("decision _invoke error", exc_info=True)
-
-
-def seam_mode(cfg: Optional[Dict[str, Any]] = None) -> str:
-    """Which trigger points the decision lane is allowed to fire from.
-
-    "legacy" (code default): pre + midturn + post, unchanged. This stays the
-    default because 34 existing lane tests encode the pre-path contract; a seam
-    change belongs in configuration, where it is visible and reversible, not
-    baked into a constant that silently reddens the fleet's contract tests.
-
-    "midturn_prellm": midturn only, and it lands pre-call. Automatic PRE-time
-    detection and the POST turn-close scan stand down. An explicitly asked
-    on-demand decision is NOT a firing point -- it is a request -- so it survives.
-    Never raises.
-    """
-    try:
-        cfg = cfg if isinstance(cfg, dict) else _cfg()
-        mode = str(cfg.get("seam") or "legacy").strip().lower()
-        return "midturn_prellm" if mode == "midturn_prellm" else "legacy"
-    except Exception:  # noqa: BLE001
-        return "legacy"
-
-
-def _seam_allows(trigger: str, cfg: Optional[Dict[str, Any]] = None) -> bool:
-    """True when this trigger point may consult under the active seam mode."""
-    try:
-        if seam_mode(cfg) == "legacy":
-            return True
-        return str(trigger or "") not in ("pre", "post")
-    except Exception:  # noqa: BLE001
-        return True
 
 
 def handle_decision_v3(session_id: str, task_id: str, task_text: str,
@@ -4138,26 +4111,20 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                        log_route: Optional[Any] = None,
                        cfg: Optional[Dict[str, Any]] = None,
                        initiator: str = "user",
-                       trigger: str = "pre") -> None:
-    """v3 lane entry (PRE heuristic + manual on-demand + midturn declared
-    claim all land here). Shadow-only: detect, call, log, park an advisory
-    — NEVER replaces the turn. Ledger row per attempt (§5.7). Caps, forked
-    breaker, strict verdict validation, fail-open everywhere. Never raises."""
+                       trigger: str = "on_demand") -> None:
+    """v3 lane entry for an EXPLICITLY requested decision (the user's own
+    'decide this' line, or an agent's declared lane="decision" claim).
+
+    There is no seam switch and no mode dispatch: the lane's one firing point
+    is midturn/pre-LLM, and the automatic PRE detection and the POST
+    turn-close scan are deleted rather than gated. An explicit request is a
+    request, not a firing point, so it lands here at any time it is made.
+
+    Shadow-only: detect, call, log, park an advisory — NEVER replaces the
+    turn. Ledger row per attempt (§5.7). Caps, forked breaker, strict verdict
+    validation, fail-open everywhere. Never raises."""
     try:
         cfg = cfg or _cfg()
-        # R59k: seam consolidation. Under midturn_prellm the decision lane has
-        # exactly one firing point and it lands before the call, so the PRE-time
-        # detect and the POST turn-close scan both stand down. An on-demand ask
-        # is a request rather than a firing point and is never gated here.
-        if not _seam_allows(trigger, cfg):
-            try:
-                if log_route is not None:
-                    log_route("decision_suppressed", lane="decision",
-                              reason="seam_midturn_only", trigger=trigger,
-                              task_id=task_id, session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
         # R14-1 (rider 14): the v3 consult entry is the LAST un-wired
         # injection seam — flag_prompt_injection ran on the midturn seams
         # and the risk leg only, so an exfiltration clause bundled into a
@@ -4227,6 +4194,15 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                 except Exception:  # noqa: BLE001 — logging never breaks
                     pass
             return
+        # ONE FIRING POINT. The PRE-time detection path is deleted at the
+        # routing layer (router_core no longer detects a fork on the turn
+        # text), so a caller only lands here for an EXPLICIT request. A hit
+        # whose shape came from the old heuristic arm is therefore THIS
+        # request -- labelled "manual" so the ledger cannot report a PRE
+        # fork the lane no longer has.
+        _trig = str(hit.get("trigger") or "manual")
+        if _trig == "pre":
+            _trig = "manual"
         if _inj:
             try:
                 if log_route is not None:
@@ -4236,7 +4212,7 @@ def handle_decision_v3(session_id: str, task_id: str, task_text: str,
                               trigger=str(hit.get("trigger") or ""))
             except Exception:  # noqa: BLE001 — logging never breaks the lane
                 pass
-        _invoke(session_id, task_id, _scan, str(hit.get("trigger") or "pre"),
+        _invoke(session_id, task_id, _scan, _trig,
                 cfg, log_route, initiator=initiator)
     except Exception:  # noqa: BLE001 — fail-open, turn proceeds unchanged
         logger.debug("handle_decision_v3 error", exc_info=True)
@@ -4641,130 +4617,6 @@ def _benign_brief_frame(text: str) -> bool:
         return False
 
 
-def post_fork_scan(session_id: str, response_text: str, model: str = "",
-                   log_route: Optional[Any] = None,
-                   cfg: Optional[Dict[str, Any]] = None) -> None:
-    """POST leg (user-locked §2): after the main model's turn, scan the
-    turn text for multiple enumerated options offered / open question /
-    decision point. Options found -> backend call with those as the closed
-    set -> the verdict is APPENDED to the turn as advisory steering
-    (banner-marked, parked-banner mechanics, never replaces delivery).
-    No options -> NO call (structural default-deny applies to the POST
-    scan too). Also fills actual_choice on the session's latest pending
-    ledger row when the response names one (§5.7 tape recorder). Advisory
-    only; no slice-namespace writes. Never raises."""
-    try:
-        cfg = cfg or _cfg()
-        if not _seam_allows("post", cfg):
-            try:
-                if log_route is not None:
-                    log_route("decision_suppressed", lane="decision",
-                              reason="seam_midturn_only", trigger="post",
-                              session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
-            return
-        # R35: structural outcome capture FIRST — resolve from what the agent
-        # actually invoked. The prose tape-recorder below is now corroboration
-        # only; it must never be the sole source of a discordance label.
-        try:
-            capture_outcome(session_id)
-        except Exception:  # noqa: BLE001
-            pass
-        # tape recorder (prose, corroborating): fill actual_choice when the
-        # response names an option
-        _record_actual(session_id, response_text, cfg, log_route)
-        # R19.12 FIX 2: POST pseudo-fire gate — the POST leg fires ONLY on
-        # >= 2 DISTINCT named options WITH consequence markers (strict
-        # structural regex). Ordinary delivery turns never reach the
-        # backend (no billing, no ledger pollution). PRE/midturn/on-demand
-        # legs unchanged.
-        # R8-3 (rider 8): the user's OWN no-decision frame governs the POST
-        # leg — when the ask this turn answers explicitly declared no
-        # decision ('no decision to make here', 'just your view', 'agree
-        # with me and move on', ...), a rhetorical fork inside the
-        # response (live: analyst B3 row 105, opt-1@0.62 billed on a
-        # confident-wrong prose turn) is the agent's own prose, NOT a
-        # pending user fork — consult would bill the user for a decision
-        # they explicitly did not ask for. Suppressed with a distinct
-        # outcome so the suppression is visible in the route log.
-        _uask = ""
-        try:
-            from . import state as _state
-            _uask = str(_state.get_last_seen(session_id) or "")
-        except Exception:  # noqa: BLE001 — gate is additive, fail-open
-            _uask = ""
-        if _post_nondecision_frame(_uask):
-            try:
-                if log_route is not None:
-                    log_route("decision_post_fork_scan",
-                              outcome="post_nondecision_frame",
-                              lane="decision", session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        # R14-2 (rider 14, D1a residual): the benign BRIEF frame on the user
-        # ask governs the POST leg too — 'brief me on the tradeoffs of X vs
-        # Y' setup prose bills an informational reply whose lever list
-        # ('how much of the fleet is mock-heavy (Jest-favored)…') parses as
-        # 2-3 pseudo-options (live: valmet row 65, trigger=post,
-        # fork_class=generic conf 0.54, banner delivered). The fork turn
-        # ('then we'll do a real decision at the end') arrives next and is
-        # unaffected (decide imperative exempt). Never blocks a true risk
-        # ask — the gate is the same R13-2 brief frame the risk leg uses.
-        if _uask and _benign_brief_frame(_uask):
-            try:
-                if log_route is not None:
-                    log_route("decision_post_fork_scan",
-                              outcome="post_brief_frame",
-                              lane="decision", session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        if not _post_gate_ok(response_text):
-            try:
-                if log_route is not None:
-                    log_route("decision_post_fork_scan",
-                              outcome=REASON_POST_GATE, lane="decision",
-                              session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        opts = extract_options(response_text)
-        # R13-3 (rider 13): interrogative "options" are the assistant's
-        # information-gathering questions (live: valmet D1a — 'does the repo
-        # use Vite already / how mock-heavy...' billed a post advisory
-        # opt-3 @ 0.45 with a banner), not a closed choice fork. Drop them;
-        # fewer than 2 real alternatives remain -> NO consult.
-        real_opts = [o for o in opts if not _is_interrogative_option(o)]
-        if len(real_opts) < 2:
-            if opts and len(real_opts) < 2 and len(opts) >= 2:
-                try:
-                    if log_route is not None:
-                        log_route("decision_post_fork_scan",
-                                  outcome="post_info_questions",
-                                  lane="decision", session_id=session_id)
-                except Exception:  # noqa: BLE001
-                    pass
-            # no fork in the turn -> no call (never guessed)
-            try:
-                if log_route is not None:
-                    log_route("decision_post_fork_scan", outcome="no_options",
-                              lane="decision", session_id=session_id)
-            except Exception:  # noqa: BLE001
-                pass
-            return
-        from . import router_core as _rc
-
-        task_id = _rc.task_id_for(session_id, response_text, str(model or ""))
-        _invoke(session_id, task_id, response_text, "post", cfg, log_route,
-                initiator="model")
-    except Exception:  # noqa: BLE001 — POST leg never breaks delivery
-        logger.debug("post_fork_scan error", exc_info=True)
-
-
 def _transcript_rows(session_id: str, after_ts: float = 0.0,
                      limit: int = 40) -> List[Tuple[Any, ...]]:
     """Read a turn's transcript rows for evidence. Read-only URI, never raises.
@@ -4930,71 +4782,3 @@ def capture_outcome(session_id: str, db_path: str = "",
                 conn.close()
         except Exception:  # noqa: BLE001
             pass
-
-
-def _record_actual(session_id: str, response_text: str, cfg: Dict[str, Any],
-                   log_route: Optional[Any]) -> None:
-    """§5.7 tape-recorder tail: actual_choice on the latest pending row when
-    the response names an option; wrong-and-confident at high confidence
-    bumps the durable counter AND the forked breaker (§5.6). Never raises."""
-    conn = None
-    try:
-        actual = extract_actual_choice(response_text)
-        conn = _ledger_connect()
-        if conn is None:
-            return
-        try:
-            row = conn.execute(
-                "SELECT id, choice, confidence FROM decision_ledger"
-                " WHERE session_id = ? AND outcome = 'pending'"
-                " ORDER BY id DESC LIMIT 1", (str(session_id or ""),)
-            ).fetchone()
-        finally:
-            conn.close()
-            conn = None
-        if not row:
-            return
-        rid, choice, conf = int(row[0]), str(row[1] or ""), row[2]
-        if not actual:
-            return  # never guessed — stays pending
-        ledger_update_actual(rid, actual, "recorded")
-        try:
-            high_conf = conf is not None and float(conf) >= float(
-                cfg.get("confidence_threshold") or 0.60)
-        except Exception:  # noqa: BLE001
-            high_conf = False
-        if choice and actual != choice and high_conf:
-            bump_counter("wrong_and_confident")
-            _record_failure(cfg)  # §5.6: wrong-and-confident feeds the breaker
-        try:
-            if log_route is not None:
-                log_route("decision_post_audit", outcome="recorded",
-                          ledger_id=rid, choice=choice, actual_choice=actual,
-                          wrong_and_confident=bool(
-                              choice and actual != choice and high_conf),
-                          lane="decision", session_id=session_id)
-        except Exception:  # noqa: BLE001
-            pass
-    except Exception:  # noqa: BLE001
-        logger.debug("record_actual error", exc_info=True)
-    finally:
-        try:
-            if conn is not None:
-                conn.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def post_audit_v3(session_id: str, response_text: str, model: str = "",
-                  log_route: Optional[Any] = None,
-                  cfg: Optional[Dict[str, Any]] = None) -> None:
-    """Legacy run-close audit (v4.10.0 framing) — kept as a thin wrapper:
-    the POST site now calls post_fork_scan (user-locked §2 addendum); this
-    entry only maintains the tape-recorder tail. Never raises."""
-    try:
-        cfg = cfg or _cfg()
-        if cfg.get("enabled") is not True or not bool(cfg.get("post", True)):
-            return
-        _record_actual(session_id, response_text, cfg, log_route)
-    except Exception:  # noqa: BLE001 — POST leg never breaks delivery
-        logger.debug("post_audit_v3 error", exc_info=True)

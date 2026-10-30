@@ -193,22 +193,3 @@ def test_post_gate_still_blocks_unstructured(rr_reset):
     assert decision._post_gate_ok("just prose, one path, no fork") is False
 
 
-def test_post_fork_scan_dispatches_on_short_fork(rr_reset, monkeypatch):
-    """The consult path actually RUNS now: post_fork_scan on the declared
-    short fork extracts 2 options and dispatches the backend call instead
-    of logging post_gate_insufficient_structure."""
-    _enable_midturn(monkeypatch)
-    dcfg = dict(decision.DEFAULTS)
-    dcfg.update({"enabled": True, "post": True, "pre": "shadow",
-                 "post_audit": False, "backend": "jev_native",
-                 "typesafe_api_key_env": "R3_KEY", "api_key_env": "R3_KEY"})
-    monkeypatch.setattr(decision, "_cfg", lambda: dcfg)
-    _mock_backend(monkeypatch)
-    fired = []
-    monkeypatch.setattr(decision, "_invoke",
-                        lambda *a, **k: fired.append(a), raising=True)
-    decision.post_fork_scan(SID, SHORT_FORK, model="m", log_route=plugin._log_route)
-    assert fired, "consult must dispatch on a declared short fork"
-    gate = [f for e, f in LOGGED if f.get("outcome") ==
-            decision.REASON_POST_GATE]
-    assert not gate, "gate must not fire on a declared fork"

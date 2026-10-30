@@ -192,47 +192,6 @@ def test_risk_decision_ask_not_brief_frame(monkeypatch):
     assert not R._benign_brief_frame(STD2_FORK)
 
 
-def test_post_leg_info_questions_never_bill(monkeypatch):
-    """R13-2 root cause (b): the assistant's information-gathering
-    question list billed a post advisory opt-3 @ 0.45 (ledger row 54).
-    Interrogative 'options' are dropped -> NO backend call, even when the
-    structural gate passes (paren-ordinal shortcut)."""
-    calls = []
-    monkeypatch.setattr(D, "_invoke",
-                        lambda *a, **k: calls.append((a, k)))
-    monkeypatch.setattr(D, "_record_actual", lambda *a, **k: None)
-    logged = []
-    qlist_paren = ("Quick facts wanted: (A) does the repo use Vite "
-                   "already? (B) how mock-heavy are the tests? Answer when "
-                   "ready.")
-    assert D._post_gate_ok(qlist_paren)
-    D.post_fork_scan("s-r13-d1a", qlist_paren, "test-model",
-                     log_route=lambda *a, **k: logged.append((a, k)),
-                     cfg={"enabled": True, "post": True})
-    assert calls == []
-    outcomes = [k.get("outcome") for a, k in logged if isinstance(k, dict)]
-    assert "post_info_questions" in outcomes
-    # the recorded D1a reply shape: suppressed with zero consults
-    D.post_fork_scan("s-r13-d1a2", D1A_REPLY_QS, "test-model",
-                     log_route=None, cfg={"enabled": True, "post": True})
-    assert calls == []
-
-
-def test_post_leg_real_fork_still_fires(monkeypatch):
-    """Regression pin: a closed choice fork still reaches the backend."""
-    calls = []
-    monkeypatch.setattr(D, "_invoke",
-                        lambda *a, **k: calls.append((a, k)))
-    monkeypatch.setattr(D, "_record_actual", lambda *a, **k: None)
-    D.post_fork_scan("s-r13-post-ok",
-                     "Option A: rolling restart because health gates catch "
-                     "regressions.\nOption B: blue-green since instant "
-                     "rollback keeps the fleet safe.",
-                     "test-model", log_route=None,
-                     cfg={"enabled": True, "post": True})
-    assert len(calls) == 1
-
-
 # --------------------------------------------------------------------------
 # R13-3: architect B9 — question-list declared-structure leak
 # --------------------------------------------------------------------------

@@ -105,30 +105,3 @@ def test_v3_consult_entry_event_pair_suppressed(monkeypatch):
     assert "injection_flagged_fork_suppressed" in names
 
 
-def test_post_brief_frame_gate(monkeypatch):
-    """R14-2: benign brief-frame ask -> POST leg never consults."""
-    events = []
-
-    def lr(event, **kw):
-        events.append((event, kw))
-    calls = []
-    monkeypatch.setattr(D, "_invoke", lambda *a, **k: calls.append(a))
-    from hermes_router import state as _st
-    monkeypatch.setattr(_st, "get_last_seen", lambda sid: D1A_ASK)
-    cfg = dict(D.DEFAULTS, enabled=True, post=True)
-    D.post_fork_scan("s3", "lever list: how much of the fleet is mock-heavy "
-                     "(Jest-favored) | whether CI time is a pain today "
-                     "(Vitest-favored)", log_route=lr, cfg=cfg)
-    # user ask gate: brief frame on, fork ask off
-    assert D._benign_brief_frame(D1A_ASK) is True
-    assert D._benign_brief_frame(D1B_ASK) is False
-    assert not calls, "post leg must not consult on a benign brief-frame ask"
-    assert any("post_brief_frame" in str(e) for e in events)
-    # D1b-style fork ask on the same reply shape still consults
-    calls.clear()
-    events.clear()
-    monkeypatch.setattr(_st, "get_last_seen", lambda sid: D1B_ASK)
-    D.post_fork_scan("s3", "Quick fork: (A) adopt vitest for the fleet tests. "
-                     "(B) stay on jest and tune it.",
-                     log_route=lr, cfg=cfg)
-    assert calls, "post leg must still consult a real fork ask"

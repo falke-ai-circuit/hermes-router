@@ -1707,19 +1707,28 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
         # consult stacked on is returned HERE — plain manual ask, behavior
         # byte-identical to the pre-rider early return (no consult cooldown
         # suppression; R16 manual semantics preserved).
+        # R76 (2026-10-30): the decision lane's AUTOMATIC PRE-time detection
+        # stage is DELETED, not gated. The lane has exactly one firing point
+        # (midturn / pre-LLM); an explicitly requested decision (the manual
+        # 'decide this' line stashed above and dispatched by dispatcher_pre)
+        # is a request, not a firing point. The heuristic detect_v3() arm
+        # that lived here fired a PRE consult on structural enumeration --
+        # precisely the second firing point this removal ends. The two
+        # EXPLICIT bypasses it evaluated survive, because they must still
+        # stop a declared fork from routing: 'skip decision' and the
+        # platform-provenance marker.
         if _manual_stack.get("hit") is not None:
+            # The explicitly requested decision (manual 'decide this' line,
+            # stashed before complexity/risk were given their chance) is
+            # RETURNED here: it is the request path, and dropping it would
+            # silently break every explicit fork ask.
             return _manual_stack["hit"]
         try:
             from . import decision as _dlane
 
             if _lane_enabled(LANE_DECISION) and override != "anchor":
                 _dcfg = _decision_cfg()
-                # R19.1 LEG 1: platform-provenance guard BEFORE detection —
-                # live replay showed 20-26% of decision detections fired on
-                # orchestrator/coder dispatch digests wearing user-role
-                # costume. Reason-coded log, then flash-direct.
                 _prov_skip = False
-                _dhit = None
                 try:
                     _prov_skip = bool(_dlane.provenance_skip(user_text, _dcfg))
                 except Exception:  # noqa: BLE001 — when in doubt, detect
@@ -1734,10 +1743,6 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                             _obs_warn('decision_provenance_skip', _obs_exc)  # rider 19 item 1
                     if _is_system_injected_turn(user_text):
-                        # R10-4 (rider 10, C3): an injection-marker turn must
-                        # never suppress the decision leg SILENTLY — same
-                        # WARN-visibility doctrine as the complexity leg's
-                        # complexity_pre_skip_system_injected event.
                         try:
                             from .core.telemetry import log_route as _lr2  # P1: core telemetry (import cycle broken)
                             _lr2("PRE", session_id=session_id,
@@ -1746,52 +1751,13 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                         except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                             _obs_warn('decision_injected_suppressed', _obs_exc)  # rider 19 item 1
                 else:
-                    # R19 v3: v3 detection (manual on-demand line, skip bypass,
-                    # heuristic pre). Complexity already had its chance above —
-                    # lane precedence §5.3 (complexity > heuristic PRE).
-                    _dhit = _dlane.detect_v3(user_text,
-                                             int(_dcfg.get("level") or 2),
-                                             cfg=_dcfg)
-                if _dhit is not None and _dhit.get("trigger") == "skip":
-                    # "skip decision" bypass — turn proceeds unchanged.
-                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
-                                None, "decision_skipped")
-                if _dhit is not None and _dhit.get("trigger") == "provenance_skip":
-                    # R19.1 LEG 1: platform envelope — never detect on it.
-                    # Log the reason code and fall through to flash-direct.
-                    try:
-                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
-                        _lr("PRE", session_id=session_id,
-                            event_detail="decision_provenance_skip",
-                            lane=LANE_DECISION, task_id=task_id)
-                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
-                        _obs_warn('decision_provenance_skip', _obs_exc)  # rider 19 item 1
-                    _dhit = None
-                if _dhit is not None and _dhit.get("trigger") == "manual" \
-                        and not _dlane.on_demand_allowed("manual", _dcfg):
-                    _dhit = None
-                if _dhit:
-                    if _consult_cooldown_active(session_id, user_text):
+                    # explicit bypass only -- no detection, no consult, no route.
+                    _skip_prefix = str(getattr(_dlane, "SKIP_TRIGGER_PREFIX", ""))
+                    if _skip_prefix and any(
+                            ln.strip().lower().startswith(_skip_prefix)
+                            for ln in user_text.splitlines() if ln.strip()):
                         return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT,
-                                    None, "consult_cooldown_suppressed")
-                    _record_cooldown_fire(
-                        session_id, _cooldown_hash(session_id, user_text))
-                    # R8-4 (rider 8): compound turn — decision consult fires
-                    # async BEFORE the risk consult routes.
-                    _fire_decision_stack()
-                    try:
-                        from .core.telemetry import log_route as _lr  # P1: core telemetry (import cycle broken)
-                        _lr("PRE", session_id=session_id,
-                            event_detail="decision_detect_fire",
-                            lane=LANE_DECISION,
-                            families=",".join(_dhit["families"]),
-                            level=int(_dhit.get("level") or 2),
-                            task_id=task_id)
-                    except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
-                        _obs_warn('decision_detect_fire', _obs_exc)  # rider 19 item 1
-                    return _dec(LANE_DECISION, MODE_DECISION_SCORE, None,
-                                "decision_detected:"
-                                + ",".join(_dhit["families"]))
+                                    None, "decision_skipped")
         except Exception:  # noqa: BLE001 — decision lane must never break dispatch
             pass
 
