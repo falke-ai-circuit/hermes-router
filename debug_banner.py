@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -287,6 +288,137 @@ def build_banner_record(lane: str, task_id: str, **fields: Any) -> Dict[str, Any
         return {}
 
 
+_DECISION_LINE_MARK = "impulse (decision)"
+
+
+def _parse_decision_line(line: str):
+    """Parse a decision-lane banner line into its numbers, or None.
+
+    Two shapes exist historically — the aggregate (`x3 | 2 lead · 1 hold | ... |
+    row 4-6`) and the midturn rollup (`3 verdicts | tok i/o | $... | provider=
+    ... | row=7 ·`). Both are recognised; anything else returns None and the
+    caller appends as before (fail-open).
+    """
+    try:
+        if not line or _DECISION_LINE_MARK not in line:
+            return None
+        cells = [c.strip() for c in line.split("|")]
+        d = {"n": 0, "leads": None, "holds": None, "ti": 0, "to": 0,
+             "cost": 0.0, "star": False, "r1": 0, "r2": 0, "model": ""}
+        m = re.search(r"x(\d+)\s*$", cells[0])
+        if m:
+            d["n"] = int(m.group(1))
+        m = re.search(r"(\d+)\s+verdict", line)
+        if m:
+            d["n"] = d["n"] or int(m.group(1))
+        m = re.search(r"(\d+)\s+lead", line)
+        if m:
+            d["leads"] = int(m.group(1))
+        m = re.search(r"(\d+)\s+hold", line)
+        if m:
+            d["holds"] = int(m.group(1))
+        m = re.search(r"(\d+)/(\d+)\s+tok", line)
+        if m:
+            d["ti"], d["to"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"\$([0-9.]+)(\*?)", line)
+        if m:
+            d["cost"] = float(m.group(1))
+            d["star"] = bool(m.group(2))
+        m = re.search(r"rows?\s+(\d+)-(\d+)", line)
+        if m:
+            d["r1"], d["r2"] = int(m.group(1)), int(m.group(2))
+        else:
+            m = re.search(r"row\s+(\d+)", line)
+            if m:
+                d["r1"] = d["r2"] = int(m.group(1))
+            rows = [int(x) for x in re.findall(r"row=(\d+)", line)]
+            if rows:
+                d["r1"] = d["r1"] or min(rows)
+                d["r2"] = max(d["r2"], max(rows))
+        for c in cells[1:]:
+            if "@" in c and "tok" not in c and "row" not in c:
+                d["model"] = c
+                break
+        if d["n"] <= 0:
+            d["n"] = 1
+        if not d["ti"] and not d["to"] and not d["r1"]:
+            return None   # carries none of our numbers: not a line to merge
+        return d
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _render_decision_line(d) -> str:
+    """Render the unified aggregate line from merged numbers."""
+    head = "%s impulse (decision)" % BANNER_HEAD
+    if int(d["n"]) > 1:
+        head += " x%d" % int(d["n"])
+    classes = []
+    if d.get("leads"):
+        classes.append("%d lead" % int(d["leads"]))
+    if d.get("holds"):
+        classes.append("%d hold" % int(d["holds"]))
+    cells = [head]
+    if classes:
+        cells.append(" · ".join(classes))
+    if d.get("model"):
+        cells.append(str(d["model"]))
+    cells.append("%d/%d tok" % (int(d["ti"]), int(d["to"])))
+    if d["cost"] > 0.0:
+        cells.append("$%.5f" % d["cost"])
+    elif d["star"] or d["ti"] or d["to"]:
+        cells.append("$0.00000*")
+    else:
+        cells.append("$0.00000")
+    r1, r2 = int(d["r1"]), int(d["r2"])
+    cells.append(("rows %d-%d" % (r1, r2)) if r2 > r1 else ("row %d" % (r1 or 0)))
+    return " | ".join(cells)
+
+
+def merge_decision_banner(delivery_text: str, banner_text: str):
+    """Merge a second decision-line into the one already in the delivery.
+
+    Returns the new delivery text, or None when the merge does not apply (not a
+    decision line, unparseable, or a non-decision lane present) — callers then
+    append exactly as before. Lane-scoped by construction: only lines carrying
+    the decision mark are touched, so anchor/frontier/uncensored banners keep
+    their own independent delivery.
+    """
+    try:
+        if not isinstance(delivery_text, str) or not isinstance(banner_text, str):
+            return None
+        if _DECISION_LINE_MARK not in banner_text:
+            return None
+        new = _parse_decision_line(banner_text)
+        if not new:
+            return None
+        lines = delivery_text.splitlines()
+        for i in range(len(lines) - 1, -1, -1):
+            if _DECISION_LINE_MARK not in lines[i]:
+                continue
+            old = _parse_decision_line(lines[i])
+            if not old:
+                return None          # present but unfamiliar: append, never guess
+            merged = dict(old)
+            merged["n"] = int(old["n"]) + int(new["n"])
+            if old.get("leads") is not None or new.get("leads") is not None:
+                merged["leads"] = int(old.get("leads") or 0) + int(new.get("leads") or 0)
+                merged["holds"] = int(old.get("holds") or 0) + int(new.get("holds") or 0)
+            merged["ti"] = int(old["ti"]) + int(new["ti"])
+            merged["to"] = int(old["to"]) + int(new["to"])
+            merged["cost"] = float(old["cost"]) + float(new["cost"])
+            merged["star"] = bool(old["star"] or new["star"])
+            known = [r for r in (old["r1"], old["r2"], new["r1"], new["r2"]) if r > 0]
+            merged["r1"] = min(known) if known else 0
+            merged["r2"] = max(known) if known else 0
+            merged["model"] = old.get("model") or new.get("model") or ""
+            lines[i] = _render_decision_line(merged)
+            return "\n".join(lines)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False,
                   _knob_checked: bool = False) -> str:
     """THE narrow §10.4-H boundary. Returns the DELIVERY representation:
@@ -305,6 +437,14 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
             return base
         if not base.strip():
             return base  # empty canonical content — nothing to attach to
+        if not prepend:
+            # R79: ONE decision line per turn. A second decision-lane banner
+            # merges into the one already delivered (counts/tokens/cost summed,
+            # row span extended); other lanes are never touched. Unparseable ->
+            # None -> append exactly as before (fail-open).
+            merged = merge_decision_banner(base, banner)
+            if merged is not None:
+                return merged
         return ("%s\n\n%s" % (banner, base)) if prepend else ("%s\n\n%s" % (base, banner))
     except Exception as exc:  # noqa: BLE001 — banner must never break delivery
         try:
