@@ -227,6 +227,7 @@ source_modules =
     hermes_router.features.banners
     hermes_router.features.banners.kinds
     hermes_router.features.banners.lifecycle
+    hermes_router.features.banners.turn_record
     hermes_router.features.detection
     hermes_router.features.detection.declaration
     hermes_router.features.detection.denial_class

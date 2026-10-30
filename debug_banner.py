@@ -571,6 +571,15 @@ def park_anchor_banner(session_id: str, banner_text: str,
 
         _lifecycle().park(_bk.get("anchor"), session_id, task_id, banner_text)
         try:
+            # ONE banner per turn (Goran 2026-10-30): the fire-time hook every
+            # lane already shares also REGISTERS its segment into the turn
+            # record. Emission happens once, at the delivery boundary.
+            from .features.banners import turn_record as _turn
+
+            _turn.register(session_id, banner_text, kind="anchor")
+        except Exception:  # noqa: BLE001 — registration never breaks a park
+            pass
+        try:
             sid = str(session_id or "")
             seg = str(banner_text or "").strip()[:MAX_BANNER_CHARS]
             live = _ANCHOR_BANNERS.get(sid, "")
@@ -617,6 +626,14 @@ def claim_banner_ownership(session_id: str, edge: str = "") -> bool:
             _lifecycle().consume(_bk.get("anchor"), sid, "", "claim_release")
         _PARK_RECORDS.pop(sid, None)
         if had:
+            # The claimed banner is released WITHOUT attaching — it must not
+            # resurface through the turn record at a later delivery edge.
+            try:
+                from .features.banners import turn_record as _turn_claim
+
+                _turn_claim.reset(sid)
+            except Exception:  # noqa: BLE001 — claim never breaks delivery
+                pass
             try:
                 from .core import telemetry as _tlm
 
@@ -701,6 +718,13 @@ def settle_decision_banner(session_id: str, delivered_text: str) -> str:
             _HELD_DECISIONS.pop(sid, None)
             return delivered_text
         _HELD_DECISIONS.pop(sid, None)  # one re-emit, then done
+        out = delivered_text
+        try:
+            from .features.banners import turn_record as _turn
+
+            _turn.register(sid, banner, lane="decision", kind="settle")
+        except Exception:  # noqa: BLE001 — registration never breaks delivery
+            pass
         return append_banner(delivered_text, "\n" + banner, _knob_checked=True)
     except Exception:  # noqa: BLE001
         return delivered_text if isinstance(delivered_text, str) else ""

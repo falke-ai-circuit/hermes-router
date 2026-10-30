@@ -767,7 +767,14 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
                                       else "no_park_this_turn"),
                               session_id=session_id)
             return None
-        _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
+        try:
+            from ..features.banners import turn_record as _turn
+
+            _merged = _turn.emit_once(str(response_text or ""), session_id,
+                                      extra_segment=_parked, kind="anchor",
+                                      edge=edge, prefix="\n")
+        except Exception:  # noqa: BLE001 — banner never breaks delivery
+            _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
         _out = _merged if isinstance(_merged, str) and _merged else str(response_text or "")
         _landed = bool(_parked.strip() and _parked.strip() in _out)
         _hub()._log_route("POST", event_detail="anchor_banner_consume",
@@ -2338,7 +2345,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     latency_s=0.0, retries=0,
                     task_id=_dbg_task_id, session_id=session_id)
                 _dbg_task_id = _hub()._tap_task_identity(session_id, model)[0]
-                _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
+                _rendered_dbg = rendered
+                try:
+                    from ..features.banners import turn_record as _turn
+
+                    _rendered_dbg = _turn.emit_once(
+                        rendered, session_id, extra_segment=_banner_text,
+                        lane="uncensored-render", kind="render", replace=True)
+                except Exception:  # noqa: BLE001 — banner never breaks delivery
+                    _rendered_dbg = _db.append_banner(rendered, _banner_text,
+                                                      _knob_checked=True)
                 if _rendered_dbg != rendered:
                     # R9 hotfix: same TypeError trap as dispatcher_pre —
                     # build_banner_record already carries event_detail.

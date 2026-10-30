@@ -32,6 +32,31 @@ except ImportError:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_banner_turn_records():
+    """Per-(session, turn) banner records are TURN state.
+
+    Tests reuse the same session ids and never advance the live turn counter,
+    so a record emitted by one test would suppress the banner in the next one
+    (the failure set passes in isolation and reds in sequence — order, not
+    product). Clearing the record per test restores the isolation the park
+    store already gets from its own fixtures.
+    """
+    try:
+        from hermes_router.features.banners import turn_record
+
+        turn_record.reset()
+    except Exception:  # noqa: BLE001 — a missing module must not break the suite
+        pass
+    yield
+    try:
+        from hermes_router.features.banners import turn_record
+
+        turn_record.reset()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _isolate_daily_spend(monkeypatch, tmp_path):
     """The suite must not depend on how much this profile has ACTUALLY spent
     today. `cap_check` reads the live spend ledger, so once the real number

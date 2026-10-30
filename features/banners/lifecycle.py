@@ -289,9 +289,33 @@ class BannerLifecycle:
             out = parked
             landed = True
         else:
-            merged = db.append_banner(base, "\n" + parked)
+            # ONE banner per turn (Goran 2026-10-30): the park registered this
+            # lane's segment at fire time, so the boundary appends the turn's
+            # WHOLE record once — never this lane's line beside another's.
+            try:
+                from ...features.banners import turn_record as _turn
+
+                if _turn.segment_count(session_id) > 1:
+                    # MULTI-lane turn: the lanes' segments render as ONE block,
+                    # appended once (Goran 2026-10-30 — the two-line defect).
+                    merged = _turn.emit_once(base, session_id,
+                                             extra_segment=parked, kind="anchor",
+                                             edge=_e, prefix="\n")
+                else:
+                    # Single-lane turn: byte-identical to the historical append.
+                    merged = db.append_banner(base, "\n" + parked)
+            except Exception:  # noqa: BLE001 — fall back to the old append
+                merged = db.append_banner(base, "\n" + parked)
             out = merged if isinstance(merged, str) and merged else str(base or "")
-            landed = bool(parked.strip() and parked.strip() in out)
+            _turn_delivered = False
+            try:
+                from ...features.banners import turn_record as _turn2
+
+                _turn_delivered = _turn2.delivered(session_id)
+            except Exception:  # noqa: BLE001 — evidence only
+                _turn_delivered = False
+            landed = bool(parked.strip() and (parked.strip() in out
+                                              or _turn_delivered))
             if not landed:
                 # R33f-A (supersedes R19.19 P0 / R19.21 re-park): TTL is ONE
                 # delivery — a consumed banner whose attach did not land is

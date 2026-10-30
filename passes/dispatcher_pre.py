@@ -683,7 +683,16 @@ def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
                 tokens_in=_ti, tokens_out=_to, est_cost=_cost,
                 latency_s=0.0, retries=render_retries,
                 task_id=_dbg_task_id, session_id=session_id)
-            _rendered_dbg = _db.append_banner(rendered, _banner_text, _knob_checked=True)
+            _rendered_dbg = rendered
+            try:
+                from ..features.banners import turn_record as _turn
+
+                _rendered_dbg = _turn.emit_once(
+                    rendered, session_id, extra_segment=_banner_text,
+                    lane="uncensored-render", kind="render", replace=True)
+            except Exception:  # noqa: BLE001 — banner never breaks delivery
+                _rendered_dbg = _db.append_banner(rendered, _banner_text,
+                                                  _knob_checked=True)
             if _rendered_dbg != rendered:
                 # R9 hotfix: build_banner_record carries its own event_detail
                 # (via build_banner_record internals) — do NOT also pass

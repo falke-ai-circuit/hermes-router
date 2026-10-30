@@ -1400,13 +1400,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             except Exception:  # noqa: BLE001
                 _btext = ""
             _out = _delivered
+            _pending = []
             if _btext:
-                try:
-                    from . import debug_banner as _dbg
-                    _out = _dbg.append_banner(_out, "\n" + _btext,
-                                              _knob_checked=True)
-                except Exception:  # noqa: BLE001
-                    pass
+                _pending.append(_btext)
             # R34-19 (Goran-direct): the POST half is a CONFIRMATION, and a
             # confirmation that says nothing is not a confirmation. When this
             # turn had a PRE and the higher self had nothing to correct, say so
@@ -1435,11 +1431,23 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     else:
                         _conf = HS_CONFIRMATION_LINE
                     if isinstance(_out, str) and _out.strip():
-                        _out = _dbg.append_banner(_out, "\n" + _conf,
-                                                  _knob_checked=True)
+                        _pending.append(_conf)
                         _log("higher_self_confirmation_emitted", kind=_kind,
                              session_id=session_id)
                 except Exception:  # noqa: BLE001 — confirmation is cosmetic
+                    pass
+            # ONE banner per turn (Goran 2026-10-30): every segment this edge
+            # produced (audit banner + higher-self confirmation) goes into the
+            # turn record, and the boundary appends the whole block once.
+            if _pending:
+                try:
+                    from .features.banners import turn_record as _turn
+
+                    _out = _turn.emit_once(
+                        _out, session_id, extra_segment="\n".join(_pending),
+                        lane="frontier-anchor", kind="completion_audit",
+                        prefix="\n", knob_checked=True)
+                except Exception:  # noqa: BLE001 — banner never breaks delivery
                     pass
             return _out
         # async topology (or sync budget 0): legacy next-turn verdict.
