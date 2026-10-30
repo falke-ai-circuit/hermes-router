@@ -242,6 +242,19 @@ PERSONA_READ_CARD_MAX = CARD_BUDGET_DEFAULT  # back-compat alias for the ceiling
 PERSONA_READ_DOCTRINE_CHARS = 520  # SOUL Hard Rules fallback for PROCEDURES
 PERSONA_READ_DOCTRINE_ROWS = 3     # constraints lifted when PROCEDURES is absent
 
+# PERSONA slice split when BOTH IDENTITY.md and SOUL.md carry prose: the read
+# card carries the identity lens AND the marker-driven SOUL rows (voice /
+# character / doctrine / closed-line), never one or the other. 55/45 is the
+# floor for SOUL — if IDENTITY is shorter than its share the remainder flows to
+# SOUL, so a terse identity never starves the doctrine rows.
+PERSONA_IDENTITY_SHARE = 55
+PERSONA_SOUL_SHARE = 45
+PERSONA_SOUL_ROW_CHARS = 200       # per-row clause bound inside the PERSONA slice
+PERSONA_SOUL_MIN_CHARS = 80        # below this there is no room for a SOUL row
+
+# SOUL rows that are load-order preamble, not voice/doctrine: never lifted.
+_SOUL_ROW_EXCLUDE = ("load order on wake", "template_version", "last_reflect")
+
 _YAML_FRONTMATTER_RE = re.compile(r"\A\ufeff?---[ \t]*\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.S)
 
 # A constraint "decides a move" when it names one of these; ranked, not filtered:
@@ -314,7 +327,65 @@ def _prose_slice(path: str, max_chars: int) -> str:
         return ""
 
 
-def _persona_substance(home: str, max_chars: int = PERSONA_READ_IDENTITY_CHARS) -> str:
+def _persona_soul_slice(home: str, max_chars: int) -> str:
+    """Marker-driven SOUL rows for the READ card's PERSONA section.
+
+    Row-level selection (not whole section blocks): the voice / character /
+    doctrine / closed-line rows are the part of SOUL that changes which move is
+    correct, and they survive a small PERSONA share where a long section would
+    have eaten the budget on headers alone. Deterministic: marker hit count
+    ranks rows, ties keep SOUL.md order, each row is clause-bounded. The
+    load-order preamble is never lifted. Never raises.
+    """
+    try:
+        if max_chars < PERSONA_SOUL_MIN_CHARS or not home:
+            return ""
+        cfg = _card_cfg()
+        path = os.path.join(str(home), cfg["persona_fallback"])
+        raw = _strip_frontmatter(_read_slice(path, 200000))
+        rows: list = []
+        for ln in raw.splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#") or s.startswith(">"):
+                continue
+            low = s.lower()
+            if any(x in low for x in _SOUL_ROW_EXCLUDE):
+                continue
+            hits = sum(1 for m in _SOUL_ROW_MARKERS if m in low)
+            if not hits:
+                continue
+            rows.append((hits, len(rows), s))
+        if not rows:
+            return ""
+        # highest marker density first, SOUL.md order as the tie-break
+        ranked = sorted(rows, key=lambda r: (-r[0], r[1]))
+        picked, too_long, used = [], [], 0
+        for _h, idx, s in ranked:
+            room = max_chars - used
+            if room <= 0:
+                break
+            if len(s) + 1 <= room:
+                # whole row: a SOUL line on the card stays VERBATIM — a clipped
+                # table row teaches the model a rule that was never written.
+                picked.append((idx, s))
+                used += len(s) + 1
+            else:
+                too_long.append((_h, idx, s))
+        if not picked and too_long:
+            # nothing fits whole: the shortest marker row, clause-bounded —
+            # better a marked partial line than no SOUL at all.
+            _h, idx, s = min(too_long, key=lambda r: (len(r[2]), r[1]))
+            row = _truncate_clause(s, min(PERSONA_SOUL_ROW_CHARS, max_chars))
+            if row:
+                picked.append((idx, row))
+        picked.sort(key=lambda x: x[0])   # SOUL.md order once selected
+        return _truncate_clause("\n".join(r for _i, r in picked), max_chars)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _persona_substance(home: str, max_chars: int = PERSONA_READ_IDENTITY_CHARS,
+                       with_soul: bool = False) -> str:
     """PERSONA slice: IDENTITY.md prose, SOUL.md when IDENTITY is absent.
 
     The first two prose paragraphs are the role lens (who it is, then the
@@ -322,16 +393,33 @@ def _persona_substance(home: str, max_chars: int = PERSONA_READ_IDENTITY_CHARS) 
     paragraphs, not as a character window, so two agents do not converge on the
     same slice length. Degradation ladder: no IDENTITY -> SOUL; neither -> ""
     (the lane runs cardless).
+
+    with_soul=True (the READ card): the slice carries the identity prose AND
+    the marker-driven SOUL rows. IDENTITY takes PERSONA_IDENTITY_SHARE of the
+    share and SOUL the rest, so neither source can displace the other; a short
+    identity hands its unused room to SOUL.
     """
     try:
         cfg = _card_cfg()
         base = str(home or "")
         if not base:
             return ""
-        out = _prose_paragraphs(os.path.join(base, cfg["persona"]), max_chars, 2)
+        cap = max(0, int(max_chars))
+        ident_cap = cap
+        if with_soul:
+            ident_cap = max(120, int(cap * PERSONA_IDENTITY_SHARE / 100)) if cap else 0
+        out = _prose_paragraphs(os.path.join(base, cfg["persona"]), ident_cap, 2)
         if not out.strip():
-            out = _prose_paragraphs(os.path.join(base, cfg["persona_fallback"]), max_chars, 2)
-        return out
+            out = _prose_paragraphs(os.path.join(base, cfg["persona_fallback"]),
+                                    ident_cap, 2)
+        if not with_soul:
+            return out
+        soul_room = cap - len(out) - 2   # 2 = the blank line between the sources
+        if soul_room >= PERSONA_SOUL_MIN_CHARS:
+            rows = _persona_soul_slice(base, soul_room)
+            if rows:
+                out = (out + "\n\n" + rows).strip() if out.strip() else rows
+        return _truncate_clause(out, cap) if cap else ""
     except Exception:  # noqa: BLE001
         return ""
 
@@ -615,7 +703,10 @@ def card_sections(home: Optional[str] = None,
     if not base:
         return {k: "" for k in _CARD_SECTION_LABELS}
     return {
-        "PERSONA": _persona_substance(base, int(usable * shares["PERSONA"])),
+        # with_soul=True: IDENTITY prose + marker-driven SOUL rows (Goran
+        # ruling 2026-10-30 — SOUL.md is elementary, never IDENTITY-only).
+        "PERSONA": _persona_substance(base, int(usable * shares["PERSONA"]),
+                                      with_soul=True),
         "PROCEDURES": _procedures_gates(base, int(usable * shares["PROCEDURES"]),
                                         PERSONA_READ_DOCTRINE_ROWS),
         "HISTORY": _history_lessons(base, int(usable * shares["HISTORY"]),

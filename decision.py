@@ -3713,7 +3713,8 @@ CREATE TABLE IF NOT EXISTS decision_ledger (
   evidence_json TEXT NOT NULL DEFAULT '',
   diagnosticity_json TEXT NOT NULL DEFAULT '',
   outcome_label TEXT NOT NULL DEFAULT '',
-  envelope_digest TEXT NOT NULL DEFAULT ''
+  envelope_digest TEXT NOT NULL DEFAULT '',
+  envelope_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS decision_counters (
   name TEXT PRIMARY KEY,
@@ -3752,7 +3753,7 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
             for _r35col in ("options_json", "signatures_json", "regime",
                             "resolved_action", "resolver_rule", "evidence_json",
                             "diagnosticity_json", "outcome_label",
-                            "envelope_digest"):
+                            "envelope_digest", "envelope_json"):
                 if _r35col not in cols:
                     try:
                         conn.execute("ALTER TABLE decision_ledger"
@@ -3856,6 +3857,10 @@ def get_counter(name: str, db_path: str = "") -> int:
 # envelope at write time and thrown away one line later.
 _OPTION_PERSIST_KEYS = ("cause_effect", "cost", "priors", "risk")
 _OPTION_JSON_CAP = 8000
+_ENVELOPE_JSON_CAP = 8000
+_ENVELOPE_JSON_MARK = "...[truncated]"
+_ENVELOPE_JSON_KEYS = ("agent_frame", "final_objective", "rolling_task",
+                       "session_context", "mindset", "options")
 
 
 def _option_probability_map(verdict: Optional[Dict[str, Any]]
@@ -3992,6 +3997,58 @@ def ledger_options_json(opts: Any, verdict: Optional[Dict[str, Any]] = None,
         return "[]"
 
 
+def envelope_json(envelope: Dict[str, Any],
+                  cap: int = _ENVELOPE_JSON_CAP) -> str:
+    """Bounded JSON body of the envelope actually sent (audit column).
+
+    PERSISTENCE ONLY — nothing reads this back at fire time. Serialization must
+    never emit invalid JSON, so an oversized envelope is shrunk by clipping its
+    longest string values to a decreasing bound (with a visible marker), never
+    by cutting the serialized string: every truncation step is re-serialized
+    and re-measured. The top-level keys the lane's audit needs
+    (agent_frame / final_objective / rolling_task / session_context / mindset /
+    options) survive every step. Never raises; returns "{}" at worst.
+    """
+    try:
+        if not isinstance(envelope, dict) or not envelope:
+            return "{}"
+
+        def _clip(obj: Any, limit: int) -> Any:
+            if isinstance(obj, str):
+                if len(obj) <= limit:
+                    return obj
+                keep = max(0, limit - len(_ENVELOPE_JSON_MARK))
+                return obj[:keep] + _ENVELOPE_JSON_MARK
+            if isinstance(obj, dict):
+                return {str(k): _clip(v, limit) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [_clip(v, limit) for v in obj]
+            return obj
+
+        full = json.dumps(envelope, default=str, ensure_ascii=False)
+        if len(full) <= cap:
+            return full
+        for limit in (1500, 800, 400, 200, 120, 64, 32, 16):
+            cand = _clip(dict(envelope), limit)
+            cand["_truncated"] = True
+            cand["_full_chars"] = len(full)
+            out = json.dumps(cand, default=str, ensure_ascii=False)
+            if len(out) <= cap:
+                return out
+        # Last resort: only the keys an audit needs, clipped hard. Still JSON.
+        slim = {k: _clip(envelope.get(k), 16) for k in _ENVELOPE_JSON_KEYS
+                if k in envelope}
+        slim["_truncated"] = True
+        slim["_full_chars"] = len(full)
+        out = json.dumps(slim, default=str, ensure_ascii=False)
+        if len(out) <= cap:
+            return out
+        return json.dumps({"_truncated": True, "_full_chars": len(full),
+                           "_keys": sorted(str(k) for k in envelope.keys())})
+    except Exception:  # noqa: BLE001 — persistence never breaks a turn
+        return "{}"
+
+
 def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
     """Append-only INSERT into decision_ledger + bounded eviction. Never
     raises; returns the row id (None => unusable store)."""
@@ -4021,7 +4078,7 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                 "choice_label", "label_source", "options_json",
                 "signatures_json", "regime", "resolved_action", "resolver_rule",
                 "evidence_json", "diagnosticity_json", "outcome_label",
-                "envelope_digest")
+                "envelope_digest", "envelope_json")
         vals = []
         for c in cols:
             v = row.get(c)
@@ -4563,6 +4620,10 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         try:
             base_row["envelope_digest"] = json.dumps(
                 envelope.get("digest") or {}, default=str)[:500]
+            # Decision-lane auditability: the digest is counts-only (<200 chars)
+            # so the actual body was unverifiable after the fact. Persist the
+            # bounded envelope itself; best-effort, fail-open, never blocks.
+            base_row["envelope_json"] = envelope_json(envelope)
         except Exception:  # noqa: BLE001
             pass
         if content is None:
