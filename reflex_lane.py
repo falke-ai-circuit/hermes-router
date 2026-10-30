@@ -98,20 +98,77 @@ def _agent_card(messages: Any = None) -> str:
     return _pc.role_card(purpose="read", messages=messages, home=_profile_home())
 
 
-def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "") -> str:
-    """The evidence handed to the decision model: who is asking, the ask, the last action."""
+def build_state(ask: str, tool: str, text: str, extra: str = "", card: str = "",
+                anchor: Optional[Dict[str, str]] = None) -> str:
+    """The evidence handed to the decision model: what the session is FOR,
+    then who is asking, the ask, the recent turns, and the last action.
+
+    R76 GOAL 2: the first two blocks are the session ANCHOR (objective and
+    current task) and SESSION CONTEXT follows the ask. Objective first,
+    evidence last: the option board exists to serve the objective, and a
+    model that meets the evidence before the goal scores local moves as if
+    they were the goal. `anchor` comes from decision.session_anchor() — the
+    same helper the structured envelope reads, so the two paths cannot drift.
+    """
+    try:
+        from . import decision as _dec
+
+        _fo_cap = int(getattr(_dec, "SESSION_OBJECTIVE_CHARS", 400))
+        _rt_cap = int(getattr(_dec, "SESSION_TASK_CHARS", 400))
+        _cx_cap = int(getattr(_dec, "SESSION_CONTEXT_CHARS", 900))
+    except Exception:  # noqa: BLE001 — caps are cosmetic, never fatal
+        _fo_cap, _rt_cap, _cx_cap = 400, 400, 900
+    a = anchor if isinstance(anchor, dict) else {}
     parts = []
+    if a.get("final_objective"):
+        parts.append("FINAL OBJECTIVE (the original ask this session must not "
+                     "forget):\n%s" % str(a["final_objective"])[:_fo_cap])
+    if a.get("rolling_task"):
+        parts.append("CURRENT TASK (the stated intent being served right "
+                     "now):\n%s" % str(a["rolling_task"])[:_rt_cap])
     if card:
         parts.append("WHO THIS IS FOR (the role that has to live with this step):\n%s" % card)
     if ask:
         parts.append("USER ASK (what this work is for):\n%s" % str(ask)[:1500])
-    if extra:
-        parts.append("SESSION STATE:\n%s" % str(extra)[:900])
+    _ctx = str(a.get("session_context") or extra or "").strip()
+    if _ctx:
+        parts.append("SESSION CONTEXT (recent turns, oldest first):\n%s"
+                     % _ctx[:_cx_cap])
     if tool:
         parts.append("LAST ACTION: %s" % str(tool)[:80])
     if text:
         parts.append("RESULT OF THAT ACTION (truncated):\n%s" % str(text)[:4000])
     return "\n\n".join(parts)
+
+
+def _last_action_tool(messages: Any) -> str:
+    """Name of the most recent tool the agent actually invoked, '' if none.
+
+    The live caller used to pass tool="", so every reading described the
+    RESULT of an unnamed action. Read backwards: assistant tool_calls carry
+    the name, and a tool-role row carries it in `name`.
+    """
+    try:
+        if not isinstance(messages, list):
+            return ""
+        for m in reversed(messages):
+            if not isinstance(m, dict):
+                continue
+            tcs = m.get("tool_calls")
+            if isinstance(tcs, list) and tcs:
+                for t in tcs:
+                    fn = (t or {}).get("function") or (t or {})
+                    nm = str(fn.get("name") or (t or {}).get("name") or "")
+                    if nm:
+                        return nm[:80]
+            if str(m.get("role") or "") in ("tool", "function"):
+                nm = str(m.get("name") or "")
+                if nm:
+                    return nm[:80]
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
+
 
 
 def _cfg(cfg: Any) -> Dict[str, Any]:
@@ -192,8 +249,19 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
             return ""
         # Same card as the every-call path and the other two lanes: without it the midturn
         # read scores moves for a role it cannot name.
-        _card = _agent_card()
-        state = build_state(ask, tool, text, extra, card=_card)
+        # R76 GOAL 2: the ANCHOR is read here too, and the card is handed the
+        # session's stated task so its CURRENT TASK line is populated from the
+        # real objective instead of being assumed absent.
+        try:
+            from . import decision as _dec
+
+            _anchor = _dec.session_anchor(session_id)
+        except Exception:  # noqa: BLE001 — anchor is additive
+            _anchor = {}
+        _msgs = ([{"role": "user", "content": _anchor["rolling_task"]}]
+                 if _anchor.get("rolling_task") else None)
+        _card = _agent_card(_msgs)
+        state = build_state(ask, tool, text, extra, card=_card, anchor=_anchor)
         data = _transport(_dx.payload(state, cands, str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return ""
@@ -1066,7 +1134,18 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                 return False
         _msgs = request.get("messages")
         _card = _agent_card(_msgs if isinstance(_msgs, list) else None)
-        data = _transport(_dx.payload(build_state(ask, "", window, card=_card), cands,
+        # R76 GOAL 2: the live every-call caller used to pass tool="" and no
+        # session context at all, so every reading described the RESULT of an
+        # unnamed action with no statement of what the session is FOR. Read
+        # the real last action and the session anchor here.
+        try:
+            from . import decision as _rdec
+
+            _ranchor = _rdec.session_anchor(sid)
+        except Exception:  # noqa: BLE001 — anchor is additive
+            _ranchor = {}
+        data = _transport(_dx.payload(build_state(ask, _last_action_tool(_msgs), window,
+                                                 card=_card, anchor=_ranchor), cands,
                                       str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return False
