@@ -35,44 +35,22 @@ from typing import Any, Dict, List, Optional, Sequence
 SCHEMA_REQUEST = "lane-request/1"
 SCHEMA_ASSIMILATION = "lane-assimilation/1"
 
-LANES = ("decision", "frontier", "uncensored")
+# Lane declarations and their CLOSED extras key sets live in ONE place
+# (features/envelope/registry.py) for BOTH directions. These names are
+# derived views over that table: nothing here restates a lane or a key.
+from .registry import (  # noqa: E402 — data-only module, no cycle
+    ASSIM_EXTRAS_KEYS,
+    EXTRAS_KEYS,
+    LANE_NAMES,
+    extras_keys,
+)
+
+LANES = LANE_NAMES  # live sequence of lane names (both directions declared)
 
 TRIGGERS = ("pre", "midturn", "post", "manual", "declared_user")
 
 DEFAULT_CHARS_CAP = 8000
 DEFAULT_DROP_ORDER = ("slice", "agent_card.history", "context.session_context")
-
-# Closed per-lane extras key sets. A key that is not here is REFUSED, not
-# dropped: silently ignoring a mistyped lane field is how a lane loses a
-# capability nobody notices for six weeks.
-EXTRAS_KEYS: Dict[str, frozenset] = {
-    "decision": frozenset({
-        "options",            # [{id, label, causal_frame, cost, priors, risk}]
-        "causal_context",     # ledger-derived causal frame (R19.18)
-        "question",           # typed ask to the lane
-        "guidance",           # {max_options, decision_kind}
-        "weighting",          # per-option weights (SPEC-impulse-lane-v1 §3)
-        "fork_class",         # closed fork vocabulary
-        "slice",              # precedent slice, provenance-tagged
-        "task",               # human task text the turn belongs to
-        "digest",             # counts-only digest of what was sent
-        "surrounding_context",
-        "frame_context_chars_used",
-    }),
-    "frontier": frozenset({
-        "paths",              # point-of-view angles offered to the frontier
-        "evidence_refs",
-        "consult_kind",       # consultation|verification
-        "route_id",
-        "kind",               # legacy provenance label (1:1 with old key)
-    }),
-    "uncensored": frozenset({
-        "leg",                # pre|post
-        "work_text",          # POST only: work to reason over
-        "voice_mode",         # voice_stems|none
-        "close_class",        # closed-line class, never inferred downstream
-    }),
-}
 
 OPTION_KEYS = frozenset({"id", "label", "causal_frame", "cost", "priors", "risk"})
 
@@ -136,21 +114,31 @@ def drop_order(cfg: Optional[Dict[str, Any]] = None,
 # validation — closed sets, explicit reasons
 # ---------------------------------------------------------------------------
 
-def validate_extras(lane: Any, extras: Any) -> List[str]:
-    """Errors for a lane's extras block. Empty list == valid.
+def validate_extras(lane: Any, extras: Any, direction: str = "request") -> List[str]:
+    """Errors for a lane's extras block in ONE direction. Empty list == valid.
 
-    Refuses (a) an unknown lane, (b) an extras key that is not this lane,
-    (c) an unknown key inside the lane's extras, (d) an unknown option key in
-    the decision lane. Never raises.
+    Refuses (a) an unknown lane, (b) an unknown direction, (c) an extras key
+    that is not this lane, (d) an unknown key inside the lane's extras, (e) an
+    unknown option key in the decision lane. Never raises.
+
+    The allowed key set comes from the registry (features/envelope/registry.py)
+    — request and assimilation each have their own closed set, and neither is
+    restated here.
     """
     errors: List[str] = []
     try:
         if lane not in LANES:
             return ["unknown lane: %r" % (lane,)]
+        if direction not in ("request", "assimilation"):
+            return ["unknown direction: %r" % (direction,)]
         if extras is None:
             return errors
         if not isinstance(extras, dict):
             return ["extras must be a dict"]
+        allowed = (
+            EXTRAS_KEYS[lane] if direction == "request"
+            else ASSIM_EXTRAS_KEYS[lane]
+        )
         for key, value in extras.items():
             if key not in LANES:
                 errors.append("unknown extras key: %r" % (key,))
@@ -163,11 +151,12 @@ def validate_extras(lane: Any, extras: Any) -> List[str]:
             if not isinstance(value, dict):
                 errors.append("extras[%r] must be a dict" % (key,))
                 continue
-            allowed = EXTRAS_KEYS[lane]
             for inner in value:
                 if inner not in allowed:
-                    errors.append("unknown extras.%s key: %r" % (lane, inner))
-            if lane == "decision":
+                    errors.append(
+                        "unknown extras.%s key: %r (%s direction)"
+                        % (lane, inner, direction))
+            if lane == "decision" and direction == "request":
                 errors.extend(_option_errors(value.get("options")))
     except Exception:  # noqa: BLE001
         return ["extras validation failed"]
