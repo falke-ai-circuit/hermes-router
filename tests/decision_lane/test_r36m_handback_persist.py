@@ -15,14 +15,23 @@ SRC = pathlib.Path(__file__).resolve().parents[2]
 def _handback_block() -> str:
     text = (SRC / "gate" / "orchestration.py").read_text()
     i = text.index("handback_failure / withhold_echo replace the body.")
-    return text[i:i + 6000]
+    # 8000, not 6000: the branch grew when echo-withhold recovery added the
+    # one-shot re-prompt ahead of the persist. The window must cover the whole
+    # branch or the pins silently stop seeing the reconcile they exist to guard.
+    return text[i:i + 8000]
 
 
 def test_handback_reconciles_the_persisted_row_before_returning():
     block = _handback_block()
     assert "rewrite_persisted_turn" in block
-    # it must run BEFORE the replacement body is returned
-    assert block.index("rewrite_persisted_turn") < block.index("return _echo.body")
+    # it must run BEFORE the replacement body is returned. The returned value is
+    # `_deliver_body` since echo-withhold recovery landed (the seam may deliver
+    # the re-prompted second body instead of the guard's notice); the invariant
+    # is unchanged — the row is reconciled against whatever body is delivered.
+    assert "_deliver_body = _echo.body" in block
+    assert block.index("rewrite_persisted_turn") < block.index("return _deliver_body")
+    # and the persisted target is the delivered body, never the guard's notice
+    assert "_seam_entry_text, _deliver_body" in block
 
 
 def test_handback_verifies_against_the_delivered_text_not_the_row_it_wrote():

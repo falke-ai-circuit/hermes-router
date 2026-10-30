@@ -236,6 +236,19 @@ HAND_BACK_TEXT = (
     "executed. Re-send the ask to run this turn again."
 )
 
+# NO_WORK_TEXT is the fail-open body when the echo guard withheld the turn AND
+# the one permitted re-prompt (echo_reprompt) also produced nothing an agent
+# could own. It states only what was checked — the reply was the router's own
+# text, a re-prompt produced no answer, and the work predicate saw no tool
+# activity. It deliberately carries NO "re-send the ask" instruction: the
+# dead-end notice must never be the only content of a turn.
+NO_WORK_TEXT = (
+    "[router] this turn produced no work product. The model's reply was the "
+    "router's own advisory text, and a single re-prompt produced no answer "
+    "either. No tool activity or file write was observed this turn, so nothing "
+    "was executed."
+)
+
 # WITHHELD_TEXT is the fallback when work DID happen but the echo could not
 # be separated from the report. It claims nothing about execution — only what
 # the guard knows: the body was withheld and the log names the reason.
@@ -604,6 +617,41 @@ def _route(log_route, event: str, **fields) -> None:
             log_route("POST", event_detail=event, **fields)
     except Exception:  # noqa: BLE001 — telemetry never blocks the guard
         pass
+
+
+def is_no_work_echo(result: "Optional[EchoResult]") -> bool:
+    """Did the guard WITHHOLD a body on a turn that produced no work at all?
+
+    This is the one condition under which the seam may spend a re-prompt
+    (``echo_reprompt.reprompt_once``). It is deliberately narrow:
+
+      * ``handback_failure`` — the no-work branch; the guard already evaluated
+        the predicate (`reason=no_work_signal`) and saw no tool traffic.
+      * ``withhold_echo`` — only when the recorded work facts show no work AND
+        no tool activity. `strip_failed` (a work turn) and
+        `read_only_tool_activity` (tools > 0) are excluded: those turns already
+        produced or consumed something, and recovery is not owed to them.
+
+    ``strip_keep_work`` is never a withhold: the report is delivered.
+    """
+    try:
+        if result is None:
+            return False
+        action = str(getattr(result, "action", "") or "")
+        if action == "handback_failure":
+            return True
+        if action != "withhold_echo":
+            return False
+        work = getattr(result, "work", None) or {}
+        if bool(work.get("has_work")):
+            return False
+        try:
+            tools = int(work.get("tools") or 0)
+        except (TypeError, ValueError):
+            tools = 0
+        return tools == 0
+    except Exception:  # noqa: BLE001 — an unreadable result is not a recoverable turn
+        return False
 
 
 def enforce_execution_echo(text: str, session_id: str = "",

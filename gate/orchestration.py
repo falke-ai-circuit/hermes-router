@@ -1181,6 +1181,50 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _hub()._log_route("POST", event_detail="post_seam_skip",
                                       reason="echo_" + str(getattr(_echo, "action", "") or "handback"),
                                       session_id=session_id)
+                    # ECHO-WITHHOLD RECOVERY (2026-10-30 brief): a withheld body
+                    # on a turn that produced no work used to END the turn with
+                    # the "Re-send the ask" hand-back as the only content —
+                    # twice live, on real decision questions. Detection stays
+                    # exactly as strict; what changes is that the turn is
+                    # RE-PROMPTED ONCE (echo_reprompt.reprompt_once) with a
+                    # directive naming the echo as not-work, and the second body
+                    # is delivered if it is not an echo. A second echo (or an
+                    # empty second body) fails OPEN on the honest no-work
+                    # notice — never the dead-end text, and never the echo
+                    # itself as the agent's work. Exactly one extra model call,
+                    # on this path only; no loop exists to run.
+                    _deliver_body = _echo.body
+                    if _eg.is_no_work_echo(_echo):
+                        _ask_rp = ""
+                        try:
+                            _ask_rp = (str(context.get("user_message") or "")
+                                       or (_hub().state.get_last_seen(session_id) or "")
+                                       or (_hub().session_store.get_last_user_message(session_id) or ""))
+                        except Exception:  # noqa: BLE001 — ask recovery never blocks recovery
+                            _ask_rp = ""
+                        _rec = None
+                        try:
+                            from .. import echo_reprompt as _erp
+                            _rec = _erp.reprompt_once(
+                                _ask_rp, _seam_entry_text, session_id=session_id,
+                                model=model, log_route=_hub()._log_route)
+                        except Exception:  # noqa: BLE001 — recovery never breaks delivery
+                            _rec = None
+                        if _rec:
+                            _deliver_body = _rec
+                            _hub()._log_route(
+                                "POST", event_detail="echo_reprompt_delivered",
+                                echo_action=str(getattr(_echo, "action", "") or ""),
+                                chars_from=len(str(_seam_entry_text or "")),
+                                chars_to=len(_rec), session_id=session_id)
+                        else:
+                            _deliver_body = _eg.NO_WORK_TEXT
+                            _hub()._log_route(
+                                "POST", event_detail="echo_reprompt_failed_open",
+                                echo_action=str(getattr(_echo, "action", "") or ""),
+                                chars_from=len(str(_seam_entry_text or "")),
+                                chars_to=len(_deliver_body),
+                                session_id=session_id)
                     # R36m: the strip branch above reconciles the persisted row
                     # (R34-19L) and this branch never did — it returns a
                     # replacement body and skips the rest of the seam, so
@@ -1207,10 +1251,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         # falsy (it is the else-branch), which is why passing
                         # the entry text with the flag set still missed.
                         _ok = _can_hb.rewrite_persisted_turn(
-                            session_id, _seam_entry_text, _echo.body)
+                            session_id, _seam_entry_text, _deliver_body)
                         if not _ok:
                             _ok = _can_hb.rewrite_persisted_turn(
-                                session_id, "", _echo.body,
+                                session_id, "", _deliver_body,
                                 allow_empty_match=True)
                         _hub()._log_route(
                             "POST",
@@ -1218,7 +1262,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                           else "handback_persist_miss"),
                             reason=str(getattr(_echo, "action", "") or ""),
                             chars_from=len(_seam_entry_text or ""),
-                            chars_to=len(_echo.body or ""),
+                            chars_to=len(_deliver_body or ""),
                             session_id=session_id)
                     except Exception:  # noqa: BLE001 — never breaks delivery
                         _hub().logger.debug("handback persist error", exc_info=True)
@@ -1230,12 +1274,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         _hub()._log_route(
                             "POST", event_detail="handback_delivery_check",
                             persisted_verified=_can_chk.verify_persisted_turn(
-                                session_id, _echo.body or ""),
-                            chars=len(_echo.body or ""),
+                                session_id, _deliver_body or ""),
+                            chars=len(_deliver_body or ""),
                             session_id=session_id)
                     except Exception:  # noqa: BLE001
                         pass
-                    return _echo.body
+                    return _deliver_body
             else:
                 _eg.observe(response_text, session_id,
                             log_route=_hub()._log_route)
