@@ -95,6 +95,33 @@ gateway restart.
 - `anchor this` — force a frontier consult on this turn.
 - `skip anchor` — bypass all routing for this turn.
 
+## Gated suite runs (the suite is polled, never waited on)
+
+A full-suite run takes 6–10 minutes. Never run it in the foreground of an
+agent turn — a blocking wait outlives the turn and the session is killed with
+the work verified-but-uncommitted. Use the detached gate:
+
+```
+bash scripts/gate.sh                 # returns in ~1s: PID=… / LOG=… / JUNIT=…
+bash scripts/gate.sh --status <LOG>  # RUNNING | DONE | TIMEOUT
+```
+
+`--status` on `DONE` prints the pytest summary line and then the
+baseline comparison against `tests/baseline_failures.txt`:
+
+```
+BEYOND_BASELINE=<n> <ids>     # reds nobody pinned -> REGRESSION
+MISSING_REQUIRED=<n> <ids>    # pinned reds now green -> DRIFT
+VERDICT=EQUALS_BASELINE|REGRESSION|DRIFT
+```
+
+Commit only on `VERDICT=EQUALS_BASELINE`. The run is bounded by
+`GATE_TIMEOUT` (default 1800s) and writes under `GATE_DIR` (default
+`/opt/data/tmp/gate`); `--status` exits 0/1/3 for equal/regression/drift, so
+a shell can gate on it directly. `scripts/baseline_check.py` remains the
+authoritative gate for the full pin semantics (reason= / expect= signature
+matching); `gate.sh` is the pollable set-equality view of the same file.
+
 ## Known limitations
 
 - Sentinel markers are string-matched; injected text can forge them to
