@@ -474,17 +474,25 @@ def build_assimilation(lane: Any, producer: str = "", route_id: str = "",
                        cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Assemble one lane-assimilation/1 envelope. {} on refusal or failure.
 
+    Shared core slots (every lane): producer, route_id, task_id, answer,
+    verdict, revised, evidence_refs, limitations, kind, ts, extras{lane:{...}},
+    budget. Lane extras come from the registry's CLOSED assimilation key set
+    (features/envelope/registry.py) — an unknown lane or an unknown extras key
+    is a refusal here exactly as it is in the request direction.
+
     `kind` carries the legacy provenance label the frontier lane already
     publishes, so consumers that read env["kind"] keep working unchanged.
     """
     try:
-        errors = validate_extras(lane, extras)
+        errors = validate_extras(lane, extras, direction="assimilation")
         if errors:
             return {}
         lane_extras: Dict[str, Any] = {}
         if isinstance(extras, dict):
             value = extras.get(lane)
             lane_extras = dict(value) if isinstance(value, dict) else {}
+        limit = chars_cap(cfg, budget)
+        order = drop_order(cfg, budget)
         envelope: Dict[str, Any] = {
             "schema": SCHEMA_ASSIMILATION,
             "lane": lane,
@@ -496,15 +504,53 @@ def build_assimilation(lane: Any, producer: str = "", route_id: str = "",
             "revised": bool(revised),
             "evidence_refs": [str(r) for r in (evidence_refs or [])],
             "limitations": str(limitations or ""),
+            "kind": str(kind or ""),
             "ts": float(ts) if isinstance(ts, (int, float)) and not isinstance(ts, bool)
                   else time.time(),
             "extras": {lane: lane_extras},
+            "budget": {"chars_cap": limit, "drop_order": list(order)},
         }
-        if kind:
-            envelope["kind"] = str(kind)
-        limit = chars_cap(cfg, budget)
-        order = drop_order(cfg, budget)
-        envelope["budget"] = {"chars_cap": limit, "drop_order": list(order)}
         return truncate(envelope, limit, order)
     except Exception:  # noqa: BLE001 — never raise
         return {}
+
+
+def validate_assimilation(envelope: Any) -> List[str]:
+    """Errors for an assembled assimilation envelope (shape + extras).
+
+    Mirrors validate_request: every shared core slot present and typed, the
+    lane's extras closed in the ASSIMILATION direction. Never raises.
+    """
+    errors: List[str] = []
+    try:
+        if not isinstance(envelope, dict) or not envelope:
+            return ["empty envelope"]
+        if envelope.get("schema") != SCHEMA_ASSIMILATION:
+            errors.append("schema must be %r" % SCHEMA_ASSIMILATION)
+        lane = envelope.get("lane")
+        if lane not in LANES:
+            errors.append("unknown lane: %r" % (lane,))
+            return errors
+        for slot in ("producer", "route_id", "task_id", "answer", "limitations",
+                     "kind"):
+            if not isinstance(envelope.get(slot), str):
+                errors.append("slot %s must be a string" % slot)
+        if not isinstance(envelope.get("verdict"), dict):
+            errors.append("verdict must be a dict")
+        if not isinstance(envelope.get("revised"), bool):
+            errors.append("revised must be a bool")
+        if not isinstance(envelope.get("evidence_refs"), list):
+            errors.append("evidence_refs must be a list")
+        if not isinstance(envelope.get("ts"), (int, float)):
+            errors.append("ts must be a number")
+        budget_slot = envelope.get("budget")
+        budget_slot = budget_slot if isinstance(budget_slot, dict) else {}
+        if not isinstance(budget_slot.get("chars_cap"), int):
+            errors.append("budget.chars_cap must be an int")
+        if not isinstance(budget_slot.get("drop_order"), list):
+            errors.append("budget.drop_order must be a list")
+        errors.extend(validate_extras(lane, envelope.get("extras"),
+                                      direction="assimilation"))
+    except Exception:  # noqa: BLE001
+        return ["assimilation validation failed"]
+    return errors

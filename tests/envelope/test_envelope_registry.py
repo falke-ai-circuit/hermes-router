@@ -127,9 +127,19 @@ def test_new_fake_lane_registers_and_builds_without_touching_builders(monkeypatc
     assert request["extras"][lane] == {"alpha": "A"}
     assert U.validate_request(request) == []
 
+    # ... and the OTHER direction builds from the same table entry (U2)
+    assimilation = U.build_assimilation(
+        lane=lane, producer="p-fake", answer="built", kind="fake_plan",
+        extras={lane: {"beta": "B"}})
+    assert assimilation["schema"] == "lane-assimilation/1"
+    assert assimilation["lane"] == lane
+    assert assimilation["extras"][lane] == {"beta": "B"}
+    assert U.validate_assimilation(assimilation) == []
+
     # the same lane's OTHER closed set is what the other direction allows
     assert U.validate_extras(lane, {lane: {"beta": "B"}}, "assimilation") == []
     assert U.validate_extras(lane, {lane: {"alpha": "A"}}, "assimilation")
 
-    # refusal still holds for the fake lane's unknown key
+    # refusal still holds for the fake lane's unknown key, in both directions
     assert U.build_request(lane=lane, extras={lane: {"bogus": 1}}) == {}
+    assert U.build_assimilation(lane=lane, extras={lane: {"bogus": 1}}) == {}
