@@ -100,7 +100,15 @@ def _prime(session_id, ask=ASK, model="minimax-m3"):
 
 
 def _post(session_id, body, model="minimax-m3", **ctx):
-    return plugin.on_transform_llm_output(
+    """The GUARDED entry — the function `register()` hands the gateway.
+
+    `plugin.on_transform_llm_output` stays the bare orchestrator (its body is
+    introspected by the banner-seam pins), so the guards are exercised through
+    the registered wrapper, which is the live path.
+    """
+    from hermes_router.gate import registration
+
+    return registration.on_transform_llm_output_guarded(
         response_text=body, session_id=session_id, model=model, **ctx)
 
 
