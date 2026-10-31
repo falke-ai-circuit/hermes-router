@@ -390,6 +390,25 @@ def _decode_content(content: Any) -> str:
 
 
 _SUPERSEDED_LOGGED: set = set()
+_COVERAGE_LOGGED: set = set()
+
+# The reflex lane's own thin-result floor (reflex_lane.fire: `len(text) < 60`).
+# A turn below it cannot be covered by ANY reflex path, whatever the config says.
+_REFLEX_MIN_TEXT = 60
+
+
+def _bounded_set_add(store: set, key: Any, cap: int = 500) -> bool:
+    """Add `key`; True when it was new. Bounded (oldest-left-first) so a long
+    fleet session cannot grow either log-dedupe set without limit."""
+    try:
+        if key in store:
+            return False
+        store.add(key)
+        while len(store) > cap:
+            store.pop()
+        return True
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _superseded_by_reflex(cfg: Any = None) -> bool:
@@ -427,15 +446,82 @@ def _superseded_by_reflex(cfg: Any = None) -> bool:
         return False
 
 
-def _log_superseded(session_id: str, seam: str) -> None:
+def _reflex_covers_turn(text: str, cfg: Any = None) -> Tuple[bool, str]:
+    """Can the weighted lane actually cover THIS turn? (R78-U ordering)
+
+    Previously this lane stood down whenever the reflex lane was ARMED
+    (config-level), so an armed-but-silent reflex suppressed detection on every
+    turn and the stand-down was indistinguishable from a broken lane: measured
+    on four probe sessions, the turn was answered by the complexity orientation
+    consult, its bookkeeping row was a `frontier_consult`, and the decision lane
+    logged `legacy_lane_superseded` without ever looking at the turn.
+
+    Coverable is now PER-TURN and evidenced by the reflex lane's own inputs —
+    all three must hold for the text this lane is about to scan:
+
+      1. the weighted lane is armed (`_superseded_by_reflex`, the same read the
+         stand-down used, so config isolation in tests is unchanged);
+      2. its every-call path is live (`every_call`, default True);
+      3. it derives a usable board from THIS turn's own text — the reflex lane
+         stays silent below 60 chars (`result_too_thin`) and when its candidate
+         builder returns nothing (`no_candidates`), so a text that yields fewer
+         than two rival moves cannot be covered by it either.
+
+    The session anchor is deliberately NOT consulted: an objective is session
+    scope, not turn evidence, and citing it here is exactly how a stand-down
+    becomes unjustifiable. Returns (covered, reason). Never raises.
+    """
     try:
-        if session_id in _SUPERSEDED_LOGGED:
+        if not _superseded_by_reflex(cfg):
+            return False, "reflex_not_armed"
+        t = str(text or "")
+        if len(t.strip()) < _REFLEX_MIN_TEXT:
+            return False, "turn_too_thin"
+        try:
+            from . import reflex_lane as _rl
+            rc = _rl._cfg(cfg if isinstance(cfg, dict) else None)
+        except Exception:  # noqa: BLE001 — config read is additive
+            rc = {}
+        if not rc.get("every_call", True):
+            return False, "reflex_every_call_off"
+        try:
+            from . import decision_extract as _dx
+            cands = _dx.candidate_set(t, cap=int(rc.get("max_options") or 7))
+        except Exception:  # noqa: BLE001 — a failed probe cannot license silence
+            return False, "reflex_board_unreadable"
+        if len(cands or []) < 2:
+            return False, "no_turn_board"
+        return True, "reflex_board=%d" % len(cands or [])
+    except Exception:  # noqa: BLE001
+        return False, "coverage_probe_error"
+
+
+def _log_superseded(session_id: str, seam: str, cover: str = "") -> None:
+    """Attributable stand-down: WHICH turn evidence let the reflex lane cover it.
+
+    One line per (session, seam, evidence) — a per-turn decision logged once per
+    distinct justification, not once per session (the old per-session key hid
+    every later turn behind the first one's silence)."""
+    try:
+        key = (session_id, seam, cover)
+        if not _bounded_set_add(_SUPERSEDED_LOGGED, key):
             return
-        _SUPERSEDED_LOGGED.add(session_id)
-        while len(_SUPERSEDED_LOGGED) > 500:
-            _SUPERSEDED_LOGGED.pop()
         _log(session_id, "legacy_lane_superseded", seam=seam,
-             reason="reflex_weights_armed")
+             reason="reflex_covers_turn", covers=str(cover or ""))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_lane_active(session_id: str, seam: str, why: str) -> None:
+    """The other half of the ordering, and the one that was missing: when the
+    reflex lane is armed but cannot cover THIS turn, the decision lane stays
+    live and says why it stayed live. Without this line an armed reflex made
+    the lane's silence unattributable from either side."""
+    try:
+        if not _bounded_set_add(_COVERAGE_LOGGED, (session_id, seam, why)):
+            return
+        _log(session_id, "legacy_lane_active", seam=seam,
+             reason="reflex_cannot_cover_turn", why=str(why or ""))
     except Exception:  # noqa: BLE001
         pass
 
@@ -452,9 +538,6 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
             return
-        if _superseded_by_reflex(cfg):
-            _log_superseded(str(session_id), seam)
-            return
         text = result if isinstance(result, str) else str(result or "")
         if not text:
             return
@@ -468,7 +551,21 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
             return
         if _dec.provenance_skip(text, cfg):
             return
+        # R78-U: the stand-down is PER-TURN. An armed reflex lane only covers a
+        # turn when it can build a board from this very text; the ordering is
+        # logged from BOTH sides so neither lane's silence is unattributable.
+        _covered, _cov_why = _reflex_covers_turn(text, cfg)
+        if _covered:
+            _log_superseded(str(session_id), seam, _cov_why)
+            return
+        if _superseded_by_reflex(cfg):
+            _log_lane_active(str(session_id), seam, _cov_why)
         opts = _dec.extract_options(text)
+        # R78-U: an admitted bounded prose fork supplies its own two verbatim
+        # sides when the generic extractor's stricter prose fallback missed the
+        # comma form ("keep the seam, or remove it?").
+        if len(opts) < 2 and _dec.has_bounded_prose_fork(text):
+            opts = _dec.bounded_prose_options(text)
         if not opts:
             # R63n: NO early return here. A tool result almost never carries an
             # enumeration, even when the work in front of the agent forks cleanly
@@ -503,6 +600,8 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  signal=str(_inj_sig), tool=str(tool_name or ""), seam=seam)
             text = _strip_injection_clause(text)
             opts = _dec.extract_options(text)
+            if len(opts) < 2 and _dec.has_bounded_prose_fork(text):
+                opts = _dec.bounded_prose_options(text)
         # R60: a fork the WORK reveals. The declared/text forks above only fire
         # on enumeration the user already wrote down -- the case an agent least
         # needs advice for. Measured live: D2's repo holds utils_v1.py and
@@ -572,6 +671,20 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
                  reason=_dec.REASON_NO_OPTIONS, mode=mode,
                  tool=str(tool_name or ""), seam=seam)
             return
+        # R78-U shape boundary. Prose 'X or Y' is now admissible, but ONLY
+        # through decision.prose_fork_shape's bounded shape. Ask-shaped prose
+        # that FAILS the bound (three options, multi-sentence, list) has no
+        # admitted option set: say no_options — attributably — instead of
+        # forwarding an option set the shape gate refuses to police, or logging
+        # a structure complaint about a shape that was never declarable.
+        if (opts and not _src_fork
+                and not _dec.has_declared_fork_structure(text)
+                and _dec.prose_fork_shape(text) == "unbounded"):
+            _log(session_id, "midturn_suppressed",
+                 reason=_dec.REASON_NO_OPTIONS, mode=mode,
+                 shape="unbounded_prose", prose_options_discarded=len(opts),
+                 tool=str(tool_name or ""), seam=seam)
+            return
         # R60b: PRECISION of the presented set. Measured on seeded forks: option
         # sets derived structurally scored precision 1.00 (D4: "edit names.py" /
         # "edit tests/test_names.py", advice correct 3/3), while sets produced by
@@ -585,7 +698,12 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         # Narrative is a tell, so bound the label length. Structural and declared
         # sets are exempt -- they are authored, not harvested.
         _struct_src = bool(_src_fork)
-        if opts and not _struct_src and not _dec.has_declared_fork_structure(text):
+        # R78-U: a BOUNDED prose fork is authored by the asker (the user's own
+        # two alternatives), so it takes the same exemption as a declared fork —
+        # it is not a harvested narrative set.
+        _authored_shape = (_dec.has_declared_fork_structure(text)
+                           or _dec.has_bounded_prose_fork(text))
+        if opts and not _struct_src and not _authored_shape:
             _kept = [o for o in opts if len(str(o).strip()) <= 60]
             if len(_kept) < len(opts):
                 _log(session_id, "midturn_options_pruned",
@@ -603,7 +721,7 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
         # can say which one was taken, so the consult buys an unscoreable
         # advisory and writes a row that abstains forever. Derived sets only;
         # declared structure and structural sources are authored, not harvested.
-        if opts and not _struct_src and not _dec.has_declared_fork_structure(text):
+        if opts and not _struct_src and not _authored_shape:
             try:
                 from . import decision_signatures as _dsig
                 if not _dsig.fork_observable([_dsig.option_signature(o) for o in opts]):
@@ -614,7 +732,7 @@ def on_terminal_output(session_id: str, tool_name: str, result: Any,
             except Exception:  # noqa: BLE001 — admission must never raise
                 pass
 
-        if not _dec.has_declared_fork_structure(text):
+        if not _authored_shape:
             if _instinct_fire(session_id, tool_name, text, cfg, mode, seam):
                 return
             if _inj_sig:
@@ -662,9 +780,9 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
         mode = _mode(cfg)
         if mode == "off" or not str(session_id or ""):
             return
-        if _superseded_by_reflex(cfg):
-            _log_superseded(str(session_id), "turn_boundary")
-            return
+        # R78-U: no session-level stand-down. Coverage is decided per scanned
+        # message below, on that message's own text, so one coverable tool
+        # result can never silence the whole turn sweep.
         # Every turn boundary is a verification point: settle whatever the
         # previous turn left open, using the transcript that now exists. Waiting
         # for the NEXT FORK to do this (the PRE leg's rule) leaves every row of
@@ -761,6 +879,15 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                      tool=str(msg.get("name") or ""), scan="turn_sweep")
             if _dec.provenance_skip(text, cfg):
                 continue  # [Durable Summary / [Depth- / bracketed envelopes
+            # R78-U per-message ordering: an armed reflex lane covers only the
+            # messages it can actually turn into a board. Anything else is still
+            # this lane's to scan, and the decision is logged from both sides.
+            _covered, _cov_why = _reflex_covers_turn(text, cfg)
+            if _covered:
+                _log_superseded(str(session_id), SEAM_TURN_BOUNDARY, _cov_why)
+                continue
+            if _superseded_by_reflex(cfg):
+                _log_lane_active(str(session_id), SEAM_TURN_BOUNDARY, _cov_why)
             if str(msg.get("role")) == "user":
                 # user ingress = run boundary: reset the RUN CAP only.
                 # D3 residual fix (evol trail, session
@@ -779,6 +906,8 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
                     rst = _state(key)
                     rst["count"] = 0
             opts = _dec.extract_options(text)
+            if len(opts) < 2 and _dec.has_bounded_prose_fork(text):
+                opts = _dec.bounded_prose_options(text)
             if not opts:
                 if _inj_sig:
                     _log(session_id, "injection_flagged_fork_suppressed",
@@ -790,7 +919,25 @@ def sweep_turn_start(session_id: str, request: Dict[str, Any]) -> None:
             # FIX-FIRST rider 4 (item 4): same declared-fork gate as SEAM 1
             # — benign prose reaching the sweep (user ingress, prior-turn
             # tool text) must not push pseudo-forks into the backend.
-            if not _dec.has_declared_fork_structure(text):
+            # R78-U: a BOUNDED two-option prose ask is admissible here too.
+            _sweep_authored = (_dec.has_declared_fork_structure(text)
+                               or _dec.has_bounded_prose_fork(text))
+            if (opts and not _sweep_authored
+                    and _dec.prose_fork_shape(text) == "unbounded"):
+                if _inj_sig:
+                    _log(session_id, "injection_flagged_fork_suppressed",
+                         family="prompt_injection", signal=str(_inj_sig),
+                         reason=_dec.REASON_NO_OPTIONS,
+                         tool=str(msg.get("name") or ""),
+                         seam=SEAM_TURN_BOUNDARY)
+                _log(session_id, "midturn_suppressed",
+                     reason=_dec.REASON_NO_OPTIONS, mode=mode,
+                     shape="unbounded_prose",
+                     prose_options_discarded=len(opts),
+                     tool=str(msg.get("name") or "turn_sweep"),
+                     seam=SEAM_TURN_BOUNDARY)
+                continue
+            if not _sweep_authored:
                 if _inj_sig:
                     _log(session_id, "injection_flagged_fork_suppressed",
                          family="prompt_injection", signal=str(_inj_sig),
@@ -1302,9 +1449,10 @@ def _instinct_fire(session_id: str, tool_name: str, text: str,
     reflex that costs tokens per tool result is a reflex you switch off.
     """
     try:
-        if _superseded_by_reflex():
-            _log_superseded(str(session_id), "post_tool_call")
-            return
+        _cov, _cov_why = _reflex_covers_turn(text, cfg)
+        if _cov:
+            _log_superseded(str(session_id), "post_tool_call", _cov_why)
+            return False
         from . import instinct_triggers as _itr
 
         rmode = _itr.mode_of(cfg)

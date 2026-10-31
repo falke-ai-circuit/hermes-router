@@ -1618,6 +1618,101 @@ def has_declared_fork_structure(text: str) -> bool:
         return False
 
 
+_BOUNDED_PROSE_OR_RE = re.compile(
+    r"^(?P<a>[^,]{2,70}?)\s*,?\s+or\s+(?P<b>[^,]{2,70})$", re.I)
+
+
+def prose_fork_shape(text: str) -> str:
+    """Shape classification for an UNDECLARED prose fork: '' | 'bounded' | 'unbounded'.
+
+    R78-U: the declared-shape gate deliberately refuses the prose 'X or Y'
+    fallback, because code/log text ('stdout or stderr redirect') matched it and
+    pushed pseudo-forks into the consult. That refusal was total, so a real
+    plain-prose two-option ask also extracted nothing. The admission is now
+    BOUNDED — a shape, not a loosened regex. Exactly admitted:
+
+      single line, single sentence (no '.', '!', '?' except one trailing one),
+      no code/log punctuation ({} = < > | ; ` [ ]), at most ONE comma (the
+      optional comma before the connective), exactly ONE word-boundary 'or'
+      (so 'X or Y or Z' is two connectives = rejected), each side 2..70 chars,
+      total 12..200 chars, and the text is ASK-SHAPED (_ASK_SHAPED_RE: a
+      trailing '?', or 'should we/i/you', 'which one/option/approach/path',
+      'pick/choose/select/decide/weigh ... between/for').
+
+    'unbounded' means ask-shaped prose carrying a binary 'or' that FAILS the
+    bound (three options, multi-sentence, list). Those are not admit-able, and
+    the caller must say so with reason=no_options rather than silently keeping
+    an option set the shape gate refuses to police. Never raises.
+    """
+    try:
+        raw = str(text or "")
+        t = " ".join(raw.strip().split())
+        if not t:
+            return ""
+        if not _ASK_SHAPED_RE.search(t):
+            return ""            # a statement/log line is not a fork ask at all
+        body = t.rstrip("?.!")
+        if len(re.findall(r"\bor\b", body, re.I)) != 1:
+            return "unbounded"   # 'X or Y or Z' — two connectives
+        if not body or any(ch in body for ch in ".!?"):
+            return "unbounded"   # multi-sentence prose
+        if "\n" in raw.strip() or "\r" in raw:
+            return "unbounded"   # paragraph, not one ask
+        if any(ch in body for ch in "{}=<>|;`[]\t"):
+            return "unbounded"   # code / log block
+        if body.count(",") > 1 or not (12 <= len(t) <= 200):
+            return "unbounded"   # comma list (>= 3 items) or unbounded length
+        m = _BOUNDED_PROSE_OR_RE.match(body)
+        if not m:
+            return "unbounded"
+        a = m.group("a").strip()
+        b = m.group("b").strip()
+        if not a or not b or a.lower() == b.lower():
+            return "unbounded"
+        return "bounded"
+    except Exception:  # noqa: BLE001 — a shape probe must never crash the lane
+        return ""
+
+
+def has_bounded_prose_fork(text: str) -> bool:
+    """True only for the exact bounded two-option prose ask (see prose_fork_shape)."""
+    return prose_fork_shape(text) == "bounded"
+
+
+_LEAD_FRAME_RE = re.compile(
+    r"^(?:which\s+(?:one|option|approach|path)\b[^,]{0,20}?|"
+    r"(?:should|shall|do|does|would|could|can|will)\s+(?:we|i|you)\s+)\s*", re.I)
+
+
+def bounded_prose_options(text: str) -> List[str]:
+    """The two VERBATIM sides of an admitted bounded prose fork.
+
+    extract_options' prose fallback needs `\\s+or\\s+` with no comma, so the
+    commonest admitted form ("keep the seam, or remove it?") yielded no option
+    set and the admission had nothing to fire over. Labels come only from the
+    stated segments (a leading interrogative frame is a substring, not
+    invented): never-invent holds. Returns [] when the shape is not admitted.
+    """
+    try:
+        if not has_bounded_prose_fork(text):
+            return []
+        t = " ".join(str(text or "").strip().rstrip("?.!").split())
+        m = _BOUNDED_PROSE_OR_RE.match(t)
+        if not m:
+            return []
+        sides: List[str] = []
+        for g in ("a", "b"):
+            s = _LEAD_FRAME_RE.sub("", m.group(g).strip()).strip(" ,")
+            if not s:
+                return []
+            sides.append(clean_snippet(s, 120))
+        if len(sides) < 2 or sides[0].lower() == sides[1].lower():
+            return []
+        return sides
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def option_ids(options: List[str]) -> List[str]:
     """Lane-assigned closed option ids: opt-1..opt-N (never model-invented)."""
     try:

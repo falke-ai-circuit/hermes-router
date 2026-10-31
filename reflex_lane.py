@@ -241,12 +241,11 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
     try:
         c = _cfg(cfg)
         if not c.get("enabled"):
-            return ""
+            return _held(session_id, "lane_disabled", "midturn")
         if not session_id:
-            return ""
+            return _held(str(session_id or ""), "no_session", "midturn")
         if len(text or "") < 60:
-            _rw._note(reason="result_too_thin")
-            return ""
+            return _held(session_id, "result_too_thin", "midturn")
         from . import decision_extract as _dx
 
         # R73 P3: the ask is passed SEPARATELY - concatenating it into the window made the
@@ -266,8 +265,7 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
                                   objective=str(_anchor.get("final_objective") or ""),
                                   rolling_task=str(_anchor.get("rolling_task") or ""))
         if not cands:
-            _rw._note(reason="no_candidates")
-            return ""
+            return _held(session_id, "no_candidates", "midturn")
         # Same card as the every-call path and the other two lanes: without it the midturn
         # read scores moves for a role it cannot name.
         # R76 GOAL 2: the card is handed the session's stated task so its CURRENT TASK line
@@ -278,11 +276,10 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         state = build_state(ask, tool, text, extra, card=_card, anchor=_anchor)
         data = _transport(_dx.payload(state, cands, str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
-            return ""
+            return _held(session_id, "transport_error", "midturn")
         parsed = _dx.parse(data, cands)
         if not parsed:
-            _rw._note(reason="parse_empty")
-            return ""
+            return _held(session_id, "parse_empty", "midturn")
         ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
                            float(c.get("min_margin") or 0.10))
         _soft = ""
@@ -302,7 +299,7 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
         block = _rend(parsed, int(c.get("block_chars") or 560),
                       basis=_dx.basis_line(tool, text), **_soft_kw)
         if not block:
-            return ""
+            return _held(session_id, "empty_block", "midturn")
         _park(session_id, block)
         _log(session_id, "reflex_weights_ready", top=parsed["options"][0]["p"],
              weights=_weights_str(parsed), margin=_margin(parsed),
@@ -367,6 +364,39 @@ def _log(session_id: str, event: str, **kw: Any) -> None:
             logger.info("reflex_lane %s %s", event, json.dumps(kw, default=str)[:300])
         except Exception:  # noqa: BLE001
             pass
+
+
+_HELD_LOGGED: set = set()
+
+
+def _held(session_id: str, reason: str, seam: str, **kw: Any) -> str:
+    """Attributable silence: every stand-down emits ONE reason line.
+
+    The lane used to return "" / False with only an in-memory `_rw._note`, which
+    is not a route-log line — measured on 3 of 4 probe sessions the lane went
+    silent and its reason was unrecoverable from any artefact. An unattributable
+    silence is the same defect class as a bare supersession stand-down, so every
+    path that declines to produce a reading now names itself.
+
+    Deduped per (session, seam, reason) and bounded: a lane that declines for
+    the same reason on every call must not flood the route log.
+    """
+    try:
+        key = (str(session_id or ""), str(seam or ""), str(reason or ""))
+        try:
+            if key in _HELD_LOGGED:
+                return ""
+            _HELD_LOGGED.add(key)
+            while len(_HELD_LOGGED) > 500:
+                _HELD_LOGGED.pop()
+        except Exception:  # noqa: BLE001 — dedupe is an optimisation only
+            pass
+        _rw._note(reason=str(reason), **kw)
+        _log(session_id, "reflex_held", reason=str(reason or ""),
+             seam=str(seam or ""), **{k: v for k, v in kw.items() if k != "seam_note"})
+    except Exception:  # noqa: BLE001 — logging never breaks a consult
+        pass
+    return ""
 
 
 def clear(session_id: str = "") -> None:
@@ -1120,16 +1150,15 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
     try:
         c = _cfg(cfg if cfg is not None else _load_cfg())
         if not c.get("enabled") or not c.get("every_call", True):
-            return False
+            return bool(_held(session_id or "req", "lane_disabled", "every_call"))
         if not isinstance(request, dict):
-            return False
+            return bool(_held(session_id or "req", "bad_request", "every_call"))
         sid = str(session_id or "req")
         settle(sid, request)          # grade the last frame against what actually happened
         _ensure_rule(request, sid, c)  # a reading delivered by another seam still needs it
         ask, window = _window_from_request(request)
         if len(window) < 60:
-            _rw._note(reason="no_work_in_request")
-            return False
+            return bool(_held(sid, "no_work_in_request", "every_call"))
         from . import decision_extract as _dx
 
         # R76 GOAL 2 / R77: read the anchor before the board — its objective is a
@@ -1145,8 +1174,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                                   objective=str(_ranchor.get("final_objective") or ""),
                                   rolling_task=str(_ranchor.get("rolling_task") or ""))
         if not cands:
-            _rw._note(reason="no_candidates")
-            return False
+            return bool(_held(sid, "no_candidates", "every_call"))
         # One reading per distinct situation: the same block twice in a row is noise, and a
         # retried request must not pay twice.
         sig = "%s|%s" % (window[-400:], "|".join(str(c.get("label") or c) for c in cands))
@@ -1154,8 +1182,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         with _LAST_BLOCK_LOCK:
             prev = _LAST_BLOCK.get(sid)
             if prev and prev[0] == sig and now - prev[1] < DEDUPE_S:
-                _rw._note(reason="duplicate_situation")
-                return False
+                return bool(_held(sid, "duplicate_situation", "every_call"))
         _msgs = request.get("messages")
         _card = _agent_card(_msgs if isinstance(_msgs, list) else None)
         # R76 GOAL 2: the live every-call caller used to pass tool="" and no
@@ -1172,10 +1199,10 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                                                  card=_card, anchor=_ranchor), cands,
                                       str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
-            return False
+            return bool(_held(sid, "transport_error", "every_call"))
         parsed = _dx.parse(data, cands)
         if not parsed:
-            return False
+            return bool(_held(sid, "parse_empty", "every_call"))
         ok, why = _dx.gate(parsed, float(c.get("min_top") or 0.45),
                            float(c.get("min_margin") or 0.10))
         _soft = ""
@@ -1216,7 +1243,7 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         block = _rend(parsed, int(c.get("block_chars") or 560),
                       basis=_dx.basis_line("", window), **_soft_kw)
         if not block:
-            return False
+            return bool(_held(sid, "empty_block", "every_call"))
         from . import frames as _fr
 
         # Integration contract (R72). The reading is a reflex, not an advisory, and the
