@@ -18,7 +18,13 @@ def log_event(session_id: str, event: str, **fields: Any) -> None:
     """Emit a decision-lane event. Never raises: observability must not break a turn."""
     try:
         from .core.telemetry import log_route as _lr   # import cycle broken on purpose
-        _lr(event, lane="decision", trigger=TRIGGER,
+        # R78U M3.3: an emitter may state its OWN lane (the uncensored assimilation
+        # record does: lane="uncensored"). Passing it through to log_route beside
+        # this module's default raised "got multiple values for keyword argument
+        # 'lane'" and the record never landed — the lane's delivery evidence was
+        # silently dropped. The emitter's lane wins; decision stays the default.
+        _lane = fields.pop("lane", "") or "decision"
+        _lr(event, lane=_lane, trigger=TRIGGER,
             session_id=str(session_id or ""), **fields)
     except Exception as exc:  # noqa: BLE001
         try:

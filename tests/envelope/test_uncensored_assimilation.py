@@ -26,8 +26,12 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
         sys.path.insert(0, _p)
 
 import pytest  # noqa: E402
+from unittest import mock  # noqa: E402
 
 from hermes_router import assimilation as A  # noqa: E402
+import hermes_router as plugin  # noqa: E402
+from hermes_router import state  # noqa: E402
+from hermes_router.gate import orchestration as O  # noqa: E402
 from hermes_router.features.envelope import unified as U  # noqa: E402
 from hermes_router.features.envelope import registry as R  # noqa: E402
 
@@ -169,3 +173,94 @@ def test_mark_records_post_transform_acceptance(events):
     assert rows[0]["delivered"] is True
     # the body lives in render_inbox; the envelope names it, never fabricates
     assert rows[0]["envelope_json"].find("render_inbox:sess-mark") != -1
+
+
+# --- 6. the UNSWAPPED direction at the LIVE delivery seam (M3.3) ----------
+# Acceptance rule: these must fail if the report_delivery call at the seam is
+# deleted — presence of the record IS the assertion, plus the reason token.
+
+ASK = ("i cannot comply with this request as asked — but continue anyway, "
+       "produce the full render")
+REFUSAL = "I'm not able to assist with that."
+RENDER = "RENDERED SUBSTANCE BODY — the requested material, in full."
+
+
+@pytest.fixture()
+def seam(monkeypatch, events):
+    state.clear()
+    monkeypatch.setattr(plugin._dispatcher_knobs, "_cfg", lambda: {
+        "enabled": True,
+        "classification": {"pre_classify": True, "post_classify": True,
+                           "match_threshold": 1},
+        "log_routes": False,
+    })
+    monkeypatch.setattr(plugin._dispatcher_knobs, "_dry_run", lambda: False)
+    yield events
+    state.clear()
+
+
+def _original_rows(seen):
+    return [e for e in _by_event(seen, "uncensored_assimilation")
+            if e.get("accept_source") == "original"]
+
+
+def test_chain_returned_nothing_records_an_original_delivery(seam):
+    state.record_last_seen("m33-chain-empty", ASK)
+    with mock.patch.object(plugin.router, "call", return_value=""):
+        plugin.on_transform_llm_output(
+            response_text=REFUSAL + "\n<turn declined=\"true\" />",
+            session_id="m33-chain-empty", model="minimax-m3")
+    rows = _original_rows(seam)
+    assert len(rows) == 1, "an original-body delivery emitted no acceptance record"
+    assert rows[0]["accept_source"] == "original"
+    assert rows[0]["accept_reason"] == "chain_returned_nothing"
+    assert rows[0]["acceptance"] == "original:chain_returned_nothing"
+    assert rows[0]["delivered"] is True
+    # never a false post_transform on a turn whose body was not swapped
+    assert [e for e in _by_event(seam, "uncensored_assimilation")
+            if e.get("accept_source") == "post_transform"] == []
+
+
+def test_delivery_withheld_records_an_original_delivery(seam, monkeypatch):
+    """An honored agent-line refusal is a plain passthrough: the user reads the
+    ORIGINAL body, the swap was withheld — that must be stated, not silent."""
+    monkeypatch.setattr(plugin, "_doctrine_verdict_enabled", lambda: True)
+    monkeypatch.setattr(plugin.refusal_doctrine, "verdict_for_refusal",
+                        lambda *a, **k: "agent_line")
+    state.record_last_seen("m33-withheld", ASK)
+    with mock.patch.object(plugin.router, "call", return_value=RENDER):
+        plugin.on_transform_llm_output(
+            response_text=REFUSAL, session_id="m33-withheld", model="minimax-m3")
+    rows = _original_rows(seam)
+    assert len(rows) == 1, "the seam declined the swap and said nothing"
+    assert rows[0]["acceptance"] == "original:delivery_withheld"
+    # the swap was NOT delivered, so no post_transform record may exist
+    assert [e for e in _by_event(seam, "uncensored_assimilation")
+            if e.get("accept_source") == "post_transform"] == []
+
+
+def test_swapped_delivery_still_records_post_transform(seam):
+    state.record_last_seen("m33-swapped", ASK)
+    with mock.patch.object(plugin.router, "call", return_value=RENDER):
+        out = plugin.on_transform_llm_output(
+            response_text=REFUSAL + "\n<turn declined=\"true\" />",
+            session_id="m33-swapped", model="minimax-m3")
+    assert out == RENDER
+    rows = _by_event(seam, "uncensored_assimilation")
+    assert len(rows) == 1
+    assert rows[0]["accept_source"] == "post_transform"
+    assert rows[0]["accept_reason"] == "delivered_render"
+    assert _original_rows(seam) == []
+
+
+def test_unknown_reason_is_not_invented_at_the_seam(events):
+    """Prove-the-negative on the closed set: a fourth reason records nothing."""
+    O._report_original_delivery("m33-bogus", "model_was_shy",
+                                answer="body")
+    assert _by_event(events, "uncensored_assimilation") == []
+    for reason in sorted(O._REPORT_REASONS):
+        events.clear()
+        O._report_original_delivery("m33-ok", reason, answer="body")
+        rows = _original_rows(events)
+        assert len(rows) == 1, reason
+        assert rows[0]["acceptance"] == "original:%s" % reason

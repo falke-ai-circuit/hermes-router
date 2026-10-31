@@ -820,6 +820,39 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
         return None
 
 
+# R78U M3.3: the UNSWAPPED acceptance path. Every delivery edge below that
+# hands the ORIGINAL body back is a delivery of this lane, so it must state its
+# provenance the same way the render site does — otherwise an original-body
+# turn is visible only as ABSENCE. Source is always "original"; the reason is
+# one of the three the assimilation API already closes over (render_unavailable
+# / chain_returned_nothing / delivery_withheld). Fail-quiet by contract: a
+# missing acceptance record must never cost a delivered turn.
+_REPORT_REASONS = frozenset({"render_unavailable", "chain_returned_nothing",
+                             "delivery_withheld"})
+
+
+def _report_original_delivery(session_id: str, reason: str,
+                              answer: str = "") -> None:
+    """Record one acceptance envelope for an ORIGINAL-body delivery.
+
+    Never raises. An unknown reason is dropped, not coerced — the closed set
+    is owned by assimilation.ACCEPT_REASONS, not by this call site."""
+    try:
+        if reason not in _REPORT_REASONS:
+            return
+        from .. import assimilation as _assim_orig
+
+        _assim_orig.report_delivery(
+            session_id,
+            {"source": "original", "reason": reason},
+            leg="post",
+            answer=str(answer or ""),
+            limitations="original_body_delivered",
+        )
+    except Exception:  # noqa: BLE001 — recording never breaks delivery
+        pass
+
+
 def _recover_orphan_anchor_swap(session_id: str) -> None:
     """R16-2c (rider 16): POST-edge orphan recovery. A staged anchor swap
     that is STILL pending when a delivery edge runs means no llm_execution
@@ -1385,6 +1418,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 # still may not be silent — fall through to banner/failure.
                 _hub()._log_route("POST", event_detail="render_unavailable",
                                   reason="empty_body", session_id=session_id)
+                # M3.3: the blank/original stands — state it.
+                _report_original_delivery(session_id, "render_unavailable",
+                                          answer=response_text)
             # FIX-FIRST rider 4 (item 1/3, parked-loss): a 0-char model body
             # used to bypass the transform entirely — the early return meant
             # the benign consume below was never reached, so any parked
@@ -1981,6 +2017,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         pattern_groups=",".join(matches),
                         answer_chars=len(response_text),
                         routed=0, session_id=session_id)
+                    _report_original_delivery(session_id, "delivery_withheld",
+                                              answer=response_text)
                     return _hub()._deliver_parked_at_edge(
                         session_id, response_text, "detection_shape_only",
                         _hook_remaining())
@@ -2000,6 +2038,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _hub()._log_route("POST", event_detail="agent_line_honored",
                                session_id=session_id, model=model,
                                refusal_chars=len(response_text))
+                    _report_original_delivery(session_id, "delivery_withheld",
+                                              answer=response_text)
                     # R15-5: honored agent-line turns are still delivery
                     # edges — attach any parked verdict banner here.
                     return _hub()._deliver_parked_at_edge(session_id,
@@ -2035,6 +2075,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # No recovery path — can't feed Venice.
             _hub()._log_route("POST", event_detail="no_pending_route", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)
+            _report_original_delivery(session_id, "delivery_withheld",
+                                      answer=response_text)
             # R15-5: this is still a DELIVERY EDGE — a parked verdict banner
             # (anchor consult billed this turn) must attach here, not
             # survive past the turn. No banner -> plain passthrough.
@@ -2218,6 +2260,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                pattern_groups=",".join(matches),
                                refusal_chars=len(response_text),
                                session_id=session_id)
+                    # M3.3: the seam declined the swap — the technical
+                    # refusal is the delivered body.
+                    _report_original_delivery(session_id, "delivery_withheld",
+                                              answer=response_text)
                     # R15-5: this IS a delivery edge — a parked verdict
                     # banner (anchor consult billed this turn) must attach
                     # here, not survive past the turn (live T2e class).
@@ -2256,6 +2302,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                               trigger_kind=str(_trigger_kind or ""),
                               refusal_chars=len(response_text),
                               session_id=session_id)
+            # M3.3: chain answered empty — the ORIGINAL refusal stands.
+            _report_original_delivery(session_id, "chain_returned_nothing",
+                                      answer=response_text)
             return _decl_passthrough()
 
         # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
