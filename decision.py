@@ -1036,13 +1036,21 @@ def _deliver(verdict: Optional[Dict[str, Any]], reason: str,
                                 session_id, seen, cap)
                     return None
                 _BANNER_COUNTS[session_id] = seen + 1
-                debug_banner.park_anchor_banner(session_id, envelope,
-                                                task_id=_park_task_id(task_id))
+                # R78U M3: AUDIT BEFORE DELIVERY. The banner is the lane's
+                # observable delivery; the parked event is its record. Parking
+                # first let a reader (a test polling the banner, or a
+                # supervisor) see a delivered advisory whose record did not
+                # exist yet — the full-suite order lost this race. Emitting the
+                # record first makes "delivered implies recorded" true at every
+                # observation point. park is fail-safe (delegates, never
+                # raises), so the record is never a claim about a failed park.
                 log_route("decision_advisory_parked",
                           confidence=round(float(verdict.get("confidence") or 0.0), 3),
                           precedents=",".join(verdict.get("precedents", [])),
                           mode=("sync" if sync else "async"),
                           route_id=task_id[:12] if task_id else "")
+                debug_banner.park_anchor_banner(session_id, envelope,
+                                                task_id=_park_task_id(task_id))
             return None
         if verdict is not None:
             # low confidence = the signal: escalate into MODE_CONSULT
@@ -5087,9 +5095,9 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         if parked:
             from . import debug_banner
 
-            debug_banner.park_anchor_banner(ids.get("session_id", ""), parked,
-                                            task_id=_park_task_id(
-                                                ids.get("task_id", "")))
+            # R78U M3: AUDIT BEFORE DELIVERY (same invariant as the sync ladder
+            # above) — the parked event is written before the banner becomes
+            # observable, so "delivered implies recorded" holds for any reader.
             log_route("decision_advisory_parked",
                       choice=str(verdict["choice"]),
                       confidence=round(float(verdict["confidence"]), 3),
@@ -5097,6 +5105,9 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                   or cfg.get("backend") or ""),
                       model=base_row["model"],
                       trigger=ids.get("trigger", "pre"))
+            debug_banner.park_anchor_banner(ids.get("session_id", ""), parked,
+                                            task_id=_park_task_id(
+                                                ids.get("task_id", "")))
     except Exception:  # noqa: BLE001
         logger.debug("decision v3 worker error", exc_info=True)
     finally:
