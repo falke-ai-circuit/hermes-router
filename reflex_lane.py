@@ -32,7 +32,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import persona_card as _pc
 from . import reflex_weights as _rw
@@ -235,6 +235,99 @@ def _transport(payload_obj: Dict[str, Any], cfg: Dict[str, Any]) -> Any:
         return None
 
 
+def build_lane_request(session_id: str, ask: str, state: str, cands: Any,
+                       card: str = "", trigger: str = "midturn",
+                       anchor: Optional[Dict[str, Any]] = None,
+                       cfg: Any = None) -> Dict[str, Any]:
+    """lane-request/1 envelope for THIS consult — the record of what the lane sent.
+
+    M14: this lane assembled its request by hand (``build_state`` -> 
+    ``decision_extract.payload``) and never crossed ``features/envelope/unified``,
+    so it was the one lane the audit could not see: zero ``lane-request/1``
+    records in eleven days of valmet traffic. The frame is unchanged — the
+    wire payload is still the lane's own — this envelope is the structured
+    record BESIDE it, built by the ONE builder, with the same per-agent
+    card/answer content the frame uses.
+
+    Adapter shape (decision lane): the lane's domain content is computed here,
+    handed to ``unified.build_request`` for schema/validation/truncation, and
+    the assembler's result is what the caller records. ``{}`` on any failure —
+    an observability record never blocks a consult.
+    """
+    try:
+        from .features.envelope import unified as _uenv
+
+        a = anchor if isinstance(anchor, dict) else {}
+        opts: List[Dict[str, Any]] = []
+        for i, c in enumerate(cands if isinstance(cands, list) else [], start=1):
+            if not isinstance(c, dict):
+                continue
+            opts.append({"id": "a%d" % i,
+                         "label": str(c.get("label") or c.get("move") or "")[:200]})
+        question = {
+            "type": "choice",
+            "text": ("Which single move does a competent agent actually take next "
+                     "given the evidence? Weigh by what the evidence shows, not by "
+                     "which option sounds safest or most central."),
+        }
+        extras: Dict[str, Any] = {
+            "options": opts,
+            "question": question,
+            "guidance": {"max_options": max(2, min(6, len(opts))),
+                         "decision_kind": "reflex"},
+        }
+        task_txt = str(a.get("rolling_task") or "")[:200]
+        if task_txt:
+            extras["task"] = task_txt
+        extras["digest"] = {
+            "sctx_chars": len(str(state or "")),
+            "causal_chars": 0,
+            "task_chars": len(task_txt),
+            "sctx_rows": str(state or "").count("\n") + 1 if state else 0,
+            "causal_rows": 0,
+        }
+        if card:
+            extras["surrounding_context"] = str(state or "")
+            extras["frame_context_chars_used"] = len(str(state or ""))
+        else:
+            extras["surrounding_context"] = str(state or "")
+        return _uenv.build_request(
+            lane="decision",
+            trigger=str(trigger or "midturn"),
+            session_id=str(session_id or ""),
+            agent_card={"persona": str(card or "")},
+            ask={"text": str(ask or ""), "kind": "user"},
+            context={"final_objective": str(a.get("final_objective") or ""),
+                     "rolling_task": str(a.get("rolling_task") or ""),
+                     "session_context": str(a.get("session_context") or "")},
+            extras={"decision": extras},
+            cfg=cfg if isinstance(cfg, dict) else None,
+        ) or {}
+    except Exception:  # noqa: BLE001 — a record never breaks a consult
+        return {}
+
+
+def _log_lane_request(session_id: str, env: Any, trigger: str,
+                     seam: str = "") -> None:
+    """Make the envelope OBSERVABLE at the seam that built it.
+
+    M14 capture is part of the fix: an envelope nobody can see is the same
+    silence as no envelope. One route-log line per consult, carrying the
+    literal schema so an audit can count it without parsing prose.
+    """
+    try:
+        if not isinstance(env, dict) or not env:
+            return
+        _extras = ((env.get("extras") or {}).get("decision") or {})
+        _log(session_id, "lane_request", schema=str(env.get("schema") or ""),
+             lane=str(env.get("lane") or ""), trigger=str(env.get("trigger") or ""),
+             seam=str(seam or trigger or ""),
+             options=len(_extras.get("options") or []),
+             chars=len(str((env.get("ask") or {}).get("text") or "")))
+    except Exception:  # noqa: BLE001 — telemetry never breaks a consult
+        pass
+
+
 def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
          extra: str = "") -> str:
     """Assemble -> ask -> validate -> park. Returns the block ("" when nothing to say)."""
@@ -274,6 +367,11 @@ def fire(session_id: str, tool: str, text: str, cfg: Any, ask: str = "",
                  if _anchor.get("rolling_task") else None)
         _card = _agent_card(_msgs)
         state = build_state(ask, tool, text, extra, card=_card, anchor=_anchor)
+        # M14: the record of what this seam is about to send, built by the ONE
+        # builder (lane-request/1) and emitted where the frame is assembled.
+        _log_lane_request(session_id, build_lane_request(
+            session_id, ask, state, cands, card=_card,
+            trigger="midturn", anchor=_anchor, cfg=c), "midturn")
         data = _transport(_dx.payload(state, cands, str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return _held(session_id, "transport_error", "midturn")
@@ -1195,8 +1293,13 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
             _ranchor = _rdec.session_anchor(sid)
         except Exception:  # noqa: BLE001 — anchor is additive
             _ranchor = {}
-        data = _transport(_dx.payload(build_state(ask, _last_action_tool(_msgs), window,
-                                                 card=_card, anchor=_ranchor), cands,
+        _state = build_state(ask, _last_action_tool(_msgs), window,
+                             card=_card, anchor=_ranchor)
+        # M14: the PRE seam's own frame — one lane-request/1 record per consult.
+        _log_lane_request(sid, build_lane_request(
+            sid, ask, _state, cands, card=_card,
+            trigger="pre", anchor=_ranchor, cfg=c), "pre", seam="every_call")
+        data = _transport(_dx.payload(_state, cands,
                                       str(c.get("jev_native_model") or "jev-latest")), c)
         if not isinstance(data, dict):
             return bool(_held(sid, "transport_error", "every_call"))
