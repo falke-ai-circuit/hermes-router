@@ -792,7 +792,8 @@ def _deliver_render_pass(request: Any, content: str, rendered: str,
                    pattern_groups="render_empty",
                    content_chars=len(content), session_id=session_id)
         return {"request": request}
-    render_inbox.record_render("PRE", session_id, len(content), rendered)
+    render_inbox.record_pre_frame(session_id, len(content), rendered,
+                                  "uncensored_render")
     # Stash for post-router recovery (spec §6.1) + record msg hash for the
     # loop guard key (spec §6.2).
     state.stash_pending(session_id, model, content, rendered)

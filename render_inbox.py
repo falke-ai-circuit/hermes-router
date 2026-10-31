@@ -45,11 +45,20 @@ def _inbox_path() -> str:
         return os.path.join("/tmp", "shadow-" + INBOX_FILENAME)
 
 
-def record_render(stage: str, session_id: str, trigger_chars: int, render: str) -> None:
-    """Append one render record. Never raises; failures are logged + swallowed."""
+def record_render(stage: str, session_id: str, trigger_chars: int, render: str,
+                  seam: str = "") -> bool:
+    """Append one render record. Never raises; failures are logged + swallowed.
+    Returns True only when the row reached the file (False on a swallowed
+    failure or an empty frame) — callers must not branch on it for delivery.
+
+    M15: `seam` is an OPTIONAL additive key naming the pre-seam producer that
+    emitted the frame (reflex_every_call / reflex_parked / assimilation_frame /
+    uncensored_render). It is omitted when empty, so the row shape for every
+    existing caller (all POST rows) is byte-identical to before.
+    """
     try:
         if not render or not str(render).strip():
-            return
+            return False
         entry = {
             "ts": round(time.time(), 3),
             "stage": str(stage or "?"),
@@ -58,6 +67,8 @@ def record_render(stage: str, session_id: str, trigger_chars: int, render: str) 
             "render_chars": len(render),
             "render": str(render)[:MAX_RENDER_CHARS],
         }
+        if seam:
+            entry["seam"] = str(seam)
         path = _inbox_path()
         d = os.path.dirname(path)
         if d:
@@ -65,8 +76,32 @@ def record_render(stage: str, session_id: str, trigger_chars: int, render: str) 
         _maybe_rotate(path)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return True
     except Exception as exc:  # noqa: BLE001 — must never break the hook
-        logger.debug("uncensored-router render-inbox write failed: %s", exc)
+        # M15: a silent capture gap is the defect this journal exists to
+        # prevent — a write failure is LOGGED (warning, visible in the route
+        # log stream) and still swallowed so delivery is never affected.
+        logger.warning("uncensored-router render-inbox write failed: %s", exc)
+        return False
+
+
+def record_pre_frame(session_id: str, trigger_chars: int, frame: str,
+                     seam: str) -> bool:
+    """THE pre-seam capture point (M15): journal a frame the PRE seam injected.
+
+    Every request-surface producer (reflex every-call reading, the parked
+    reflex reading delivered at the next call, the uncensored-lane
+    assimilation frame) calls this at the moment the frame becomes part of
+    the request the model will see. Returns True when the row landed; never
+    raises — capture must not be able to break delivery.
+    """
+    try:
+        return bool(record_render("PRE", session_id, trigger_chars, frame,
+                                  seam=seam))
+    except Exception as exc:  # noqa: BLE001 — capture never breaks delivery
+        logger.warning("uncensored-router PRE frame capture failed (seam=%s): %s",
+                       seam, exc)
+        return False
 
 
 def read_renders(limit: int = 10) -> List[dict]:

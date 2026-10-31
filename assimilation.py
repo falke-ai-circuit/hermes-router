@@ -226,6 +226,15 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
             request, ASSIMILATION_RULE_ID, text, session_id=sid,
             role="system", dedupe="call"))
         if ok:
+            # M15: the frame IS a PRE render — journal the exact text the
+            # model now reads, so an audit can grade the frame and not a
+            # counter. Failures are swallowed inside record_pre_frame.
+            try:
+                from . import render_inbox as _rin
+
+                _rin.record_pre_frame(sid, 0, text, "assimilation_frame")
+            except Exception:  # noqa: BLE001 — capture never breaks a turn
+                pass
             _log(sid, "assimilation_frame_injected", rule=ASSIMILATION_RULE_ID,
                  turn=turn_no, chars=len(text), wording=frame_wording(),
                  seam="pre")

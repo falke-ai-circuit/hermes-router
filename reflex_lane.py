@@ -605,6 +605,14 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         _ensure_rule(request, session_id, _cfg(None))
         ok = _fr.append_platform_rule(msgs, next_rule_id(session_id), block, role="user")
         if ok:
+            # M15: a delivered reading IS a PRE frame — journal it at the
+            # moment it enters the request (never raises, never blocks).
+            try:
+                from . import render_inbox as _rin
+
+                _rin.record_pre_frame(session_id, 0, block, "reflex_parked")
+            except Exception:  # noqa: BLE001 — capture never breaks delivery
+                logger.debug("reflex_lane PRE capture error", exc_info=True)
             _receipt(session_id, {}, None, "midturn")
             _log(session_id, "reflex_weights_delivered", chars=len(block))
         return bool(ok)
@@ -1368,6 +1376,16 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         if not ok:
             ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
         if ok:
+            # M15: the every-call PRE seam's frame — the exact block the model
+            # will read this request, journaled as stage=PRE. Bounded: a
+            # capture failure is swallowed here and again inside render_inbox.
+            try:
+                from . import render_inbox as _rin
+
+                _rin.record_pre_frame(sid, len(ask or ""), block,
+                                      "reflex_every_call")
+            except Exception:  # noqa: BLE001 — capture never breaks delivery
+                logger.debug("reflex_lane PRE capture error", exc_info=True)
             # P1: a delivered reading is a billed call with a visible effect, so it ships with
             # a receipt through the same banner path as every other lane.
             _receipt(sid, parsed, data, "every_call")
