@@ -43,8 +43,46 @@ def install_legacy_aliases(root_name: str) -> None:
 
 on_llm_request = orchestration.on_llm_request
 on_llm_execution = orchestration.on_llm_execution
-on_transform_llm_output = orchestration.on_transform_llm_output
 on_transform_terminal_output = orchestration.on_transform_terminal_output
+
+
+def _hub_log_route():
+    """The plugin root's `_log_route`, or None outside a package context."""
+    root = _sys.modules.get(_ROOT_NAME)
+    return getattr(root, "_log_route", None) if root is not None else None
+
+
+def on_transform_llm_output(**kwargs):
+    """R78U M8 delivery-edge guards around the POST orchestrator.
+
+    The orchestrator decides whether a turn ROUTES; these guards decide whether
+    the replacement it returns may REPLACE the agent's body:
+
+      1. an identity rewrite (the render re-says the original) is dropped — it
+         delivers nothing and cost a call;
+      2. a non-English decline cue no longer inherits the English-object
+         default that called benign prose `action_denial` — such a body must
+         be SHAPED like a refusal (terse, nothing delivered);
+      3. the model's own self-declaration outranks classifier-only inference:
+         `declined="false"` settles the turn, `declined="true"` keeps its
+         route.
+
+    Transparent by construction: with no guard firing, the orchestrator's
+    answer is returned unchanged, and any guard exception returns it too. The
+    echo guard and the declaration contract are read, never modified.
+    """
+    out = orchestration.on_transform_llm_output(**kwargs)
+    try:
+        from .. import post_guards as _pg
+
+        return _pg.apply_guards(
+            kwargs.get("response_text", "") or "",
+            out,
+            log_route=_hub_log_route(),
+            session_id=str(kwargs.get("session_id") or ""),
+        )
+    except Exception:  # noqa: BLE001 — guards fail open to the orchestrator
+        return out
 
 _MOVABLE_ORCH_NAMES = tuple(
     n for n in dir(orchestration)
