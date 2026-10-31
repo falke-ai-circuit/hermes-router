@@ -1301,7 +1301,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 # it said NO-FINDINGS or findings. Pairing is logged FIRST so
                 # telemetry never loses it, then the record is consumed.
                 _log_pair("post", True, pre_trigger=str(
-                    _pair.get("trigger") or ""), session_id=session_id)
+                    _pair.get("trigger") or ""), session_id=session_id,
+                    claim_derived=bool(_pair.get("claim_derived")))
                 try:
                     from . import state as _st
                     _st.clear_pre_advisory(session_id)
@@ -1825,14 +1826,22 @@ def _pre_pairing(session_id: str, ask: str = "") -> Optional[Dict[str, Any]]:
 
 
 def _log_pair(stage: str, paired: bool, pre_trigger: str = "",
-              reason: str = "", session_id: str = "") -> None:
+              reason: str = "", session_id: str = "",
+              claim_derived: bool = False) -> None:
     """R34-19 pairing telemetry: `higher_self_pair stage=pre|post
-    paired=True|False pre_trigger=<trigger> [reason=<why>]`."""
+    paired=True|False pre_trigger=<trigger> [reason=<why>]`.
+
+    R78U M13: `claim_derived=True` marks a pair whose PRE evidence was the
+    turn's own route-gate claim rather than a stored advisory text — the two
+    are different proofs and must be countable apart in the ledger.
+    """
     kw: Dict[str, Any] = {"stage": str(stage), "paired": bool(paired)}
     if pre_trigger:
         kw["pre_trigger"] = str(pre_trigger)[:80]
     if reason:
         kw["reason"] = str(reason)[:80]
+    if claim_derived:
+        kw["claim_derived"] = True
     if session_id:
         kw["session_id"] = session_id
     try:
@@ -2514,6 +2523,19 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             # verdict budget to the advisory size is the starvation that produced
             # empty consults (finish=length, 0 verdict).
             _mt += int(_fold_revision_tokens(_fold_cap))
+        # R78U M13: an allowance that cannot FINISH inside the socket timeout is
+        # a timeout generator, not a budget. Live 2026-10-31: the sync lane
+        # granted max_tokens=12000 inside a 24s hook and every single fire came
+        # back `Request timed out` (32 skipped rows per agent, 0
+        # completion_audit_done, pair never True). Size the allowance to the wall
+        # clock (~50 output tok/s, measured), never above the configured budget.
+        if socket_timeout < 120:
+            _mt_wall = max(600, int(float(socket_timeout) * 50))
+            if _mt > _mt_wall:
+                _log("completion_audit_budget_clamped",
+                     max_tokens_from=_mt, max_tokens_to=_mt_wall,
+                     timeout_s=socket_timeout, session_id=session_id)
+                _mt = _mt_wall
         api_kwargs = {"messages": msgs,
                       "max_tokens": _mt,
                       "temperature": 0.2}
@@ -2560,12 +2582,33 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             # R34-19d: WHICH call failed, on what payload, under what timeout.
             # 'anchored_call_failed' alone sent the diagnosis to the wrong layer
             # twice (the call works standalone with the same endpoint).
+            #
+            # R78U M13: the blanket token is now only the fallback. The lane
+            # records WHY (thread-local, same thread), so a provider timeout, a
+            # content filter, an empty answer and a missing key are four
+            # countable reasons instead of one — the cap has its own token too
+            # (`cap_blocked`, above), and it is never reported as an anchor
+            # failure.
             try:
                 _pl_chars = sum(len(str(_m.get("content") or "")) for _m in (msgs or [])
                                 if isinstance(_m, dict))
             except Exception:  # noqa: BLE001
                 _pl_chars = -1
-            _log("completion_audit_skipped", reason="anchored_call_failed",
+            _fail_reason, _fail_detail = ("", {})
+            try:
+                _fail_reason, _fail_detail = anchor_exec.last_failure()
+            except Exception:  # noqa: BLE001
+                pass
+            _reason_token = {
+                "timeout": "anchored_call_timeout",
+                "content_filter": "anchored_call_content_filter",
+                "empty_response": "anchored_call_empty_response",
+                "key_unavailable": "anchored_call_key_unavailable",
+                "exception": "anchored_call_exception",
+            }.get(str(_fail_reason or ""), "anchored_call_failed")
+            _log("completion_audit_skipped", reason=_reason_token,
+                 fail_reason=str(_fail_reason or "unrecorded"),
+                 fail_detail=str(_fail_detail or "")[:200],
                  model=str(getattr(ep, "model", "") or ""),
                  msgs=len(msgs or []), payload_chars=_pl_chars,
                  timeout=socket_timeout, max_tokens=api_kwargs.get("max_tokens"),
@@ -2749,6 +2792,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # R37-1: a folded revision with an otherwise empty verdict is still a
         # correction — it must not be discarded by the NO-FINDINGS early return.
         if (not verdict_text or verdict_text == "NO-FINDINGS") and not _revised_body:
+            _rid_nf = None
             if verdict_text:
                 _log("completion_audit_done chars=0 verdict=no-findings",
                      session_id=session_id)
@@ -2790,7 +2834,27 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                             _dbg.park_anchor_banner(session_id, _bnf)
                 except Exception:  # noqa: BLE001
                     pass
-            return None
+            # R78U M13: a COMPLETED consult that found nothing is a RESULT.
+            # This returned None, so audit_gate read a healthy no-findings
+            # verdict as `post_consult_failed`, logged the pair as unpaired,
+            # and the "checked at close — holds" confirmation was structurally
+            # unreachable even when the call succeeded. The meta dict below is
+            # the no-findings RESULT (empty note, verdict flag set); the caller
+            # decides what to render, as with any other verdict.
+            return {
+                "note": "",
+                "verdict": "no-findings",
+                "model": str(getattr(ep, "model", "") or ""),
+                "endpoint": str(getattr(ep, "base_url", "") or ""),
+                "tokens_in": pt,
+                "tokens_out": ct,
+                "cost": cost,
+                "sense_check": _sc,
+                "adversarial": _adv,
+                "ledger_row": _rid_nf,
+                "revised_response": None,
+                "revised_reason": "not_requested",
+            }
         # R73 P0b: positive provenance, no negation, no directive at the tail.
         #   * the old phrasing denied the accusation by name, and the persona that read the note
         #     reached for exactly that word.

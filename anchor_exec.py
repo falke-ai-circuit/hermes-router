@@ -46,6 +46,108 @@ _MEMORY_CONTEXT_RE = re.compile(r"<memory-context>.*?</memory-context>\s*",
 
 
 # ---------------------------------------------------------------------------
+# R78U M13: a failed anchored call must never be a silent None.
+#
+# `anchored_call` returns (None, None, None, None) on four structurally
+# different failures — missing key, empty/content-filtered response, transport
+# timeout, provider exception — and every caller collapsed them into one token
+# (`anchored_call_failed`). Live 2026-10-31: 32 skipped rows per agent, ZERO
+# completion_audit_done, and nothing on record saying WHICH of the four it was,
+# so the audit lane was diagnosed as "the consult never returns anything"
+# instead of "the consult times out inside a 24s hook".
+#
+# The reason is recorded thread-locally: the consult runs in its own worker
+# thread and reads it back on the SAME thread that made the call.
+# ---------------------------------------------------------------------------
+
+_FAIL_STATE = threading.local()
+
+
+def _set_last_failure(reason: str, **detail: Any) -> None:
+    """Record why the most recent anchored_call in THIS thread failed."""
+    try:
+        _FAIL_STATE.reason = str(reason or "")
+        _FAIL_STATE.detail = dict(detail or {})
+    except Exception:  # noqa: BLE001 — telemetry never breaks the lane
+        pass
+
+
+def clear_last_failure() -> None:
+    try:
+        _FAIL_STATE.reason = ""
+        _FAIL_STATE.detail = {}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def last_failure() -> Tuple[str, Dict[str, Any]]:
+    """(reason, detail) of the most recent anchored_call in THIS thread.
+
+    reason ∈ {"", "key_unavailable", "content_filter", "empty_response",
+              "timeout", "exception"} — "" means no failure recorded (success
+              or no call made yet). Never raises.
+    """
+    try:
+        return (str(getattr(_FAIL_STATE, "reason", "") or ""),
+                dict(getattr(_FAIL_STATE, "detail", {}) or {}))
+    except Exception:  # noqa: BLE001
+        return ("", {})
+
+
+def _is_timeout_exc(exc: BaseException) -> bool:
+    """True when the exception is a transport/read timeout, not a provider
+    rejection. Class-name walk (no hard import of httpx/openai types here —
+    those are imported lazily inside the call) + message fallback."""
+    try:
+        names = {c.__name__ for c in type(exc).__mro__}
+    except Exception:  # noqa: BLE001
+        names = set()
+    if names & {"TimeoutError", "timeout", "ReadTimeout", "ConnectTimeout",
+                "APITimeoutError", "TimeoutException", "PoolTimeout"}:
+        return True
+    txt = str(exc).lower()
+    return "timed out" in txt or "timeout" in txt
+
+
+def _filter_safe_payload(payload: Dict[str, Any],
+                         head_chars: int = 900,
+                         tail_chars: int = 1800) -> Dict[str, Any]:
+    """R78U M13 stage (iii): a content-filter zeroed the ANSWER, not the ask.
+
+    The provider's filter trips on the DRAFT BODY (the response under audit is
+    a mutated copy of the live conversation), so the minimal retry — which
+    re-sends the same user message verbatim — filters identically. This retry
+    keeps the head of the brief (the ask) and the tail (the verdict contract /
+    instructions, which payload trimming already preserves), eliding the
+    middle. Returns {} when there is nothing to elide. Never raises.
+    """
+    try:
+        out = dict(payload or {})
+        out.pop("reasoning_effort", None)
+        msgs = out.get("messages")
+        if not isinstance(msgs, list):
+            return {}
+        elided = 0
+        new_msgs = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            txt = str(m.get("content") or "")
+            if m.get("role") == "user" and len(txt) > head_chars + tail_chars:
+                elided += len(txt) - (head_chars + tail_chars)
+                txt = (txt[:head_chars]
+                       + "\n[... body elided: content-filter-safe retry ...]\n"
+                       + txt[-tail_chars:])
+            new_msgs.append({"role": m.get("role") or "user", "content": txt})
+        if not elided:
+            return {}
+        out["messages"] = new_msgs
+        return out
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Key resolution (key_file discipline not required here — anchor keys are env
 # refs by design: OPENROUTER_API_KEY or the custom provider's key_env)
 # ---------------------------------------------------------------------------
@@ -530,10 +632,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         import httpx
         from openai import OpenAI
 
+        clear_last_failure()
         api_key = _resolve_key(endpoint)
         if not api_key:
             logger.error("anchor_route_failed reason=key_unavailable key_env=%s",
                          endpoint.api_key_env)
+            _set_last_failure("key_unavailable",
+                              key_env=str(endpoint.api_key_env or ""),
+                              model=str(getattr(endpoint, "model", "") or ""))
             return None, None, None, None
 
         payload = copy.deepcopy(api_kwargs)
@@ -663,9 +769,11 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             content = ""
         if not str(content).strip():
             _diag = ""
+            _finish_reason = ""
             try:
                 _ch = (raw.get("choices") or [{}])[0] or {}
                 _m = _ch.get("message") or {}
+                _finish_reason = str(_ch.get("finish_reason") or "")
                 _diag = ("finish=%s tool_calls=%s reasoning_chars=%d payload_keys=%s "
                          "max_tokens=%s n_msgs=%d") % (
                     _ch.get("finish_reason"), bool(_m.get("tool_calls")),
@@ -674,8 +782,18 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     payload.get("max_tokens"), len(payload.get("messages") or []))
             except Exception:  # noqa: BLE001
                 _diag = "diag_unavailable"
-            logger.error("anchor_route_failed reason=empty_response model=%s %s",
-                         endpoint.model, _diag)
+            # R78U M13: WHICH empty this was. A provider content filter is not
+            # the same failure as a genuinely empty answer, and neither is a
+            # missing key — one token for all three is how the lane stayed
+            # undiagnosed for a day of live traffic.
+            _set_last_failure(
+                "content_filter" if _finish_reason == "content_filter"
+                else "empty_response",
+                model=str(getattr(endpoint, "model", "") or ""),
+                finish=_finish_reason, max_tokens=payload.get("max_tokens"))
+            logger.error("anchor_route_failed reason=%s model=%s %s",
+                         "content_filter" if _finish_reason == "content_filter"
+                         else "empty_response", endpoint.model, _diag)
             # R34-9b: empty content from a 200 is not the end of the lane.
             # Stage (i) one minimal-payload retry, stage (ii) the optional
             # failover walk. Both logged; fail-open (R34-5 still owns the
@@ -689,7 +807,22 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                 raw = _rraw
                 content = _rc
                 endpoint = _rep
-            else:
+                clear_last_failure()
+            elif _finish_reason == "content_filter":
+                # R78U M13 stage (iii): the minimal retry re-sends the same
+                # user message verbatim, so it filters identically (live
+                # valmet 14:40: minimal retry, finish=content_filter again).
+                # Elide the draft body, keep the ask + the verdict contract.
+                _fs = _filter_safe_payload(payload)
+                if _fs:
+                    logger.info("anchor_consult_filter_safe_retry model=%s",
+                                endpoint.model)
+                    _c2, _r2 = _simple_anchored_call(endpoint, _fs, timeout)
+                    if str(_c2 or "").strip():
+                        raw = _r2
+                        content = _c2
+                        clear_last_failure()
+            if not str(content or "").strip():
                 return None, None, None, None
 
         pricing = anchor_chain.load_anchor_chain().pricing
@@ -700,6 +833,8 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         return str(content), cost, pt, ct
     except Exception as exc:  # noqa: BLE001 — anchored lane must never raise
         logger.error("anchor_route_failed reason=exception detail=%.300s", str(exc))
+        _set_last_failure("timeout" if _is_timeout_exc(exc) else "exception",
+                          detail=str(exc)[:200], kind=type(exc).__name__)
         return None, None, None, None
 
 
