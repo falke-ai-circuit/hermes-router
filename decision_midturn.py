@@ -1233,6 +1233,16 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                 adv = (adv + "\n" + _mb) if adv else _mb
         except Exception:  # noqa: BLE001 — never blocks delivery
             pass
+        # M2.1: the ASSIMILATION direction, MIDTURN seam — same builder, same
+        # closed extras set as the PRE/v3 worker (one build site per direction).
+        _dec._emit_decision_assimilation(
+            envelope, verdict,
+            {"session_id": session_id,
+             "task_id": str(base.get("task_id") or "")},
+            rid, adv,
+            lambda ev, **kw: _log(session_id, ev,
+                                  **{k: v for k, v in kw.items()
+                                     if k != "session_id"}))
         if adv:
             with _LOCK:
                 # max 1 pending, latest-wins

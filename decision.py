@@ -2727,6 +2727,123 @@ def _unified_options(framed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
+ASSIM_OUTCOME_LABELS = frozenset({"resolved", "pending", "stand_down",
+                                  "invalid_fork", "uncodable",
+                                  "unscorable_no_options"})
+
+
+def build_decision_assimilation(envelope: Dict[str, Any],
+                                verdict: Optional[Dict[str, Any]] = None,
+                                producer: str = "decision",
+                                route_id: str = "",
+                                task_id: str = "",
+                                answer: str = "",
+                                kind: str = "decision_fork",
+                                ledger_id: Any = None,
+                                limitations: str = "") -> Dict[str, Any]:
+    """DECISION lane, ASSIMILATION direction — thin adapter, ONE builder.
+
+    Plan §3.2/§3.3 (phase-2 U4): the lane computes its domain content only;
+    features/envelope/unified.py owns the schema, the closed extras key check
+    and truncation. The extras are the registry's CLOSED decision assimilation
+    set {options, chosen, resolver_rule, outcome_label, diagnosticity} — the
+    same slots the decision ledger row already records, so text and structure
+    cannot drift. A builder refusal is {} and stays visible; there is no
+    bespoke second shape. Never raises.
+    """
+    try:
+        from .features.envelope import unified as _uenv
+
+        opts = [o for o in (envelope.get("options") or [])
+                if isinstance(o, dict)]
+        v = dict(verdict) if isinstance(verdict, dict) else {}
+        chosen = str(v.get("choice") or "")
+        outcome = "pending"
+        if chosen == STAND_DOWN_CHOICE:
+            outcome = "stand_down"
+        elif chosen == "unmapped":
+            outcome = "invalid_fork"
+        elif chosen:
+            outcome = "resolved"
+        resolver = ""
+        diag: Dict[str, Any] = {}
+        try:
+            from . import decision_signatures as _ds
+
+            resolver = str(_ds.RESOLVER_RULE_VERSION)
+            sigs = [_ds.option_signature(str(o.get("label") or ""),
+                                         str(o.get("cause_effect") or ""),
+                                         str(o.get("cost") or ""),
+                                         str(o.get("risk") or ""))
+                    for o in opts]
+            diag = _ds.diagnosticity(sigs)
+        except Exception:  # noqa: BLE001 — measurement is optional, not a gate
+            resolver, diag = "", {}
+        refs = []
+        if ledger_id not in (None, ""):
+            refs.append("decision_ledger:%s" % ledger_id)
+        return _uenv.build_assimilation(
+            lane="decision",
+            producer=str(producer or ""),
+            route_id=str(route_id or ""),
+            task_id=str(task_id or ""),
+            answer=str(answer or ""),
+            verdict=v,
+            revised=False,
+            evidence_refs=refs,
+            limitations=str(limitations or ""),
+            ts=time.time(),
+            kind=str(kind or ""),
+            extras={"decision": {
+                "options": [{"id": str(o.get("id") or ""),
+                             "label": str(o.get("label") or "")} for o in opts],
+                "chosen": chosen,
+                "resolver_rule": resolver,
+                "outcome_label": outcome,
+                "diagnosticity": diag,
+            }},
+        )
+    except Exception:  # noqa: BLE001 — never raise
+        return {}
+
+
+def _emit_decision_assimilation(envelope: Dict[str, Any],
+                                verdict: Optional[Dict[str, Any]],
+                                ids: Dict[str, Any], ledger_id: Any,
+                                answer: str, log_route: Any,
+                                limitations: str = "") -> Dict[str, Any]:
+    """Build the decision assimilation envelope and emit it on the lane's own
+    record channel. Returns the envelope ({} when the builder refuses).
+
+    Shared by the PRE/v3 worker and the MIDTURN seam: one build site, one
+    event name, both directions of the turn covered. Never raises.
+    """
+    try:
+        assim = build_decision_assimilation(
+            envelope, verdict,
+            route_id=str((ids or {}).get("task_id") or ""),
+            task_id=str((ids or {}).get("task_id") or ""),
+            answer=str(answer or ""),
+            ledger_id=ledger_id,
+            limitations=str(limitations or ""),
+        )
+        if not assim:
+            return {}
+        if log_route is not None:
+            log_route("decision_assimilation",
+                      lane="decision",
+                      schema=str(assim.get("schema") or ""),
+                      chosen=str(assim.get("extras", {}).get("decision", {})
+                                 .get("chosen") or ""),
+                      outcome=str(assim.get("extras", {}).get("decision", {})
+                                  .get("outcome_label") or ""),
+                      ledger_id=ledger_id if ledger_id is not None else "",
+                      envelope_json=json.dumps(assim, default=str)[:2000])
+        return assim
+    except Exception:  # noqa: BLE001 — never raise
+        return {}
+
+
 def _envelope_from_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Unified request -> the decision lane's legacy envelope (same fields,
     same names, same omission rules: absent component omitted, never "")."""
@@ -4960,6 +5077,12 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
             advisory = " ".join(x for x in (advisory,
                                             render_verdict_record(rid))
                                 if x)
+        # M2.1: the ASSIMILATION direction of the decision lane — one builder
+        # (lane-assimilation/1, extras = the registry's closed decision set),
+        # emitted on the lane's record channel beside the delivered text.
+        _emit_decision_assimilation(
+            envelope, verdict, ids, rid, advisory, log_route,
+            limitations=("suppressed:%s" % _g_reason) if _g_reason else "")
         parked = "\n\n".join(x for x in (advisory, banner) if x)
         if parked:
             from . import debug_banner
