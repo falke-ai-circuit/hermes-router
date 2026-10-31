@@ -81,7 +81,27 @@ def on_transform_llm_output_guarded(**kwargs):
     answer is returned unchanged, and any guard exception returns it too. The
     echo guard and the declaration contract are read, never modified.
     """
-    out = orchestration.on_transform_llm_output(**kwargs)
+    _pg = None
+    _pc_token = None
+    try:
+        from .. import post_guards as _pg
+
+        _pc_token = _pg.open_pre_call(
+            kwargs.get("response_text", "") or "",
+            session_id=str(kwargs.get("session_id") or ""),
+            log_route=_hub_log_route(),
+        )
+    except Exception:  # noqa: BLE001 — no window = no pre-call gate, status quo
+        _pg = None
+        _pc_token = None
+    try:
+        out = orchestration.on_transform_llm_output(**kwargs)
+    finally:
+        try:
+            if _pg is not None:
+                _pg.close_pre_call(_pc_token)
+        except Exception:  # noqa: BLE001 — closing never breaks delivery
+            pass
     try:
         from .. import post_guards as _pg
 

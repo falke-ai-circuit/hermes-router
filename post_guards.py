@@ -29,6 +29,7 @@ open — an exception returns the orchestrator's answer unchanged.
 """
 from __future__ import annotations
 
+import contextvars
 import difflib
 import re
 from typing import Optional, Tuple
@@ -223,6 +224,120 @@ def read_declaration(body: str) -> Tuple[str, str]:
         return stripped, _decl.parse_declaration_value(value)
     except Exception:  # noqa: BLE001 — guard 3 fails OPEN to the orchestrator
         return str(body or ""), UNKNOWN
+
+
+# --------------------------------------------------------------------------- #
+# PRE-CALL gate — the same signals, read BEFORE the billed render
+# --------------------------------------------------------------------------- #
+# M8 put its guards at the DELIVERY edge: they stopped the wrong body being
+# delivered, but the render had already been billed (measured: $0.012138 spent
+# rewriting a benign Italian answer into itself). This gate asks the question
+# one step earlier, at `router.call`, so the request is never made.
+#
+# WHAT IS KNOWABLE BEFORE THE CALL — and what is not (the boundary is the
+# point; a predictor that "knows" the render before it exists would be a lie):
+#
+#   declaration       PRE-CALL. `strip_tag`/`parse_declaration_value` read the
+#                     entered body. `false` settles the turn (the orchestrator
+#                     already declines to route it); `true` outranks the shape
+#                     screen exactly as it does at the delivery edge.
+#   action_denial     PRE-CALL. `is_language_agnostic_action_denial` is a pure
+#     SHAPE           function of the entered body (cue language + structure +
+#                     length). No render is needed to know that a 2 000-char
+#                     structured technical answer is not a hold.
+#   materially        POST-CALL ONLY. Identity is a relation between the
+#     identical       original and the render. There is NO pre-call proxy for
+#                     it, and none is invented here: the closest pre-call
+#                     evidence that a render cannot improve the body is the
+#                     SHAPE screen above, which is why the gate is bounded to
+#                     it. Identity stays decided at the delivery edge, where
+#                     both texts exist.
+#
+# The window is a ContextVar, not module state: it is opened and closed around
+# ONE orchestrator call by gate/registration, it is per-context (concurrent
+# turns never see each other's), and it is consumed once by the first
+# `router.call` in that window. Every other caller of `router.call` (PRE lane,
+# shadow lane, empty-body rule) runs with no window and is untouched.
+_PRE_CALL_WINDOW: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "hermes_router_pre_call_window", default=None)
+
+
+def pre_call_verdict(original: str) -> Tuple[bool, str]:
+    """(skip, reason) for a render that has NOT been made yet.
+
+    `skip` True means: no call can improve this body, so do not bill one.
+    """
+    body = str(original or "")
+    if not body.strip():
+        return False, ""
+    stripped, declaration = read_declaration(body)
+    if declaration == DECLARED_FALSE:
+        return True, DECLARATION
+    if declaration == DECLARED_TRUE:
+        return False, ""  # §2a.4: the model's declaration outranks the shape screen
+    if not is_language_agnostic_action_denial(stripped):
+        return True, SHAPE
+    return False, ""
+
+
+def open_pre_call(original: str, session_id: str = "", log_route=None):
+    """Open the pre-call window for ONE orchestrator call. None when no skip.
+
+    Never raises: a broken window means "no gate", which is the status quo
+    spend, never a suppressed turn.
+    """
+    try:
+        skip, reason = pre_call_verdict(original)
+        if not skip:
+            return None
+        return _PRE_CALL_WINDOW.set({
+            "session_id": str(session_id or ""),
+            "reason": reason,
+            "log_route": log_route,
+            "body_chars": len(str(original or "")),
+        })
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def close_pre_call(token) -> None:
+    """Close the window (idempotent, never raises)."""
+    if token is None:
+        return
+    try:
+        _PRE_CALL_WINDOW.reset(token)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def consume_pre_call(session_id: str = "") -> str:
+    """Reason when the render about to be billed must NOT be made ("" = call).
+
+    Consume-once: the first `router.call` inside the window takes the verdict,
+    so a fallback attempt inside the same call path is never double-judged.
+    Emits the spend-avoidance row here, with the same sink the delivery-edge
+    guards use.
+    """
+    win = _PRE_CALL_WINDOW.get()
+    if not win:
+        return ""
+    try:
+        if (win.get("session_id") and str(session_id or "")
+                and win["session_id"] != str(session_id or "")):
+            return ""
+        reason = str(win.get("reason") or "")
+        _PRE_CALL_WINDOW.set(None)
+        sink = win.get("log_route")
+        if sink is not None:  # telemetry never breaks the call path
+            try:
+                sink("POST", event_detail="pre_call_guard_suppressed",
+                     guard=reason, billed=0, body_chars=win.get("body_chars", 0),
+                     session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001
+                pass
+        return reason
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 # --------------------------------------------------------------------------- #
