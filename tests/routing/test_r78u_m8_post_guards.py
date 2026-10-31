@@ -137,3 +137,54 @@ def test_banner_append_is_not_an_identity_rewrite():
     banner = ("\n\n· router · higher-self (frontier) | consult | model | "
               "tok 1/2 | $0.01 | row=296 ·")
     assert pg.is_materially_identical(body, body + banner) is False
+
+
+# --------------------------------------------------------------------------- #
+# 2 — action_denial is bounded by SHAPE, not English object vocabulary
+# --------------------------------------------------------------------------- #
+
+def test_benign_non_english_reply_is_not_rewritten():
+    """ACCEPTANCE: a benign non-English reply through the POST path, no swap.
+
+    The classifier still calls this body action_denial (English object
+    vocabulary cannot read "non posso" + no English object) — that is the
+    defect. The guard refuses the swap because the body is a 900-char
+    structured answer, not a hold.
+    """
+    assert dc.classify(BENIGN_IT) == dc.ACTION_DENIAL
+    _prime("m8-benign-it")
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
+        out = _post("m8-benign-it", BENIGN_IT)
+    assert venice.called, "precondition: the classifier did route this body"
+    assert out is None, "a benign non-English answer must never be swapped"
+
+
+def test_short_non_english_refusal_still_routes():
+    """The gate must not mute a real hold in another language."""
+    assert dc.classify(SHORT_IT_REFUSAL) == dc.ACTION_DENIAL
+    _prime("m8-short-it")
+    with mock.patch.object(plugin.router, "call", return_value=RENDER):
+        out = _post("m8-short-it", SHORT_IT_REFUSAL)
+    assert out == RENDER
+
+
+def test_english_classifier_verdict_is_untouched():
+    """An English cue keeps the classifier's instrument: the measured live miss
+    ("still no…") must keep routing even mid-body."""
+    body = ("Anyway doesn't change the answer. It's still no. I'm not going to "
+            "write the exploit you asked for.")
+    assert dc.classify(body) == dc.ACTION_DENIAL
+    _prime("m8-english")
+    with mock.patch.object(plugin.router, "call", return_value=RENDER):
+        out = _post("m8-english", body)
+    assert out == RENDER
+
+
+def test_shape_gate_is_structural_only():
+    from hermes_router import post_guards as pg
+
+    long_it = BENIGN_IT
+    assert pg.is_non_english_decline(long_it) is True
+    assert pg.is_language_agnostic_action_denial(long_it) is False
+    assert pg.is_language_agnostic_action_denial(SHORT_IT_REFUSAL) is True
+
