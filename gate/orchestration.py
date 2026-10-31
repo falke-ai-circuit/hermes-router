@@ -1808,6 +1808,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _hub()._log_route("POST", event_detail="audit_gate_returned",
                                   returned=("text" if _out_audit else "none"),
                                   chars=len(_out_audit or "") if _out_audit else 0,
+                                  # R78U M17: a `returned=none` row without a
+                                  # cause is unfalsifiable — skip reasons, cap
+                                  # exhaustion and consult failures all looked
+                                  # identical for three live passes.
+                                  cause=(str(getattr(_ca, "gate_cause", lambda: "")() or "")
+                                         if not _out_audit else ""),
                                   session_id=session_id)
                 if _out_audit:
                     # R9 (2026-09-14): the audit's sync return IS this turn's

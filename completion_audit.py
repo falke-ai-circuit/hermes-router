@@ -62,6 +62,11 @@ except Exception:  # noqa: BLE001
     pass
 
 _MIN_RESPONSE_CHARS = 500
+# R78U M17: the smallest output allowance that can still emit a verdict. Below
+# this a "resized to fit the remaining cap" consult would be starved into
+# empty_response, which is the failure mode the 12000-token budget existed to
+# stop — so headroom below the floor is a named cap_exhausted, not a runt call.
+_CAP_MIN_TOKENS = 600
 # trailing "\n" preserved: _NOTE_MARKER is concatenated with _NOTE_PREFIX at
 # the note-assembly site (pre-R8h contract).
 _NOTE_MARKER = _HS_AUDIT_MARKER + "\n"
@@ -880,6 +885,39 @@ def _is_audit_artifact(text: str) -> bool:
         return False
 
 
+# R78U M17: the gate's VERDICT used to be the only thing on record
+# (`audit_gate_returned returned=none chars=0`), so a skip, a cap veto and a
+# failed consult were indistinguishable in the ledger — the conductor's third
+# live pass could prove POST never produced text but could not name why. The
+# cause travels on a thread-local because audit_gate's return contract
+# (Optional[str] = deliver-or-pass-through) must not change under the caller.
+_GATE_CAUSE = threading.local()
+
+
+def _set_gate_cause(reason: Any, **detail: Any) -> str:
+    """Record WHY this turn's gate produced nothing. Never raises."""
+    try:
+        _GATE_CAUSE.reason = str(reason or "")
+        _GATE_CAUSE.detail = detail or {}
+        return _GATE_CAUSE.reason
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def gate_cause() -> str:
+    """Cause token for the last audit_gate call on THIS thread ('' if none)."""
+    try:
+        return str(getattr(_GATE_CAUSE, "reason", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _skip(reason: str, session_id: Any = None, **kw: Any) -> None:
+    """`audit_gate_skip` row + cause, so the terminal row is never causeless."""
+    _set_gate_cause(reason, **kw)
+    _log("audit_gate_skip", reason=reason, session_id=session_id, **kw)
+
+
 def audit_gate(session_id: str, response_text: str, model: str = "",
                context: Optional[dict] = None,
                *, ask_override: str = "",
@@ -902,6 +940,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
     false-positive passthroughs were skipping the audit entirely — closure
     responses are exactly the most refusal-shape-shaped text)."""
     try:
+        # R78U M17: fresh cause for THIS call — a stale token from a previous
+        # turn must never be reported as this turn's reason.
+        _set_gate_cause("")
         # R42 shadow path — logged on EVERY turn, before any billing or
         # eligibility check, so "would-fire" is measurable even when the
         # consult is blocked (mode off / cap / no endpoint). This is the
@@ -959,7 +1000,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                          claim_source=str(_claim.get("source") or ""),
                          session_id=session_id)
                 else:
-                    _log("audit_gate_skip", reason="turn_claimed",
+                    _skip("turn_claimed",
                          claim_lane=str(_claim.get("lane") or ""),
                          claim_source=str(_claim.get("source") or ""),
                          session_id=session_id)
@@ -973,7 +1014,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # R42: a PRE on record no longer overrides the master switch. The
             # work-mass decision is still on record (`work_mass_gate`) — a
             # would-fire is measurable even when billing is blocked.
-            _log("audit_gate_skip", reason="mode_off",
+            _skip("mode_off",
                  would_fire=bool(_wm["fire"]), session_id=session_id)
             return None
         # R34-19: the length floor exists to stop a one-line reply from buying
@@ -983,7 +1024,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation because the agent reported it in 264 chars.
         if not isinstance(response_text, str) or (
                 not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-            _log("audit_gate_skip", reason="response_too_short_unpaired",
+            _skip("response_too_short_unpaired",
                  chars=len(str(response_text or "")), pair=bool(_pair),
                  session_id=session_id)
             return None
@@ -1009,7 +1050,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                               reason="uncensored_render_this_turn",
                               session_id=session_id)
                     _st.clear_pre_advisory(session_id)
-                _log("audit_gate_skip", reason="uncensored_render_this_turn",
+                _skip("uncensored_render_this_turn",
                      session_id=session_id)
                 return None
         except Exception:  # noqa: BLE001 — fail-open
@@ -1028,7 +1069,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # often has none (no user_message in context, empty last-seen).
             ask = str(_pair.get("ask") or "")
         if not ask.strip():
-            _log("audit_gate_skip", reason="no_ask", session_id=session_id)
+            _skip("no_ask", session_id=session_id)
             return None
         # R34-19: bind the pairing to THIS ask — a PRE recorded for another
         # turn in the same session is not this turn's PRE.
@@ -1075,7 +1116,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             from .decision import _benign_brief_frame as _bf
 
             if _bf(ask) and not _pair:
-                _log("audit_gate_skip", reason="benign_brief_frame",
+                _skip("benign_brief_frame",
                      session_id=session_id)
                 return None
         except Exception:  # noqa: BLE001 — gate is additive, fail-open
@@ -1102,9 +1143,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
 
             if (_benign_composition_frame(ask)
                     and not _cdf(ask) and not _pair):
-                _log("audit_gate_skip",
-                     reason="benign_zero_composition_frame",
-                     session_id=session_id)
+                _skip("benign_zero_composition_frame",
+                      session_id=session_id)
                 return None
         except Exception:  # noqa: BLE001 — gate is additive, fail-open
             pass
@@ -1170,9 +1210,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
 
                     if (_ndf(ask) and not _mt(ask) and not _df(ask)):
                         _closure = False
-                        _log("audit_gate_skip",
-                             reason="closure_nondecision_frame",
-                             session_id=session_id)
+                        _skip("closure_nondecision_frame",
+                              session_id=session_id)
                 except Exception:  # noqa: BLE001 — gate is additive
                     pass
             _fire = _closure
@@ -1213,7 +1252,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # gateway loads the plugin under a different top-level name and a
         # hard import here would kill the whole gate silently — live-caught)
         if not _fire:
-            _log("audit_gate_skip", reason="cadence",
+            _skip("cadence",
                        turn=_turn_n, of=_min_turns, session_id=session_id)
             return None
         # R42: one row per fired consult, carrying the trigger AND the work
@@ -1237,6 +1276,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             if str(_fire_trigger).startswith("work_mass_"):
                 _mark_reflected(session_id)
         if not _ok:
+            _set_gate_cause(_why or "ineligible")
             if _pair:
                 # The pairing existed but the POST cannot fire (too short,
                 # already fired, quotes an audit, ...). Consume it: one POST.
@@ -1262,6 +1302,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         _topology = audit_topology()
         if _topology == "sync" and _sync_budget > 0:
             _req = (context or {}).get("request") if isinstance(context, dict) else None
+            _diag: Dict[str, Any] = {}
             try:
                 _sync_kw: Dict[str, Any] = {}
                 if _pair_ctx:
@@ -1280,12 +1321,27 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 # (reason=needs_tool_work every time), so removing the request
                 # costs nothing and makes the boundary structural instead of
                 # statistical.
+                _diag: Dict[str, Any] = {}
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
-                    timeout_s=_sync_budget, fold_revision=False, **_sync_kw)
-            except Exception:  # noqa: BLE001
+                    timeout_s=_sync_budget, fold_revision=False,
+                    diag=_diag, **_sync_kw)
+            except Exception as _sx:  # noqa: BLE001
+                _diag["reason"] = "consult_raised"
+                _diag["detail"] = type(_sx).__name__
                 _meta = None
             if not (_meta and isinstance(_meta, dict)):
+                # R78U M17: the terminal verdict names its cause. The consult
+                # core records WHY it produced nothing (cap_exhausted,
+                # key_unavailable, timeout, content_filter, empty_response,
+                # no_primary_endpoint, ...) — 'post_consult_failed' is only the
+                # fallback, never the sole token on a row.
+                _cause = str(_diag.get("reason") or "post_consult_failed")
+                _set_gate_cause(_cause,
+                                detail=str(_diag.get("detail") or ""))
+                _log("completion_audit_consult_empty", cause=_cause,
+                     detail=str(_diag.get("detail") or "")[:200],
+                     session_id=session_id)
                 if _pair:
                     try:
                         from . import state as _st
@@ -1294,7 +1350,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                         pass
                     _log_pair("post", False, pre_trigger=str(
                         _pair.get("trigger") or ""),
-                        reason="post_consult_failed", session_id=session_id)
+                        reason=_cause, session_id=session_id)
                 return None
             if _pair:
                 # R34-19: the PRE exists — this verdict answered it, whether
@@ -1452,6 +1508,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     pass
             return _out
         # async topology (or sync budget 0): legacy next-turn verdict.
+        _set_gate_cause("async_topology")
         _req = (context or {}).get("request") if isinstance(context, dict) else None
         run_completion_audit(session_id, ask, response_text, _req, model,
                              pre_brief=(str(_pair_ctx.get("text") or "") if _pair_ctx else ""),
@@ -1467,6 +1524,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         return None
     except Exception:  # noqa: BLE001 — audit must never break delivery
         logger.debug("audit_gate error", exc_info=True)
+        _set_gate_cause("gate_error")
         return None
 
 
@@ -2064,7 +2122,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               timeout_s: float = 45.0,
                               pre_brief: str = "",
                               pre_trigger: str = "",
-                              fold_revision: bool = True) -> Optional[Dict[str, Any]]:
+                              fold_revision: bool = True,
+                              diag: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Sync POST audit (Goran 2026-09-10; R37-1 folded revision): frontier
     consult completes BEFORE delivery and returns BOTH halves in ONE call —
     the verdict and (when the defect is text-fixable) the corrected final
@@ -2093,7 +2152,7 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
         meta = _consult_meta(session_id, ask, response_text, request,
                              model, key, socket_timeout=max(10, int(timeout_s)),
                              pre_brief=pre_brief, pre_trigger=pre_trigger,
-                             fold_revision=fold_revision)
+                             fold_revision=fold_revision, diag=diag)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -2487,7 +2546,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                   socket_timeout: int = 120,
                   pre_brief: str = "",
                   pre_trigger: str = "",
-                  fold_revision: bool = False) -> Optional[Dict[str, Any]]:
+                  fold_revision: bool = False,
+                  diag: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -2498,6 +2558,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         ep = chain.endpoint_for("primary")
         if ep is None:
             logger.info("completion_audit_skipped reason=no_primary_endpoint")
+            if diag is not None:
+                diag["reason"] = "no_primary_endpoint"
             return None
         max_chars = audit_max_chars()
         # R34-19e: budget-aware total cap — under ~40s the frontier call cannot
@@ -2544,8 +2606,44 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         est_cost = anchor_chain.estimate_call_cost(ep, est_in, est_out, chain.pricing)
         allowed, spend_now, _ = anchor_chain.cap_check(chain, est_cost)
         if not allowed:
-            _log("completion_audit_skipped reason=cap_blocked", session_id=session_id)
-            return None
+            # R78U M17: the daily cap is a BUDGET, not a silent veto. The
+            # estimate prices the FULL max_tokens allowance, so a consult that
+            # would spend a few hundred output tokens was refused for the
+            # worst-case price — live: 27 orchestrator + 4 valmet fires, every
+            # one `cap_blocked`, zero consults, zero text, and the terminal row
+            # said only `returned=none`. Size the allowance to the remaining
+            # headroom: if headroom can still buy a viable verdict the consult
+            # RUNS; if it cannot, the cause is a named `cap_exhausted` with the
+            # numbers, never a causeless None.
+            _headroom = max(0.0, float(chain.daily_cap_usd) - float(spend_now))
+            _fit_mt = anchor_chain.max_tokens_for_headroom(
+                ep, int(est_in), _headroom, chain.pricing)
+            if _fit_mt >= _CAP_MIN_TOKENS:
+                _log("completion_audit_cap_resized",
+                     max_tokens_from=_mt, max_tokens_to=_fit_mt,
+                     headroom_usd=round(_headroom, 6),
+                     cap_usd=float(chain.daily_cap_usd),
+                     spend_usd=round(float(spend_now), 6),
+                     session_id=session_id)
+                _mt = int(_fit_mt)
+                api_kwargs["max_tokens"] = _mt
+                est_in, est_out = anchor_exec.estimate_tokens_from_payload(api_kwargs)
+                est_cost = anchor_chain.estimate_call_cost(
+                    ep, est_in, est_out, chain.pricing)
+                allowed, spend_now, _ = anchor_chain.cap_check(chain, est_cost)
+            if not allowed:
+                _detail = ("cap_usd=%.4f spend_usd=%.4f headroom_usd=%.4f "
+                           "est_cost=%.4f fit_tokens=%d floor=%d"
+                           % (float(chain.daily_cap_usd), float(spend_now),
+                              round(_headroom, 6), est_cost, int(_fit_mt),
+                              int(_CAP_MIN_TOKENS)))
+                _log("completion_audit_skipped", reason="cap_exhausted",
+                     detail=_detail, model=str(getattr(ep, "model", "") or ""),
+                     session_id=session_id)
+                if diag is not None:
+                    diag["reason"] = "cap_exhausted"
+                    diag["detail"] = _detail
+                return None
         try:
             content, cost, pt, ct = anchor_exec.anchored_call(
                 ep, api_kwargs, timeout=socket_timeout)
@@ -2553,6 +2651,10 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _log("completion_audit_skipped", reason="anchored_call_raised",
                  error=type(_ac_err).__name__, detail=str(_ac_err)[:160],
                  session_id=session_id)
+            if diag is not None:
+                diag["reason"] = "consult_raised"
+                diag["detail"] = "%s: %.160s" % (type(_ac_err).__name__,
+                                                 str(_ac_err))
             return None
         if cost is None and est_cost > 0:
             cost = est_cost
@@ -2614,6 +2716,11 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                  timeout=socket_timeout, max_tokens=api_kwargs.get("max_tokens"),
                  est_cost=est_cost, pt=pt if pt is not None else -1,
                  ct=ct if ct is not None else -1, session_id=session_id)
+            if diag is not None:
+                # R78U M17: carry the CLASS to the terminal row, not just a log
+                # line — the caller folds it into `audit_gate_returned cause=`.
+                diag["reason"] = _reason_token
+                diag["detail"] = str(_fail_detail or _fail_reason or "")[:200]
             return None
         verdict_text = str(content).strip()
         # R37-1: ONE call carries both halves. The envelope is parsed here (where
@@ -3010,6 +3117,11 @@ def _log(msg: str, **kw: Any) -> None:
 
         _h = _get_hub()
         if _h is not None:
+            # R78U M17: a skip row IS the cause — record it here so every
+            # existing call site (nine of them, all inside audit_gate) feeds the
+            # terminal `audit_gate_returned` row without touching each one.
+            if str(msg) == "audit_gate_skip":
+                _set_gate_cause((kw or {}).get("reason"))
             _h._log_route("POST", event_detail=msg, **kw)
             return
     except Exception:  # noqa: BLE001 — telemetry never breaks a turn

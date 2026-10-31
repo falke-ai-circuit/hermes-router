@@ -491,6 +491,26 @@ def estimate_call_cost(endpoint: AnchorEndpoint, est_input_tokens: int,
         return 0.0
 
 
+def max_tokens_for_headroom(endpoint: AnchorEndpoint, est_input_tokens: int,
+                            headroom_usd: float,
+                            pricing: Dict[str, Dict[str, float]]) -> int:
+    """R78U M17: largest output allowance whose estimated cost fits the
+    remaining daily headroom. Returns 0 when not even the input side fits.
+    Never raises."""
+    try:
+        prices = pricing.get(endpoint.model) if isinstance(pricing, dict) else None
+        if not isinstance(prices, dict):
+            prices = {"input_per_1m": 0.5, "output_per_1m": 1.5}
+        inp = float(prices.get("input_per_1m", 0.5) or 0.0)
+        out = float(prices.get("output_per_1m", 1.5) or 0.0)
+        room = float(headroom_usd or 0.0) - (max(0, int(est_input_tokens)) / 1_000_000.0) * inp
+        if room <= 0.0 or out <= 0.0:
+            return 0
+        return int(max(0.0, (room * 1_000_000.0) / out))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def cap_check(chain: AnchorChainCfg, next_call_cost: float) -> Tuple[bool, float, float]:
     """Return (allowed, spend_now, projected). allowed=False when today's spend
     plus the next call cost would exceed the daily cap. Never raises."""
