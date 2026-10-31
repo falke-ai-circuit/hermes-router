@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
-NOUS_BASE = "https://inference-api.nousresearch.com/v1"
+NOUS_BASE = "http://127.0.0.1:8680/v1"
 NOUS_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_DAILY_CAP_USD = 2.0
 
