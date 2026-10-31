@@ -4809,6 +4809,44 @@ def _log_mindset_scores(verdict: Any, ids: Dict[str, str],
         pass
 
 
+def _park_suppressed_banner(ids: Dict[str, Any], base_row: Dict[str, Any],
+                           meta: Dict[str, Any], reason: str,
+                           rid: Any = None,
+                           log_route: Any = None) -> None:
+    """M7 (b) — operator ruling OPTION C: the call RAN and money was spent, so
+    the delivery decision is suppressed but never silent. Parks a banner
+    carrying an explicit SUPPRESSED state naming the reason token.
+
+    One helper for every post-call suppression return in the v3 worker, so no
+    seam can drift into a bare `return` (that shape is exactly the 58.6% of
+    fires the conductor measured as bannerless). Never raises.
+    """
+    try:
+        from . import debug_banner
+
+        model = str(base_row.get("model") or "")
+        banner = render_decision_banner(
+            str(ids.get("trigger") or "pre"), model, meta or {},
+            initiator=str(ids.get("initiator") or "user"),
+            ledger_ref=rid, suppressed=str(reason or "suppressed"))
+        if not banner:
+            return
+        try:
+            if log_route is not None:
+                log_route("decision_suppressed_banner", lane="decision",
+                          reason=str(reason or "")[:40],
+                          trigger=str(ids.get("trigger") or "pre"),
+                          session_id=str(ids.get("session_id") or ""),
+                          task_id=str(ids.get("task_id") or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
+        debug_banner.park_anchor_banner(
+            str(ids.get("session_id") or ""), banner,
+            task_id=_park_task_id(str(ids.get("task_id") or "")))
+    except Exception:  # noqa: BLE001 — a banner must never break the lane
+        pass
+
+
 def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                cfg: Dict[str, Any], log_route: Any) -> None:
     try:
@@ -4933,6 +4971,10 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                       backend=str(meta.get("backend")
                                   or cfg.get("backend") or ""))
             ledger_write(dict(base_row, fail_open_reason=str(reason)))
+            # M7(b): the HTTP call was made — suppression is a DELIVERY
+            # decision, never a reason to hide the spend.
+            _park_suppressed_banner(ids, base_row, meta, str(reason),
+                                    log_route=log_route)
             return
         verdict, vreason = validate_verdict(content, envelope)
         _log_mindset_scores(verdict, ids, cfg, log_route)
@@ -4944,6 +4986,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                       backend=str(meta.get("backend")
                                   or cfg.get("backend") or ""))
             ledger_write(dict(base_row, fail_open_reason=str(vreason)))
+            _park_suppressed_banner(ids, base_row, meta, str(vreason),
+                                    log_route=log_route)
             return
         # R19.17 ADDENDUM 2 (1): unmapped choice -> ledger row with
         # choice=unmapped + outcome=invalid_fork; NO advisory, NO banner.
@@ -4958,6 +5002,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                               fail_open_reason=REASON_INVALID_FORK,
                               verdict_json=verdict_row_json(verdict,
                                                             content)))
+            _park_suppressed_banner(ids, base_row, meta, REASON_INVALID_FORK,
+                                    log_route=log_route)
             return
         if verdict["choice"] == STAND_DOWN_CHOICE:
             # §7(d): the backend stood down — no decision actually requested.
@@ -4967,6 +5013,8 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
                                   or cfg.get("backend") or ""))
             ledger_write(dict(base_row, outcome="stand_down",
                               fail_open_reason="stand_down"))
+            _park_suppressed_banner(ids, base_row, meta, "stand_down",
+                                    log_route=log_route)
             return
         # §7(e) misfire counter: a high-confidence answer on a POST fork scan
         # (the weakest trigger — the model merely OFFERED options) counts
@@ -5076,7 +5124,11 @@ def _v3_worker(envelope: Dict[str, Any], ids: Dict[str, str],
         banner = render_decision_banner(
             ids.get("trigger", "pre"), base_row["model"], meta,
             initiator=ids.get("initiator", "user"),
-            ledger_ref=rid, tokens_ok=tokens_ok)
+            ledger_ref=rid, tokens_ok=tokens_ok,
+            # M7(b): this banner is the billing receipt for a call that ran;
+            # when the emission gate suppressed the ADVISORY the receipt says
+            # so explicitly instead of looking like a normal delivery.
+            suppressed=str(_g_reason or ""))
         # F1 (rider 6): the advisory carries the verdict-of-record read back
         # from the ledger row — no render-layer shaping may diverge from the
         # recorded choice/confidence. No row -> no claim. R37-3: a suppressed

@@ -1105,6 +1105,11 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _log(session_id, "midturn_suppressed", reason=str(reason),
                  sig=sig, mode=mode, tool=tool_name, seam=seam,
                  backend=str(cfg.get("backend") or ""))
+            # M7(b): the call ran — suppression never hides the spend.
+            _dec._park_suppressed_banner(
+                {"trigger": TRIGGER, "session_id": session_id,
+                 "task_id": str(base.get("task_id") or "")},
+                base, meta, str(reason))
             return
         verdict, vreason = _dec.validate_verdict(content, envelope)
         # R58: the midturn seam validates HERE, not in decision.py's worker —
@@ -1127,12 +1132,20 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
             _dec.ledger_write(dict(base, fail_open_reason=str(vreason)))
             _log(session_id, "midturn_suppressed", reason=str(vreason),
                  sig=sig, mode=mode, tool=tool_name, seam=seam)
+            _dec._park_suppressed_banner(
+                {"trigger": TRIGGER, "session_id": session_id,
+                 "task_id": str(base.get("task_id") or "")},
+                base, meta, str(vreason))
             return
         if verdict["choice"] == _dec.STAND_DOWN_CHOICE:
             _dec.ledger_write(dict(base, outcome="stand_down",
                                    fail_open_reason="stand_down"))
             _log(session_id, "midturn_stand_down", sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
+            _dec._park_suppressed_banner(
+                {"trigger": TRIGGER, "session_id": session_id,
+                 "task_id": str(base.get("task_id") or "")},
+                base, meta, "stand_down")
             return
         # R19.17 ADDENDUM 2: unmapped choice -> invalid_fork row (never
         # free text in the choice column); no advisory parked.
@@ -1145,6 +1158,10 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                                        verdict, content)))
             _log(session_id, "midturn_invalid_fork", sig=sig, mode=mode,
                  tool=tool_name, seam=seam)
+            _dec._park_suppressed_banner(
+                {"trigger": TRIGGER, "session_id": session_id,
+                 "task_id": str(base.get("task_id") or "")},
+                base, meta, _dec.REASON_INVALID_FORK)
             return
         # R34-3: resolve the chosen option's label + provenance BEFORE the
         # row is written so the ledger carries it (banner text at turn close

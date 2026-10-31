@@ -222,7 +222,8 @@ def render_verdict_record(rid: Any) -> str:
 def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
                            initiator: str = "user",
                            ledger_ref: Any = None,
-                           tokens_ok: Optional[bool] = None) -> str:
+                           tokens_ok: Optional[bool] = None,
+                           suppressed: str = "") -> str:
     """§7 provenance banner, same mechanics as uncensored/frontier lanes:
     '· router · impulse (decision) | <trigger> | <model> | tok n/n | $x.xxxxxx |
     initiator=user'. One banner per message, latest-wins park.
@@ -278,6 +279,14 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
             markers.append("ledger-row MISSING")
         if tokens_ok is False:
             markers.append("LEDGER-WRITE FAILED")
+        # M7(b) — operator ruling OPTION C: a consult that RAN (cost incurred)
+        # but whose delivery is suppressed still emits a banner carrying an
+        # explicit suppressed state naming the reason token. No silent spend;
+        # no invisible billing. The marker is additive and id-free on purpose
+        # (it names a delivery decision, not a call).
+        if str(suppressed or "").strip():
+            markers.append("SUPPRESSED state=%s"
+                           % str(suppressed).strip()[:40])
         if markers:
             _out = str(_out).rstrip()
             if _out.endswith("·"):
