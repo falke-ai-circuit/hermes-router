@@ -1,10 +1,18 @@
-# R76-P4 controlled-failure baseline (pinned 2026-10-27 at HEAD 756e8ed).
+# R76-P4 controlled-failure baseline — RE-BASELINED by R78-U M9 (2026-10-31).
 #
-# The suite is NOT green and no slice in R76-P4 may claim GREEN over an
-# undiagnosed red (plan §C clause 3). A slice's gate is therefore
-# "failure set EQUALS this set", not "0 failed". Enforced mechanically by:
+# Previous state: ONE row era, pinned at HEAD 756e8ed, while the tree stood at
+# 56ececf.  The gate therefore graded DRIFT on every run for reasons that had
+# nothing to do with the slice under review — a gate that is always red is a
+# gate nobody reads.  This file is that re-pin, measured, not asserted:
 #
 #     python3 scripts/baseline_check.py
+#     HEAD 56ececf -> 15 failed, 2759 passed, 3 skipped, 1 deselected,
+#                     1 xfailed, 6 errors = 21 red
+#
+# 21 red = 9 required + 12 optional, every one of the 21 classified in
+# M9_PIN.md with per-row evidence and a measured "before" run at ec5d167
+# (the commit immediately preceding the R78-U slice).  11 of the 21 are
+# PRE-EXISTING reds that predate the slice; 0 were introduced by it.
 #
 # Format: one node id per line; '#' starts a comment; blank lines ignored.
 #     <nodeid>            required — must be red
@@ -14,29 +22,40 @@
 #                         (an unexplained exemption is refused; a red with a
 #                          different cause, or an id that never runs, is DRIFT)
 #
-# Every entry here has a row in docs/r76-p4-baseline-triage.md naming its
-# class (env / real / accepted-debt). Adding a line is a decision, not a
-# convenience: an entry with no triage row is a lie about the code.
+# A required row means "red in EVERY run".  An optional row means "its colour
+# is not a fact about the slice" and says which fact it is about instead.
+# Adding a line is a decision, not a convenience.
+#
+# KNOWN LIMIT, stated so nobody mistakes this pin for hermetic: the runner is
+# NOT hermetic — the child pytest inherits the invoking shell's HERMES_HOME,
+# and the 7 rider16/rider18 rows below depend on
+# hermes_router.classification.pre_classify in that home's config.yaml.  They
+# are red with pre_classify=false (the coder home) and green with true.  The
+# hermetic per-run home that removes this dependence exists on branch
+# refactor/r78 (M0.8) and should be merged here before anyone treats a main
+# gate result as reproducible across operators.
 
-# --- required (9) ----------------------------------------------------------
-tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks
-tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets
-tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema
-tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics
-tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics
-tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist
-tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner
-tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum
-tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold
+# --- required (9) --- every one red in every measured run
+tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks  # real: allowlist may only shrink; decision_midturn.py + reflex_weights.py read the legacy block
+tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets  # real: bare max_tokens literals in api/router_tools.py and tools/detcorpus/* (signature widened since row 2)
+tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema  # real: closure_pass + features/detection/unknown_route_gate read config paths absent from core/schema.py
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics  # real: decline construction over-broad; a status report is read as a refusal (with the row below)
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics  # real: same construction as above, first-person account read as a refusal
+tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist  # env: teardown-only egress to ollama.com:443 via the live provider config; body assertions passed
+tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner  # env: same autouse egress guard, same endpoint-resolution seam as the row above
+tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum  # accepted-debt: completion_audit passes fold_revision=False by design; the pin was never inverted
+tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold  # accepted-debt: same fold decision exercised through the large-budget branch
 
-# --- optional (1) ----------------------------------------------------------
-# State-dependent, NOT code-dependent: test_m1 does not request the module's
-# own `_env` fixture, so anchor_exec._mindset_history stays unpatched and the
-# stance is read from live session state. OBSERVED at 0e4ce3a: red standalone
-# (`1 failed, 16 passed`), PASSING in the full suite (`7 failed, 2528 passed`)
-# — the colour follows the state of the history DB, not the slice.
-# The exemption must explain itself: reason= names the class, and expect= is the
-# recorded failure signature. A red with any other cause is a regression, not
-# this exemption. A node id that never runs at all is DRIFT.
-# Row M1 in docs/r76-p4-baseline-triage.md.
-optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  reason=state-dependent  expect="assert None is not None"
+# --- optional (12) --- 1 state-dependent + 7 env + 4 order
+optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  reason=state-dependent  expect="assert None is not None"  # reads live session history: the test never requests the module's _env fixture
+optional tests/routing/test_rider16_fixes.py::test_anchored_failure_logs_route_skipped  reason=env  expect="route_skipped must reach the route log on anchored failure"  # PRE seam short-circuits under the invoking home's classification.pre_classify=false
+optional tests/routing/test_rider16_fixes.py::test_anchored_failure_parks_fail_loud_banner  reason=env  expect="consult_failed"  # same config-conditioned PRE short-circuit; no consult, so no failure banner is parked
+optional tests/routing/test_rider16_fixes.py::test_declared_higherself_success_delivers_banner  reason=env  expect="consult must route"  # same class: the declared form never reaches the consult under pre_classify=false
+optional tests/routing/test_rider16_fixes.py::test_open_question_success_delivers_banner  reason=env  expect="anchor_route_fired"  # same class: no anchor_route_fired event because the PRE seam is short-circuited
+optional tests/routing/test_rider16_fixes.py::test_second_identical_manual_ask_consults_nothing  reason=env  expect="first ask must consult"  # same class: zero decision rows because the first ask never consults
+optional tests/routing/test_rider18_fixes.py::test_open_question_emits_frontier_route_fired  reason=env  expect="frontier_route_fired must be emitted"  # same config-conditioned PRE short-circuit, frontier direction
+optional tests/routing/test_rider18_fixes.py::test_declared_frontier_form_also_emits_frontier_event  reason=env  expect="declared form must still route"  # same class: declared frontier form never routes
+optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_two_decision_lines_merge_into_one_with_summed_numbers  reason=order  expect="lane store not cleared by this test"  # order: reflex_lane._HELD_LOGGED arrives dirty (47 keys) from an earlier file; not in the test's clear-list
+optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_hold_only_says_hold_and_never_zero_lead  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
+optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_other_lanes_are_never_merged  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
+optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_unparseable_decision_line_appends_instead_of_being_lost  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
