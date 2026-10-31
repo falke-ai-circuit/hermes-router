@@ -3600,7 +3600,9 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
         key = _os.environ.get(str(cfg.get("api_key_env")
                                   or "OPENROUTER_API_KEY"), "")
         if not key:
+            # M7b: no key -> no dispatch, no spend -> no SUPPRESSED banner.
             return None, dict(meta, model=model, endpoint=endpoint,
+                              no_call=True,
                               latency_s=round(time.time() - t0, 2)), \
                 REASON_BACKEND_ERROR
         data = _http_post_json(endpoint,
@@ -3708,12 +3710,13 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
         # returned like any other fail-open, which the ledger records.
         _ok, _why = consult_admissible(envelope)
         if not _ok:
-            return None, meta, _why
+            # M7b: nothing was dispatched — no spend, so no SUPPRESSED banner.
+            return None, dict(meta, no_call=True), _why
         backend = str(cfg.get("backend") or "nous").strip().lower()
         timeout = float(cfg.get("backend_timeout_seconds") or 15)
         prompt = render_prompt(envelope)
         if not prompt:
-            return None, meta, REASON_PARSE_FAIL
+            return None, dict(meta, no_call=True), REASON_PARSE_FAIL
         t0 = time.time()
         if backend == "jev":
             return _call_jev(envelope, prompt, cfg, timeout, t0)
@@ -3732,13 +3735,16 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
                 str(cfg.get("typesafe_api_key_env")
                     or DEFAULTS["typesafe_api_key_env"]), "")
             if not key:
+                # M7b: no key -> no dispatch, no spend -> no SUPPRESSED banner.
                 return None, dict(meta, model=model, endpoint=endpoint,
+                                  no_call=True,
                                   latency_s=round(time.time() - t0, 2),
                                   backend="jev_native"), \
                     REASON_BACKEND_ERROR
             payload = _systemone_native_payload(envelope, cfg)
             if not payload:
-                return None, dict(meta, backend="jev_native"), \
+                return None, dict(meta, backend="jev_native",
+                                  no_call=True), \
                     REASON_PARSE_FAIL
             data = _http_post_json(
                 endpoint, {"Authorization": "Bearer %s" % key}, payload,
@@ -3820,7 +3826,8 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
             if not content or not str(content).strip():
                 return None, meta, REASON_PARSE_FAIL
             return str(content), meta, "ok"
-        return None, meta, REASON_UNKNOWN_BACKEND
+        # M7b: no adapter matched -> no dispatch, no spend.
+        return None, dict(meta, no_call=True), REASON_UNKNOWN_BACKEND
     except Exception:  # noqa: BLE001
         return None, meta, REASON_BACKEND_ERROR
 
@@ -4820,8 +4827,16 @@ def _park_suppressed_banner(ids: Dict[str, Any], base_row: Dict[str, Any],
     One helper for every post-call suppression return in the v3 worker, so no
     seam can drift into a bare `return` (that shape is exactly the 58.6% of
     fires the conductor measured as bannerless). Never raises.
+
+    M7b: rule (b) is about a consult that RAN and COST money but was not
+    delivered. A pre-dispatch failure (missing key, inadmissible envelope,
+    unknown backend) made no call and spent nothing, so it must stay silent
+    exactly as before — those returns mark meta with no_call=True and are
+    dropped here, at the one choke point.
     """
     try:
+        if (meta or {}).get("no_call"):
+            return
         from . import debug_banner
 
         model = str(base_row.get("model") or "")
