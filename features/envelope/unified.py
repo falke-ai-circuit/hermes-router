@@ -43,6 +43,7 @@ from .registry import (  # noqa: E402 — data-only module, no cycle
     EXTRAS_KEYS,
     LANE_NAMES,
     extras_keys,
+    required_keys,
 )
 
 LANES = LANE_NAMES  # live sequence of lane names (both directions declared)
@@ -462,6 +463,29 @@ def build_request(lane: Any, trigger: str = "pre", session_id: str = "",
 # the one assimilation builder (output direction)
 # ---------------------------------------------------------------------------
 
+def _missing_required(lane: Any, extras: Any, direction: str) -> List[str]:
+    """Required extras keys that are absent or blank. Empty list == satisfied.
+
+    An allowed-but-absent key is a thinner envelope; a REQUIRED-but-absent key
+    (registry.REQUIRED_KEYS) is an envelope that misstates what happened, so it
+    is refused here at build time and reported by the validators.
+    """
+    out: List[str] = []
+    try:
+        need = required_keys(lane, direction)
+        if not need:
+            return out
+        block = extras.get(lane) if isinstance(extras, dict) else None
+        block = block if isinstance(block, dict) else {}
+        for key in sorted(need):
+            value = block.get(key)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                out.append(str(key))
+    except Exception:  # noqa: BLE001 — a requirement probe never breaks a build
+        return out
+    return out
+
+
 def build_assimilation(lane: Any, producer: str = "", route_id: str = "",
                        task_id: str = "", answer: str = "",
                        verdict: Optional[Dict[str, Any]] = None,
@@ -486,6 +510,10 @@ def build_assimilation(lane: Any, producer: str = "", route_id: str = "",
     try:
         errors = validate_extras(lane, extras, direction="assimilation")
         if errors:
+            return {}
+        if _missing_required(lane, extras, "assimilation"):
+            # A required value is missing: {} is a visible refusal upstream
+            # (lane reports "no envelope"), never a delivery claim without it.
             return {}
         lane_extras: Dict[str, Any] = {}
         if isinstance(extras, dict):
@@ -551,6 +579,8 @@ def validate_assimilation(envelope: Any) -> List[str]:
             errors.append("budget.drop_order must be a list")
         errors.extend(validate_extras(lane, envelope.get("extras"),
                                       direction="assimilation"))
+        for key in _missing_required(lane, envelope.get("extras"), "assimilation"):
+            errors.append("required extras.%s.%s missing or blank" % (lane, key))
     except Exception:  # noqa: BLE001
         return ["assimilation validation failed"]
     return errors

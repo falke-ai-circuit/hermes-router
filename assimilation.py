@@ -179,6 +179,9 @@ def mark_turn_rendered(session_id: str) -> None:
     for key, turn_no in evicted:
         _log(key, "assimilation_mark_dropped", rule=ASSIMILATION_RULE_ID,
              reason="capacity", turn=turn_no, mark_max=_MARK_MAX)
+    # M3.1: the mark IS the lane's acceptance statement — one record per
+    # delivered render, on the same channel, fail-quiet.
+    _report_mark_acceptance(sid)
 
 
 def pending_turn(session_id: str) -> bool:
@@ -296,3 +299,209 @@ def frame_for(session_id: str) -> Optional[str]:
     """What the frame WOULD be for this session, for logs/tests. None when no
     rendered turn is pending."""
     return frame_text() if pending_turn(session_id) else None
+
+
+# ---------------------------------------------------------------------------
+# ASSIMILATION ENVELOPE — lane-assimilation/1, output direction
+# ---------------------------------------------------------------------------
+# M3.1: the lane carries the SAME envelope contract as the decision lane. ONE
+# builder (features/envelope/unified.py), lane="uncensored", extras = the
+# registry's CLOSED uncensored assimilation set {leg, render, acceptance,
+# refusal_class, voice_mode}. There is no bespoke second shape here.
+#
+# `acceptance` is REQUIRED (registry.REQUIRED_KEYS) and says HOW the delivered
+# body was accepted: the body the user read was either a post_transform of the
+# model's turn, or the original body untouched — plus a closed reason token.
+# A report without it cannot be built ({} ) and cannot validate, so the lane
+# cannot record "delivered" while leaving the provenance unsaid.
+
+import json  # noqa: E402 — envelope emission only, no import-time cycle
+
+ACCEPT_SOURCES = ("post_transform", "original")
+
+ACCEPT_REASONS = frozenset({
+    "delivered_render",        # the render IS the delivered turn (mark site)
+    "render_swap",             # render replaced the refusal-shaped body
+    "empty_body_render",       # a blank model body became content
+    "render_unavailable",      # chain produced nothing; original body stands
+    "chain_returned_nothing",  # chain answered empty; original body stands
+    "delivery_withheld",       # delivery seam declined the swap
+})
+
+DEFAULT_ACCEPTANCE = "post_transform:delivered_render"
+
+
+def acceptance_token(source: Any, reason: Any = "delivered_render") -> str:
+    """"<source>:<reason>" — '' when either token is outside the closed sets.
+
+    Two parts, both closed: the SOURCE says whose bytes the user read, the
+    REASON says why. A free-text acceptance value would be unauditable, so an
+    unknown token is a refusal (''), never a coerced guess.
+    """
+    try:
+        src = str(source or "").strip().lower()
+        rsn = str(reason or "").strip().lower()
+        if src not in ACCEPT_SOURCES or rsn not in ACCEPT_REASONS:
+            return ""
+        return "%s:%s" % (src, rsn)
+    except Exception:  # noqa: BLE001 — never raise
+        return ""
+
+
+def parse_acceptance(token: Any) -> tuple:
+    """(source, reason) for a token; ("", "") when malformed/unknown."""
+    try:
+        src, sep, rsn = str(token or "").partition(":")
+        if not sep:
+            return ("", "")
+        norm = acceptance_token(src, rsn)
+        if not norm:
+            return ("", "")
+        return tuple(norm.split(":", 1))  # type: ignore[return-value]
+    except Exception:  # noqa: BLE001
+        return ("", "")
+
+
+def _normalize_acceptance(acceptance: Any) -> str:
+    """Accept a token string OR {source, reason} OR (source, reason)."""
+    try:
+        if isinstance(acceptance, dict):
+            return acceptance_token(acceptance.get("source"),
+                                    acceptance.get("reason", "delivered_render"))
+        if isinstance(acceptance, (tuple, list)) and len(acceptance) == 2:
+            return acceptance_token(acceptance[0], acceptance[1])
+        src, rsn = parse_acceptance(acceptance)
+        return acceptance_token(src, rsn) if src else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def build_uncensored_assimilation(acceptance: Any, leg: str = "post",
+                                  render: str = "",
+                                  refusal_class: str = "",
+                                  voice_mode: str = "voice_stems",
+                                  producer: str = "uncensored",
+                                  route_id: str = "", task_id: str = "",
+                                  answer: str = "",
+                                  verdict: Optional[Dict[str, Any]] = None,
+                                  revised: bool = False,
+                                  evidence_refs: Optional[list] = None,
+                                  limitations: str = "",
+                                  kind: str = "uncensored_render",
+                                  include_render: Optional[bool] = None
+                                  ) -> Dict[str, Any]:
+    """UNCENSORED lane, ASSIMILATION direction — thin adapter, ONE builder.
+
+    Plan §3.2/§3.3: the lane computes domain content only; the unified builder
+    owns schema, the closed extras check, the truncation policy and the
+    required-key refusal. `render` is OMITTED (not blanked) when the caller
+    does not hold the body — the body then lives in render_inbox and the
+    evidence_ref points at it, rather than claiming an empty body.
+
+    Refusal is {} and stays visible: acceptance missing/unknown -> {}; unknown
+    extras -> {}; builder failure -> {}. Never raises.
+    """
+    try:
+        from .features.envelope import unified as _uenv
+
+        token = _normalize_acceptance(acceptance)
+        extras: Dict[str, Any] = {
+            "leg": str(leg or "post").strip().lower() or "post",
+            "acceptance": token,
+            "refusal_class": str(refusal_class or ""),
+            "voice_mode": str(voice_mode or "voice_stems"),
+        }
+        if include_render is None:
+            include_render = bool(str(render if render is not None else ""))
+        if include_render:
+            extras["render"] = str(render if render is not None else "")
+        return _uenv.build_assimilation(
+            lane="uncensored",
+            producer=str(producer or ""),
+            route_id=str(route_id or ""),
+            task_id=str(task_id or ""),
+            answer=str(answer or ""),
+            verdict=dict(verdict) if isinstance(verdict, dict) else {},
+            revised=bool(revised),
+            evidence_refs=[str(r) for r in (evidence_refs or [])],
+            limitations=str(limitations or ""),
+            ts=time.time(),
+            kind=str(kind or ""),
+            extras={"uncensored": extras},
+        )
+    except Exception:  # noqa: BLE001 — never raise
+        return {}
+
+
+def report_delivery(session_id: str, acceptance: Any, *,
+                    render: str = "", leg: str = "post",
+                    verdict: Optional[Dict[str, Any]] = None,
+                    route_id: str = "", task_id: str = "", answer: str = "",
+                    refusal_class: str = "", evidence_refs: Optional[list] = None,
+                    limitations: str = "",
+                    kind: str = "uncensored_render") -> Dict[str, Any]:
+    """THE delivery recorder for this lane. Emits the assimilation envelope on
+    the lane's own record channel and returns it.
+
+    Hard guard: without a valid acceptance token — or when the built envelope
+    fails validate_assimilation — NOTHING is recorded. The refusal is logged
+    as `uncensored_assimilation_refused` with the reason, so a delivery that
+    cannot state its provenance is visible as a missing record rather than
+    silently counted as delivered. Never raises.
+    """
+    try:
+        token = _normalize_acceptance(acceptance)
+        if not token:
+            _log(session_id, "uncensored_assimilation_refused",
+                 reason="acceptance_missing", stage="report_delivery",
+                 leg=str(leg or ""))
+            return {}
+        env = build_uncensored_assimilation(
+            token, leg=leg, render=render, refusal_class=refusal_class,
+            route_id=route_id, task_id=task_id, answer=answer, verdict=verdict,
+            evidence_refs=evidence_refs, limitations=limitations, kind=kind,
+            include_render=bool(str(render or "")),
+        )
+        if not env:
+            _log(session_id, "uncensored_assimilation_refused",
+                 reason="builder_refused", stage="report_delivery",
+                 acceptance=token, leg=str(leg or ""))
+            return {}
+        from .features.envelope import unified as _uenv
+
+        errors = _uenv.validate_assimilation(env)
+        if errors:
+            _log(session_id, "uncensored_assimilation_refused",
+                 reason="validation_failed", stage="report_delivery",
+                 acceptance=token, errors=";".join(errors)[:300])
+            return {}
+        src, rsn = parse_acceptance(token)
+        _log(session_id, "uncensored_assimilation", lane="uncensored",
+             schema=str(env.get("schema") or ""), leg=str(leg or ""),
+             acceptance=token, accept_source=src, accept_reason=rsn,
+             delivered=True,
+             envelope_json=json.dumps(env, default=str)[:2000])
+        return env
+    except Exception:  # noqa: BLE001 — recording must never break a turn
+        return {}
+
+
+def _report_mark_acceptance(session_id: str) -> None:
+    """Record the acceptance envelope for a marked render.
+
+    mark_turn_rendered is called ONLY when a render IS the delivered turn (both
+    live call sites), so the source is post_transform by construction. The
+    body itself already lives in render_inbox — the envelope names it as
+    evidence instead of duplicating it. Fail-quiet: a missing record never
+    costs a delivered turn.
+    """
+    try:
+        report_delivery(
+            session_id,
+            acceptance_token("post_transform", "delivered_render"),
+            leg="post",
+            evidence_refs=["render_inbox:%s" % str(session_id or "")],
+            limitations="render_body_in_render_inbox",
+        )
+    except Exception:  # noqa: BLE001 — never break delivery
+        pass

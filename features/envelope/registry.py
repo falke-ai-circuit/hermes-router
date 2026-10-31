@@ -91,6 +91,24 @@ LANES: Dict[str, Dict[str, frozenset]] = {
 # derived, LIVE views — one source of truth, zero duplicated literals
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# REQUIRED (not merely allowed) extras keys, per lane + direction
+# --------------------------------------------------------------------------- #
+# A closed key set says "these keys may appear". A required key says "the
+# envelope is a LIE without this value", and the two must not be conflated:
+# every other lane's extras are optional evidence, while the uncensored
+# assimilation's `acceptance` is the statement of HOW the delivered body was
+# accepted (post_transform vs original + the reason token). A lane that cannot
+# say that must not emit an assimilation envelope claiming a delivery — a body
+# with no acceptance record is the inverse-delivery defect in schema form.
+REQUIRED_KEYS: Dict[str, Dict[str, frozenset]] = {
+    "uncensored": {
+        "request": frozenset(),
+        "assimilation": frozenset({"acceptance"}),
+    },
+}
+
+
 class _DerivedKeys(Mapping):
     """``lane -> frozenset`` view over ``LANES[lane][direction]``, live.
 
@@ -169,6 +187,21 @@ def extras_keys(lane: Any, direction: str = "request") -> frozenset:
         if direction not in DIRECTIONS:
             return frozenset()
         return frozenset(LANES[lane].get(direction) or ())
+    except Exception:  # noqa: BLE001
+        return frozenset()
+
+
+def required_keys(lane: Any, direction: str = "request") -> frozenset:
+    """REQUIRED extras keys for ``lane`` in ``direction`` (empty when none).
+
+    Required is not allowed: an allowed-but-absent key yields a thinner
+    envelope, a required-but-absent key yields an envelope that misstates what
+    happened. Builders refuse it and validators report it.
+    """
+    try:
+        if direction not in DIRECTIONS:
+            return frozenset()
+        return frozenset((REQUIRED_KEYS.get(lane) or {}).get(direction) or ())
     except Exception:  # noqa: BLE001
         return frozenset()
 

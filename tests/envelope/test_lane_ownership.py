@@ -107,5 +107,8 @@ def test_a_built_envelope_never_carries_another_lane_block():
                                                     else {}})
         assert request, lane
         assert set(request["extras"]) == {lane}
-        assim = U.build_assimilation(lane=lane, extras={lane: {}})
+        assim = U.build_assimilation(
+            lane=lane,
+            extras={lane: {k: "probe" for k in
+                           R.required_keys(lane, "assimilation")}})
         assert assim and set(assim["extras"]) == {lane}
