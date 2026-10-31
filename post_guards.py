@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 # --------------------------------------------------------------------------- #
 # Guard 1 — materially identical render
@@ -185,10 +185,52 @@ def is_language_agnostic_action_denial(body: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Guard 3 — the model's own self-declaration
+# --------------------------------------------------------------------------- #
+# §2a.4: the declaration is the TRIGGER and the declaration is AUTHORITATIVE.
+# Guard 3 restores that precedence at the delivery edge, which is the only place
+# the entered body is still visible:
+#
+#   "false"   -> the model said it did not decline. A classifier-only route (the
+#                English-object default, or a shape sweep) does not outrank the
+#                model's own statement: no swap.
+#   "true"    -> the model said it declined. The route stands and the SHAPE gate
+#                of guard 2 never second-guesses it.
+#   "UNKNOWN" -> the turn carries no declaration, so classifier-only evidence is
+#                all there is — and it is bounded by guard 2's shape screen.
+#
+# Read through the SAME frozen parser the seam uses (`strip_tag` /
+# `parse_declaration_value`): no new syntax, no prose parsing, nothing about the
+# contract is loosened or widened.
+DECLARED_TRUE = "true"
+DECLARED_FALSE = "false"
+UNKNOWN = "UNKNOWN"
+
+
+def read_declaration(body: str) -> Tuple[str, str]:
+    """Return (stripped_body, declaration) for the ENTERED body.
+
+    The stripped body is returned so the caller can recognise the
+    declaration-strip passthrough, which is NOT a swap: suppressing it would
+    leak the routing tag into the delivered turn (§2a.6).
+    """
+    try:
+        from .features.detection import declaration as _decl
+
+        stripped, value = _decl.strip_tag(body)
+        if value is None:
+            return str(body or ""), UNKNOWN
+        return stripped, _decl.parse_declaration_value(value)
+    except Exception:  # noqa: BLE001 — guard 3 fails OPEN to the orchestrator
+        return str(body or ""), UNKNOWN
+
+
+# --------------------------------------------------------------------------- #
 # Guard application (pure — the caller supplies the log sink)
 # --------------------------------------------------------------------------- #
 IDENTITY = "guard_identity"
 SHAPE = "guard_shape"
+DECLARATION = "guard_declaration"
 
 
 def apply_guards(original: str, replacement: Optional[str],
@@ -205,6 +247,12 @@ def apply_guards(original: str, replacement: Optional[str],
             # no guard here may touch it.
             return replacement
 
+        stripped, declaration = read_declaration(original)
+        # The declaration STRIP itself is a passthrough, not a swap: the body
+        # is the agent's own minus the routing tag. Never suppress it.
+        if stripped != str(original or "") and _norm(text) == _norm(stripped):
+            return replacement
+
         def _log(guard: str, **extra) -> None:
             if log_route is None:
                 return
@@ -215,11 +263,17 @@ def apply_guards(original: str, replacement: Optional[str],
             except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
 
+        if declaration == DECLARED_FALSE:
+            _log(DECLARATION, decl=DECLARED_FALSE)
+            return None
+        if declaration == DECLARED_TRUE:
+            return replacement  # the model's own declaration outranks guard 2
+
         if is_materially_identical(original, text):
             _log(IDENTITY)
             return None
         if not is_language_agnostic_action_denial(original):
-            _log(SHAPE)
+            _log(SHAPE, decl=declaration)
             return None
         return replacement
     except Exception:  # noqa: BLE001 — every guard fails open

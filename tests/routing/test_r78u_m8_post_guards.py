@@ -188,3 +188,40 @@ def test_shape_gate_is_structural_only():
     assert pg.is_language_agnostic_action_denial(long_it) is False
     assert pg.is_language_agnostic_action_denial(SHORT_IT_REFUSAL) is True
 
+
+# --------------------------------------------------------------------------- #
+# 3 — the model's own self-declaration outranks classifier-only inference
+# --------------------------------------------------------------------------- #
+
+def test_declared_true_outranks_the_shape_gate():
+    """A body the shape gate would veto still routes when the MODEL declares
+    the decline — the declaration is the trigger (§2a.4)."""
+    _prime("m8-decl-true")
+    body = BENIGN_IT + "\n" + TAG_T
+    with mock.patch.object(plugin.router, "call", return_value=RENDER):
+        out = _post("m8-decl-true", body)
+    assert out == RENDER
+    assert "declined" not in out.lower()
+
+
+def test_declared_false_outranks_a_classifier_only_route():
+    """`declined="false"` settles the turn: the delivered body is the agent's
+    own (tag stripped), never a classifier-driven render."""
+    _prime("m8-decl-false")
+    body = EN_REFUSAL + "\n" + TAG_F
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
+        out = _post("m8-decl-false", body)
+    assert not venice.called
+    assert out == EN_REFUSAL
+    assert "declined" not in (out or "").lower()
+
+
+def test_undeclared_turn_is_the_only_one_the_shape_gate_decides():
+    from hermes_router import post_guards as pg
+
+    _, decl_long = pg.read_declaration(BENIGN_IT)
+    _, decl_true = pg.read_declaration(BENIGN_IT + "\n" + TAG_T)
+    assert decl_long == pg.UNKNOWN
+    assert decl_true == pg.DECLARED_TRUE
+
+
