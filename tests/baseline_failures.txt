@@ -41,8 +41,6 @@ tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_bu
 tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema  # real: closure_pass + features/detection/unknown_route_gate read config paths absent from core/schema.py
 tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics  # real: decline construction over-broad; a status report is read as a refusal (with the row below)
 tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics  # real: same construction as above, first-person account read as a refusal
-tests/routing/test_rider10_fixes.py::test_r10_2_audit_banner_carries_row_ref_after_persist  # env: teardown-only egress to ollama.com:443 via the live provider config; body assertions passed
-tests/routing/test_rider10_fixes.py::test_r10_2_meta_carries_row_for_downgraded_async_banner  # env: same autouse egress guard, same endpoint-resolution seam as the row above
 tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum  # accepted-debt: completion_audit passes fold_revision=False by design; the pin was never inverted
 tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold  # accepted-debt: same fold decision exercised through the large-budget branch
 
@@ -59,3 +57,7 @@ optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_two_decision
 optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_hold_only_says_hold_and_never_zero_lead  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
 optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_other_lanes_are_never_merged  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
 optional tests/zz_lane_hazard/test_r79_one_banner_per_turn.py::test_unparseable_decision_line_appends_instead_of_being_lost  reason=order  expect="lane store not cleared by this test"  # order: same entry-time dirty store as the row above
+# RE-PIN 2026-10-31: the two rider10 audit-banner rows above were removed because they now PASS.
+# Cause: the banner-ordering fix (91b40ff, R78U M3) emits the parked record before the banner
+# is consumed, so the row-ref/meta assertions hold. Gate proof: PINNED-RED-NOW-GREEN in
+# /opt/data/tmp/r78u/gate_m8b.log. Pin shrinks only when a defect is fixed; never to hide a red.
