@@ -1988,22 +1988,116 @@ def peek_pending_swap(session_id: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def build_frontier_request(ask: str, agent: str = "agent", role: str = "",
+                           consult_kind: str = "consultation", kind: str = "",
+                           route_id: str = "", session_id: str = "",
+                           evidence_refs: Optional[List[str]] = None,
+                           context: str = "",
+                           trigger: str = "pre") -> Dict[str, Any]:
+    """lane-request/1 envelope for a frontier PRE consult. {} on failure.
+
+    Phase-2 U3 (plan §3.2-3.4): the frontier lane was the ONE lane with no
+    request envelope. The ``extras.frontier.paths`` slot was DECLARED in the
+    registry and populated by nothing; it is filled here from ``povs.POV_SET``,
+    the same four voices whose dispositions the consult frame renders, so the
+    record and the frame cannot disagree about who was asked.
+
+    The consult FRAME is untouched (it still appends povs.claim_instruction()):
+    this envelope is the structured record of what the lane sent, beside the
+    frame, not a replacement for it. Never raises.
+    """
+    try:
+        from . import povs as _povs
+        from .features.envelope import unified as _uenv
+
+        paths = [str(p.name) for p in _povs.POV_SET]
+        label = str(consult_kind or kind or "consultation")
+        return _uenv.build_request(
+            lane="frontier",
+            trigger=trigger,
+            session_id=str(session_id or ""),
+            agent_card={"persona": str(agent or ""), "procedures": str(role or "")},
+            ask={"text": str(ask or "").strip(), "kind": "user"},
+            context={"session_context": str(context or "")[:1200]},
+            extras={"frontier": {
+                "paths": paths,
+                "evidence_refs": [str(r) for r in (evidence_refs or [])],
+                "consult_kind": label,
+                "route_id": str(route_id or ""),
+                "kind": str(kind or label),
+            }},
+        ) or {}
+    except Exception:  # noqa: BLE001 — never raise
+        return {}
+
+
+def _frontier_pov_claims(answer: str,
+                         claims: Optional[Dict[str, Any]] = None,
+                         notes: Optional[Dict[str, Any]] = None
+                         ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(pov_claims, dials) for the frontier assimilation envelope.
+
+    Claims come from the caller when the consult already parsed them (the PRE
+    call site runs povs.split_projection on the raw body before the advisory is
+    cleaned, so the machine channel is gone by envelope time); otherwise they
+    are parsed here from the answer text with the SAME parser. Absent claims
+    yield an EMPTY LIST — never a fabricated claim, never a crash, and never a
+    zero vector pretending to be a measured stance.
+    """
+    try:
+        from . import povs as _povs
+
+        parsed: Dict[str, Any] = {str(k): v for k, v in (claims or {}).items()}
+        parsed_notes: Dict[str, Any] = {str(k): v for k, v in (notes or {}).items()}
+        if not parsed:
+            _dials, _clean, meta = _povs.split_projection(answer)
+            if isinstance(meta, dict) and meta.get("format") == "pov":
+                parsed = dict(meta.get("claims") or {})
+                parsed_notes = dict(meta.get("notes") or {})
+        if not parsed:
+            return [], {}
+        dials = dict(_povs.dials_from_claims(parsed))
+        win = _povs.winning_voice(parsed)
+        entries = [{"voice": str(v),
+                    "weight": float(parsed.get(v, 0.0) or 0.0),
+                    "note": str(parsed_notes.get(v, "") or ""),
+                    "winning": bool(v == win)}
+                   for v in _povs.VOICES]
+        return entries, dials
+    except Exception:  # noqa: BLE001 — claims are evidence, never a dependency
+        return [], {}
+
+
 def build_frontier_envelope(kind: str, producer: str, decision: RouteDecision,
                             answer: str, evidence_refs: Optional[List[str]] = None,
-                            limitations: Optional[str] = None) -> Dict[str, Any]:
+                            limitations: Optional[str] = None,
+                            claims: Optional[Dict[str, Any]] = None,
+                            notes: Optional[Dict[str, Any]] = None,
+                            consult_kind: str = "") -> Dict[str, Any]:
     """Provenance envelope for frontier outputs entering as TOOL RESULTS
     (never rewrites the user message). kind: consultation|
     verification. Never raises.
 
-    Thin adapter (Goran directive 2026-10-30): the assimilation template
-    (lane-assimilation/1) is built by features/envelope/unified.py. Every key
-    this lane already published — kind, producer, route_id, task_id, answer,
-    evidence_refs, limitations, ts — maps 1:1 onto it, so consumers keep
-    reading the same fields; schema/lane/verdict/revised are additive.
+    Thin adapter (plan §3.4): ONE call to features/envelope/unified.py. Every
+    key this lane already published — kind, producer, route_id, task_id,
+    answer, evidence_refs, limitations, ts — maps 1:1 onto the assimilation
+    template, so consumers keep reading the same fields; schema/lane/verdict/
+    revised are additive. The lane extras carry what the four voices said
+    (pov_claims + the dials the winner emerged from), populated by the shared
+    povs parsers. There is NO fallback dict: an envelope that cannot be built
+    is {} — visible as "no envelope" upstream — rather than a hand-rolled
+    second shape that hides the failure.
     """
     try:
         from .features.envelope import unified as _uenv
 
+        pov_claims, dials = _frontier_pov_claims(answer, claims, notes)
+        extras: Dict[str, Any] = {
+            "consult_kind": str(consult_kind or kind or ""),
+            "pov_claims": pov_claims,
+        }
+        if dials:
+            extras["dials"] = dials
         return _uenv.build_assimilation(
             lane="frontier",
             producer=producer,
@@ -2014,16 +2108,8 @@ def build_frontier_envelope(kind: str, producer: str, decision: RouteDecision,
             limitations=limitations or "",
             ts=time.time(),
             kind=kind,
-        ) or {
-            "kind": kind,
-            "producer": producer,
-            "route_id": decision.route_id,
-            "task_id": decision.task_id,
-            "answer": answer,
-            "evidence_refs": list(evidence_refs or []),
-            "limitations": limitations or "",
-            "ts": time.time(),
-        }
+            extras={"frontier": extras},
+        )
     except Exception:  # noqa: BLE001
         return {}
 

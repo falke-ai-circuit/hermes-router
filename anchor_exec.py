@@ -1641,6 +1641,45 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # is how a consult produced 2,776 chars that a 600-char injection cap
         # then threw away.
         _bounded = apply_advisory_budget(bounded_replay(api_kwargs))
+        # Phase-2 U3 (plan §3.2-3.4): the frontier PRE consult was the ONE lane
+        # with no request envelope. Record exactly what this lane SENT as a
+        # lane-request/1 envelope: the ``paths`` slot the registry declared and
+        # nothing populated is now the four POV voices (povs.POV_SET), carried
+        # with consult_kind / route_id / kind. The frame itself is unchanged —
+        # it still appends povs.claim_instruction(); the envelope is the
+        # structured record beside it, not a replacement. Fail-open: no
+        # envelope never blocks the consult.
+        try:
+            _req_ask = ""
+            _req_msgs = (_bounded or {}).get("messages")
+            for _m in reversed(_req_msgs if isinstance(_req_msgs, list) else []):
+                if isinstance(_m, dict) and _m.get("role") == "user":
+                    _req_ask = str(_m.get("content") or "")
+                    break
+            _req_kind = "orientation" if bool(rec.get("orientation")) else "consultation"
+            _req_env = router_core.build_frontier_request(
+                _req_ask, consult_kind=_req_kind, kind=_req_kind,
+                route_id=str(rec.get("route_id") or ""),
+                session_id=str(session_id or ""),
+                context=str(locals().get("_causal_block") or ""))
+            if _req_env:
+                # The staged record is what the lane sent; the route event makes
+                # the same facts visible without a second delivery surface.
+                rec["request_envelope"] = _req_env
+                try:
+                    from .core.telemetry import log_route as _lrx3
+
+                    _req_frontier = (_req_env.get("extras") or {}).get("frontier") or {}
+                    _lrx3("PRE", event_detail="frontier_lane_request",
+                          schema=str(_req_env.get("schema") or ""),
+                          paths=",".join(_req_frontier.get("paths") or []),
+                          consult_kind=str(_req_frontier.get("consult_kind") or ""),
+                          route_id=str(rec.get("route_id") or ""),
+                          session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+        except Exception:  # noqa: BLE001 — the record never breaks the consult
+            pass
         # NOTE: `_log` is a closure local to retry_anchored_async — NOT in scope
         # here. Calling it raised NameError inside the fail-open wrapper and
         # silently aborted the consult (live: 59 tests red, PRE billed 0 calls).
@@ -1716,13 +1755,16 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         # the block is machine channel, not part of the advisory. Missing or
         # unparseable -> target None -> no modulation, logged, never raised.
         _mindset_target: Optional[Dict[str, float]] = None
+        # Bound OUTSIDE the try so the envelope seam below can always read it:
+        # a parse failure leaves "no claims", never an unbound name.
+        _pov_meta: Dict[str, Any] = {"format": "none"}
         try:
             from . import mindset as _ms_mod
 
             # R57: dual parse — the POV claim block first, legacy MINDSET_TARGET
             # as fallback. `_pov_meta` carries the winning voice and gate flags
             # for the ledger; the dial math is identical downstream.
-            _pov_meta: Dict[str, Any] = {"format": "none"}
+            _pov_meta = {"format": "none"}
             try:
                 from . import povs as _povs
 
@@ -1932,6 +1974,9 @@ def maybe_execute_anchored(session_id: str, api_kwargs: Dict[str, Any]
         envelope = router_core.build_frontier_envelope(
             kind, endpoint.model, decision_like, content,
             limitations="single-shot anchored call; no tool access",
+            claims=(_pov_meta or {}).get("claims") or None,
+            notes=(_pov_meta or {}).get("notes") or None,
+            consult_kind=kind,
         )
         # R34-7: an execution-shaped turn must still get its work product —
         # the orientation envelope is ADVISORY context, never the answer.
