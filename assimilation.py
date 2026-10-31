@@ -304,12 +304,6 @@ def _note_lost_mark(sid: str) -> None:
         pass
 
 
-def frame_for(session_id: str) -> Optional[str]:
-    """What the frame WOULD be for this session, for logs/tests. None when no
-    rendered turn is pending."""
-    return frame_text() if pending_turn(session_id) else None
-
-
 # ---------------------------------------------------------------------------
 # ASSIMILATION ENVELOPE — lane-assimilation/1, output direction
 # ---------------------------------------------------------------------------

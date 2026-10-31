@@ -4,9 +4,11 @@ Goran directive 2026-10-30 (spec: /opt/data/tmp/unified_envelope_spec.md).
 
 MEASURED problem this replaces: three request shapes grew independently —
 decision.build_envelope (15 fields, custom), povs.build_pre_prompt (system
-string + messages, no schema), and the frontier lane, which had no request
-envelope at all. The same information (agent card, ask, context, stance) was
-assembled three times, in three orders, with three truncation policies.
+string + messages, no schema — REMOVED in M12; the frontier PRE frame is
+anchor_exec.build_orientation_frame), and the frontier lane, which had no
+request envelope at all. The same information (agent card, ask, context,
+stance) was assembled three times, in three orders, with three truncation
+policies.
 
 This module is the single owner of:
 

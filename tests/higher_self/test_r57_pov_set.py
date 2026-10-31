@@ -136,20 +136,6 @@ def test_delta_labelled_in_words():
     assert "less careful" in joined
 
 
-def test_pre_prompt_conditions_on_persona_and_context():
-    system, msgs = povs.build_pre_prompt("fix the typo", agent="coder",
-                                         role="software engineer", context="3 files changed")
-    assert "AGENT: coder" in system
-    assert "software engineer" in system
-    assert "SITUATION SO FAR" in msgs[0]["content"]
-
-
-def test_post_prompt_reuses_the_same_voices():
-    system_pre, _ = povs.build_pre_prompt("x", agent="coder", role="r")
-    system_post, _ = povs.build_post_prompt("work done", agent="coder", role="r")
-    assert system_pre == system_post, "PRE and POST must speak as the same set"
-
-
 def test_all_four_corners_are_reachable_from_claims():
     seen = set()
     for p in povs.POV_SET:

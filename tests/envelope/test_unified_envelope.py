@@ -118,25 +118,15 @@ def test_decision_adapter_keeps_its_fields_and_delegates(monkeypatch):
                                    [], "pre") == {}
 
 
-def test_povs_adapter_keeps_system_and_messages(monkeypatch):
-    from hermes_router import povs
+def test_legacy_pov_consult_frame_builders_are_gone():
+    """M12: the four-voice consult frame had a SECOND producer (povs), dead
+    since the frontier PRE frame moved to anchor_exec.build_orientation_frame.
+    One contract, one template — the parallel builder must not come back."""
+    from hermes_router import assimilation, povs
 
-    seen = []
-    real = U.build_request
-    monkeypatch.setattr(U, "build_request",
-                        lambda **kw: seen.append(kw) or real(**kw))
-
-    system, msgs = povs.build_pre_prompt("fix the typo", agent="coder",
-                                         role="software engineer",
-                                         context="3 files changed")
-
-    assert seen and seen[0]["lane"] == "uncensored", "adapter bypassed the builder"
-    assert seen[0]["extras"]["uncensored"]["leg"] == "pre"
-    assert isinstance(system, str) and "AGENT: coder" in system
-    assert "software engineer" in system
-    assert isinstance(msgs, list) and msgs[0]["role"] == "user"
-    assert "fix the typo" in msgs[0]["content"]
-    assert "SITUATION SO FAR" in msgs[0]["content"]
+    assert not hasattr(povs, "build_pre_prompt")
+    assert not hasattr(povs, "build_post_prompt")
+    assert not hasattr(assimilation, "frame_for")
 
 
 def test_frontier_adapter_keeps_its_keys_and_delegates(monkeypatch):
