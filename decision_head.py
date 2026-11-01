@@ -188,7 +188,12 @@ def embed_text(text: str) -> Optional[list]:
             return None
         url = str(ep.get("url") or "").rstrip("/")
         if not url.endswith("/embeddings"):
-            url = url.rsplit("/chat/completions", 1)[0].rstrip("/") + "/embeddings"
+            # M24-02: the chat tail is the shared code DEFAULT (single source);
+            # /embeddings is an embeddings tail, outside this group's scope.
+            from .core.config_access import PROVIDER_CHAT_PATH_DEFAULT
+
+            url = (url.rsplit(PROVIDER_CHAT_PATH_DEFAULT, 1)[0].rstrip("/")
+                   + "/embeddings")
         key_env = str(ep.get("key_env") or "MINIMAX_API_KEY")
         api_key = os.environ.get(key_env, "").strip()
         if not api_key:

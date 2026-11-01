@@ -149,7 +149,20 @@ def _target() -> Optional[Dict[str, str]]:
     # pass the model id EXACTLY as configured: custom providers expect the
     # full slug ("deepseek/deepseek-v4.1-flash-1017"); stripping the prefix
     # gets a 404 from the endpoint.
-    return {"base": base, "key": key, "model": model}
+    return {"base": base, "key": key, "model": model, "provider": provider}
+
+
+def _chat_path(tgt: Dict[str, str]) -> str:
+    """providers.<provider>.chat_path for this target — the code literal is only
+    the DEFAULT (M24-02, same rule as the M24-01 base URLs). Never raises."""
+    try:
+        from .core import config_access
+
+        return config_access.provider_path(
+            tgt.get("provider") or "", "chat_path",
+            config_access.PROVIDER_CHAT_PATH_DEFAULT)
+    except Exception:  # noqa: BLE001 — OpenAI shape is still worth trying
+        return "/chat/completions"
 
 
 def _call(tgt: Dict[str, str], msgs: list, max_tokens: int,
@@ -167,7 +180,7 @@ def _call(tgt: Dict[str, str], msgs: list, max_tokens: int,
                               "temperature": 0.3,
                               "max_tokens": max_tokens}).encode("utf-8")
     try:
-        req = urllib.request.Request(tgt["base"] + "/chat/completions",
+        req = urllib.request.Request(tgt["base"] + _chat_path(tgt),
                                      data=openai_body, headers=headers)
         with urllib.request.urlopen(req, timeout=budget_s) as resp:
             payload = json.loads(resp.read().decode("utf-8", "replace"))

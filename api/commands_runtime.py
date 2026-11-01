@@ -268,9 +268,15 @@ async def _cmd_ping() -> str:
         api_key = _resolve_key(ep)
         if not api_key:
             return "ping: key unavailable (%s)" % ep.api_key_env
+        # M24-02: the chat-completions tail is providers.<scheme>.chat_path —
+        # the code literal is only the DEFAULT (same rule as the base URL).
+        from ..core import config_access
+
+        chat_path = config_access.provider_path(
+            ep.scheme, "chat_path", config_access.PROVIDER_CHAT_PATH_DEFAULT)
         curl_cmd = [
             "curl", "-sS", "--max-time", str(_commands().DOCTOR_PING_TIMEOUT), "-X", "POST",
-            ep.base_url.rstrip("/") + "/chat/completions",
+            ep.base_url.rstrip("/") + chat_path,
             "-H", "Authorization: Bearer " + api_key,
             "-H", "Content-Type: application/json",
             "-d", payload_json,

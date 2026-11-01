@@ -362,7 +362,12 @@ def test_backend_jev_pipeline(_reset, monkeypatch):
     monkeypatch.setenv("R19_TEST_KEY", "k-test")
 
     def _fake_post(url, headers, payload, timeout):
-        assert url == decision.DEFAULTS["openrouter_endpoint"]
+        # M24-02: the endpoint is COMPOSED from providers.openrouter.base_url
+        # (M24-01) + providers.openrouter.chat_path. The second assert keeps the
+        # original behavioural claim: a silent profile composes the pre-M24-02
+        # literal byte-for-byte.
+        assert url == decision._default_openrouter_endpoint()
+        assert url == "https://openrouter.ai/api/v1/chat/completions"
         assert headers["Authorization"] == "Bearer k-test"
         assert payload["model"] == "typesafe/jev-router@pinned"
         return {"choices": [{"message": {"content": json.dumps(

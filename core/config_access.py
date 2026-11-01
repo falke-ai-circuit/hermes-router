@@ -323,6 +323,34 @@ def providers_custom() -> Dict[str, Any]:
 
 _MISSING = object()
 
+# M24-02: provider URL TAILS. These literals are DEFAULTS only — a profile that
+# sets providers.<name>.chat_path / providers.<name>.models_path wins. Same
+# rule as M24-01's base URLs: silent config keeps the exact previous bytes.
+PROVIDER_CHAT_PATH_DEFAULT = "/chat/completions"
+PROVIDER_MODELS_PATH_DEFAULT = "/models"
+
+
+def provider_path(name: str, kind: str,
+                  default: str = PROVIDER_CHAT_PATH_DEFAULT) -> str:
+    """providers.<name>.<kind> — a provider URL TAIL (chat_path / models_path)
+    — or the literal default when config is silent.
+
+    M24-02, same shape as M24-01's base URLs: the literal is the DEFAULT, never
+    the authority. A profile that names a tail wins; every profile that does not
+    gets exactly the URL bytes it got before this change. A tail is normalized
+    to one leading slash and no trailing one (so "chat/completions/" reads
+    correctly), and an empty value falls back to the default. Fails to the
+    default on any read error. Never raises.
+    """
+    try:
+        value = str(get(f"providers.{name}.{kind}", default) or "").strip()
+    except Exception:  # noqa: BLE001 — config read must never break a call
+        return default
+    if not value:
+        return default
+    value = "/" + value.lstrip("/")
+    return value.rstrip("/") or default
+
 
 def _walk(section: Dict[str, Any], path: str) -> Any:
     """Walk a dotted path through the router section. Returns _MISSING when

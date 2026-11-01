@@ -21,10 +21,29 @@ import time
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
+from .core.config_access import PROVIDER_CHAT_PATH_DEFAULT, PROVIDER_MODELS_PATH_DEFAULT
+
 PRICING_TTL_S = 12 * 3600
-NOUS_MODELS_URL = "https://inference-api.nousresearch.com/v1/models"
+# M24-02: the HOST is a fixed code constant (host tables are M24-04, untouched);
+# the /models TAIL is providers.nous.models_path with the single default tail
+# constant as its DEFAULT. NOUS_MODELS_URL stays the default-composed value for
+# callers that need the DEFAULT itself — live code resolves _nous_models_url().
+NOUS_MODELS_BASE = "https://inference-api.nousresearch.com/v1"
+NOUS_MODELS_URL = NOUS_MODELS_BASE + PROVIDER_MODELS_PATH_DEFAULT
 _CACHE_FILENAME = "hermes-router-provider-prices.json"
 _FETCH_TIMEOUT_S = 15
+
+
+def _nous_models_url() -> str:
+    """Models-catalog URL for the nous provider: host + providers.nous.models_path
+    (M24-02 — the tail literal is the DEFAULT, config wins). Never raises."""
+    try:
+        from .core import config_access
+
+        return NOUS_MODELS_BASE + config_access.provider_path(
+            "nous", "models_path", config_access.PROVIDER_MODELS_PATH_DEFAULT)
+    except Exception:  # noqa: BLE001 — fall back to the default-composed URL
+        return NOUS_MODELS_URL
 
 
 def _cache_path() -> str:
@@ -139,6 +158,20 @@ def _load_catalog_cache(lane: str) -> tuple:
         return ()
 
 
+def _models_url_from_chat(chat_url: str) -> str:
+    """Models-catalog URL derived from a CHAIN chat URL: strip the chat tail,
+    append the models tail.
+
+    M24-02: both tails are the code DEFAULTS (the single source in
+    core.config_access). A chain entry carries no provider id, so a per-provider
+    providers.<name>.chat_path/models_path override cannot be resolved here —
+    the chain URL is the authority and host→provider mapping is M24-04.
+    Never raises.
+    """
+    base = str(chat_url or "").rsplit(PROVIDER_CHAT_PATH_DEFAULT, 1)[0]
+    return base + PROVIDER_MODELS_PATH_DEFAULT
+
+
 def _chain_models_urls() -> Dict[str, str]:
     """model name -> /models base url, from .chain entries."""
     out: Dict[str, str] = {}
@@ -156,14 +189,14 @@ def _chain_models_urls() -> Dict[str, str]:
                 model = str(e.get("model") or "")
                 chat_url = str(e.get("url") or "")
                 if model and chat_url:
-                    out[model] = chat_url.rsplit("/chat/completions", 1)[0] + "/models"
+                    out[model] = _models_url_from_chat(chat_url)
     except Exception:  # noqa: BLE001
         pass
     # Nous catalog (Goran 09-09: cost FROM THE PROVIDER). Main workhorse +
     # flagship lanes bill through nous; its /v1/models carries per-model
     # pricing. Register the known nous-served models explicitly.
     for m in ("z-ai/glm-5.3-flash", "glm-5.3-flash", "openai/gpt-5.6-luna-pro"):
-        out.setdefault(m, NOUS_MODELS_URL)
+        out.setdefault(m, _nous_models_url())
     return out
 
 
@@ -177,7 +210,7 @@ def _lane_model_urls(lane: str) -> Dict[str, str]:
     try:
         lane_norm = str(lane or "").strip().lower()
         if lane_norm == "frontier":
-            return {"nous": NOUS_MODELS_URL}
+            return {"nous": _nous_models_url()}
         if lane_norm == "uncensored":
             out: Dict[str, str] = {}
             try:
@@ -193,8 +226,7 @@ def _lane_model_urls(lane: str) -> Dict[str, str]:
                     url = str(e.get("url") or "")
                     if not url:
                         continue
-                    out[str(e.get("model") or url)] = (
-                        url.rsplit("/chat/completions", 1)[0] + "/models")
+                    out[str(e.get("model") or url)] = _models_url_from_chat(url)
             return out
         return {}
     except Exception:  # noqa: BLE001
@@ -337,7 +369,7 @@ def provider_catalog_entries(lane: str) -> tuple:
         if lane == "frontier":
             # nous catalog: NOUS_API_KEY env (same credential the frontier
             # chain's provider bills under).
-            keyinfo.setdefault(NOUS_MODELS_URL, ("", "NOUS_API_KEY"))
+            keyinfo.setdefault(_nous_models_url(), ("", "NOUS_API_KEY"))
         out: list = []
         seen = set()
         for url in sorted(set(urls.values())):

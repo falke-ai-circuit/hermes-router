@@ -84,7 +84,11 @@ DEFAULTS: Dict[str, Any] = {
     "typesafe_api_key_env": "TYPESAFE_API_KEY",
     "jev_native_model": "jev-latest",
     "api_key_env": "OPENROUTER_API_KEY",
-    "openrouter_endpoint": "https://openrouter.ai/api/v1/chat/completions",
+    # M24-02: EMPTY by design — the URL is composed at call time from
+    # providers.openrouter.base_url (M24-01) + providers.openrouter.chat_path,
+    # each with its code literal as the DEFAULT. A silent profile composes the
+    # exact pre-M24-02 URL; an operator-set value still wins verbatim.
+    "openrouter_endpoint": "",
     "slice": True,              # §3.6 optional provenance-stamped slice
     "caps": {"per_run": 20, "per_session": 100, "global_daily": 1000},
     "ledger_max_rows": 5000,    # bounded state: append-only ledger row cap
@@ -3584,6 +3588,26 @@ def _systemone_verdict_content(data: Any, envelope: Dict[str, Any]) -> str:
         return ""
 
 
+def _default_openrouter_endpoint() -> str:
+    """The openrouter chat URL composed from CONFIG, literals only as DEFAULTS.
+
+    M24-02: the base comes from providers.openrouter.base_url (the M24-01
+    accessor) and the tail from providers.openrouter.chat_path. A silent profile
+    composes byte-identically to the literal this module used to hold, so no
+    deployed profile changes behaviour. Never raises: the caller fails open.
+    """
+    try:
+        from . import anchor_chain
+
+        return anchor_chain.provider_endpoint(
+            "openrouter", anchor_chain.OPENROUTER_BASE)
+    except Exception:  # noqa: BLE001 — compose from the defaults it stands for
+        from .core import config_access
+
+        return ("https://openrouter.ai/api/v1"
+                + config_access.PROVIDER_CHAT_PATH_DEFAULT)
+
+
 def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
               timeout: float, t0: float
               ) -> Tuple[Optional[str], Dict[str, Any], str]:
@@ -3594,7 +3618,7 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
     try:
         model = str(cfg.get("jev_model") or DEFAULTS["jev_model"])
         endpoint = str(cfg.get("openrouter_endpoint")
-                       or DEFAULTS["openrouter_endpoint"])
+                       or _default_openrouter_endpoint())
         import os as _os
 
         key = _os.environ.get(str(cfg.get("api_key_env")

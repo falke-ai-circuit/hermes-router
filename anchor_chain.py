@@ -127,6 +127,23 @@ def _provider_base(name: str, default: str) -> str:
         return default
 
 
+def provider_endpoint(name: str, base_default: str) -> str:
+    """base_url + chat_path for a provider — both config-first (M24-01/M24-02).
+
+    Composed from the SAME accessors the anchor/decision lanes use, so a silent
+    profile gets the exact URL bytes the code literal used to hold. Never raises.
+    """
+    try:
+        from .core import config_access
+
+        return (_provider_base(name, base_default).rstrip("/")
+                + config_access.provider_path(
+                    name, "chat_path",
+                    config_access.PROVIDER_CHAT_PATH_DEFAULT))
+    except Exception:  # noqa: BLE001 — callers fail open on their own
+        return _provider_base(name, base_default).rstrip("/")
+
+
 def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoint]:
     """Resolve <scheme>://<model> to (base_url, key_env). Built-in schemes:
     openrouter. Generic passthrough: custom providers in config under the

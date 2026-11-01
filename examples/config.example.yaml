@@ -168,8 +168,11 @@ hermes_router:
   providers:               # dict | default {} | provider-id -> target map; unset = code literal default
     nous:
       base_url: ""         # str | default "" | base URL for the nous provider (unset -> code default literal)
+      chat_path: "/chat/completions"   # str | default "/chat/completions" | chat-completions tail appended to base_url (unset -> "/chat/completions")
+      models_path: "/models"           # str | default "/models" | catalog-models tail appended to the models host (unset -> "/models")
     openrouter:
       base_url: ""         # str | default "" | base URL for the openrouter provider (unset -> code default literal)
+      chat_path: "/chat/completions"   # str | default "/chat/completions" | chat-completions tail appended to base_url (unset -> "/chat/completions")
 
   # ##########################################################################
   # COMPATIBILITY — pre-M23 spellings and internal knobs.
