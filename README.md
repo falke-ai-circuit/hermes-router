@@ -95,6 +95,11 @@ Exact type + default for every key: `core/schema.py`. Legacy
 `uncensored_router:` config sections keep working (canonical
 `hermes_router:` wins; `router_control` dual-writes).
 
+Copy-ready, commented example carrying **every** declared key at its default:
+`examples/config.example.yaml`. It is drift-guarded —
+`tests/config/test_example_config.py` fails if the example invents a key,
+drops one, or sets a value that does not type-check.
+
 ## Lane table
 
 Registered lane data lives in `lanes/builtins.py` (phrase tables from

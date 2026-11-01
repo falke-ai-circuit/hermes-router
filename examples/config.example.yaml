@@ -1,0 +1,301 @@
+# hermes_router — example configuration.
+#
+# EVERY key declared in core/schema.py appears here, once, at its schema
+# default. Every value below is therefore a no-op: this file tells you what
+# can be set, not what you must set. Delete a line and behaviour is unchanged
+# until you change a value.
+#
+# How to use it:
+#   * copy the `hermes_router:` block into your profile's config.yaml;
+#   * edit only the keys you care about — the rest can be deleted;
+#   * config is read live per dispatch, so knob changes need no gateway bounce.
+#
+# Layout: the TEN GROUPS first (M23 operator surface — edit these), then a
+# COMPATIBILITY section (pre-M23 flat spellings and internal knobs). A grouped
+# key always wins over its pre-M23 spelling; the old spelling still resolves if
+# the grouped key is absent, so a half-migrated profile keeps working.
+#
+# Placeholders only: no operator hosts, directories or credentials belong in a
+# committed file. Provider keys are named by ENV VAR (`*_key_ref`), never held.
+#
+# Types: bool | int | float | str | list | dict. "unset" = absent from the file
+# (the typed default is returned, never a silent None). `bool|int` keys accept
+# either the switch or a 0-3 verbosity level.
+
+hermes_router:
+
+  # ==========================================================================
+  # operator — day-to-day switches
+  # ==========================================================================
+  operator:
+    enabled: true          # bool | default true | master switch; unset = on. false = loads, routes nothing
+    dry_run: false         # bool | default false | classify + log the decision, act on nothing; unset = off
+    pending_routes_ttl_seconds: 300   # int | default 300 | seconds a parked pending route stays valid; unset = 300
+    slash_command: true    # bool | default true | register the /router operator command; unset = on
+
+  # ==========================================================================
+  # render — LANE 1, the uncensored render chain
+  # ==========================================================================
+  render:
+    # REQUIRED FOR THIS LANE: an empty chain means LANE 1 never fires (there is
+    # no endpoint to render through), even though render.* otherwise defaults on.
+    # Entries are endpoint dicts, e.g.
+    #   - {name: primary,  base_url: "https://<your-provider>/v1/chat/completions", model: "<model-id>", key_ref: "<ENV_VAR_NAME>"}
+    #   - {name: fallback, base_url: "https://<your-backup>/v1/chat/completions",   model: "<model-id>", key_ref: "<ENV_VAR_NAME>"}
+    chain: []              # list | default [] | ordered endpoint dicts, first wins then next; unset = lane off
+    max_chars: 0           # int | default 0 | clamp the rendered body to N chars, 0 = no clamp; unset = 0 (off)
+    method_spec: ""        # str | default "" | method-spec text injected into the render prompt; unset = none
+    refusal_doctrine: always_route   # str | default always_route | verdict policy on a refusal: always_route / doctrine / off; unset = always_route
+    substance_frame: ""    # str | default "" | frame text prepended to orientation asks; unset = none
+    provenance_footer: false   # bool | default false | append a provenance footer to rendered output; unset = off
+    key_ref: ""            # str | default "" | where the render key lives: ENV_VAR_NAME or "file:<path>"; unset = no key sent
+
+  # ==========================================================================
+  # classify — PRE/POST detection + classification
+  # ==========================================================================
+  classify:
+    pre_enabled: true      # bool | default true | run the PRE classify gate; unset = on
+    post_enabled: true     # bool | default true | run the POST classify gate; unset = on
+    mode: route            # str | default route | what a match does: route / annotate; unset = route
+    match_threshold: 1.0   # float | default 1.0 | score a pattern must reach to count as a match; unset = 1.0
+    pre_patterns: []       # list | default [] | PRE pattern table (extra inline patterns); unset = none
+    post_patterns: []      # list | default [] | POST pattern table (extra inline patterns); unset = none
+    semantic_gate: false   # bool | default false | require the semantic judge before a match acts; unset = off
+    aux:                   # dict | aux-classifier sub-block; only read when aux.enabled is on
+      enabled: true        # bool | default true | let the aux model adjudicate ambiguous turns; unset = on
+      provider: nous       # str | default nous | provider id the aux call goes through; unset = nous
+      endpoint: ""         # str | default "" | aux chat-completions URL; unset = provider default
+      model: ""            # str | default "" | aux model id; unset = provider default model
+      key_ref: ""          # str | default "" | ENV_VAR_NAME or "file:<path>" holding the aux key; unset = none
+      timeout_s: 45        # int | default 45 | per-call timeout for the aux model; unset = 45
+      calls_per_hour: 20   # int | default 20 | aux call rate cap; unset = 20
+      breaker_failures: 3  # int | default 3 | consecutive failures before the aux breaker opens; unset = 3
+      breaker_cooldown_s: 600   # int | default 600 | seconds the aux breaker stays open; unset = 600
+
+  # ==========================================================================
+  # anchor — LANE 2, the complexity/struggle consult
+  # ==========================================================================
+  anchor:
+    enabled: true          # bool | default true | allow the anchor consult lane; unset = on
+    # REQUIRED FOR THIS LANE: with an empty primary the anchor has no model to
+    # consult and LANE 2 never fires, even when enabled is true.
+    primary: ""            # str | default "" | model id consulted for a hard turn; unset = lane inert
+    judge: ""              # str | default "" | model id used to judge the consult answer; unset = primary
+    failover: []           # list | default [] | ordered backup endpoint dicts tried on failure; unset = none
+    overflow: pass_through # str | default pass_through | what to do when the anchor is spent or blocked: pass_through / hold; unset = pass_through
+    daily_cap_usd: 2.0     # float | default 2.0 | daily anchor spend cap in USD; unset = 2.0
+    reasoning_effort: ""   # str | default "" | reasoning-effort hint passed to the provider; unset = provider default
+    max_history_turns: 12  # int | default 12 | turns of history replayed into the consult; unset = 12
+    complexity_level: 2    # int | default 2 | complexity threshold the anchor answers above; unset = 2
+    models: {}             # dict | model-id -> provider/meta map for consult models; unset = none
+    pricing: {}            # dict | model-id -> {input_per_1m, output_per_1m} for cost rows; unset = unpriced
+
+  # ==========================================================================
+  # decision — the decision lane (fork / consult / frame)
+  # ==========================================================================
+  decision:
+    enabled: false         # bool | default false | turn the decision lane on; unset = off
+    seam: midturn_prellm   # str | default midturn_prellm | hook seam the decision runs at; unset = midturn_prellm
+    backend: jev_native    # str | default jev_native | which decision backend serves the call; unset = jev_native
+    miner_max_records: 200 # int | default 200 | records read per mining pass; unset = 200
+    miner_scan_days: 14    # int | default 14 | days of history a mining pass scans; unset = 14
+    post_audit: true       # bool | default true | run the POST completion audit after substantive turns; unset = on
+    mode: ""               # str | default "" | decision mode override; unset = backend decides
+    frame_context_chars: 0 # int | default 0 | chars of frame context sent with the decision call, 0 = none; unset = 0
+    confidence_threshold: 0.5   # float | default 0.5 | confidence floor before the lane acts; unset = 0.5
+    model: ""              # str | default "" | model id for the decision call; unset = backend default
+    endpoint: ""           # str | default "" | decision chat-completions URL; unset = backend default
+    api_key_env: ""        # str | default "" | ENV_VAR_NAME holding the decision key; unset = none
+    pre: {}                # dict | PRE-decision sub-block overrides; unset = none
+    post: {}               # dict | POST-decision sub-block overrides; unset = none
+
+  # ==========================================================================
+  # reflex — reflex/instinct lane
+  # ==========================================================================
+  reflex:
+    enabled: false         # bool | default false | turn the reflex lane on; unset = off
+    timeout_s: 8           # int | default 8 | per-call timeout for the reflex pass; unset = 8
+    min_top: 0.45          # float | default 0.45 | minimum top score for a reflex candidate; unset = 0.45
+    min_margin: 0.10       # float | default 0.10 | minimum lead of top over runner-up; unset = 0.10
+    weights: {}            # dict | scorer weights, key -> weight; unset = built-in weights
+    pov_mode: auto         # str | default auto | point-of-view mode for the reflex consult; unset = auto
+
+  # ==========================================================================
+  # persona — persona card + integration frames
+  # ==========================================================================
+  persona:
+    mode: voice_stems     # str | default voice_stems | how the persona card is composed; unset = voice_stems
+    card_chars: 2500      # int | default 2500 | char cap on the persona card; unset = 2500
+    shadow_integration_frame: impulse            # str | default impulse | frame name for shadow integration; unset = impulse
+    higher_self_integration_frame: internal-observer   # str | default internal-observer | frame name for higher-self integration; unset = internal-observer
+
+  # ==========================================================================
+  # budgets — per-lane token ceilings
+  # ==========================================================================
+  budgets:
+    consult:               # dict | budget for the anchored consult call
+      max_tokens: 512      # int | default 512 | max output tokens for a consult; unset = 512
+    verdict:               # dict | budget for verdict calls
+      max_tokens: 512      # int | default 512 | max output tokens for a verdict; unset = 512
+    completion_audit:      # dict | budget for the POST completion audit
+      max_tokens: 12000    # int | default 12000 | max output tokens for a completion audit; unset = 12000
+    render:                # dict | budget for LANE 1 renders
+      max_tokens: 2048     # int | default 2048 | max output tokens for a render; unset = 2048
+    probe:                 # dict | budget for cheap probe calls
+      max_tokens: 256      # int | default 256 | max output tokens for a probe; unset = 256
+    readout: {}            # dict | budget readout overrides; unset = computed
+
+  # ==========================================================================
+  # paths — CODE-OWNED: state dir + route log (not operator-writable)
+  # ==========================================================================
+  paths:
+    state_dir: ""          # str | default "" | base dir for router state files; unset = profile dir
+    log_path: ""           # str | default "" | route-event log path (content-free, 0600); unset = profile dir default
+    log_max_bytes: 10485760   # int | default 10485760 | rotate the route log at this size (10 MiB); unset = 10 MiB
+    log_routes: true       # bool | default true | write route events at all; unset = on
+
+  # ==========================================================================
+  # pricing — $/1M model pricing table (model-keyed)
+  # ==========================================================================
+  pricing: {}              # dict | default {} | model-id -> {input_per_1m, output_per_1m}; unset = no price rows, spend reads 0
+  # shape:
+  #   pricing:
+  #     <model-id>: {input_per_1m: 0.0, output_per_1m: 0.0}
+
+  # ==========================================================================
+  # providers — provider targets (declaration only)
+  # ==========================================================================
+  providers:               # dict | default {} | provider-id -> target map; unset = code literals
+    nous:
+      base_url: ""         # str | default "" | base URL for the nous provider; unset = code literal
+
+  # ##########################################################################
+  # COMPATIBILITY — pre-M23 spellings and internal knobs.
+  # Every key below is declared in the schema, so it is listed. A grouped key
+  # above ALWAYS wins; these exist so an older profile (or an older operator)
+  # keeps working. All values equal the code default: this whole section can be
+  # deleted with no behaviour change.
+  # ##########################################################################
+
+  # --- flat switches that now live inside a group --------------------------
+  enabled: true                    # bool | default true | pre-M23 spelling of operator.enabled; grouped key wins
+  dry_run: false                   # bool | default false | pre-M23 spelling of operator.dry_run; grouped key wins
+  pending_routes_ttl_seconds: 300  # int | default 300 | pre-M23 spelling of operator.pending_routes_ttl_seconds; grouped key wins
+  refusal_doctrine: always_route   # str | default always_route | pre-M23 spelling of render.refusal_doctrine; grouped key wins
+  render_max_chars: 0              # int | default 0 | pre-M23 spelling of render.max_chars; grouped key wins
+  substance_frame: ""              # str | default "" | pre-M23 spelling of render.substance_frame; grouped key wins
+  render_method_spec: ""           # str | default "" | pre-M23 spelling of render.method_spec; grouped key wins
+  persona_card_chars: 2500         # int | default 2500 | pre-M23 spelling of persona.card_chars; grouped key wins
+  chain: []                        # list | default [] | pre-M23 spelling of render.chain (endpoint dicts); grouped key wins
+  log_path: /tmp/hermes-router.log # str | default /tmp/hermes-router.log | pre-M23 spelling of paths.log_path; grouped key wins
+  log_routes: true                 # bool | default true | pre-M23 spelling of paths.log_routes; grouped key wins
+  log_max_bytes: 10485760          # int | default 10485760 | pre-M23 spelling of paths.log_max_bytes; grouped key wins
+
+  # --- operator/diagnostic knobs with no grouped replacement ---------------
+  debug_banner: false              # bool|int | default false | spend/decision banners on delivered output (true, or 0-3 verbosity); unset = off
+  on_demand_routing: false         # bool | default false | kill switch: route only on demand; unset = automatic routing allowed
+  on_demand_aux_classify: false    # bool | default false | kill switch: aux classify only on demand; unset = automatic
+  flinch_reason_gate: true         # bool | default true | censorship-vs-technical verdict gate; unset = on
+  post_banner_cap_per_run: 3       # int | default 3 | max POST banners delivered per run; unset = 3
+  banner_capture_fallback_wait: 45 # int | default 45 | seconds to wait for banner capture before falling back; unset = 45
+  orientation_ask_cap: 4000        # int | default 4000 | char cap on the orientation ask frame; unset = 4000
+  thread_digest_chars: 3000        # int | default 3000 | char cap on the injected thread digest; unset = 3000
+  thread_digest_asks: 6            # int | default 6 | number of asks summarised into the digest; unset = 6
+  routing_daily_cap_usd: 0.0       # float|null | default 0.0 | daily routing spend cap; 0 = no cap; unset = no cap
+  bounded_replay: false            # bool | default false | replay the bounded recent window into the anchor; unset = off
+  pov_mode: auto                   # str | default auto | point-of-view mode for the complexity consult; unset = auto
+  stage1: true                     # bool | default true | stage-1 heuristic gate before a consult; unset = on
+  rescan_dedupe: true              # bool | default true | dedupe explicit rescans; unset = on
+
+  # --- decision-lane internals (top-level knobs) ---------------------------
+  backend: nous                    # str | default nous | decision backend id; unset = nous
+  decision_mode: ""                # str | default "" | decision mode override; unset = backend decides
+  jev_model: ""                    # str | default "" | model id for the jev backend; unset = backend default
+  jev_native_model: ""             # str|null | default "" | model id for the jev-native backend; unset = jev-latest
+  openrouter_endpoint: ""          # str | default "" | chat-completions URL for the OpenRouter backend; unset = code literal
+  typesafe_endpoint: ""            # str|null | default "" | system-one endpoint URL; unset = code literal
+  typesafe_api_key_env: ""         # str|null | default "" | ENV_VAR_NAME holding the typesafe key; unset = none
+  api_key_env: ""                  # str | default "" | ENV_VAR_NAME holding the provider key; unset = none
+  backend_timeout_seconds: 15.0    # float | default 15.0 | per-call timeout for the decision backend; unset = 15.0
+  score_timeout_seconds: 45.0      # float | default 45.0 | timeout for the scoring pass; unset = 45.0
+  confidence_threshold: 0.5        # float | default 0.5 | confidence floor before a decision acts; unset = 0.5
+  breaker_fails: 3                 # int | default 3 | consecutive failures before the breaker opens; unset = 3
+  breaker_cooldown_s: 600          # int | default 600 | seconds the breaker stays open; unset = 600
+  calls_per_hour: 20               # int | default 20 | decision call rate cap; unset = 20
+  misfire_confidence: 0.3          # float | default 0.3 | confidence at/above which a POST answer counts as a misfire; unset = 0.3
+  max_frame_chars: 8000            # int | default 8000 | char cap on the decision frame; unset = 8000
+  max_snippet_chars: 400           # int | default 400 | char cap on an extracted snippet; unset = 400
+  max_precedent_age_days: 30       # int | default 30 | oldest precedent (days) the miner will use; unset = 30
+  provenance_window_chars: 3000    # int | default 3000 | marker scan window, in chars; unset = 3000
+  enum_min_chars: 40               # int | default 40 | chars of enumerated answer needed to count as a workflow; unset = 40
+  enum_min_items: 3                # int | default 3 | enumerated siblings needed to count as a workflow; unset = 3
+  evol_tail_lines: 30              # int | default 30 | lines of evol.jsonl read into context; unset = 30
+  extract_cap: 8000                # int | default 8000 | extraction cap (the decision lane clamps it to 2-6); unset = 8000
+  weights_path: ""                 # str|null | default "" | trained decision_head weights file; unset = heuristic scorer
+  embedding_endpoint: ""           # str|null | default "" | embeddings endpoint for decision_head; unset = off
+
+  # --- legacy blocks (pre-M23 shape); the grouped block above wins ----------
+  classification:                  # dict | default {} | pre-M23 classify block; classify.* wins
+    semantic_gate: false           # bool | default false | pre-M23 semantic gate; classify.semantic_gate wins
+    pre_patterns: []               # list | default [] | pre-M23 PRE patterns; classify.pre_patterns wins
+    aux_classify: {}               # dict | default {} | pre-M23 aux block; classify.aux wins
+
+  complexity:                      # dict | default {} | complexity consult block; anchor.* wins
+    pov_mode: auto                 # str | default auto | POV mode for the complexity consult; unset = auto
+    stage1: true                   # bool | default true | stage-1 heuristic gate; unset = on
+    consult_cooldown_turns: 5      # int | default 5 | turns to wait between consults; unset = 5
+    aux_consult_min_interval_sec: 300   # int | default 300 | minimum seconds between aux consults; unset = 300
+
+  anchor_chain:                    # dict | default {} | pre-M23 anchor block; anchor.* wins
+    primary: {}                    # dict | default {} | pre-M23 anchor primary (dict shape); anchor.primary wins
+    judge: {}                      # dict | default {} | pre-M23 anchor judge; anchor.judge wins
+    models: {}                     # dict | default {} | pre-M23 model map; anchor.models wins
+    pricing: {}                    # dict | default {} | pre-M23 price map; anchor.pricing wins
+    failover: []                   # list|null | default [] | pre-M23 failover endpoints; anchor.failover wins
+    enabled: true                  # bool | default true | pre-M23 anchor switch; anchor.enabled wins
+    on_demand: false               # bool | default false | anchor consulted only on demand; unset = automatic
+    daily_cap_usd: 0.0             # float | default 0.0 | pre-M23 anchor cap; anchor.daily_cap_usd wins
+    max_history_turns: 12          # int | default 12 | pre-M23 history depth; anchor.max_history_turns wins
+    reasoning_effort: ""           # str|null | default "" | pre-M23 effort hint; anchor.reasoning_effort wins
+    summary_header: ""             # str|null | default "" | header prepended to a consult summary; unset = none
+    threshold: 0.0                 # float|null | default 0.0 | pre-M23 struggle threshold; 0 = off
+    model: ""                      # str|null | default "" | pre-M23 flat model id; anchor.primary wins
+    endpoint: ""                   # str|null | default "" | pre-M23 flat endpoint; the chain/anchor endpoints win
+    api_key_env: ""                # str|null | default "" | pre-M23 ENV_VAR_NAME for the anchor key; unset = none
+    caps: {}                       # dict | default {} | per-call caps for the anchor; unset = none
+
+  decision_head:                   # dict | default {} | pre-M23 decision gate block; decision.* wins
+    mode: ""                       # str|null | default "" | pre-M23 decision mode; decision.mode wins
+    enabled: true                  # bool | default true | pre-M23 decision gate switch; decision.enabled wins
+    level: 0                       # int | default 0 | pre-M23 decision verbosity level; unset = 0
+    slice: ""                      # str|null | default "" | pre-M23 frame slice name; unset = none
+    confidence_threshold: 0.5      # float | default 0.5 | pre-M23 confidence floor; decision.confidence_threshold wins
+
+  risk:                            # dict | default {} | risk consult block (no grouped replacement)
+    enabled: true                  # bool | default true | enable the risk consult lane; unset = on
+    endpoint: ""                   # str|null | default "" | risk consult URL; unset = code literal
+    chain: []                      # list|null | default [] | ordered risk endpoints; unset = none
+    on_demand: false               # bool | default false | risk consulted only on demand; unset = automatic
+
+  frontier:                        # dict | default {} | higher-self frontier block (no grouped replacement)
+    pov_mode: auto                 # str | default auto | POV mode for the frontier consult; unset = auto
+    consult_cooldown_turns: 5      # int | default 5 | turns between frontier consults; unset = 5
+    aux_consult_min_interval_sec: 300   # int | default 300 | minimum seconds between aux consults; unset = 300
+    ttl_s: 0                       # int|null | default 0 | parked-banner TTL in seconds, 0 = built-in default; unset = 0
+    base_s: 0                      # int|null | default 0 | base backoff seconds, 0 = built-in default; unset = 0
+    max_s: 0                       # int|null | default 0 | max backoff seconds, 0 = built-in default; unset = 0
+    banner_capture_fallback_wait: 45   # int | default 45 | seconds to wait for banner capture; unset = 45
+    debug_banner: false            # bool|int | default false | banners for the frontier lane; unset = off
+
+  uncensored_router: {}            # dict|null | default {} | legacy render section; render.* wins
+
+  detection:                       # dict | default {} | two-tier detection block
+    enabled: true                  # bool | default true | enable the semantic judge tier; unset = on
+    model: auto                    # str | default auto | model id for the semantic judge; unset = auto
+
+  envelope:                        # dict | declared leaves only (no container key)
+    chars_cap: 8000                # int | default 8000 | request envelope char budget; unset = 8000
+    drop_order:                    # list | default [slice, agent_card.history, context.session_context] | slots emptied in order until the envelope fits; unset = that order
+      - slice
+      - agent_card.history
+      - context.session_context
