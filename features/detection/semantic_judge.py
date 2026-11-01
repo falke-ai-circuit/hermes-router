@@ -353,14 +353,13 @@ def resolve_model(cfg: Optional[Dict[str, Any]] = None) -> str:
 
 
 def _fallback_client() -> Optional[Any]:
-    """OpenAI-compatible client on the profile's provider base (router
-    section base_url, NOUS_API_KEY key — mirrors completion_audit's
+    """OpenAI-compatible client on the profile's provider base
+    (providers.nous.base_url, NOUS_API_KEY key — mirrors completion_audit's
     resolution). None when unresolvable (fail-open, no egress)."""
     try:
         from ...core import config_access as _ca
 
-        sec = _ca.router_section() or {}
-        base = str(sec.get("base_url") or "").strip() or \
+        base = str(_ca.get("providers.nous.base_url", "") or "").strip() or \
             "https://inference-api.nousresearch.com/v1"
         import os
 

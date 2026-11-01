@@ -165,9 +165,11 @@ hermes_router:
   # ==========================================================================
   # providers — provider targets (declaration only)
   # ==========================================================================
-  providers:               # dict | default {} | provider-id -> target map; unset = code literals
+  providers:               # dict | default {} | provider-id -> target map; unset = code literal default
     nous:
-      base_url: ""         # str | default "" | base URL for the nous provider; unset = code literal
+      base_url: ""         # str | default "" | base URL for the nous provider (unset -> code default literal)
+    openrouter:
+      base_url: ""         # str | default "" | base URL for the openrouter provider (unset -> code default literal)
 
   # ##########################################################################
   # COMPATIBILITY — pre-M23 spellings and internal knobs.

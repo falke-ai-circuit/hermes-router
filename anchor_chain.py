@@ -45,6 +45,9 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+# M24-01: these are DEFAULTS only. providers.<name>.base_url wins when the
+# profile names one; the literal applies when config is silent (unchanged
+# behaviour for every deployed profile).
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 NOUS_BASE = "http://127.0.0.1:8680/v1"
@@ -108,6 +111,22 @@ def _custom_providers() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
+def _provider_base(name: str, default: str) -> str:
+    """providers.<name>.base_url, or the code literal when config is silent.
+
+    M24-01: the literal is the DEFAULT, never the authority — a profile that
+    names a base URL wins, and every profile that does not gets exactly the
+    bytes it got before this change. Fails to the literal on any read error.
+    """
+    try:
+        from . import config_access
+
+        value = config_access.get(f"providers.{name}.base_url", default)
+        return str(value or "").strip() or default
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoint]:
     """Resolve <scheme>://<model> to (base_url, key_env). Built-in schemes:
     openrouter. Generic passthrough: custom providers in config under the
@@ -116,12 +135,14 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
         scheme = (scheme or "").strip().lower()
         if scheme == "openrouter":
             return AnchorEndpoint(
-                scheme="openrouter", model=model, base_url=OPENROUTER_BASE,
+                scheme="openrouter", model=model,
+                base_url=_provider_base("openrouter", OPENROUTER_BASE),
                 api_key_env=OPENROUTER_KEY_ENV, role=role,
             )
         if scheme == "nous":
             return AnchorEndpoint(
-                scheme="nous", model=model, base_url=NOUS_BASE,
+                scheme="nous", model=model,
+                base_url=_provider_base("nous", NOUS_BASE),
                 api_key_env=NOUS_KEY_ENV, role=role,
             )
         custom = _custom_providers().get(scheme)

@@ -2262,8 +2262,8 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         # burned the 4k budget → content=null), not a model problem —
         # fixed with budget, not by lobotomizing the pass.
         model = str(sec.get("model") or "") or "z-ai/glm-5.3"
-        base = (str(sec.get("base_url") or "").strip()
-                or "https://inference-api.nousresearch.com/v1")
+        base = (str(_cac.get("providers.nous.base_url", "")) or "").strip() \
+            or "https://inference-api.nousresearch.com/v1"
         # R34-19j: the revision IS the frontier lane — it must follow the
         # configured anchor chain, never a hardcoded model. Left hardcoded, an
         # anchor swap moved the consult and left the revision behind on

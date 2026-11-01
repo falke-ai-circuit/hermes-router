@@ -324,11 +324,11 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     # --- pricing (model-keyed: pricing.<model>.{input_per_1m,output_per_1m}) --
     _k("pricing", dict, {}),
 
-    # --- providers: DECLARATION ONLY in M23. Base URLs and key-env literals
-    # are still the code's own (M24 removes them); only the alias target is
-    # declared so `base_url` has somewhere to resolve to.
+    # --- providers: base URLs read as config, code literal is only the DEFAULT
+    # (M24-01). Key-env names are still code-owned (M24-03).
     _k("providers", dict, {}),
     _k("providers.nous.base_url", str, "", legacy_of="base_url"),
+    _k("providers.openrouter.base_url", str, ""),
 )
 
 SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS
