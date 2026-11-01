@@ -512,8 +512,12 @@ def validate_config() -> int:
                 # R34-6: a legacy flat leaf superseded by the live nested
                 # block is NOT a violation — the profile simply uses the
                 # nested shape. Real drift inside the nested keys still warns.
-                if (getattr(k, "legacy_of", "") == "anchor_chain"
-                        and _nested_anchor):
+                # M23-01: the marker moved from legacy_of (which now records
+                # what a NEW grouped key replaces) to superseded_by; the
+                # legacy_of form is still honoured for Keys built elsewhere.
+                _superseded = (getattr(k, "superseded_by", "")
+                               or getattr(k, "legacy_of", ""))
+                if _superseded == "anchor_chain" and _nested_anchor:
                     continue
                 value = _walk(section, k.path)
                 if value is _MISSING:
