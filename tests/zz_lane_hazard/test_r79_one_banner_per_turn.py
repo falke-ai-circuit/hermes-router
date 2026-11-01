@@ -16,50 +16,47 @@ from hermes_router import debug_banner as db
 from hermes_router import reflex_lane as rl
 
 
-# The stores the delivery edge keys by session id (verified against the module
-# namespaces). Clearing is explicit because some module dicts are load-bearing
-# containers, not session state; the GUARD below is generic, so a store that is
-# missing here cannot stay silently dirty — it fails the test and names itself.
-_SESSION_STORES = (
-    ("rl._PENDING", lambda: rl._PENDING),
-    ("rl._SEQ", lambda: rl._SEQ),
-    ("rl._ACC", lambda: rl._ACC),
-    ("rl._LAST_FIRE", lambda: getattr(rl, "_LAST_FIRE", {})),
-    ("rl._DELIVERED_AT", lambda: getattr(rl, "_DELIVERED_AT", {})),
-    ("rl._LAST_BLOCK", lambda: getattr(rl, "_LAST_BLOCK", {})),
-    ("rl._LAST_FRAME", lambda: getattr(rl, "_LAST_FRAME", {})),
-    ("db._ANCHOR_BANNERS", lambda: db._ANCHOR_BANNERS),
-    ("db._ANCHOR_TASKS", lambda: getattr(db, "_ANCHOR_TASKS", {})),
-    ("db._ANCHOR_SEGS", lambda: getattr(db, "_ANCHOR_SEGS", {})),
-    ("db._PARK_RECORDS", lambda: getattr(db, "_PARK_RECORDS", {})),
-    ("db._HELD_DECISIONS", lambda: getattr(db, "_HELD_DECISIONS", {})),
-)
+# The clear-list is DERIVED from the modules' namespaces, never hand-written.
+# The hand-written list that used to live here was the defect: it named 12 of
+# the 14 session containers and omitted reflex_lane._HELD_LOGGED, so a 47-key
+# set arrived dirty from an earlier file and this file's teardown guard failed
+# (R79). A store added tomorrow is now swept with nobody remembering to add it.
+_LANE_MODULES = (rl, db)
+_STORE_TYPES = (dict, set, list)
+_STORE_EXCLUDE = ("CACHE", "DEFAULT")   # module-level caches/consts, not session state
+
+
+def _lane_stores():
+    """Every per-session mutable container in either module, by module name."""
+    stores = []
+    for mod in _LANE_MODULES:
+        short = mod.__name__.rsplit(".", 1)[-1]
+        for name, val in list(vars(mod).items()):
+            if not name.startswith("_") or name.startswith("__"):
+                continue
+            if not isinstance(val, _STORE_TYPES):
+                continue
+            if any(tok in name.upper() for tok in _STORE_EXCLUDE):
+                continue
+            stores.append(("%s.%s" % (short, name), val))
+    return stores
 
 
 def _sweep_lane_stores():
-    for _name, get in _SESSION_STORES:
-        store = get()
-        if isinstance(store, (dict, set, list)):
-            store.clear()
+    for _name, store in _lane_stores():
+        store.clear()          # clear in place: aliases elsewhere see the sweep
 
 
 def _dirty_lane_stores():
-    """Generic: every underscore dict/set in either module that still has state.
+    """Guard: every derived store that still carries state, named explicitly.
 
-    This is the guard, and it is deliberately NOT the clear-list — it derives
-    from the namespace, so a store added tomorrow shows up by name instead of
-    poisoning a later test file.
+    Same enumeration as the sweep, so the guard cannot drift from the clear-list
+    the way the hand-written pair did.
     """
     dirty = []
-    for mod in (rl, db):
-        short = mod.__name__.rsplit(".", 1)[-1]
-        for name, val in list(vars(mod).items()):
-            if not name.startswith("_") or name.startswith("__") or not isinstance(val, (dict, set)):
-                continue
-            if "CACHE" in name.upper() or "DEFAULT" in name.upper():
-                continue      # module-level caches/consts, not per-session state
-            if val:
-                dirty.append("%s.%s (%d)" % (short, name, len(val)))
+    for name, store in _lane_stores():
+        if isinstance(store, (dict, set)) and store:
+            dirty.append("%s (%d)" % (name, len(store)))
     return dirty
 
 
