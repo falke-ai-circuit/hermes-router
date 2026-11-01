@@ -108,3 +108,62 @@ def test_pre_seam_emits_the_lane_request(monkeypatch):
     assert reqs, "no lane-request record emitted at the PRE seam"
     assert reqs[0]["schema"] == "lane-request/1"
     assert reqs[0]["trigger"] == "pre"
+
+
+# --- M18: the record must reach the ROUTE LOG, not just _log --------------------
+# The seam above stubs `_log`, which is exactly how the defect hid: the lane
+# logged a lane-request record with its own `trigger`, decision_log passed a
+# fixed `trigger=TRIGGER` beside it, python raised "got multiple values for
+# keyword argument 'trigger'", and the fail-open except swallowed it — a billed
+# consult shipped its receipt row and zero lane-request rows. These pins go
+# through the real emitter chain to the route-log dispatcher.
+
+def _captured_route_rows(monkeypatch):
+    from hermes_router.core import patchpoints as PP
+
+    rows = []
+
+    def _cap(event, **fields):
+        rows.append((event, fields))
+
+    monkeypatch.setattr(PP, "log_route_override", _cap)
+    return rows
+
+
+def test_the_seam_row_lands_in_the_route_log_with_schema_and_lane(monkeypatch):
+    rows = _captured_route_rows(monkeypatch)
+    _stub_lane(monkeypatch)
+
+    RL.fire("s-m18", "read_file", "x" * 200,
+            {"enabled": True, "every_call": True}, ask="do the thing")
+
+    landed = [f for ev, f in rows if ev == "lane_request"]
+    assert landed, "the lane-request record never reached the route log"
+    assert landed[0]["schema"] == "lane-request/1"
+    assert landed[0]["lane"] == "decision"
+    assert landed[0]["trigger"] == "midturn"
+    assert landed[0]["session_id"] == "s-m18"
+
+
+def test_the_emitters_own_trigger_reaches_the_route_log(monkeypatch):
+    """The bug in one line: `trigger` from the emitter must not collide with
+    the default decision-log trigger."""
+    from hermes_router import decision_log as DL
+
+    rows = _captured_route_rows(monkeypatch)
+    DL.log_event("s-m18b", "lane_request", schema="lane-request/1",
+                 lane="decision", trigger="pre", seam="every_call")
+
+    assert rows and rows[0][0] == "lane_request"
+    assert rows[0][1]["trigger"] == "pre"
+    assert rows[0][1]["lane"] == "decision"
+    assert rows[0][1]["schema"] == "lane-request/1"
+
+
+def test_an_emitter_that_names_no_trigger_still_reads_midturn(monkeypatch):
+    from hermes_router import decision_log as DL
+
+    rows = _captured_route_rows(monkeypatch)
+    DL.log_event("s-m18c", "reflex_held", reason="no_candidates")
+
+    assert rows and rows[0][1]["trigger"] == "midturn"

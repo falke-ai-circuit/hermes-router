@@ -24,7 +24,14 @@ def log_event(session_id: str, event: str, **fields: Any) -> None:
         # 'lane'" and the record never landed — the lane's delivery evidence was
         # silently dropped. The emitter's lane wins; decision stays the default.
         _lane = fields.pop("lane", "") or "decision"
-        _lr(event, lane=_lane, trigger=TRIGGER,
+        # M18: same defect one line over. reflex_lane's lane-request record names
+        # its own trigger (pre / midturn), and the fixed `trigger=TRIGGER` below
+        # raised "got multiple values for keyword argument 'trigger'" — swallowed
+        # by this except, so the seam's lane-request/1 row never reached the route
+        # log while its receipt row did. The emitter's trigger wins; midturn stays
+        # the default for emitters that name none.
+        _trigger = fields.pop("trigger", "") or TRIGGER
+        _lr(event, lane=_lane, trigger=_trigger,
             session_id=str(session_id or ""), **fields)
     except Exception as exc:  # noqa: BLE001
         try:
