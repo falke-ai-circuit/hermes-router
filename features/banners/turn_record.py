@@ -110,7 +110,11 @@ def register(session_id: str, segment: str, *, lane: str = "",
 
     Idempotent: an identical segment is not stored twice, and a second segment
     from the SAME lane/kind/row replaces the earlier one (latest wins for a
-    retry). Returns True when the record changed. Never raises.
+    retry). The one exception is the FRONTIER lane (M22, operator ruling
+    2026-11-01): two frontier firings in one turn are two measurements, not a
+    retry, so they STACK and `render` sums them into one line — the same
+    treatment the decision lane gets. Returns True when the record changed.
+    Never raises.
     """
     try:
         text = str(segment or "").strip()
@@ -120,12 +124,13 @@ def register(session_id: str, segment: str, *, lane: str = "",
         _lane = str(lane or "") or _lane_of(text)
         _kind = str(kind or "")
         _row = _row_of(text)
+        _aggregating = _lane.startswith("frontier")
         segs: List[Dict[str, Any]] = rec["segments"]
         for i, seg in enumerate(segs):
             if seg["text"] == text:
                 return False
-            if (seg["lane"] == _lane and seg["kind"] == _kind
-                    and seg["row"] == _row):
+            if not _aggregating and (seg["lane"] == _lane and seg["kind"] == _kind
+                                     and seg["row"] == _row):
                 segs[i] = {"lane": _lane, "kind": _kind, "row": _row,
                            "text": text, "edge": str(edge or "")}
                 return True
@@ -150,6 +155,27 @@ def render(session_id: str) -> str:
         segs = [s["text"] for s in rec["segments"] if str(s.get("text") or "").strip()]
         if not segs:
             return ""
+        # M22 (operator ruling 2026-11-01): the frontier lane aggregates like
+        # the decision lane — its segments coalesce into ONE line carrying the
+        # summed numbers, so the PRE consult and the POST confirmation of a
+        # turn no longer arrive as two frontier lines. Unrelated lanes keep
+        # their own line.
+        try:
+            _fmark = getattr(_db, "_FRONTIER_LINE_MARK", "higher-self (frontier)")
+            _first = None
+            _coalesced: List[str] = []
+            for text in segs:
+                if _fmark in text and _first is not None:
+                    _merged_f = _db.merge_frontier_banner(_coalesced[_first], text)
+                    if isinstance(_merged_f, str) and _merged_f.strip():
+                        _coalesced[_first] = _merged_f
+                        continue
+                if _fmark in text and _first is None:
+                    _first = len(_coalesced)
+                _coalesced.append(text)
+            segs = _coalesced
+        except Exception:  # noqa: BLE001 — coalescing is a nicety
+            pass
         out = segs[0]
         for text in segs[1:]:
             merged = None

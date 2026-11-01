@@ -419,6 +419,166 @@ def merge_decision_banner(delivery_text: str, banner_text: str):
         return None
 
 
+# --- M22 (operator ruling 2026-11-01): the frontier lane aggregates too -----
+# The decision lane merged at the delivery boundary since R79; the frontier
+# lane did not, so a PRE consult line and a POST confirmation line (or two
+# consults) arrived as SEPARATE frontier lines in one turn. The operator
+# ruled that frontier aggregates like decision. Same boundary, same shape:
+# one line per lane per turn, counts/tokens/cost summed, provider/model/
+# trigger/endpoint and any trailing suffix preserved from the first line.
+# Unrelated lanes (uncensored/shadow) are still never merged.
+_FRONTIER_LINE_MARK = "higher-self (frontier)"
+
+
+def _parse_frontier_line(line: str):
+    """Parse a frontier-lane banner line into its numbers, or None.
+
+    Recognises the compact L1 shape
+    (`· router · higher-self (frontier) | pre-check | m @ host | tok 10/5 |
+    $0.0000* | 3s`) plus a trailing `| row=N ·` suffix when present. Anything
+    it cannot read returns None and the caller appends as before (fail-open).
+    """
+    try:
+        s = str(line or "")
+        if _FRONTIER_LINE_MARK not in s:
+            return None
+        cells = [c.strip() for c in s.split("|")]
+        d = {"n": 1, "ti": 0, "to": 0, "cost": 0.0, "star": False,
+             "lat": 0, "r1": 0, "r2": 0, "model": "", "trigger": ""}
+        m = re.search(r"\bx(\d+)\b", cells[0])
+        if m:
+            d["n"] = max(1, int(m.group(1)))
+        if len(cells) > 1:
+            d["trigger"] = cells[1]
+        m = re.search(r"tok\s+(\d+)/(\d+)", s)
+        if m:
+            d["ti"], d["to"] = int(m.group(1)), int(m.group(2))
+        m = re.search(r"\$([0-9.]+)(\*?)", s)
+        if m:
+            d["cost"] = float(m.group(1))
+            d["star"] = bool(m.group(2))
+        m = re.search(r"\|\s*(\d+)s\s*(?:\||$)", s)
+        if m:
+            d["lat"] = int(m.group(1))
+        for c in cells[2:]:
+            if "@" in c and "tok" not in c and "row" not in c:
+                d["model"] = c
+                break
+        m = re.search(r"rows?\s+(\d+)-(\d+)", s)
+        if m:
+            d["r1"], d["r2"] = int(m.group(1)), int(m.group(2))
+        else:
+            rows = [int(x) for x in re.findall(r"row[= ](\d+)", s)]
+            if rows:
+                d["r1"], d["r2"] = min(rows), max(rows)
+        if not d["ti"] and not d["to"] and not d["cost"] and not d["r1"]:
+            return None   # carries none of our numbers: not a line to merge
+        return d
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _render_frontier_merge(old_line: str, d) -> str:
+    """Rewrite ONE frontier line with the merged numbers.
+
+    The first line's identity string is kept (lane label, trigger, model,
+    endpoint, initiator and any suffix the caller appended); only the
+    numeric cells and the count marker change. Cells that cannot be
+    rewritten are preserved verbatim — never silently dropped.
+    """
+    cells = [c.strip() for c in str(old_line or "").split("|")]
+    n = max(1, int(d["n"]))
+    head = re.sub(r"\s+x\d+\b", "", cells[0]).rstrip()
+    if n > 1:
+        head += " x%d" % n
+    cells[0] = head
+    cost = float(d["cost"] or 0.0)
+    if cost > 0.0:
+        cost_s = "$%.6f" % cost
+    elif d.get("star") or d["ti"] or d["to"]:
+        cost_s = "$0.0000*"
+    else:
+        cost_s = "$0.0000"
+    out = [cells[0]]
+    for c in cells[1:]:
+        if re.search(r"\btok\s+\d+/\d+", c):
+            out.append("tok %d/%d" % (int(d["ti"]), int(d["to"])))
+        elif c.startswith("$"):
+            out.append(cost_s)
+        elif re.fullmatch(r"\d+s", c):
+            if int(d.get("lat") or 0) >= 1:
+                out.append("%ds" % int(d["lat"]))
+            # else: a 0s cell carried no fact — drop it rather than print one
+        elif re.match(r"rows?\s+\d", c):
+            r1, r2 = int(d["r1"]), int(d["r2"])
+            if r2 > r1:
+                out.append("rows %d-%d" % (r1, r2))
+            elif r1:
+                out.append("row %d" % r1)
+        elif "row=" in c:
+            rows = [int(x) for x in re.findall(r"row=(\d+)", c)]
+            r1, r2 = int(d["r1"]), int(d["r2"])
+            if rows:
+                lo, hi = min(rows + [r1] if r1 else rows), max(rows + [r2] if r2 else rows)
+                c = re.sub(r"row=\d+", "row=%d" % lo, c)
+                if hi > lo:
+                    c = c.rstrip(" ·") + " · rows %d-%d" % (lo, hi)
+            out.append(c)
+        else:
+            out.append(c)
+    return " | ".join(out)
+
+
+def merge_frontier_banner(delivery_text: str, banner_text: str):
+    """Merge a second FRONTIER-lane line into the one already in the delivery.
+
+    Returns the new text, or None when the merge does not apply (no frontier
+    mark in either line, unparseable numbers, or a multi-line banner whose
+    context lines would be lost) — callers then append exactly as before.
+    Lane-scoped by construction: only frontier lines are touched, so the
+    decision and uncensored lanes keep their own independent delivery.
+
+    M22 (operator ruling 2026-11-01): this is the frontier analogue of
+    merge_decision_banner — the PRE consult and the POST confirmation of one
+    turn become ONE line carrying the summed tokens, cost and latency, with
+    provider/model/trigger preserved.
+    """
+    try:
+        if not isinstance(delivery_text, str) or not isinstance(banner_text, str):
+            return None
+        if _FRONTIER_LINE_MARK not in banner_text:
+            return None
+        if "\n" in banner_text.strip():
+            return None          # L2/L3 context lines: append, never lose them
+        new = _parse_frontier_line(banner_text)
+        if not new:
+            return None
+        lines = delivery_text.splitlines()
+        for i in range(len(lines) - 1, -1, -1):
+            if _FRONTIER_LINE_MARK not in lines[i]:
+                continue
+            old = _parse_frontier_line(lines[i])
+            if not old:
+                return None      # present but unfamiliar: append, never guess
+            merged = dict(old)
+            merged["n"] = int(old["n"]) + int(new["n"])
+            merged["ti"] = int(old["ti"]) + int(new["ti"])
+            merged["to"] = int(old["to"]) + int(new["to"])
+            merged["cost"] = float(old["cost"]) + float(new["cost"])
+            merged["star"] = bool(old["star"] or new["star"])
+            merged["lat"] = int(old["lat"]) + int(new["lat"])
+            known = [r for r in (old["r1"], old["r2"], new["r1"], new["r2"]) if r > 0]
+            merged["r1"] = min(known) if known else 0
+            merged["r2"] = max(known) if known else 0
+            merged["model"] = old.get("model") or new.get("model") or ""
+            merged["trigger"] = old.get("trigger") or new.get("trigger") or ""
+            lines[i] = _render_frontier_merge(lines[i], merged)
+            return "\n".join(lines)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False,
                   _knob_checked: bool = False) -> str:
     """THE narrow §10.4-H boundary. Returns the DELIVERY representation:
@@ -443,6 +603,14 @@ def append_banner(delivery_text: str, banner_text: str, *, prepend: bool = False
             # row span extended); other lanes are never touched. Unparseable ->
             # None -> append exactly as before (fail-open).
             merged = merge_decision_banner(base, banner)
+            if merged is not None:
+                return merged
+            # M22 (operator ruling 2026-11-01): the frontier lane aggregates
+            # exactly like the decision lane — a second frontier line in the
+            # same delivery merges into the one already there (counts, tokens,
+            # cost and latency summed; row span extended). Other lanes are
+            # still never touched.
+            merged = merge_frontier_banner(base, banner)
             if merged is not None:
                 return merged
         return ("%s\n\n%s" % (banner, base)) if prepend else ("%s\n\n%s" % (base, banner))

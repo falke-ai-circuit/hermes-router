@@ -132,15 +132,56 @@ def test_hold_only_says_hold_and_never_zero_lead():
     assert "hold" in line and "0 lead" not in line, line
 
 
+def _frontier(trigger, ti, to, cost, lat=3, model="m-frontier"):
+    return db.format_banner(
+        lane="frontier-anchor", trigger=trigger, model=model,
+        endpoint="openrouter://api.example/v1", tokens_in=ti, tokens_out=to,
+        est_cost=cost, latency_s=lat, retries=0)
+
+
+def test_two_frontier_lines_merge_into_one_with_summed_numbers():
+    """M22 (operator ruling 2026-11-01): frontier aggregates like decision.
+
+    The PRE consult and the POST confirmation of one turn are two measurements
+    of the SAME lane, so they render as ONE line carrying the summed numbers —
+    provider/model/trigger preserved, nothing appended beside it.
+    """
+    body = db.append_banner("answer", "\n" + _frontier("pre-check", 10, 2, 0.000123),
+                            _knob_checked=True)
+    body = db.append_banner(body, "\n" + _frontier("post-check", 20, 4, 0.000123),
+                            _knob_checked=True)
+    assert body.count("higher-self (frontier)") == 1, body
+    line = next(ln for ln in body.splitlines() if "higher-self (frontier)" in ln)
+    assert re.search(r"x2\b", line), line
+    assert "tok 30/6" in line, line
+    assert "$0.000246" in line, line
+    assert "m-frontier" in line, "the provider/model must be preserved: %s" % line
+    assert "pre-check" in line, "the identifying trigger must be preserved: %s" % line
+    assert "6s" in line, "latency must be summed: %s" % line
+
+
 def test_other_lanes_are_never_merged():
-    anchor = "· router · anchor (frontier) | trigger: open_question | row 9"
-    body = db.append_banner("answer", "\n" + _line(1, 1, 0, 10, 2, 0.0, 5, 5), _knob_checked=True)
-    body = db.append_banner(body, "\n" + anchor, _knob_checked=True)
-    assert body.count(HEAD) == 1, body
-    assert anchor in body, "an anchor banner must keep its own line"
-    body2 = db.append_banner(body, "\n" + _line(1, 0, 1, 10, 2, 0.0, 6, 6), _knob_checked=True)
-    assert body2.count(HEAD) == 1, body2
-    assert anchor in body2
+    """M22: only the FRONTIER lane aggregates. Decision keeps its own line and
+    an unrelated lane (shadow/uncensored) is never folded into anything."""
+    uncensored = db.format_banner(
+        lane="uncensored-render", trigger="render", model="m-shadow",
+        endpoint="openrouter://api.example/v1", tokens_in=7, tokens_out=1,
+        est_cost=0.0, latency_s=0.0)
+    body = db.append_banner("answer", "\n" + _frontier("pre-check", 10, 2, 0.000123),
+                            _knob_checked=True)
+    body = db.append_banner(body, "\n" + uncensored, _knob_checked=True)
+    assert body.count("higher-self (frontier)") == 1, body
+    assert body.count("shadow-self (uncensored)") == 1, body
+    # a second uncensored line is NOT merged into the first
+    body2 = db.append_banner(body, "\n" + uncensored.replace("tok 7/1", "tok 5/1"),
+                             _knob_checked=True)
+    assert body2.count("shadow-self (uncensored)") == 2, body2
+    assert body2.count("higher-self (frontier)") == 1, body2
+    # decision + frontier stay two lines: different lanes, never folded
+    body3 = db.append_banner(body2, "\n" + _line(1, 1, 0, 10, 2, 0.0, 5, 5),
+                             _knob_checked=True)
+    assert body3.count(HEAD) == 1, body3
+    assert body3.count("higher-self (frontier)") == 1, body3
 
 
 def test_unparseable_decision_line_appends_instead_of_being_lost():
