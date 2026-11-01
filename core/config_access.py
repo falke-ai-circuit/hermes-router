@@ -197,9 +197,26 @@ def router_section() -> Dict[str, Any]:
 
 def sub_block(name: str) -> Dict[str, Any]:
     """A named sub-block of the router section (complexity, decision_head,
-    anchor_chain, ...). {} on miss. Never raises."""
+    anchor_chain, ...). {} on miss. Never raises.
+
+    M23-01: a GROUPED block name (classify) resolves first and falls back to
+    the legacy block name (classification) while profiles still carry it, so
+    a caller can ask for the schema name and still see a pre-M23 config."""
     try:
-        block = router_section().get(name)
+        section = router_section()
+        block = section.get(name)
+        if isinstance(block, dict) and block:
+            return dict(block)
+        try:
+            from . import schema
+
+            legacy_name = schema.BLOCK_ALIASES.get(str(name))
+        except Exception:  # noqa: BLE001
+            legacy_name = None
+        if legacy_name:
+            fallback = section.get(legacy_name)
+            if isinstance(fallback, dict) and fallback:
+                return dict(fallback)
         return dict(block) if isinstance(block, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
@@ -362,15 +379,60 @@ def get(path: str, default: Any = None) -> Any:
     (never silently None). On type mismatch: emits a `config_key_type_mismatch`
     row and returns the typed default. On explicit None with nullable=True:
     returns None (no row). Never raises.
+
+    M23-01 ALIAS STEP (compatibility is the hard part): an OLD name resolves to
+    its grouped path first (enabled -> operator.enabled). The grouped path is
+    read first, then the deployed old spelling, so a profile can be on either
+    schema — or half-migrated — and the read still lands. The old names stay
+    declared, so nothing is removed in v1.
     """
     try:
         from . import telemetry
 
-        k = telemetry_key(path)
+        try:
+            from . import schema as _schema
+        except Exception:  # noqa: BLE001
+            _schema = None
+
+        requested = str(path)
+        target = requested
+        if _schema is not None:
+            try:
+                target = _schema.canonical_path(requested)
+            except Exception:  # noqa: BLE001
+                target = requested
+        k = telemetry_key(target)
+        if k is None:
+            # an old key that is declared but not aliased (or a legacy leaf)
+            k = telemetry_key(requested)
+            target = requested
         if k is None:
             telemetry.log_route("config_key_unknown", path=path)
             return default
-        value = _walk(router_section(), path)
+        section = router_section()
+        value = _walk(section, target)
+        vk = k  # the key whose type/default/nullable applies to the value read
+        if value is _MISSING and target != requested:
+            # caller used the old name; the profile may still be on it. The OLD
+            # key's declared type governs here — a v1 key whose shape is not a
+            # pure rename (anchor_chain.primary is a dict, anchor.primary is a
+            # str) must keep reading exactly as it did before M23.
+            value = _walk(section, requested)
+            if value is not _MISSING:
+                vk = telemetry_key(requested) or k
+        if value is _MISSING and _schema is not None:
+            try:
+                for legacy in _schema.legacy_paths(target):
+                    if legacy == requested:
+                        continue
+                    value = _walk(section, legacy)
+                    if value is not _MISSING:
+                        # grouped caller, deployed old spelling: the GROUPED
+                        # key's type governs, so a shape mismatch surfaces as a
+                        # type row instead of leaking into a str consumer.
+                        break
+            except Exception:  # noqa: BLE001
+                pass
         if value is _MISSING:
             # A missing key is a property of the profile's config, not an
             # event of this read. Logging it on EVERY read let one absent key
@@ -379,16 +441,16 @@ def get(path: str, default: Any = None) -> Any:
             # buried the disappearance of the completion-audit gate itself for
             # six weeks. Once per key per process is signal; every read is fog.
             _note_missing_key_once(path, telemetry)
-            return default if default is not None else k.default
-        if value is None and k.nullable:
+            return default if default is not None else vk.default
+        if value is None and vk.nullable:
             return None
-        if not _type_ok(value, k.type):
-            _exp = (k.type if isinstance(k.type, tuple)
-                    else (k.type,))
+        if not _type_ok(value, vk.type):
+            _exp = (vk.type if isinstance(vk.type, tuple)
+                    else (vk.type,))
             telemetry.log_route("config_key_type_mismatch", path=path,
                                 type=_type_name(value),
                                 expected="/".join(t.__name__ for t in _exp))
-            return default if default is not None else k.default
+            return default if default is not None else vk.default
         return value
     except Exception:  # noqa: BLE001 — config read must never raise
         return default

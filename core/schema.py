@@ -11,7 +11,7 @@
 # value never silently returns None — the typed default comes back and a
 # telemetry row is emitted. sub_block() keeps its shape for existing callers.
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any, Dict, Tuple
 
 
 @dataclass(frozen=True)
@@ -21,23 +21,30 @@ class Key:
     default: Any
     nullable: bool
     control_writable: bool     # cross-checked against config_writer CANONICAL_SECTION rules
+    # M23-01: the OLD name(s) this key replaces, comma-separated ("chain,endpoint").
+    # ALIASES is derived from this field, so a grouped key states its own migration
+    # row and old spellings keep resolving through config_access.get().
+    legacy_of: str = ""
     # R34-6: a LEGACY flat leaf that the live nested block supersedes. Load
     # validation skips it when the nested shape is present, so a profile on
     # the nested schema stops emitting bogus config_key_missing rows while
-    # real drift in the nested keys still warns.
-    legacy_of: str = ""        # parent block path ("anchor_chain") or ""
+    # real drift in the nested keys still warns. (Distinct from legacy_of,
+    # which names what a NEW key replaces.)
+    superseded_by: str = ""
 
 
 def _k(path, type_, default, nullable=False, control_writable=True,
-       legacy_of=""):  # noqa: ANN001
+       legacy_of="", superseded_by=""):  # noqa: ANN001
     return Key(path=path, type=type_, default=default,
                nullable=nullable, control_writable=control_writable,
-               legacy_of=legacy_of)
+               legacy_of=legacy_of, superseded_by=superseded_by)
 
 
 # Top-level scalars — defaults EXACTLY equal the literals the readers use.
 # (plugin.yaml config_schema + dispatcher_knobs code-read inventory)
-SCHEMA: Tuple[Key, ...] = (
+# M23-01: this tuple is the PRE-M23 inventory, kept byte-identical (nothing is
+# removed in v1). The grouped declaration below ADDS to it; SCHEMA is the union.
+_V1_KEYS: Tuple[Key, ...] = (
     # --- plugin.yaml config_schema scalars ---
     _k("enabled", bool, True),
     _k("refusal_doctrine", str, "always_route"),
@@ -159,18 +166,18 @@ SCHEMA: Tuple[Key, ...] = (
     # Legacy flat leaves (pre-nested profiles). Kept readable via get() but
     # SKIPPED by load validation when the nested block is present.
     _k("anchor_chain.reasoning_effort", str, "", nullable=True,
-       legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
     _k("anchor_chain.summary_header", str, "", nullable=True,
-       legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
     _k("anchor_chain.threshold", float, 0.0, nullable=True,
-       legacy_of="anchor_chain"),
-    _k("anchor_chain.enabled", bool, True, legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
+    _k("anchor_chain.enabled", bool, True, superseded_by="anchor_chain"),
     _k("anchor_chain.model", str, "", nullable=True,
-       legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
     _k("anchor_chain.endpoint", str, "", nullable=True,
-       legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
     _k("anchor_chain.api_key_env", str, "", nullable=True,
-       legacy_of="anchor_chain"),
+       superseded_by="anchor_chain"),
     _k("anchor_chain.on_demand", bool, False),
     _k("anchor_chain.caps", dict, {}),
     _k("decision_head.mode", str, "", nullable=True),
@@ -191,9 +198,194 @@ SCHEMA: Tuple[Key, ...] = (
     _k("frontier.debug_banner", (bool, int), False),
 )
 
+
+# ---------------------------------------------------------------------------
+# M23-01 — GROUPED SCHEMA DECLARATION (spec: M20_CONFIG_CONSULT §5 + App. A)
+# ---------------------------------------------------------------------------
+# Ten groups. Every key is typed and defaulted here; `legacy_of` names the old
+# spelling(s) the key replaces, so the migration table lives in code and both
+# spellings resolve (config_access.get() reads the grouped path first, then the
+# deployed old name). Defaults EQUAL the current code literals — no default is
+# flipped in M23 (the corrected decision.* defaults are Phase 3, behind
+# HERMES_ROUTER_LEGACY_DEFAULTS). Nothing is removed in v1.
+GROUPS: Tuple[str, ...] = (
+    "operator",   # day-to-day switches
+    "render",     # LANE 1 — uncensored render chain
+    "classify",   # PRE/POST detection + classification
+    "anchor",     # LANE 2 — complexity/struggle consult
+    "decision",   # decision lane (fork/consult/frame)
+    "reflex",     # reflex/instinct lane
+    "persona",    # persona card + integration frames
+    "budgets",    # per-lane token/char envelopes
+    "paths",      # CODE-OWNED: state dir + route log
+    "pricing",    # $/1M model pricing table
+)
+
+_GROUPED_KEYS: Tuple[Key, ...] = (
+    # --- operator -----------------------------------------------------------
+    _k("operator.enabled", bool, True, legacy_of="enabled"),
+    _k("operator.dry_run", bool, False, legacy_of="dry_run"),
+    _k("operator.pending_routes_ttl_seconds", int, 300,
+       legacy_of="pending_routes_ttl_seconds"),
+    # env-only today (HERMES_ROUTER_ENABLE_SLASH_COMMAND); declared so the
+    # operator surface and the env override name the same setting.
+    _k("operator.slash_command", bool, True),
+
+    # --- render (LANE 1) ----------------------------------------------------
+    _k("render.chain", list, [], nullable=True, legacy_of="chain,endpoint"),
+    _k("render.max_chars", int, 0, legacy_of="render_max_chars"),
+    _k("render.method_spec", str, "", legacy_of="render_method_spec"),
+    _k("render.refusal_doctrine", str, "always_route",
+       legacy_of="refusal_doctrine"),
+    _k("render.substance_frame", str, "", legacy_of="substance_frame"),
+    # App. A undeclared key: opt-IN, default FALSE (provenance_footer.py:105).
+    _k("render.provenance_footer", bool, False, legacy_of="provenance_footer"),
+    # env var name or file:<path>; replaces the key_file/key_env duality.
+    _k("render.key_ref", str, ""),
+
+    # --- classify -----------------------------------------------------------
+    _k("classify.pre_enabled", bool, True,
+       legacy_of="classification.pre_classify"),
+    _k("classify.post_enabled", bool, True,
+       legacy_of="classification.post_classify"),
+    _k("classify.mode", str, "route", legacy_of="classification.mode"),
+    _k("classify.match_threshold", float, 1.0,
+       legacy_of="classification.match_threshold"),
+    _k("classify.pre_patterns", list, [], legacy_of="classification.pre_patterns"),
+    _k("classify.post_patterns", list, [],
+       legacy_of="classification.post_patterns"),
+    _k("classify.semantic_gate", bool, False,
+       legacy_of="classification.semantic_gate"),
+    _k("classify.aux", dict, {}),
+    _k("classify.aux.enabled", bool, True,
+       legacy_of="classification.aux_classify"),
+    _k("classify.aux.provider", str, "nous"),
+    _k("classify.aux.endpoint", str, "",
+       legacy_of="classification.aux_endpoint"),
+    _k("classify.aux.model", str, "", legacy_of="classification.aux_model"),
+    _k("classify.aux.key_ref", str, ""),
+    # replaces the silent HERMES_AUX_TIMEOUT_SECONDS = 45 literal
+    _k("classify.aux.timeout_s", int, 45),
+    _k("classify.aux.calls_per_hour", int, 20,
+       legacy_of="classification.aux_calls_per_hour"),
+    _k("classify.aux.breaker_failures", int, 3,
+       legacy_of="classification.aux_breaker_failures"),
+    _k("classify.aux.breaker_cooldown_s", int, 600,
+       legacy_of="classification.aux_breaker_cooldown_seconds"),
+
+    # --- anchor (LANE 2) ----------------------------------------------------
+    _k("anchor.enabled", bool, True, legacy_of="anchor_chain.enabled"),
+    _k("anchor.primary", str, "", legacy_of="anchor_chain.primary"),
+    _k("anchor.judge", str, "", legacy_of="anchor_chain.judge"),
+    _k("anchor.failover", list, [], nullable=True,
+       legacy_of="anchor_chain.failover"),
+    # read today but undeclared (anchor_chain.py); default = live fallback.
+    _k("anchor.overflow", str, "pass_through", legacy_of="anchor_chain.overflow"),
+    _k("anchor.daily_cap_usd", float, 2.0, legacy_of="anchor_chain.daily_cap_usd"),
+    _k("anchor.reasoning_effort", str, "", nullable=True,
+       legacy_of="anchor_chain.reasoning_effort"),
+    _k("anchor.max_history_turns", int, 12,
+       legacy_of="anchor_chain.max_history_turns"),
+    _k("anchor.complexity_level", int, 2, legacy_of="complexity.level"),
+    _k("anchor.models", dict, {}, legacy_of="anchor_chain.models"),
+    _k("anchor.pricing", dict, {}, legacy_of="anchor_chain.pricing"),
+
+    # --- decision (the live block on all 11 profiles is already this shape) --
+    _k("decision.enabled", bool, False, legacy_of="decision_head.enabled"),
+    _k("decision.seam", str, "midturn_prellm"),
+    _k("decision.backend", str, "jev_native"),
+
+    # --- reflex -------------------------------------------------------------
+    _k("reflex.enabled", bool, False),
+    _k("reflex.timeout_s", int, 8),
+    _k("reflex.min_top", float, 0.45),
+    _k("reflex.min_margin", float, 0.10),
+    _k("reflex.weights", dict, {}, legacy_of="reflex_weights"),
+
+    # --- persona ------------------------------------------------------------
+    _k("persona.mode", str, "voice_stems", legacy_of="persona_mode"),
+    _k("persona.card_chars", int, 2500, legacy_of="persona_card_chars"),
+    _k("persona.shadow_integration_frame", str, "impulse",
+       legacy_of="shadow_integration_frame"),
+    _k("persona.higher_self_integration_frame", str, "internal-observer",
+       legacy_of="higher_self_integration_frame"),
+
+    # --- budgets (max_tokens leaves already declared above) -----------------
+    _k("budgets.readout", dict, {}, legacy_of="budget_readout"),
+
+    # --- paths (CODE-OWNED: never router_control-writable) ------------------
+    _k("paths.state_dir", str, ""),
+    _k("paths.log_path", str, "", control_writable=False, legacy_of="log_path"),
+    _k("paths.log_max_bytes", int, 10485760, control_writable=False,
+       legacy_of="log_max_bytes"),
+    _k("paths.log_routes", bool, True, control_writable=False,
+       legacy_of="log_routes"),
+
+    # --- pricing (model-keyed: pricing.<model>.{input_per_1m,output_per_1m}) --
+    _k("pricing", dict, {}),
+
+    # --- providers: DECLARATION ONLY in M23. Base URLs and key-env literals
+    # are still the code's own (M24 removes them); only the alias target is
+    # declared so `base_url` has somewhere to resolve to.
+    _k("providers", dict, {}),
+    _k("providers.nous.base_url", str, "", legacy_of="base_url"),
+)
+
+SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS
+
 _BY_PATH = {k.path: k for k in SCHEMA}
+
+# old name -> grouped path, DERIVED from legacy_of (single source of truth;
+# a key that does not record its predecessor cannot silently acquire an alias).
+ALIASES: Dict[str, str] = {
+    old.strip(): k.path
+    for k in SCHEMA
+    for old in str(k.legacy_of or "").split(",")
+    if old.strip()
+}
+
+# Block renames: asking for the grouped block name reads it first and falls back
+# to the legacy block name while profiles still carry it.
+BLOCK_ALIASES: Dict[str, str] = {"classify": "classification",
+                                 "anchor": "anchor_chain"}
 
 
 def key(path: str) -> Any:
     """The SCHEMA Key for a dotted path, or None if unknown."""
     return _BY_PATH.get(str(path))
+
+
+def canonical_path(path: str) -> str:
+    """The GROUPED path for an old spelling (ALIASES), else `path` unchanged.
+    An unknown path is returned as-is — get() then reports it. Never raises."""
+    try:
+        p = str(path)
+        return ALIASES.get(p, p)
+    except Exception:  # noqa: BLE001
+        return str(path)
+
+
+def legacy_paths(path: str) -> Tuple[str, ...]:
+    """The old name(s) the key at `path` replaces — the read fallback for a
+    profile still on the pre-M23 spelling. () for a key with no predecessor."""
+    try:
+        k = _BY_PATH.get(str(path))
+        if k is None:
+            return ()
+        return tuple(old.strip() for old in str(k.legacy_of or "").split(",")
+                     if old.strip())
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def group_of(path: str) -> str:
+    """The declared group a path belongs to ("" for ungrouped/legacy keys)."""
+    head = str(path).split(".", 1)[0]
+    return head if head in GROUPS else ""
+
+
+def keys_in_group(group: str) -> Tuple[Key, ...]:
+    """Every declared LEAF key under one of the ten groups. The block container
+    itself (`key("pricing")`) is not a leaf and is not returned. Never raises."""
+    g = str(group)
+    return tuple(k for k in SCHEMA if k.path.startswith(g + "."))
