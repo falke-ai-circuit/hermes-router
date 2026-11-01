@@ -126,6 +126,17 @@ def register(session_id: str, segment: str, *, lane: str = "",
         _row = _row_of(text)
         _aggregating = _lane.startswith("frontier")
         segs: List[Dict[str, Any]] = rec["segments"]
+        # M33: a delivery edge can hand back the ALREADY-rendered parked block
+        # ("leg A\n\nleg B") while both legs were registered one by one at
+        # their park sites. Storing the block as a third segment made render()
+        # emit the merged line AND the raw block behind it — the very two
+        # banners the merge exists to remove. A block whose every line is
+        # already stored carries no new fact: drop it.
+        if "\n" in text:
+            _have = {str(s.get("text") or "") for s in segs}
+            _lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            if _lines and all(ln in _have for ln in _lines):
+                return False
         for i, seg in enumerate(segs):
             if seg["text"] == text:
                 return False

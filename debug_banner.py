@@ -533,6 +533,65 @@ def _parse_frontier_line(line: str):
         return None
 
 
+def frontier_leg_counts(text: str) -> "tuple[int, int]":
+    """(pre_legs, post_legs) counted in a banner block — M33.
+
+    A leg is counted by what its trigger cell SAYS it is: `pre-check` is the
+    PRE consult that runs at turn start, `post-check` the confirmation at turn
+    close (debug_banner._END_LABELS owns that mapping). Anything else — an
+    `anchored` frontier banner, a retry, a failure line — is a one-shot
+    measurement with no second leg coming and is never counted, so it can
+    never be held. Never raises; (0, 0) when nothing parses.
+    """
+    pre = post = 0
+    try:
+        for line in str(text or "").splitlines():
+            if _FRONTIER_LINE_MARK not in line:
+                continue
+            cells = [c.strip().lower() for c in line.split("|")]
+            trig = cells[1] if len(cells) > 1 else ""
+            if trig.startswith("post-check"):
+                post += 1
+            elif trig.startswith("pre-check"):
+                pre += 1
+        return pre, post
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+def frontier_pre_only(text: str) -> bool:
+    """True when a block carries frontier PRE legs and no POST leg yet."""
+    pre, post = frontier_leg_counts(text)
+    return pre > 0 and post == 0
+
+
+def frontier_pre_hold(session_id: str) -> bool:
+    """M33: is this turn's parked frontier leg still waiting for its POST leg?
+
+    Live defect: one turn delivered TWO frontier banners — the PRE consult's
+    line rode the injected surface at turn start, the POST confirmation's line
+    was appended at turn close. They were two DELIVERIES, so the merge at the
+    boundary (merge_frontier_banner) never saw them together and could not
+    sum anything. The fix parks the PRE leg: while the turn is still OPEN and
+    the slot holds pre-check legs only, the delivery edge leaves the banner in
+    the slot instead of shipping a line the POST leg can no longer join.
+
+    Release is by evidence, not guesswork: a turn that closed with no POST leg
+    (`advisory_consumption.turn_closed`) delivers the PRE banner unchanged —
+    pre-only is a normal turn, not an error. Never raises; False means "deliver
+    as usual".
+    """
+    try:
+        block = _ANCHOR_BANNERS.get(str(session_id or ""), "")
+        if not block or not frontier_pre_only(block):
+            return False
+        from . import advisory_consumption as _ac
+
+        return not _ac.turn_closed(session_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _render_frontier_merge(old_line: str, d) -> str:
     """Rewrite ONE frontier line with the merged numbers.
 
@@ -555,6 +614,7 @@ def _render_frontier_merge(old_line: str, d) -> str:
     else:
         cost_s = "$0.0000"
     out = [cells[0]]
+    _lat_done = False
     for c in cells[1:]:
         if re.search(r"\btok\s+\d+/\d+", c):
             out.append("tok %d/%d" % (int(d["ti"]), int(d["to"])))
@@ -563,14 +623,25 @@ def _render_frontier_merge(old_line: str, d) -> str:
         elif re.fullmatch(r"\d+s", c):
             if int(d.get("lat") or 0) >= 1:
                 out.append("%ds" % int(d["lat"]))
+                _lat_done = True
             # else: a 0s cell carried no fact — drop it rather than print one
         elif re.match(r"rows?\s+\d", c):
+            # M33: latency is a leg number like tokens and cost. When the
+            # FIRST leg carried no latency cell (a pre consult has none) there
+            # is no cell to rewrite, so the POST leg's seconds used to vanish
+            # from the merged line — a dropped measurement. Emit it here.
+            if not _lat_done and int(d.get("lat") or 0) >= 1:
+                out.append("%ds" % int(d["lat"]))
+                _lat_done = True
             r1, r2 = int(d["r1"]), int(d["r2"])
             if r2 > r1:
                 out.append("rows %d-%d" % (r1, r2))
             elif r1:
                 out.append("row %d" % r1)
         elif "row=" in c:
+            if not _lat_done and int(d.get("lat") or 0) >= 1:
+                out.append("%ds" % int(d["lat"]))
+                _lat_done = True
             rows = [int(x) for x in re.findall(r"row=(\d+)", c)]
             r1, r2 = int(d["r1"]), int(d["r2"])
             if rows:

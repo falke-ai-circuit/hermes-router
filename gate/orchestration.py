@@ -758,6 +758,21 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
             _rec = _dbd.park_record(session_id) or {}
         except Exception:  # noqa: BLE001 — record read never breaks delivery
             _rec = {}
+        # M33: this helper consumes the slot DIRECTLY (bypassing the
+        # lifecycle chokepoint), so the frontier hold has to be honoured here
+        # too — a PRE leg parked at turn start may not ride an edge the POST
+        # leg has not reached yet. The banner stays parked; the body passes.
+        try:
+            if _dbd.frontier_pre_hold(session_id):
+                _pre, _post = _dbd.frontier_leg_counts(
+                    _dbd._ANCHOR_BANNERS.get(str(session_id or ""), ""))
+                _hub()._log_route("POST", event_detail="frontier_pre_held",
+                                  edge=edge, pre_legs=_pre, post_legs=_post,
+                                  reason="awaiting_post_leg",
+                                  session_id=session_id)
+                return None
+        except Exception:  # noqa: BLE001 — a hold never breaks delivery
+            pass
         _parked = _dbd.consume_parked_banner(session_id)
         _dbd.note_consumed_decision(session_id, _parked)
         if not _parked:

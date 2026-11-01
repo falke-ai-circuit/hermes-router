@@ -252,6 +252,29 @@ class BannerLifecycle:
                         if mode == "append" else ""
         except Exception:  # noqa: BLE001 — the guard never breaks delivery
             pass
+        # M33 (operator ruling 2026-11-01): ONE frontier banner per turn. The
+        # PRE consult parks its line at turn start and the POST confirmation
+        # parks at turn close; a delivery edge in between used to consume the
+        # PRE line alone, so the turn shipped TWO frontier banners in TWO
+        # deliveries and the boundary merge (which only ever sees one delivery)
+        # could not sum them. While the turn is still OPEN and the slot holds
+        # pre-check legs only, the edge HOLDS: the banner stays parked, the
+        # body goes out untouched, and the POST leg joins it. A turn that
+        # closes with no POST leg delivers the PRE banner unchanged — pre-only
+        # is a normal turn, not an error. Other lanes are never held.
+        try:
+            if mode in ("append", "body") and db.frontier_pre_hold(session_id):
+                _pre, _post = db.frontier_leg_counts(
+                    self.peek(session_id) or "")
+                _log_route("POST", event_detail="frontier_pre_held",
+                           edge=str(log_edge if log_edge is not None else edge),
+                           pre_legs=_pre, post_legs=_post,
+                           reason="awaiting_post_leg",
+                           session_id=str(session_id or ""))
+                return (text if isinstance(text, str) else "") \
+                    if mode == "append" else ""
+        except Exception:  # noqa: BLE001 — a hold never breaks delivery
+            pass
         # consume through the debug_banner delegate — the historical patch
         # surface (tests patch debug_banner.consume_parked_banner).
         # R34-17 item 3: read the semaphore record BEFORE the consume pops it.

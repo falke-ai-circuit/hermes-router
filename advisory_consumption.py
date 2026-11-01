@@ -186,6 +186,22 @@ def note_turn_closed(session_id: str) -> float:
         return 0.0
 
 
+def turn_closed(session_id: str) -> bool:
+    """True when the session's CURRENT turn has been marked closed.
+
+    M33: the delivery chokepoint needs one honest discriminator between a
+    mid-turn edge that merely passes through (the pre leg's injected surface)
+    and the turn's closing edge (where the post leg has fired). `turn_no`
+    cannot answer that — a duplicate transform pass keeps the number — while
+    the close marker is exactly the fact: `note_turn_closed` records it and
+    `note_turn_open` clears it for a genuinely new ask. Never raises.
+    """
+    try:
+        return _key(session_id) in _CLOSED
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def turn_no(session_id: str) -> int:
     """Current turn number for the session (0 when unknown). Never raises."""
     try:
