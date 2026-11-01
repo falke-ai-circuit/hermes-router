@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -36,14 +36,39 @@ logger = logging.getLogger(__name__)
 # Substring match on tool-call argument / tool-result text. Parent-domain
 # forms are covered by the same substrings (any chat-completions-shaped
 # URL under these parents contains at least one).
-PROVIDER_HOSTS = (
-    "inference-api.nousresearch.com",
-    "api.abliteration.ai",
-    "abliteration.ai",
-    "api.venice.ai",
-    "venice.ai",
-    "openrouter.ai",
-)
+#
+# M24-04: the hostnames are CONFIG now — providers.<name>.hosts — and the table
+# below is the DEFAULT (the exact hosts these literals held), so a silent
+# profile detects byte-for-byte what it detected before. Order inside a provider
+# is preserved; the sets are matched, not ordered. `abliteration` keeps the bare
+# parent form because this table is a DETECTION corpus (it also has to catch a
+# host written without the api. prefix), and typesafe is deliberately ABSENT:
+# adding a host here would widen detection, which is not this change's brief.
+_DETECTION_HOST_ORDER = ("nous", "abliteration", "venice", "openrouter")
+_DETECTION_HOST_DEFAULTS = {
+    "nous": ("inference-api.nousresearch.com",),
+    "abliteration": ("api.abliteration.ai", "abliteration.ai"),
+    "venice": ("api.venice.ai", "venice.ai"),
+    "openrouter": ("openrouter.ai",),
+}
+
+
+def provider_hosts() -> Tuple[str, ...]:
+    """The provider hostnames this profile recognises, from providers.<name>.hosts
+    with the code table above as the DEFAULT. Never raises; a failed read or an
+    empty result falls back to the literal set, so detection is never blinded."""
+    try:
+        from .core import config_access
+
+        pairs = config_access.provider_host_pairs(_DETECTION_HOST_ORDER,
+                                                  _DETECTION_HOST_DEFAULTS)
+        hosts = tuple(h for h, _ in pairs if h)
+        if hosts:
+            return hosts
+    except Exception:  # noqa: BLE001 — detection must never break on config
+        pass
+    return tuple(h for name in _DETECTION_HOST_ORDER
+                 for h in _DETECTION_HOST_DEFAULTS[name])
 
 # R34-4: hosts this PROFILE legitimately talks to. The main model is served
 # by a custom provider (live: custom:nousinf) and the router's own lanes hit
@@ -166,7 +191,7 @@ def _scan_text_for_hosts(text: str) -> Set[str]:
     raises."""
     try:
         low = str(text or "").lower()
-        hits = {h for h in PROVIDER_HOSTS if h in low}
+        hits = {h for h in provider_hosts() if h in low}
         # drop bare forms subsumed by a longer matched form
         return {h for h in hits
                 if not any(h != o and h in o for o in hits)}

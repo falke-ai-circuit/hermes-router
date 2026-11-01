@@ -32,6 +32,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("hermes.plugins.router.render_payload")
 
+
+def _provider_host_pairs() -> tuple:
+    """(host, provider name) pairs for the banner's provider cell.
+
+    M24-04: read as providers.<name>.hosts through the single accessor; the
+    shipped host literals inside it are only the DEFAULT, so a silent profile
+    resolves the same table this module used to inline. Never raises.
+    """
+    try:
+        from .core import config_access
+
+        return config_access.provider_host_pairs()
+    except Exception:  # noqa: BLE001 — a banner must never break on config
+        return ()
+
+
+
 CONTEXT_MAX_CHARS = 1200
 VOICE_MAX_CHARS = 1600
 TASK_MAX_CHARS = 4000
@@ -250,12 +267,11 @@ def render_decision_banner(trigger: str, model: str, meta: Dict[str, Any],
         except Exception:  # noqa: BLE001
             cost = 0.0
         # R19.9: banner shows the PROVIDER (identical pattern to other
-        # lanes), never the raw URL.
+        # lanes), never the raw URL. M24-04: the host→provider recognition
+        # table is config (providers.<name>.hosts), the shared lm order and
+        # shipped literals are the DEFAULT.
         ep = str(meta.get("endpoint") or "")
-        for host, name in (("openrouter.ai", "openrouter"),
-                           ("inference-api.nousresearch.com", "nous"),
-                           ("api.venice.ai", "venice"),
-                           ("api.typesafe.ai", "typesafe")):
+        for host, name in _provider_host_pairs():
             if host in ep:
                 ep = name
                 break

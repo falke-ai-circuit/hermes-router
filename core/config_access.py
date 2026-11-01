@@ -385,6 +385,78 @@ def provider_key_env(name: str, default: str = "") -> str:
     return value or fallback
 
 
+# M24-04: provider HOST TABLES — the hostnames used to RECOGNISE a provider in
+# free text (bypass detection) or in an endpoint URL (banner provider cells).
+# Same rule as M24-01 base URLs, M24-02 URL tails and M24-03 key-env names: a
+# profile that sets providers.<name>.hosts WINS; a silent profile matches the
+# exact hostnames the code literals held. Matching is substring, so a bare
+# parent form also covers its subdomains.
+PROVIDER_HOST_DEFAULTS: Dict[str, tuple] = {
+    "nous": ("inference-api.nousresearch.com",),
+    "openrouter": ("openrouter.ai",),
+    "venice": ("api.venice.ai",),
+    "typesafe": ("api.typesafe.ai",),
+    "abliteration": ("api.abliteration.ai", "abliteration.ai"),
+}
+
+# The recognition ORDER the banner lanes ship: a host is claimed by the FIRST
+# provider in this list that lists it, so the order is part of the contract.
+PROVIDER_HOST_ORDER: tuple = ("openrouter", "nous", "venice", "typesafe")
+
+
+def provider_hosts(name: str, default: tuple = ()) -> tuple:
+    """providers.<name>.hosts — the hostnames that RECOGNISE this provider — or
+    the code literal default when config is silent.
+
+    M24-04, same shape as M24-01/02/03: the literal is the DEFAULT, never the
+    authority. `default` is the caller's own literal list (so a call site that
+    needs a narrower or wider recognition set keeps it); when it is empty the
+    shared table above supplies the shipped list. A profile value may be a list
+    of hostnames or a single hostname string; blanks are dropped and an
+    empty/absent/wrong-typed value falls back to the default, so a provider can
+    never silently lose every host that identifies it. Never raises.
+    """
+    try:
+        fallback = tuple(str(h).strip() for h in (default or ())
+                         if str(h).strip())
+        if not fallback:
+            fallback = tuple(PROVIDER_HOST_DEFAULTS.get(
+                str(name or "").strip().lower(), ()))
+        value = get(f"providers.{name}.hosts", None)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            return fallback
+        hosts = tuple(str(h).strip() for h in value
+                      if isinstance(h, str) and str(h).strip())
+        return hosts or fallback
+    except Exception:  # noqa: BLE001 — config read must never break a call
+        return tuple(default or ())
+
+
+def provider_host_pairs(order: tuple = (), defaults: Any = None) -> tuple:
+    """(hostname, provider_name) pairs, config-resolved, in recognition order.
+
+    M24-04: the ONE builder behind every host table, so the banner lanes and the
+    bypass detector read the same providers.<name>.hosts values instead of three
+    drifting copies of the same literals. `order` defaults to the shipped banner
+    order; `defaults` is a {provider: literal hosts} map of DEFAULTS (the shared
+    table when omitted). Never raises — an unreadable config yields the literals.
+    """
+    try:
+        names = tuple(order or PROVIDER_HOST_ORDER)
+        table = defaults if isinstance(defaults, dict) else None
+        pairs = []
+        for name in names:
+            key = str(name).strip()
+            literal = tuple((table or {}).get(key, ()))
+            for host in provider_hosts(key, literal):
+                pairs.append((host, key))
+        return tuple(pairs)
+    except Exception:  # noqa: BLE001 — config read must never break a call
+        return ()
+
+
 def _walk(section: Dict[str, Any], path: str) -> Any:
     """Walk a dotted path through the router section. Returns _MISSING when
     any segment is absent/non-dict (leaf values may legitimately be None)."""

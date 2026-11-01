@@ -1002,10 +1002,35 @@ def _acc_update(session_id: str, tokens_in: int, tokens_out: int, cost: float,
         return snap, delivered
 
 
-_PROVIDER_HOSTS = (("openrouter.ai", "openrouter"),
-                   ("inference-api.nousresearch.com", "nous"),
-                   ("api.venice.ai", "venice"),
-                   ("api.typesafe.ai", "typesafe"))
+# M24-04: the banner's provider recognition table. Hostnames come from
+# providers.<name>.hosts (config resolved per render); the tuples below are the
+# DEFAULTS — the exact literals this table held — so a silent profile prints the
+# same host cell it printed before. Order is the first-match contract.
+_PROVIDER_HOST_ORDER = ("openrouter", "nous", "venice", "typesafe")
+_PROVIDER_HOST_DEFAULTS = {
+    "openrouter": ("openrouter.ai",),
+    "nous": ("inference-api.nousresearch.com",),
+    "venice": ("api.venice.ai",),
+    "typesafe": ("api.typesafe.ai",),
+}
+
+
+def _provider_host_pairs() -> tuple:
+    """(host, provider name) pairs for the host cell, config-resolved.
+
+    Never raises: a failed read or an empty result falls back to the literals.
+    """
+    try:
+        from .core import config_access
+
+        pairs = config_access.provider_host_pairs(_PROVIDER_HOST_ORDER,
+                                                  _PROVIDER_HOST_DEFAULTS)
+        if pairs:
+            return pairs
+    except Exception:  # noqa: BLE001 — a banner must never break on config
+        pass
+    return tuple((h, name) for name in _PROVIDER_HOST_ORDER
+                 for h in _PROVIDER_HOST_DEFAULTS[name])
 
 
 def _display_model(model: Any) -> str:
@@ -1046,7 +1071,7 @@ def _display_host(cfg: Dict[str, Any]) -> str:
         host = ep.split("/", 1)[0].split(":", 1)[0].strip()
     except Exception:  # noqa: BLE001
         host = ""
-    for real, name in _PROVIDER_HOSTS:
+    for real, name in _provider_host_pairs():
         if real in host:
             return name
     return host[:24]

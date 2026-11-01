@@ -82,6 +82,21 @@ import logging
 
 logger = logging.getLogger("hermes_router.decision_midturn")
 
+
+def _provider_host_pairs() -> tuple:
+    """(host, provider name) pairs for endpoint→provider recognition.
+
+    M24-04: providers.<name>.hosts through the single accessor; the shipped
+    literals inside it are only the DEFAULT. Never raises — an unreadable
+    config yields no pairs and the caller falls through to its own default.
+    """
+    try:
+        from .core import config_access
+
+        return config_access.provider_host_pairs()
+    except Exception:  # noqa: BLE001 — provider naming must not break a turn
+        return ()
+
 # Config gate: decision.midturn = shadow | on | off (default off fleet-wide).
 MIDTURN_MODE_KEY = "midturn"
 VALID_MODES = ("shadow", "on", "off")
@@ -1758,13 +1773,13 @@ def close_turn(session_id: str) -> str:
 
 def endpoint_provider(endpoint: str) -> str:
     """Host->provider-name mapping (same rule as render_decision_banner):
-    provider NAME only, never a URL. '' when undetermined. Never raises."""
+    provider NAME only, never a URL. '' when undetermined. Never raises.
+
+    M24-04: the recognition table is providers.<name>.hosts (config), the
+    shipped host literals are only the DEFAULT."""
     try:
         ep = str(endpoint or "")
-        for host, name in (("openrouter.ai", "openrouter"),
-                           ("inference-api.nousresearch.com", "nous"),
-                           ("api.venice.ai", "venice"),
-                           ("api.typesafe.ai", "typesafe")):
+        for host, name in _provider_host_pairs():
             if host in ep:
                 return name
         # Non-URL endpoints carry a display name already (e.g. hermes-auxiliary)

@@ -333,12 +333,21 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     _k("providers.nous.chat_path", str, "/chat/completions"),
     _k("providers.nous.models_path", str, "/models"),
     _k("providers.nous.key_env", str, "NOUS_API_KEY"),
+    _k("providers.nous.hosts", list, []),
     _k("providers.openrouter.base_url", str, ""),
     _k("providers.openrouter.chat_path", str, "/chat/completions"),
     _k("providers.openrouter.key_env", str, "OPENROUTER_API_KEY"),
+    _k("providers.openrouter.hosts", list, []),
     _k("providers.typesafe.key_env", str, "TYPESAFE_API_KEY"),
+    _k("providers.typesafe.hosts", list, []),
     _k("providers.venice.key_env", str, "VENICE_API_KEY"),
+    _k("providers.venice.hosts", list, []),
     _k("providers.minimax.key_env", str, "MINIMAX_API_KEY"),
+    # M24-04: HOST TABLES — the hostnames that RECOGNISE a provider in text or in
+    # an endpoint URL. Declared as an empty list so the example can carry an
+    # empty default: unset means "use the code default host list", and the
+    # accessor (config_access.provider_hosts) is what turns it into hostnames.
+    _k("providers.abliteration.hosts", list, []),
 )
 
 SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS
