@@ -266,14 +266,18 @@ def _substance_frame() -> str:
 
 
 def _log_path() -> str:
-    return str(_plugin()._cfg().get("log_path") or _plugin().DEFAULT_LOG_PATH)
+    """M24-05: reads paths.log_path (owner: core.telemetry). The hub constant
+    DEFAULT_LOG_PATH is no longer a second authority here — one reader, one
+    default, so a profile on the grouped key cannot be read two ways."""
+    from ..core import telemetry as _telemetry
+
+    return str(_telemetry._log_path())
 
 
 def _log_max_bytes() -> int:
-    try:
-        return int(_plugin()._cfg().get("log_max_bytes", _plugin().DEFAULT_LOG_MAX_BYTES))
-    except (TypeError, ValueError):
-        return _plugin().DEFAULT_LOG_MAX_BYTES
+    from ..core import telemetry as _telemetry
+
+    return int(_telemetry._log_max_bytes())
 
 
 def _log_route(event: str, **fields: Any) -> None:

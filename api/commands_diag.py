@@ -67,7 +67,15 @@ def _route_log_path() -> str:
 
         return str(_plugin._log_path())
     except Exception:  # noqa: BLE001
-        return "/tmp/uncensored-router.log"
+        # M24-05: the shared /tmp literal is gone. On a failed hub lookup read
+        # the same paths.log_path the writer reads; "" (no log known) beats
+        # pointing diag at a file the router never wrote.
+        try:
+            from ..core import telemetry as _telemetry
+
+            return str(_telemetry._log_path())
+        except Exception:  # noqa: BLE001
+            return ""
 
 
 def _read_log_lines(max_lines: int, max_bytes: int) -> Tuple[List[str], bool]:

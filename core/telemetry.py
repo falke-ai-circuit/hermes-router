@@ -74,27 +74,74 @@ def _config() -> Dict[str, Any]:
         return {}
 
 
-def _log_path() -> str:
+_MISSING_CFG = object()
+
+
+def _cfg_scalar(name: str, legacy: str) -> Any:
+    """`paths.<name>` from the hub `_cfg` surface (grouped spelling first), then
+    the legacy spelling; `_MISSING_CFG` when the surface carries neither.
+
+    M24-05: the route-log keys are read as paths.log_path / paths.log_routes /
+    paths.log_max_bytes. The hub `_cfg` read stays FIRST because it is the live
+    patch surface (test suite + gateway); the typed accessor below covers a
+    config section that is only on disk.
+    """
     cfg = _config()
     try:
-        default = DEFAULT_LOG_PATH
+        paths = cfg.get("paths")
+        if isinstance(paths, dict) and paths.get(name) is not None:
+            return paths.get(name)
     except Exception:  # noqa: BLE001
-        default = ""
-    return str(cfg.get("log_path") or default)
+        pass
+    try:
+        return cfg.get(legacy, _MISSING_CFG)
+    except Exception:  # noqa: BLE001
+        return _MISSING_CFG
+
+
+def _paths_config(name: str, default: Any) -> Any:
+    """Typed read of `paths.<name>` — the caller's literal stays the DEFAULT.
+
+    M24-05, same rule as the M24-01..04 provider keys: a profile that sets the
+    grouped key wins, a silent profile gets the exact literal bytes as before.
+    Never raises.
+    """
+    try:
+        from . import config_access
+
+        return config_access.get("paths." + name, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _log_path() -> str:
+    value = _cfg_scalar("log_path", "log_path")
+    if value is _MISSING_CFG:
+        value = _paths_config("log_path", "") or DEFAULT_LOG_PATH
+    return str(value) if value else DEFAULT_LOG_PATH
 
 
 def _log_max_bytes() -> int:
-    cfg = _config()
+    value = _cfg_scalar("log_max_bytes", "log_max_bytes")
+    if value is _MISSING_CFG:
+        value = _paths_config("log_max_bytes", DEFAULT_LOG_MAX_BYTES)
     try:
-        return int(cfg.get("log_max_bytes", DEFAULT_LOG_MAX_BYTES))
+        return int(value)
     except (TypeError, ValueError):
         return DEFAULT_LOG_MAX_BYTES
+
+
+def _log_routes() -> bool:
+    value = _cfg_scalar("log_routes", "log_routes")
+    if value is _MISSING_CFG:
+        value = _paths_config("log_routes", True)
+    return bool(value)
 
 
 def _impl(event: str, **fields: Any) -> None:
     """Append one line to the route log. Never raises. Rotates past max bytes.
     Body moved verbatim from dispatcher_knobs._log_route @590bda3."""
-    if not bool(_config().get("log_routes", True)):
+    if not _log_routes():
         return
     from datetime import datetime, timezone
 
