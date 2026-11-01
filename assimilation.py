@@ -177,8 +177,8 @@ def mark_turn_rendered(session_id: str) -> None:
     except Exception:  # noqa: BLE001 — marking must never break delivery
         return
     for key, turn_no in evicted:
-        _log(key, "assimilation_mark_dropped", rule=ASSIMILATION_RULE_ID,
-             reason="capacity", turn=turn_no, mark_max=_MARK_MAX)
+        _frame_log(key, "assimilation_mark_dropped", frame_text(),
+                   reason="capacity", turn=turn_no, mark_max=_MARK_MAX)
     # M3.1: the mark IS the lane's acceptance statement — one record per
     # delivered render, on the same channel, fail-quiet.
     _report_mark_acceptance(sid)
@@ -196,19 +196,40 @@ def clear_marks() -> None:
         _LOST_SEEN.clear()
 
 
+def _frame_log(session_id: str, event: str, text: str = "", **fields: Any) -> None:
+    """Emit one frame row: the lane, the seam and the frame size, always.
+
+    M19: the lane was unobservable because these records inherited
+    decision_log's default lane. A frame row landed labelled ``lane=decision``,
+    so an audit scoped to the uncensored lane counted zero injections while the
+    leg was running. Every row now states its own lane, its seam and the frame
+    size the model would read, so the leg is countable by lane rather than
+    inferred from a rule id nobody greps for.
+    """
+    fields.setdefault("lane", "uncensored")
+    fields.setdefault("seam", "pre")
+    fields.setdefault("chars", len(text or ""))
+    fields.setdefault("rule", ASSIMILATION_RULE_ID)
+    _log(session_id, event, **fields)
+
+
 def inject_frame(request: Any, session_id: str = "") -> bool:
     """THE injection point: append the frame ONCE per rendered turn.
 
     role='system' — the platform's channel, never the agent's voice and never
     the body. Returns True when a message was appended. Never raises.
 
-    Every outcome that loses a frame is logged (unit 2): injection carries the
-    rule id, session and rendered-turn number, so the leg is measurable live
-    instead of inferable from an in-process dict nobody can read after a bounce.
+    Every outcome is logged (unit 2, M19): an injection writes a row with the
+    lane, seam and frame size; a refusal writes a drop row; and the two exits
+    that used to return in total silence (an unusable call, an exception) now
+    name themselves, because a lane whose failures emit nothing is
+    indistinguishable from a lane that never ran.
     """
+    sid = str(session_id or "")
     try:
-        sid = str(session_id or "")
         if not sid or not isinstance(request, dict):
+            _frame_log(sid, "assimilation_frame_failed",
+                       reason="no_session" if not sid else "bad_request")
             return False
         with _MARK_LOCK:
             turn_no = _MARKED.pop(sid, 0)   # one-shot: one frame per rendered turn
@@ -235,17 +256,20 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
                 _rin.record_pre_frame(sid, 0, text, "assimilation_frame")
             except Exception:  # noqa: BLE001 — capture never breaks a turn
                 pass
-            _log(sid, "assimilation_frame_injected", rule=ASSIMILATION_RULE_ID,
-                 turn=turn_no, chars=len(text), wording=frame_wording(),
-                 seam="pre")
+            _frame_log(sid, "assimilation_frame_injected", text,
+                       turn=turn_no, wording=frame_wording())
         else:
             # frames.inject_platform_rule refused (marker dedupe / latch): the
             # mark was consumed and no frame landed — that is a dropped frame.
-            _log(sid, "assimilation_mark_dropped", rule=ASSIMILATION_RULE_ID,
-                 reason="not_appended", turn=turn_no, chars=len(text),
-                 seam="pre")
+            _frame_log(sid, "assimilation_mark_dropped", text,
+                       reason="not_appended", turn=turn_no)
         return ok
-    except Exception:  # noqa: BLE001 — the frame must never break a turn
+    except Exception as exc:  # noqa: BLE001 — the frame must never break a turn
+        # M19: this exit used to return in silence, so an injection that raised
+        # on every turn produced zero rows and looked exactly like a lane that
+        # never ran. Name it; the frame still never breaks the turn.
+        _frame_log(sid, "assimilation_frame_failed", reason="exception",
+                   error=type(exc).__name__)
         return False
 
 
@@ -297,9 +321,9 @@ def _note_lost_mark(sid: str) -> None:
             if len(_LOST_SEEN) > _MARK_MAX:
                 for k in list(_LOST_SEEN)[: len(_LOST_SEEN) - _MARK_MAX]:
                     _LOST_SEEN.pop(k, None)
-        _log(sid, "assimilation_mark_dropped", rule=ASSIMILATION_RULE_ID,
-             reason="process_restart", turn=0, render_ts=newest,
-             dropped_age_s=round(_PROCESS_STARTED_AT - newest, 1), seam="pre")
+        _frame_log(sid, "assimilation_mark_dropped", frame_text(),
+                   reason="process_restart", turn=0, render_ts=newest,
+                   dropped_age_s=round(_PROCESS_STARTED_AT - newest, 1))
     except Exception:  # noqa: BLE001 — the frame must never break a turn
         pass
 

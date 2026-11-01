@@ -119,3 +119,63 @@ def test_a_render_from_this_process_is_not_a_lost_mark(events, monkeypatch):
                                            "session_id": "sess-fresh"}])
     assert assimilation.inject_frame({"messages": []}, "sess-fresh") is False
     assert _by_event(events, DROPPED) == []
+
+
+# --- M19: the row must be findable by LANE, not by a rule id --------------
+
+def test_every_frame_row_names_lane_seam_and_frame_size(events, monkeypatch):
+    """M19: the lane was unobservable because these rows inherited
+    decision_log's lane=decision default. Every frame row states its own lane,
+    its seam and the frame size the model reads."""
+    monkeypatch.setattr(assimilation, "inject_platform_rule",
+                        lambda *a, **k: True)
+    assimilation.mark_turn_rendered("sess-lane")
+    assert assimilation.inject_frame({"messages": []}, "sess-lane") is True
+
+    row = _by_event(events, INJECTED)[0]
+    assert row["lane"] == "uncensored"
+    assert row["seam"] == "pre"
+    assert row["chars"] == len(assimilation.frame_text())
+    assert row["chars"] > 0
+
+
+def test_drop_rows_carry_lane_seam_and_frame_size(events, monkeypatch):
+    monkeypatch.setattr(assimilation, "inject_platform_rule",
+                        lambda *a, **k: False)
+    assimilation.mark_turn_rendered("sess-drop-lane")
+    assimilation.inject_frame({"messages": []}, "sess-drop-lane")
+
+    row = _by_event(events, DROPPED)[0]
+    assert row["lane"] == "uncensored"
+    assert row["seam"] == "pre"
+    assert row["chars"] == len(assimilation.frame_text())
+
+
+def test_a_raising_injection_is_no_longer_silent(events, monkeypatch):
+    """M19: this exit used to return False emitting nothing, so a frame that
+    raised on every turn was indistinguishable from a lane that never ran."""
+    def _boom(*a, **k):
+        raise RuntimeError("inject blew up")
+
+    monkeypatch.setattr(assimilation, "inject_platform_rule", _boom)
+    assimilation.mark_turn_rendered("sess-boom")
+    assert assimilation.inject_frame({"messages": []}, "sess-boom") is False
+
+    rows = _by_event(events, "assimilation_frame_failed")
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "exception"
+    assert rows[0]["error"] == "RuntimeError"
+    assert rows[0]["lane"] == "uncensored"
+    assert rows[0]["seam"] == "pre"
+
+
+def test_an_unusable_call_names_itself(events):
+    """A call with no session cannot key a mark — it must still leave a row,
+    otherwise the leg's most common production failure is invisible."""
+    assert assimilation.inject_frame({"messages": []}, "") is False
+
+    rows = _by_event(events, "assimilation_frame_failed")
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "no_session"
+    assert rows[0]["lane"] == "uncensored"
+    assert rows[0]["seam"] == "pre"
