@@ -318,6 +318,12 @@ def _parse_decision_line(line: str):
         if m:
             d["holds"] = int(m.group(1))
         m = re.search(r"(\d+)/(\d+)\s+tok", line)
+        if not m:
+            # M27: the verdict/rollup shape writes the PREFIX form
+            # (`tok 1668/83`, decision_midturn._aggregate_line), which this
+            # aggregate-only regex never matched — ti/to stayed 0, so a merged
+            # line silently dropped that leg's tokens and undercounted.
+            m = re.search(r"\btok\s+(\d+)/(\d+)", line)
         if m:
             d["ti"], d["to"] = int(m.group(1)), int(m.group(2))
         m = re.search(r"\$([0-9.]+)(\*?)", line)
@@ -375,8 +381,20 @@ def _render_decision_line(d) -> str:
     return " | ".join(cells)
 
 
-def merge_decision_banner(delivery_text: str, banner_text: str):
-    """Merge a second decision-line into the one already in the delivery.
+def _banner_blocks(text: str) -> "list":
+    """The banners inside ONE delivery string, in fire order.
+
+    The anchor park slot stacks every fired banner into a single block
+    (`"\\n\\n".join(segs)` in features/banners/lifecycle.py), so a consumed
+    banner — and therefore a delivered one — can carry several banner lines.
+    A blank line is the banner boundary; an L2/L3 context line (`task …`) has
+    a single newline above it and stays with its own banner.
+    """
+    return [b for b in re.split(r"\n[ \t]*\n", str(text or "")) if b.strip()]
+
+
+def _merge_one_decision_line(delivery_text: str, banner_text: str):
+    """Merge a SECOND decision line into the one already in the delivery.
 
     Returns the new delivery text, or None when the merge does not apply (not a
     decision line, unparseable, or a non-decision lane present) — callers then
@@ -415,6 +433,43 @@ def merge_decision_banner(delivery_text: str, banner_text: str):
             lines[i] = _render_decision_line(merged)
             return "\n".join(lines)
         return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def merge_decision_banner(delivery_text: str, banner_text: str):
+    """Merge a decision banner into the delivery — line by line.
+
+    M27: the boundary receives ONE banner string, never one line per call. The
+    anchor park slot stacks the turn's fired banners into a single block, so a
+    decision advisory plus the turn-close verdict rollup arrive concatenated
+    inside `banner_text`. The old code parsed that block as ONE verdict (first
+    regex match wins) and only ever matched it against lines ALREADY in the
+    delivery -> None -> the block was appended verbatim: two decision lines in
+    the delivered body, and the second leg's tokens never counted. So walk the
+    blocks in fire order and run each through the same per-line merge; a
+    single-block banner behaves exactly as before.
+    """
+    try:
+        if not isinstance(delivery_text, str) or not isinstance(banner_text, str):
+            return None
+        if _DECISION_LINE_MARK not in banner_text:
+            return None
+        blocks = _banner_blocks(banner_text)
+        if len(blocks) <= 1:
+            return _merge_one_decision_line(delivery_text, banner_text)
+        out = delivery_text
+        merged_any = False
+        for block in blocks:
+            line = block.strip()
+            merged = (_merge_one_decision_line(out, line)
+                      if _DECISION_LINE_MARK in line else None)
+            if isinstance(merged, str) and merged:
+                out = merged
+                merged_any = True
+            else:
+                out = out.rstrip() + "\n\n" + line
+        return out if merged_any else None
     except Exception:  # noqa: BLE001
         return None
 

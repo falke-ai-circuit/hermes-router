@@ -97,14 +97,24 @@ def test_bounded_segments(_clean):
 
 def test_frontier_banner_delivery_path_end_to_end(_clean):
     """Delivery parity: park stacked block -> consume -> append to delivery
-    -> the delivered text carries every lane that fired this turn."""
+    -> the delivered text carries every LANE that fired this turn.
+
+    M27/R79: the two reflex segments are the SAME lane (impulse decision), so
+    they reach delivery as ONE line with summed tokens — per-fire segments used
+    to survive as two lines only because the stacked block bypassed the merge
+    entirely (the live two-banner turn). Park-level stacking is unchanged and
+    is still pinned by test_frontier_plus_two_reflex_all_stack above."""
     DB.park_anchor_banner("s-f4g", FRONTIER, task_id="t1")
     DB.park_anchor_banner("s-f4g", REFLEX_1, task_id="t2")
     DB.park_anchor_banner("s-f4g", REFLEX_2, task_id="t3")
     delivered = DB.append_banner("canonical answer", "\n"
                                  + DB.consume_parked_banner("s-f4g"),
                                  _knob_checked=True)
-    for marker in ("higher-self (frontier)", REFLEX_1.split(" | ")[0],
-                   "impulse (decision)"):
+    for marker in ("higher-self (frontier)", "impulse (decision)"):
         assert marker in delivered
-    assert delivered.count("· router ·") == 3
+    assert delivered.count("higher-self (frontier)") == 1
+    assert delivered.count("· router ·") == 2
+    decision = next(ln for ln in delivered.splitlines()
+                    if "impulse (decision)" in ln)
+    assert "x2" in decision, decision
+    assert "220/45 tok" in decision, "100/20 + 120/25 must SUM: %s" % decision
