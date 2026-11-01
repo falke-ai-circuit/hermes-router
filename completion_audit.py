@@ -2271,7 +2271,9 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         # is precisely the empty-response shape (thinking eats the budget,
         # content comes back null). Ported from the live Hetzner recovery
         # patched copy, where it was the only thing making the pass work.
-        key_envs = ["NOUS_API_KEY"]
+        # M24-03: the nous key-env NAME is providers.nous.key_env; the literal
+        # below is only the DEFAULT (same rule as the M24-01/M24-02 provider URL).
+        key_envs = [_cac.provider_key_env("nous", "NOUS_API_KEY")]
         _eff_override: Optional[str] = "max"   # legacy default: no anchor
         try:
             from . import anchor_chain as _acr

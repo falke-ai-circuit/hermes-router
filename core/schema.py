@@ -324,15 +324,21 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     # --- pricing (model-keyed: pricing.<model>.{input_per_1m,output_per_1m}) --
     _k("pricing", dict, {}),
 
-    # --- providers: base URLs and URL tails read as config, code literal only
-    # the DEFAULT (M24-01 base_url, M24-02 chat_path/models_path). Key-env
-    # names are still code-owned (M24-03).
+    # --- providers: base URLs, URL tails and KEY-ENV NAMES read as config, the
+    # code literal only the DEFAULT (M24-01 base_url, M24-02 chat_path/
+    # models_path, M24-03 key_env). A key_env value is an ENV VAR NAME, never a
+    # credential — the accessor returns a name, the caller reads the env.
     _k("providers", dict, {}),
     _k("providers.nous.base_url", str, "", legacy_of="base_url"),
     _k("providers.nous.chat_path", str, "/chat/completions"),
     _k("providers.nous.models_path", str, "/models"),
+    _k("providers.nous.key_env", str, "NOUS_API_KEY"),
     _k("providers.openrouter.base_url", str, ""),
     _k("providers.openrouter.chat_path", str, "/chat/completions"),
+    _k("providers.openrouter.key_env", str, "OPENROUTER_API_KEY"),
+    _k("providers.typesafe.key_env", str, "TYPESAFE_API_KEY"),
+    _k("providers.venice.key_env", str, "VENICE_API_KEY"),
+    _k("providers.minimax.key_env", str, "MINIMAX_API_KEY"),
 )
 
 SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS

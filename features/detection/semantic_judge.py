@@ -364,7 +364,8 @@ def _fallback_client() -> Optional[Any]:
         import os
 
         api_key = ""
-        for env_name in ("NOUS_API_KEY",):
+        # M24-03: the nous key-env NAME is providers.nous.key_env, literal default.
+        for env_name in (_ca.provider_key_env("nous", "NOUS_API_KEY"),):
             val = os.environ.get(env_name, "").strip()
             if val and val.lower() not in ("placeholder", "testkey", "changeme"):
                 api_key = val

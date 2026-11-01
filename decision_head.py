@@ -194,7 +194,12 @@ def embed_text(text: str) -> Optional[list]:
 
             url = (url.rsplit(PROVIDER_CHAT_PATH_DEFAULT, 1)[0].rstrip("/")
                    + "/embeddings")
-        key_env = str(ep.get("key_env") or "MINIMAX_API_KEY")
+        # M24-03: the minimax key-env NAME is providers.minimax.key_env — the
+        # code literal is only the DEFAULT, same rule as the provider URLs.
+        from .core.config_access import provider_key_env
+
+        key_env = str(ep.get("key_env")
+                      or provider_key_env("minimax", "MINIMAX_API_KEY"))
         api_key = os.environ.get(key_env, "").strip()
         if not api_key:
             return None

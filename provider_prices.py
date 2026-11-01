@@ -21,7 +21,8 @@ import time
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
-from .core.config_access import PROVIDER_CHAT_PATH_DEFAULT, PROVIDER_MODELS_PATH_DEFAULT
+from .core.config_access import (PROVIDER_CHAT_PATH_DEFAULT,
+                                 PROVIDER_MODELS_PATH_DEFAULT, provider_key_env)
 
 PRICING_TTL_S = 12 * 3600
 # M24-02: the HOST is a fixed code constant (host tables are M24-04, untouched);
@@ -369,7 +370,11 @@ def provider_catalog_entries(lane: str) -> tuple:
         if lane == "frontier":
             # nous catalog: NOUS_API_KEY env (same credential the frontier
             # chain's provider bills under).
-            keyinfo.setdefault(_nous_models_url(), ("", "NOUS_API_KEY"))
+            # nous catalog: the nous provider's key env — providers.nous.key_env,
+            # the literal below only the DEFAULT (M24-03).
+            keyinfo.setdefault(
+                _nous_models_url(),
+                ("", provider_key_env("nous", "NOUS_API_KEY")))
         out: list = []
         seen = set()
         for url in sorted(set(urls.values())):

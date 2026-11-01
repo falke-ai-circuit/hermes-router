@@ -115,7 +115,15 @@ def _read_key(key_file: str, key_env: str = "") -> str:
             logger.error("Venice key file is empty: %s", path)
         except OSError as exc:
             logger.error("Could not read Venice key file %s: %s", path, exc)
-    env_name = key_env or "VENICE_API_KEY"
+    # M24-03: the venice key-env NAME is providers.venice.key_env — the literal
+    # below is only the DEFAULT. Read here, not at module import, so a profile
+    # that names its own env var wins and a silent profile is unchanged.
+    try:
+        from .core import config_access as _ca
+
+        env_name = key_env or _ca.provider_key_env("venice", "VENICE_API_KEY")
+    except Exception:  # noqa: BLE001 — key lookup never raises
+        env_name = key_env or "VENICE_API_KEY"
     env_val = os.environ.get(env_name, "").strip()
     if env_val:
         return env_val

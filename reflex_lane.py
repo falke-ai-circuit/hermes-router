@@ -218,7 +218,9 @@ def _transport(payload_obj: Dict[str, Any], cfg: Dict[str, Any]) -> Any:
         from . import decision as _dec
 
         endpoint = str(cfg.get("typesafe_endpoint") or _dec.DEFAULTS["typesafe_endpoint"])
-        key_env = str(cfg.get("typesafe_api_key_env") or _dec.DEFAULTS["typesafe_api_key_env"])
+        key_env = str(cfg.get("typesafe_api_key_env")
+                      or _dec._provider_key_env(
+                          "typesafe", _dec.DEFAULTS["typesafe_api_key_env"]))
         key = os.environ.get(key_env, "")
         if not key:
             _rw._note(reason="no_key", key_env=key_env)

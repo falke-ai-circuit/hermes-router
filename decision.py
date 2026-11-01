@@ -3608,6 +3608,22 @@ def _default_openrouter_endpoint() -> str:
                 + config_access.PROVIDER_CHAT_PATH_DEFAULT)
 
 
+def _provider_key_env(provider: str, default: str) -> str:
+    """providers.<provider>.key_env — the ENV VAR NAME holding that provider's
+    key — or the code literal when config is silent.
+
+    M24-03: same shape as the M24-01 base URL and M24-02 URL tails. The literal
+    (DEFAULTS / the caller's own) is the DEFAULT, never the authority. Never
+    raises; a key lookup must always keep a name to try.
+    """
+    try:
+        from .core import config_access
+
+        return config_access.provider_key_env(provider, default)
+    except Exception:  # noqa: BLE001 — config read must never break a call
+        return default
+
+
 def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
               timeout: float, t0: float
               ) -> Tuple[Optional[str], Dict[str, Any], str]:
@@ -3622,7 +3638,8 @@ def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
         import os as _os
 
         key = _os.environ.get(str(cfg.get("api_key_env")
-                                  or "OPENROUTER_API_KEY"), "")
+                                  or _provider_key_env(
+                                      "openrouter", DEFAULTS["api_key_env"])), "")
         if not key:
             # M7b: no key -> no dispatch, no spend -> no SUPPRESSED banner.
             return None, dict(meta, model=model, endpoint=endpoint,
@@ -3757,7 +3774,8 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
 
             key = _os.environ.get(
                 str(cfg.get("typesafe_api_key_env")
-                    or DEFAULTS["typesafe_api_key_env"]), "")
+                    or _provider_key_env(
+                        "typesafe", DEFAULTS["typesafe_api_key_env"])), "")
             if not key:
                 # M7b: no key -> no dispatch, no spend -> no SUPPRESSED banner.
                 return None, dict(meta, model=model, endpoint=endpoint,

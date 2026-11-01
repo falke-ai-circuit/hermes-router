@@ -352,6 +352,39 @@ def provider_path(name: str, kind: str,
     return value.rstrip("/") or default
 
 
+# M24-03: provider KEY-ENV NAMES — the literal that names the environment
+# variable holding a provider key ("NOUS_API_KEY"). These are DEFAULTS only, the
+# same rule as M24-01 base URLs and M24-02 URL tails: a profile that sets
+# providers.<name>.key_env wins, a silent profile resolves the exact name the
+# code literal held. Declared here so the whole provider surface is one table.
+PROVIDER_KEY_ENV_DEFAULTS: Dict[str, str] = {
+    "nous": "NOUS_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "typesafe": "TYPESAFE_API_KEY",
+    "venice": "VENICE_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+}
+
+
+def provider_key_env(name: str, default: str = "") -> str:
+    """providers.<name>.key_env — the NAME of the env var holding this
+    provider's key — or the code literal default when config is silent.
+
+    M24-03: the literal is the DEFAULT, never the authority. `default` is the
+    caller's own literal (so the call site stays readable); when it is empty the
+    shared table above supplies it. An empty/blank configured value falls back to
+    the default — a profile must never end up looking for a key in an env var
+    with no name. Fails to the default on any read error. Never raises.
+    """
+    fallback = (str(default or "").strip()
+                or PROVIDER_KEY_ENV_DEFAULTS.get(str(name or "").strip().lower(), ""))
+    try:
+        value = str(get(f"providers.{name}.key_env", fallback) or "").strip()
+    except Exception:  # noqa: BLE001 — config read must never break a call
+        return fallback
+    return value or fallback
+
+
 def _walk(section: Dict[str, Any], path: str) -> Any:
     """Walk a dotted path through the router section. Returns _MISSING when
     any segment is absent/non-dict (leaf values may legitimately be None)."""

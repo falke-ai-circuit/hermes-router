@@ -144,6 +144,22 @@ def provider_endpoint(name: str, base_default: str) -> str:
         return _provider_base(name, base_default).rstrip("/")
 
 
+def _provider_key_env(name: str, default: str) -> str:
+    """providers.<name>.key_env, or the code literal when config is silent.
+
+    M24-03: the env-var NAME that holds this provider's key. Same shape as
+    _provider_base (M24-01): the literal is the DEFAULT, never the authority.
+    Fails to the literal on any read error — a key lookup must always have a
+    name to try.
+    """
+    try:
+        from .core import config_access
+
+        return config_access.provider_key_env(name, default)
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoint]:
     """Resolve <scheme>://<model> to (base_url, key_env). Built-in schemes:
     openrouter. Generic passthrough: custom providers in config under the
@@ -154,13 +170,14 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
             return AnchorEndpoint(
                 scheme="openrouter", model=model,
                 base_url=_provider_base("openrouter", OPENROUTER_BASE),
-                api_key_env=OPENROUTER_KEY_ENV, role=role,
+                api_key_env=_provider_key_env("openrouter", OPENROUTER_KEY_ENV),
+                role=role,
             )
         if scheme == "nous":
             return AnchorEndpoint(
                 scheme="nous", model=model,
                 base_url=_provider_base("nous", NOUS_BASE),
-                api_key_env=NOUS_KEY_ENV, role=role,
+                api_key_env=_provider_key_env("nous", NOUS_KEY_ENV), role=role,
             )
         custom = _custom_providers().get(scheme)
         if isinstance(custom, dict) and custom.get("base_url"):

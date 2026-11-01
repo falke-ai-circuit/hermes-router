@@ -170,9 +170,17 @@ hermes_router:
       base_url: ""         # str | default "" | base URL for the nous provider (unset -> code default literal)
       chat_path: "/chat/completions"   # str | default "/chat/completions" | chat-completions tail appended to base_url (unset -> "/chat/completions")
       models_path: "/models"           # str | default "/models" | catalog-models tail appended to the models host (unset -> "/models")
+      key_env: "NOUS_API_KEY"          # str | default "NOUS_API_KEY" | ENV VAR NAME holding the nous key, never the key itself (unset -> "NOUS_API_KEY")
     openrouter:
       base_url: ""         # str | default "" | base URL for the openrouter provider (unset -> code default literal)
       chat_path: "/chat/completions"   # str | default "/chat/completions" | chat-completions tail appended to base_url (unset -> "/chat/completions")
+      key_env: "OPENROUTER_API_KEY"    # str | default "OPENROUTER_API_KEY" | ENV VAR NAME holding the openrouter key (unset -> "OPENROUTER_API_KEY")
+    typesafe:
+      key_env: "TYPESAFE_API_KEY"      # str | default "TYPESAFE_API_KEY" | ENV VAR NAME holding the typesafe/system-one key (unset -> "TYPESAFE_API_KEY")
+    venice:
+      key_env: "VENICE_API_KEY"        # str | default "VENICE_API_KEY" | ENV VAR NAME holding the venice key (unset -> "VENICE_API_KEY")
+    minimax:
+      key_env: "MINIMAX_API_KEY"       # str | default "MINIMAX_API_KEY" | ENV VAR NAME holding the aux/embeddings key (unset -> "MINIMAX_API_KEY")
 
   # ##########################################################################
   # COMPATIBILITY — pre-M23 spellings and internal knobs.
