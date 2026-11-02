@@ -1950,6 +1950,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _gate_verdict = "abstain"
         _gate_semantics: tuple = ()
         _gate_replacement = ""
+        # M41-03 (§B S5): the acceptance criterion the PRE leg extracted rides
+        # the SAME turn record — it is READ here, never re-extracted, so POST
+        # cannot disagree with the criterion the turn was produced against. None
+        # is the explicit "no criterion" state (same degrade as an abstained
+        # gate: grade nothing, fall to the body path), never an empty dict.
+        _gate_criterion: Optional[dict] = None
         try:
             from ..features.detection import domain_gate as _dgate
 
@@ -1957,9 +1963,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _gate_verdict = _dgate.verdict(_gate_row)
             _gate_semantics = tuple((_gate_row or {}).get("gate_semantics") or ())
             _gate_replacement = str((_gate_row or {}).get("replacement") or "")
+            _gate_criterion = _dgate.criterion_of(_gate_row)
         except Exception:  # noqa: BLE001 — the read never breaks delivery
             _gate_row = None
             _gate_verdict = "abstain"
+            _gate_criterion = None
             _hub().logger.debug("domain-gate POST read error", exc_info=True)
         try:
             _hub()._log_route(
@@ -1968,8 +1976,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 domain=str((_gate_row or {}).get("domain") or ""),
                 question=str((_gate_row or {}).get("question") or ""),
                 reason=str((_gate_row or {}).get("reason") or ""),
-                criterion_kind=str((((_gate_row or {}).get("criterion") or {})
-                                    .get("kind")) or ""),
+                criterion_kind=str((_gate_criterion or {}).get("kind") or ""),
+                criterion_units=int((_gate_criterion or {}).get("units") or 0),
+                criterion_available=0 if _gate_criterion is None else 1,
+                criterion_chars=len(str((_gate_criterion or {}).get("verbatim") or "")),
                 semantics_rows=len(_gate_semantics),
                 replacement=_gate_replacement,
                 session_id=session_id)

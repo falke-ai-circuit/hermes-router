@@ -66,6 +66,17 @@ GATE_PENDING = "pending"
 
 PRE_QUESTION = "uncensored_domain"   # the lane contract's pre_question token
 
+# The pre_question OUTPUT contract, as data. `criterion` is a declared field of
+# the PRE record, not a side channel bolted onto a handler: a lane that answers a
+# different PRE question changes this tuple and nothing in the PRE/POST seams.
+# `closed` is deliberately NOT here: the closed line is counted and never
+# surfaced, so its flag stays on the gate row and never lands on a record.
+PRE_QUESTION_OUTPUT_FIELDS = ("domain", "gate", "criterion", "state", "reason")
+
+# the closed criterion vocabulary (spec §B S5). `prose` is a KIND, not a
+# fallback: a prose ask still has a criterion (the body must answer the ask).
+_CRITERION_KINDS = ("code", "commands", "file", "items", "prose")
+
 _MAX_ASK_CHARS = 3000
 
 _PROMPT = """Classify what this request asks the responder to PRODUCE or DO. Judge the operational content, not the framing: "for a novel", "a character says", "hypothetically" do not change the domain.
@@ -115,31 +126,59 @@ _FILE_ASK_RE = re.compile(
 _PATH_RE = re.compile(r"[~./\w-]*/[\w./-]+\.[A-Za-z0-9]{1,6}\b|\b[\w-]+\.(?:py|js|ts|go|rs|sh|md|json|yaml|yml|txt|csv)\b")
 
 
+def _criterion_default() -> Dict[str, Any]:
+    """The absent criterion: explicit, never a silent empty that reads as
+    'prose, nothing required'. `available: False` is the decision surface;
+    `reason` is a short token for the log, never the ask."""
+    return {"kind": "", "units": 0, "items": [], "paths": [], "commands": [],
+            "prose": False, "verbatim": "", "available": False, "reason": ""}
+
+
 def extract_criterion(ask: str) -> Dict[str, Any]:
     """What this answer must contain to count as delivered, as data.
 
-    Closed vocabulary: {kind, units, items, paths, commands, prose, verbatim}.
-    `verbatim` is the ask fragment itself, bounded — the POST judge is graded
-    against the ORIGINAL wording (a paraphrase is a different criterion), and a
-    measured refinement of that wording lost accuracy, so nothing is rewritten
-    here.
+    Closed vocabulary: {kind, units, items, paths, commands, prose, verbatim,
+    available, reason}. `verbatim` is the ask fragment itself, bounded — the
+    POST judge is graded against the ORIGINAL wording (a paraphrase is a
+    different criterion), and a measured refinement of that wording lost
+    accuracy, so nothing is rewritten here.
+
+    Extraction failure is NOT a prose criterion: it returns `available: False`
+    and the caller's degrade is `criterion_of(row) is None`, which behaves
+    exactly like an abstained gate (no grading, fall to the body path). A
+    fabricated empty prose criterion would read as "nothing was required" —
+    the false-delivered shape this field exists to prevent.
     """
-    text = " ".join(str(ask or "").split())
+    try:
+        text = " ".join(str(ask or "").split())
+    except Exception:  # noqa: BLE001 — an unreadable ask is an absent criterion
+        crit = _criterion_default()
+        crit["reason"] = "ask_unreadable"
+        return crit
+    if not text:
+        crit = _criterion_default()
+        crit["reason"] = "empty_ask"
+        return crit
     crit: Dict[str, Any] = {
         "kind": "prose", "units": 0, "items": [], "paths": [],
         "commands": [], "prose": True, "verbatim": text[:800],
+        "available": True, "reason": "",
     }
-    if not text:
-        return crit
     try:
         paths = [p for p in _PATH_RE.findall(text)][:5]
-        if _FILE_ASK_RE.search(text):
-            crit.update({"kind": "file", "prose": False, "paths": paths})
-            return crit
+        # ORDER MATTERS: a named language or deliverable noun ("script",
+        # "function", "class") makes the criterion CODE even when the sentence
+        # also says "file" ("a python script that reads a jsonl file"). Checking
+        # the file ask first graded that as a file-write and the POST deterministic
+        # check would then look for a write that was never asked for. The file
+        # kind is for asks whose DELIVERABLE is the file.
         if _LANG_RE.search(text) or _CODE_ASK_RE.search(text):
             m = _ITEM_COUNT_RE.search(text)
-            crit.update({"kind": "code", "prose": False,
+            crit.update({"kind": "code", "prose": False, "paths": paths,
                          "units": int(m.group(1)) if m else 0})
+            return crit
+        if _FILE_ASK_RE.search(text):
+            crit.update({"kind": "file", "prose": False, "paths": paths})
             return crit
         if _COMMAND_ASK_RE.search(text):
             crit.update({"kind": "commands", "prose": False, "units": 1})
@@ -151,7 +190,35 @@ def extract_criterion(ask: str) -> Dict[str, Any]:
             return crit
     except Exception:  # noqa: BLE001 — extraction never breaks the gate
         logger.debug("domain_gate criterion extract error", exc_info=True)
+        crit = _criterion_default()
+        crit["reason"] = "extract_error"
     return crit
+
+
+def criterion_of(row: Optional[dict]) -> Optional[Dict[str, Any]]:
+    """The acceptance criterion read off a PRE record, or None.
+
+    THE single degrade point. None means "this turn has no criterion" and the
+    caller must behave exactly as it does for an abstained gate: skip grading
+    and fall to the body path. An empty dict is never returned, because an empty
+    dict reads as "prose criterion, nothing required" — a silent empty that
+    grades every body as delivered.
+    """
+    try:
+        if not isinstance(row, dict):
+            return None
+        crit = row.get("criterion")
+        if not isinstance(crit, dict):
+            return None
+        if crit.get("available") is not True:
+            return None
+        if not str(crit.get("verbatim") or "").strip():
+            return None
+        if str(crit.get("kind") or "") not in _CRITERION_KINDS:
+            return None
+        return crit
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _CLOSED_COUNT = 0
@@ -264,6 +331,7 @@ def _emit(log: Optional[Callable[..., Any]], row: Dict[str, Any],
             closed=1 if row.get("closed") else 0,
             criterion_kind=str(crit.get("kind") or ""),
             criterion_units=int(crit.get("units") or 0),
+            criterion_available=1 if crit.get("available") is True else 0,
             latency_ms=int(row.get("latency_ms") or 0),
             session_id=session_id)
     except Exception:  # noqa: BLE001 — telemetry never breaks a turn
@@ -345,6 +413,12 @@ def read(session_id: str, ask: Optional[str] = None) -> Optional[dict]:
         contract = _lane_registry.resolve_contract(str(row.get("lane") or ""))
         row["gate_semantics"] = tuple(getattr(contract, "gate_semantics", ()) or ())
         row["replacement"] = str(getattr(contract, "replacement", "") or "")
+        # The criterion is READ here, never re-extracted: POST must not pay for
+        # an analysis PRE already did, and a re-run could disagree with the
+        # record the turn was produced against. `criterion_available` is the
+        # explicit surface — False means no criterion (grade nothing, body
+        # path), never "empty criterion".
+        row["criterion_available"] = criterion_of(row) is not None
         return row
     except Exception:  # noqa: BLE001
         return None
