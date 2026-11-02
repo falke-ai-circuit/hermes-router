@@ -229,8 +229,10 @@ source_modules =
     hermes_router.features.banners.lifecycle
     hermes_router.features.banners.turn_record
     hermes_router.features.detection
+    hermes_router.features.detection.compound_split
     hermes_router.features.detection.declaration
     hermes_router.features.detection.denial_class
+    hermes_router.features.detection.domain_gate
     hermes_router.features.detection.normalise
     hermes_router.features.detection.semantic_judge
     hermes_router.features.detection.structural
