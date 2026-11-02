@@ -26,6 +26,29 @@ _IDS: Dict[str, "LaneSpec"] = {}
 
 
 @dataclass(frozen=True)
+class LaneContract:
+    """The four things a lane IS (M41-02 §B; design "Generalisation").
+
+    `pre_question` / `post_question` are vocabulary tokens, not lane checks:
+    the PRE and POST seams resolve them engine-side (PRE_QUESTIONS /
+    POST_QUESTIONS) so no handler ever compares a lane id.
+
+    `gate_semantics` is an ORDERED tuple of (predicate_token, action_token)
+    rows, first match wins. It is data, not an expression language: a lane that
+    needs a predicate the vocabulary does not carry needs a vocabulary entry
+    (reviewed centrally, visible in the diff), not a handler edit.
+
+    `replacement` names the render chain a route-and-replace action enters; it
+    resolves by token the same way.
+    """
+
+    pre_question: str = ""
+    post_question: str = ""
+    gate_semantics: tuple = ()
+    replacement: str = ""
+
+
+@dataclass(frozen=True)
 class LaneSpec:
     """One lane's behavioral surface as data (§1.5)."""
 
@@ -41,6 +64,10 @@ class LaneSpec:
     delivery_edges: FrozenSet[str] = frozenset()
     consult_role: Optional[str] = None
     valid: bool = True
+    # M41-02 (§B): one optional field, default None — every pre-existing
+    # entry keeps its meaning unchanged.
+    contract: Optional[LaneContract] = None
+
 
 
 def register_lane(spec: LaneSpec) -> None:
@@ -71,3 +98,31 @@ def all_lanes() -> tuple:
 def valid_lane_ids() -> tuple:
     """Replaces VALID_ROUTE_LANES membership (only spec.valid rows)."""
     return tuple(s.id for s in _IDS.values() if s.valid)
+
+
+def resolve_contract(lane_id: str) -> Optional[LaneContract]:
+    """The lane's contract, or None when it declares none.
+
+    Engine-side resolution by TOKEN: a caller that holds a lane id gets its
+    four fields here and never inspects the id itself (M41-02 §B — "a second
+    lane is one LaneSpec literal, no handler edit"). Unknown id => None, the
+    same fail-open the rest of this module's readers use.
+    """
+    spec = _IDS.get(str(lane_id or ""))
+    return spec.contract if spec is not None else None
+
+
+def lane_for_pre_question(question: str) -> Optional[str]:
+    """The lane id owning a PRE question token, or None.
+
+    This is how the PRE seam names its lane without a branch: the gate asks
+    which registered lane carries the question it is about to ask, and writes
+    that lane's id on the turn record for POST to resolve the semantics back.
+    """
+    q = str(question or "")
+    if not q:
+        return None
+    for spec in _IDS.values():
+        if spec.contract is not None and spec.contract.pre_question == q:
+            return spec.id
+    return None

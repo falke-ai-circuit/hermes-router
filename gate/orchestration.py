@@ -556,6 +556,25 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 is_continuation=bool(_is_tool_loop))
         except Exception:  # noqa: BLE001 — fail-open, never block delivery
             pass
+        # M41-02 (§C S1): the PRE DOMAIN gate — a squelch that classifies what
+        # the ask wants PRODUCED or DONE (never its framing) and records the
+        # verdict on the SHARED per-session turn record for POST to read.
+        # Position note (reasoned deviation from §C's :525-531): the call sits
+        # immediately AFTER advance_turn_identity, not before it, because the
+        # record it writes is turn-bound (state.mark_pre_domain stamps
+        # current_turn_id) — stamping it before the advance would bind the
+        # record to the PREVIOUS turn and make every POST read `abstain`. It is
+        # still the same seam, before generation, and still never awaited.
+        # Zero added latency is structural: start() spawns a daemon thread and
+        # returns; nothing joins it here or at POST. Outside
+        # aux_consult_min_interval_sec by construction (no claim_pass path, no
+        # reference to the interval) — proved by test, never by config.
+        try:
+            from ..features.detection import domain_gate as _dgate
+
+            _dgate.start(session_id, content, log=_hub()._log_route)
+        except Exception:  # noqa: BLE001 — the gate must never cost a turn
+            _hub().logger.debug("domain-gate wiring error", exc_info=True)
         # v3.0.0 complexity lane dispatcher pass — now the gate's CLAIM
         # phase (Phase 1 route gate): declared on-demand inputs are
         # evaluated at the same position, with the legacy _dispatch_pass
@@ -1918,6 +1937,42 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 reason=str((_probe_row or {}).get("reason") or "")
                 if isinstance(_probe_row, dict) else "",
                 body_chars=len(response_text or ""), session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            pass
+        # M41-02 (§C S6): read the PRE gate verdict from the shared per-session
+        # turn record. POST must NOT re-classify the ask. `verdict()` collapses
+        # None / pending / expired / turn-mismatch to `abstain`, which is a
+        # gate FAILURE that falls to the body path — never "safe". The ordered
+        # rows are read off the lane contract as DATA (`gate_semantics`); no
+        # lane id is compared here (review test: zero per-lane branches in the
+        # POST handler).
+        _gate_row: Optional[dict] = None
+        _gate_verdict = "abstain"
+        _gate_semantics: tuple = ()
+        _gate_replacement = ""
+        try:
+            from ..features.detection import domain_gate as _dgate
+
+            _gate_row = _dgate.read(session_id)
+            _gate_verdict = _dgate.verdict(_gate_row)
+            _gate_semantics = tuple((_gate_row or {}).get("gate_semantics") or ())
+            _gate_replacement = str((_gate_row or {}).get("replacement") or "")
+        except Exception:  # noqa: BLE001 — the read never breaks delivery
+            _gate_row = None
+            _gate_verdict = "abstain"
+            _hub().logger.debug("domain-gate POST read error", exc_info=True)
+        try:
+            _hub()._log_route(
+                "POST", event_detail="domain_gate_turn",
+                gate=_gate_verdict,
+                domain=str((_gate_row or {}).get("domain") or ""),
+                question=str((_gate_row or {}).get("question") or ""),
+                reason=str((_gate_row or {}).get("reason") or ""),
+                criterion_kind=str((((_gate_row or {}).get("criterion") or {})
+                                    .get("kind")) or ""),
+                semantics_rows=len(_gate_semantics),
+                replacement=_gate_replacement,
+                session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
         _denial_class = ""

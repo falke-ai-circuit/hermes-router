@@ -409,6 +409,100 @@ def clear_pre_advisory(session_id: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# M41-02 (§C S3): the PRE DOMAIN GATE verdict — the shared per-session turn
+# record the POST seam reads instead of re-classifying.
+#
+# Same contract as _PRE_ADVISORY above (one record per session, ask-sig bound,
+# turn bound, TTL'd, overwritten by the newer PRE) because the failure mode is
+# the same: a verdict that cannot be proved to belong to THIS turn is not a
+# verdict. NOT core/canonical.py — that is a delivered-text ledger, and a PRE
+# verdict is not a delivered event; writing it there would break
+# `persisted == delivered`.
+#
+# Two states are written deliberately:
+#   pending  — start() armed the gate for this ask, the worker has not landed.
+#              POST reads it as `abstain` (a missing verdict is a FAILURE, never
+#              "safe"), which is what makes "zero added latency" and "abstain is
+#              never safe" the same decision.
+#   final    — flagged | not_flagged | abstain.
+_PRE_DOMAIN: Dict[str, dict] = {}
+_PRE_DOMAIN_TTL = 900.0     # one turn; a gateway-killed turn expires, never lingers
+
+
+def mark_pre_domain(session_id: str, ask: str = "", *, lane: str = "",
+                    question: str = "", gate: str = "", domain: str = "",
+                    criterion: Optional[dict] = None, reason: str = "",
+                    latency_ms: int = 0, state: str = "") -> Optional[dict]:
+    """Record the PRE domain-gate verdict for this turn. Never raises; returns
+    the stored record, or None when there is no turn identity to bind it to."""
+    try:
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        rec = {
+            "ts": time.time(),
+            "ask_sig": _ask_sig(ask),
+            # Bounded ask text: the POST seam often has no user_message in
+            # context, and a record POST cannot tie to its own turn is dead.
+            "ask": str(ask or "")[:2000],
+            "turn": int(current_turn_id(sid)),
+            "lane": str(lane or "")[:40],
+            "question": str(question or "")[:60],
+            "gate": str(gate or "")[:20],
+            "state": str(state or gate or "")[:20],
+            "domain": str(domain or "")[:40],
+            "reason": str(reason or "")[:60],
+            "criterion": dict(criterion) if isinstance(criterion, dict) else {},
+            "latency_ms": int(latency_ms or 0),
+        }
+        with _TURN_FLAG_LOCK:
+            if len(_PRE_DOMAIN) >= 512:
+                _PRE_DOMAIN.clear()
+            _PRE_DOMAIN[sid] = rec
+        return dict(rec)
+    except Exception:  # noqa: BLE001 — the handoff never breaks a turn
+        return None
+
+
+def pre_domain(session_id: str, window_s: float = _PRE_DOMAIN_TTL,
+               ask: Optional[str] = None) -> Optional[dict]:
+    """The PRE domain-gate record for this session, or None (expired/absent).
+
+    Read-only. `ask`, when given, must match the recorded ask fingerprint: a
+    verdict taken for a different ask is never a verdict for this turn.
+    """
+    try:
+        now = time.time()
+        with _TURN_FLAG_LOCK:
+            rec = _PRE_DOMAIN.get(session_id or "")
+            rec = dict(rec) if rec else None
+        if not rec:
+            return None
+        if now - float(rec.get("ts") or 0) > float(window_s):
+            clear_pre_domain(session_id)
+            return None
+        if ask is not None and rec.get("ask_sig") and _ask_sig(ask) != rec["ask_sig"]:
+            return None
+        return rec
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def clear_pre_domain(session_id: Optional[str] = None) -> None:
+    """Drop one session's gate record (or all of them when None). Test/recovery
+    hook; the POST seam does NOT clear it (a turn may be read more than once)."""
+    try:
+        with _TURN_FLAG_LOCK:
+            if session_id is None:
+                _PRE_DOMAIN.clear()
+            else:
+                _PRE_DOMAIN.pop(session_id or "", None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+
 def last_staged_consult(session_id: str) -> Tuple[Optional[float], str]:
     """(timestamp, task_id) of the last staged PRE consult for this session.
     (None, "") also on missing/unreadable state (fail-open)."""

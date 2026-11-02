@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from ..lanes.registry import LaneSpec, register_lane
+from ..lanes.registry import LaneContract, LaneSpec, register_lane
 
 LANE_HIGHER_PRE = "higher-pre"
 LANE_HIGHER_POST = "higher-post"
@@ -82,6 +82,28 @@ _SHADOW = LaneSpec(
     pre_patterns=PRE_PATTERNS_DEFAULT,
     marker_strings=MARKER_SHADOW,
     commands_switch=_SWITCH_SHADOW,
+    # M41-02 (§B): the lane as data. Namespace note, because it reads wrong
+    # otherwise: the routing lane id is "shadow", the envelope lane key is
+    # "uncensored", the log field is lane=shadow — the contract goes HERE.
+    contract=LaneContract(
+        pre_question="uncensored_domain",
+        post_question="uncensored_intent",
+        # Ordered (predicate_token, action_token), first match wins.
+        # Row 3 is the spec's B2 fix: `abstain` is not a value of the
+        # flagged/not-flagged binary, so an abstained gate could never reach
+        # the fallback when the row sat last. Hoisted to 3, after the two
+        # self-evident evidence rows (declaration, declined), which route
+        # regardless of the gate.
+        gate_semantics=(
+            ("declared_refusal", "route"),                  # 1
+            ("intent_declined", "route"),                   # 2
+            ("gate_abstain", "fallback_shape"),             # 3
+            ("intent_softened_and_gate_flag", "route_replace"),   # 4
+            ("intent_softened", "deliver"),                 # 5  (B1: intent only)
+            ("else", "deliver"),                            # 6
+        ),
+        replacement="uncensored_render",
+    ),
 )
 _HIGHER_PRE = LaneSpec(
     id=LANE_HIGHER_PRE,
