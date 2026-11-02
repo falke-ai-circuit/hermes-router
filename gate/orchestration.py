@@ -1305,6 +1305,30 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 chars=len(str(response_text or "")),
                 session_id=session_id)
             return _decl_passthrough()
+        # M34-04 (M35 §3 clause 4): TRANSCRIPT = DELIVERY — the backstop.
+        # The delivery obligation is written by the gateway AFTER this hook
+        # returns (platforms/base.py:6049-6108), so the pair to compare is the
+        # session's LAST delivered turn: its obligation row vs the transcript
+        # row that existed when it was delivered (timestamp-bound, never the
+        # newest row — a later turn or a bg-review append is newer). A
+        # mismatch is a HARD FAILURE: error event + failed turn, not a note.
+        # Audited once per obligation, so one bad row fails one turn.
+        try:
+            from ..core import delivery_integrity as _dint
+
+            _div = _dint.audit_last_delivery(
+                session_id, log=_hub()._log_route)
+            if _div.checked and not _div.ok:
+                _hub().logger.error(
+                    "transcript_divergence row=%s obligation=%s delivered=%d "
+                    "transcript=%d session=%s",
+                    _div.row_id, _div.obligation_id, _div.delivered_chars,
+                    _div.transcript_chars, session_id)
+                # The failed turn is visible and withheld; it is never
+                # delivered as if it were the answer.
+                return _dint.failure_body(_div)
+        except Exception:  # noqa: BLE001 — the backstop never breaks a turn
+            _hub().logger.debug("delivery integrity audit error", exc_info=True)
         # R20-D3 (rider 20): the host plugin runner kills this callback at
         # 30s ("timed out after 30s — skipping") and then SKIPS later
         # invocations ("skipped after previous timeout or while still
