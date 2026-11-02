@@ -62,6 +62,55 @@ except Exception:  # noqa: BLE001
     pass
 
 _MIN_RESPONSE_CHARS = 500
+# R78U M34-10 (measured live, shadow 2026-11-02 03:15:24Z): a 429-char plain
+# decline hit `response_too_short_unpaired chars=429 pair=False` and got no
+# second opinion, while a 701-char hedge routed — the floor was deciding
+# refusal SHAPE by size, and it was inverted (long hedges caught, terse
+# declines missed). Shape wins over size at BOTH length floors below: a body
+# that announces its own refusal is not "unpairable" because it is short.
+# The floor keeps deciding for genuinely unpaired non-refusal short bodies.
+# Narrow on purpose: this reads SELF-STANCE only (first-person chosen refusal,
+# answer-copula no, "same answer") — never topic negation, so status reports
+# like "Not confirmed — still unknown" cannot buy a consult with a short body.
+_REFUSAL_SHAPE_RE = re.compile(
+    r"(?:"
+    r"\bi\s*(?:'m|am)\s+(?:declining|refusing)\b"
+    r"|\bi\s+(?:decline|refuse)\b"
+    r"|\bi\s+won'?t\b"
+    r"|\bi\s+will\s+not\b"
+    r"|\bi\s*(?:'m|am)\s+not\s+going\s+to\b"
+    r"|\bnot\s+(?:writing|producing|generating|creating|drawing)\s+"
+    r"(?:that|this|it|one)\b"
+    r"|\b(?:my|the)\s+answer\s+(?:is|stands|stays|remains)\b"
+    r"[^.!?\n]{0,24}\bno\b"
+    r"|\bsame\s+answer\b"
+    r")",
+    re.IGNORECASE,
+)
+# Compliance affirmations are the one opener class that looks like a refusal
+# ("No problem, here's the file") and is not one.
+_REFUSAL_SHAPE_COMPLIANCE_RE = re.compile(
+    r"^\s*no\s+(?:problem|worries|thanks|thank\s+you)\b", re.IGNORECASE)
+
+
+def is_refusal_shaped_body(text: str) -> bool:
+    """True when `text` READS AS A DECLINE (R78U M34-10).
+
+    Used only by the two audit length floors, to stop size from being the
+    discriminator for refusal shape. Bounded to the opening 1200 chars, folds
+    typographic apostrophes (the classifier's R33 live lesson), never raises.
+    Errors return False: an uncertain body keeps the floor (no surprise spend).
+    """
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return False
+        t = text.strip()[:1200].replace("\u2019", "'")
+        if _REFUSAL_SHAPE_COMPLIANCE_RE.match(t):
+            return False
+        return bool(_REFUSAL_SHAPE_RE.search(t))
+    except Exception:  # noqa: BLE001 — an error must not bypass a billing floor
+        return False
+
 # R78U M17: the smallest output allowance that can still emit a verdict. Below
 # this a "resized to fit the remaining cap" consult would be starved into
 # empty_response, which is the failure mode the 12000-token budget existed to
@@ -760,7 +809,13 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     # is terse (live: 2 files + 5 tests reported in 264 chars lost its POST).
     if not paired and (not isinstance(response_text, str)
                        or len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-        return False, "response_too_short"
+        # R78U M34-10: shape wins over size — a body that announces its own
+        # refusal routes to the consult however terse it is.
+        if isinstance(response_text, str) and is_refusal_shaped_body(response_text):
+            _log("audit_length_floor_refusal_shape", chars=len(response_text),
+                 pair=False, floor="eligible", session_id=session_id)
+        else:
+            return False, "response_too_short"
     if paired and not isinstance(response_text, str):
         return False, "response_too_short"
     # R42: the ask-side complexity test is GONE from POST eligibility. POST
@@ -1024,10 +1079,19 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation because the agent reported it in 264 chars.
         if not isinstance(response_text, str) or (
                 not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-            _skip("response_too_short_unpaired",
-                 chars=len(str(response_text or "")), pair=bool(_pair),
-                 session_id=session_id)
-            return None
+            # R78U M34-10: a refusal-SHAPED body is not "unpairable" because
+            # it is short. The floor keeps deciding for non-refusal short
+            # bodies; it stops deciding refusal shape.
+            if (isinstance(response_text, str) and not _pair
+                    and is_refusal_shaped_body(response_text)):
+                _log("audit_length_floor_refusal_shape",
+                     chars=len(response_text), pair=False, floor="audit_gate",
+                     session_id=session_id)
+            else:
+                _skip("response_too_short_unpaired",
+                      chars=len(str(response_text or "")), pair=bool(_pair),
+                      session_id=session_id)
+                return None
         # Leg 7 (single claim point, blueprint invariant #1): when the
         # gate's claim registry holds ANY claim for this session/turn,
         # the audit stands down — that claim owns the turn's one routing
