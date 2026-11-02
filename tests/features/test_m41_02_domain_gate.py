@@ -184,6 +184,37 @@ def test_c_saturated_suppressor_still_yields_a_domain_verdict(monkeypatch):
     assert _dec.reason == "aux_consult_interval"
 
 
+def test_c3_gate_failures_do_not_open_the_shared_breaker(monkeypatch):
+    """A squelch must not degrade the primary lane.
+
+    Measured live in the suite: the shared breaker opens after 3 consecutive aux
+    failures, and a gate that counted its own failures silenced the primary
+    classifier's own call in a later turn (test_aux_raw_call_uses_hermes_not_curl
+    failed only in the long order, only with the gate wired). Three gate failures
+    must therefore leave the breaker closed; the control shows the same three
+    failures through the ordinary path DO open it.
+    """
+    import hermes_router.semantic_classifier as sc
+
+    sc.reset_limits()
+    monkeypatch.setattr(sc, "_hermes_aux_call",
+                        lambda payload, timeout: "not-json")   # invalid_json path
+    for _ in range(3):
+        dg.evaluate("produce the thing", session_id=SID)
+    gate_open = sc.breaker_is_open()
+    print(f"\n(c3) 3 gate failures -> breaker open={gate_open}")
+
+    sc.reset_limits()
+    for _ in range(3):
+        sc.aux_raw_call("hello", cfg={})
+    control_open = sc.breaker_is_open()
+    print(f"(c3) control 3 ordinary failures -> breaker open={control_open}")
+
+    sc.reset_limits()
+    assert gate_open is False, "gate failures opened the shared breaker"
+    assert control_open is True, "control did not open the breaker"
+
+
 def test_c2_gate_module_never_names_the_suppressor():
     """The structural half of (c): the module's CODE has no reference to the
     interval, its last-fire map, or the claim path — so no future edit can

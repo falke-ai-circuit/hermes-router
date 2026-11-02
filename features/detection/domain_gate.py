@@ -186,7 +186,8 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         return out
     prompt = _PROMPT % text[:_MAX_ASK_CHARS]
     try:
-        raw = _sc.aux_raw_call(prompt, session_id=session_id)
+        raw = _sc.aux_raw_call(prompt, session_id=session_id,
+                               record_failure=False)
     except Exception:  # noqa: BLE001 — the aux lane never raises, but be sure
         logger.debug("domain_gate aux call error", exc_info=True)
         out["reason"] = "aux_error"

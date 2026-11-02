@@ -420,7 +420,8 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
         return None
 
 def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
-                 record_success: bool = True, session_id: str = "") -> Optional[str]:
+                 record_success: bool = True, session_id: str = "",
+                 record_failure: bool = True) -> Optional[str]:
     """Single aux dispatch: free-text prompt in, extracted content out.
 
     Shared by classify() (refusal classes) and refusal_doctrine verdicts.
@@ -432,6 +433,12 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     seam of its own. Same breaker/cap/retry/ledger discipline as before:
     None on ANY failure (which counts toward the breaker); content string on
     success. Never raises; the model's free text never leaves this module.
+
+    `record_failure=False` (M41-02): a NON-CRITICAL observer must not open the
+    shared circuit breaker. The PRE domain gate is a squelch — three failed
+    gate calls in a row would otherwise silence the primary classifier for the
+    whole breaker window, i.e. an optional lane degrading a required one.
+    Default True: every pre-existing caller counts exactly as before.
     """
     try:
         cls = _classification_cfg(cfg)
@@ -463,18 +470,21 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             time.sleep(min(2 * _attempt, 5))
             body = _hermes_aux_call(json.dumps(payload), timeout)
         if body is None:
-            _record_failure(cls)
+            if record_failure:
+                _record_failure(cls)
             return None
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
             logger.error("semantic_aux_failed reason=invalid_json body_bytes=%d", len(body))
-            _record_failure(cls)
+            if record_failure:
+                _record_failure(cls)
             return None
         content = _extract_content(data)
         if not content or not str(content).strip():
             logger.error("semantic_aux_failed reason=unparseable")
-            _record_failure(cls)
+            if record_failure:
+                _record_failure(cls)
             return None
         # v3.5.0 tokens-ledger tap (blueprint 5.2): the aux lane bypasses core
         # accounting entirely, so plugin-side usage capture is the only record.
