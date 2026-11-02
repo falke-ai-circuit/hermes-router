@@ -1126,7 +1126,48 @@ def _declared_decision(content: str, session_id: str) -> GateDecision:
     return NO_ROUTE
 
 
-def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision]:
+# M34-09 (Goran live 2026-11-02 03:11:47): a DECLARED lane ask must never be
+# muted by the aux pacing interval. The interval exists to stop the router
+# consulting ITSELF; 'Use uncensored lane to do it' was throttled at 197.5s
+# (declared_intent_no_route + aux_consult_interval_suppressed) because the
+# near-miss wording falls through to the aux path. This probe is the
+# declared-intent SHAPE: a directive line that NAMES a lane family behind a
+# routing verb ('use [the] uncensored lane', 'route to shadow', ...). Prose,
+# quoted and mid-sentence mentions stay inert (_directive_lines echo guard).
+# Fail-open False, never routes on its own — it only unlocks pacing.
+_DECLARED_LANE_ASK_HEADS = ("use ", "route ", "route this through ",
+                            "route through ", "route to ", "route to the ",
+                            "go through ", "switch to ")
+_DECLARED_LANE_ASK_TOKENS = ("uncensored", "shadow", "higher self",
+                             "frontier")
+
+
+def declared_lane_ask(content: str) -> bool:
+    """True when a turn-start directive line explicitly asks to use a lane
+    family (the 'declared intent' surface for pacing purposes). Echo
+    guarded; never raises."""
+    try:
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            for head in _DECLARED_LANE_ASK_HEADS:
+                if not norm.startswith(head):
+                    continue
+                rest = norm[len(head):].strip()
+                if rest.startswith("the "):
+                    rest = rest[len("the "):].strip()
+                if any(rest.startswith(tok)
+                       for tok in _DECLARED_LANE_ASK_TOKENS):
+                    return True
+                break
+        return False
+    except Exception:  # noqa: BLE001 — fail-open: pacing stays as today
+        return False
+
+
+def _aux_intent_decision(content: str, session_id: str,
+                         declared_ask: bool = False) -> Optional[GateDecision]:
     """LEG 13: the aux-slot intent classifier's gate decision.
 
     Blueprint mapping + hardening:
@@ -1284,6 +1325,9 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
         # 0=disabled). Machine-detected aux_intent consults from one
         # session are paced: no second aux consult within the interval
         # (declared-user consults are NOT gated). Fail-open, never raises.
+        # M34-09: the declared-intent path is exempt — and the exemption is
+        # RECORDED (aux_consult_interval_bypassed reason=declared_ask), so a
+        # user-declared ask is never muted invisibly by self-consult pacing.
         try:
             from . import router_core as _rc_gate
             _min_iv = _rc_gate.aux_consult_min_interval()
@@ -1291,16 +1335,29 @@ def _aux_intent_decision(content: str, session_id: str) -> Optional[GateDecision
                 _now = time.time()
                 _last = _AUX_CONSULT_LAST.get(str(session_id or ""), 0.0)
                 if _now - _last < _min_iv:
-                    try:
-                        _pkg_fn("_log_route")(
-                            "PRE", event_detail="aux_consult_interval_suppressed",
-                            lane=str(aux_lane), min_interval=_min_iv,
-                            since_last_s=round(_now - _last, 1),
-                            session_id=session_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    return GateDecision(route=False,
-                                        reason="aux_consult_interval")
+                    if declared_ask:
+                        try:
+                            _pkg_fn("_log_route")(
+                                "PRE",
+                                event_detail="aux_consult_interval_bypassed",
+                                reason="declared_ask",
+                                lane=str(aux_lane), min_interval=_min_iv,
+                                since_last_s=round(_now - _last, 1),
+                                session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        try:
+                            _pkg_fn("_log_route")(
+                                "PRE",
+                                event_detail="aux_consult_interval_suppressed",
+                                lane=str(aux_lane), min_interval=_min_iv,
+                                since_last_s=round(_now - _last, 1),
+                                session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return GateDecision(route=False,
+                                            reason="aux_consult_interval")
                 _AUX_CONSULT_LAST[str(session_id or "")] = _now
                 while len(_AUX_CONSULT_LAST) > 256:
                     _AUX_CONSULT_LAST.pop(next(iter(_AUX_CONSULT_LAST)), None)
@@ -1610,8 +1667,22 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
             # machine-detected, so the per-agent daily cap applies.
             if not declared.route and on_demand_aux_classify_enabled():
                 from .intent_classifier import _intent_suspect as _suspect_fn
+                # M34-09: declared-intent asks bypass aux consult pacing.
+                # Strict declared hit + directive line naming a lane family
+                # ('use uncensored lane to do it') OR the strict near-miss
+                # line shape — never the loose observability probe (that
+                # matches prose). Fail-open False.
+                _declared_ask = bool(_declared_hit)
+                if not _declared_ask:
+                    try:
+                        _declared_ask = bool(declared_lane_ask(content) or
+                                             _detect_declared_intent_near_miss(
+                                                 content))
+                    except Exception:  # noqa: BLE001 — fail-open: pace as today
+                        _declared_ask = False
                 if _suspect_fn(content):
-                    _aux_lane = _aux_intent_decision(content, session_id)
+                    _aux_lane = _aux_intent_decision(
+                        content, session_id, declared_ask=_declared_ask)
                     if _aux_lane is not None:
                         return _aux_lane
 
