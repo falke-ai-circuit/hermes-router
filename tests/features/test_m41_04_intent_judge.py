@@ -296,8 +296,43 @@ def test_c_deterministic_source_without_a_check_is_invalid():
 
 
 # ---------------------------------------------------------------------------
-# (e) breaker safety — with the control
+# readable at the routing seam without re-running PRE
 # ---------------------------------------------------------------------------
+def test_seam_read_grades_from_the_recorded_criterion_without_re_extracting(monkeypatch):
+    """POST's contract (spec §D item 3): the criterion is READ off the PRE
+    record. Extraction is counted — a second call is the defect."""
+    import time as _t
+
+    import hermes_router.semantic_classifier as sc
+
+    monkeypatch.setattr(sc, "aux_raw_call",
+                        lambda prompt, **kw: '{"domain": "benign_task", "confident": true}')
+    dg.start(SID, ASK_CODE)
+    t0 = _t.monotonic()
+    while _t.monotonic() - t0 < 5:
+        row = state.pre_domain(SID)
+        if row and str(row.get("state")) != dg.GATE_PENDING:
+            break
+        _t.sleep(0.01)
+
+    calls = {"n": 0}
+    real = dg.extract_criterion
+
+    def _counted(ask):
+        calls["n"] += 1
+        return real(ask)
+
+    monkeypatch.setattr(dg, "extract_criterion", _counted)
+
+    out = ij.judge_turn(SID, BODY_CODE_OK)
+    assert out["intent"] == ij.INTENT_DELIVERED
+    assert out["criterion_kind"] == "code"
+    assert calls["n"] == 0, "the POST read re-extracted the criterion"
+    # the class is readable at the seam as a bare string too
+    assert ij.verdict_class(out) == "delivered"
+
+
+
 def _fail_transport(monkeypatch):
     import hermes_router.semantic_classifier as sc
 
