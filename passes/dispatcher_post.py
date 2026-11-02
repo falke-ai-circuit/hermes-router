@@ -16,6 +16,7 @@ package module too (tests patch plugin.semantic_classifier).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -151,6 +152,124 @@ def _is_refusal_shaped(text: str) -> bool:
 
 def _is_refusal_shaped_public(text: str) -> bool:
     return _is_refusal_shaped(text)
+
+
+# --- R78U M34-02: post-render ACCEPTANCE gate -------------------------------
+# The live ladder's only substance test was `_is_refusal_shaped` — vocabulary,
+# 2+ keys. Shadow's delivered denial ("No. Same answer as before, and the
+# packaging doesn't change it — … that are the two places I stop") contains
+# ZERO opener hits and was accepted on attempt 1 without a retry. A render that
+# DEFLECTS without refusal vocabulary therefore becomes the transcript.
+#
+# Acceptance = ALL of:
+#   (a) non-empty;
+#   (b) not refusal-shaped (vocabulary OR bare-decline-first-line + a hold);
+#   (c) not tool-call-shaped (`<… tool call`, `Saved to USER.md`, `Saved to MEMORY.md`);
+#   (d) substance present, for a CONTENT ask: >=600 chars AND >=3 narrative
+#       markers AND no meta-note about the interactor ("expect a plain no",
+#       "the working convention", "the collaboration stalls").
+DELIVERABLE_MIN_CHARS = 600
+
+# Clause (c): a render that is really a tool call / a memory-save assertion is
+# not a reply. Shape only — no vocabulary beyond the two literal claims.
+_TOOL_CALL_SHAPE_RE = (
+    r"<\s*[^>\n]{0,80}?tool call"          # <memory tool call … />, <x tool call>
+    r"|Saved to (?:USER|MEMORY)\.md"       # phantom memory-save claim
+)
+
+# Clause (b) second arm: a bare decline in the OPENING line plus a first-person
+# hold inside the opening 240 chars. This is what "No. Same answer as before…"
+# is, and what the opener list misses. Kept to the opening so a scene whose
+# dialogue later says "No," is never caught.
+_BARE_DECLINE_OPEN_RE = re.compile(
+    r"^[\s*_#>\u201c\u2018'\"]*(?:no|nope|nah|nein|non|нет|nie)\b[\s.,;:!?\u2014-]", re.IGNORECASE)
+_OPEN_HOLD_RE = re.compile(
+    r"\b(?:won't|will not|can't|cannot|i stop|stops here|shut|declin\w*|refus\w*"
+    r"|not (?:going|doing|putting|writing|what|something)|same answer|no renegotiation"
+    r"|the answer is)\b", re.IGNORECASE)
+
+# Clause (d) marker 1: a meta-note about the interactor — the render is talking
+# ABOUT the person instead of answering them.
+_META_NOTE_RE = re.compile(
+    r"expect (?:a|them|you|it|him|her)[^.\n]{0,60}\bno\b"
+    r"|the working convention"
+    r"|the collaboration stalls"
+    r"|\bthey(?:'ll| will) re-ask\b"
+    r"|\b(?:this|the) user (?:will|tends|responds|pushes)\b"
+    r"|\byou (?:tend to|respond well to|push for|keep asking)\b",
+    re.IGNORECASE)
+
+# Clause (d) marker 2: narrative beats. Dialogue spans + past-tense narrative
+# verbs; three independent markers is a body, not a deflection.
+_DIALOGUE_RE = re.compile(r"\"[^\"\n]{8,}\"|\u201c[^\u201d\n]{8,}\u201d")
+_NARRATIVE_VERB_RE = re.compile(
+    r"\b(?:said|asked|walked|stood|sat|opened|closed|looked|turned|counted|wrote|"
+    r"held|felt|went|came|told|waited|was|were|had been)\b", re.IGNORECASE)
+
+_CONTENT_ASK_RE = re.compile(
+    r"\b(?:write|wrote|writing|scene|story|stories|draft|render|describe|script|"
+    r"tell me|show me|give me|continue|expand|compose|narrate|chapter)\b", re.IGNORECASE)
+
+
+def _is_content_ask(ask: str) -> bool:
+    """True when the ask asks for a produced body (clause (d) applies).
+
+    A one-word or short operational ask ("retry", "ask", "go") is NOT a content
+    ask — the 600-char floor and the narrative-marker floor would be nonsense
+    there. Long asks and production-verb asks are.
+    """
+    a = str(ask or "").strip()
+    if len(a) >= 200:
+        return True
+    return len(a) >= 40 and bool(_CONTENT_ASK_RE.search(a))
+
+
+def _tool_call_shaped(text: str) -> bool:
+    return bool(re.search(_TOOL_CALL_SHAPE_RE, str(text or ""), re.IGNORECASE))
+
+
+def _refusal_shaped_post(text: str) -> bool:
+    """Clause (b): the dispatcher vocabulary OR the bare-decline opening.
+
+    The second arm exists because the vocabulary arm provably misses delivered
+    denials (M34-02: 0 hits on a 721-char "No. Same answer as before…" body).
+    """
+    if _is_refusal_shaped(text):
+        return True
+    head = str(text or "")[:240]
+    return bool(_BARE_DECLINE_OPEN_RE.match(head) and _OPEN_HOLD_RE.search(head))
+
+
+def _narrative_markers(text: str) -> int:
+    t = str(text or "")
+    return len(_DIALOGUE_RE.findall(t)) + len(_NARRATIVE_VERB_RE.findall(t))
+
+
+def render_acceptance_failure(rendered: str, ask: str = "") -> Optional[str]:
+    """M34-02 post-render acceptance. Returns a reason code when the render is
+    NOT a deliverable, None when it is.
+
+    Reasons are ordered exactly as the acceptance clauses: empty →
+    refusal_shape → tool_call_shape → substance_short → no_narrative →
+    meta_note. Callers re-render on a reason, and fail loud (`route_failed_
+    substance`) when the reason survives the retry budget — a deflection is
+    never delivered and never written to the transcript as the answer.
+    """
+    text = str(rendered or "")
+    if not text.strip():
+        return "empty"
+    if _refusal_shaped_post(text):
+        return "refusal_shape"
+    if _tool_call_shaped(text):
+        return "tool_call_shape"
+    if _is_content_ask(ask):
+        if len(text.strip()) < DELIVERABLE_MIN_CHARS:
+            return "substance_short"
+        if _narrative_markers(text) < 3:
+            return "no_narrative"
+        if _META_NOTE_RE.search(text):
+            return "meta_note"
+    return None
 
 SUBSTANCE_FRAME_ASK_CAP = 4000  # hard cap on the verbatim ask (brief v3.1.0)
 SUBSTANCE_FRAME_ASK_SUFFIX = "[...truncated]"
