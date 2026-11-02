@@ -274,6 +274,23 @@ def _run(session_id: str, body: str, row: Optional[dict],
         pass
 
 
+def _record_for(sid: str, body: str, row: Optional[dict], gate: str) -> Dict[str, Any]:
+    """The turn record this judgement rides on (identity + bounded evidence)."""
+    return {
+        "turn_key": _turn_key(sid),
+        "verdict": None,
+        "intent": None,
+        "done": threading.Event(),
+        "started": time.time(),
+        "at": 0.0,
+        "gate": str(gate or "abstain"),
+        "body_chars": len(str(body or "")),
+        "body_head": " ".join(str(body or "").split())[:_BODY_HEAD],
+        "criterion": str(((row or {}).get("criterion") or {}).get("verbatim")
+                         or "")[:_CRIT_CAP],
+    }
+
+
 def sync_verdict(session_id: str, body: str, row: Optional[dict], *,
                  gate: str = "abstain",
                  log: Optional[Callable[..., Any]] = None,
@@ -292,19 +309,26 @@ def sync_verdict(session_id: str, body: str, row: Optional[dict], *,
     if not sid:
         return None
     _prune()
-    rec: Dict[str, Any] = {
-        "turn_key": _turn_key(sid),
-        "verdict": None,
-        "intent": None,
-        "done": threading.Event(),
-        "started": time.time(),
-        "at": 0.0,
-        "gate": str(gate or "abstain"),
-        "body_chars": len(str(body or "")),
-        "body_head": " ".join(str(body or "").split())[:_BODY_HEAD],
-        "criterion": str(((row or {}).get("criterion") or {}).get("verbatim")
-                         or "")[:_CRIT_CAP],
-    }
+    _budget = budget_ms()
+    if _budget <= 0:
+        # ASYNC DISABLED — the pre-M41-11 read, verbatim. `classify.
+        # softened_budget_ms: 0` is the documented kill switch AND the suite's
+        # isolation default: no worker, no deferred thread to outlive the turn,
+        # the same inline behaviour every pre-M41-11 pin was written against.
+        rec = _record_for(sid, body, row, gate)
+        try:
+            from . import intent_judge as _ij
+
+            verdict = _ij.judge_turn(sid, body, row=row)
+        except Exception:  # noqa: BLE001 — a judge gap must not break delivery
+            logger.debug("deferred_intent inline judge error", exc_info=True)
+            verdict = None
+        rec["verdict"] = verdict
+        _done0 = rec.get("done")
+        if _done0 is not None:
+            _done0.set()
+        return verdict
+    rec = _record_for(sid, body, row, gate)
     with _LOCK:
         while len(_RECORDS) >= _MAX_RECORDS:
             _RECORDS.pop(next(iter(_RECORDS)), None)

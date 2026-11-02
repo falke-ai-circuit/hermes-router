@@ -18,6 +18,10 @@ covered the PRE verdict thread.
 - Measured: sync read 2336 ms -> 250 ms median (p95 251, max 267) over all 828
   scored rows; gates re-measured on the frozen denominators 85.76% in-domain /
   4.52% benign FP / rule-2 precision 0.9829; 60-body retest 56/60 = 0.933.
+- `classify.softened_budget_ms: 0` is a documented KILL SWITCH: the judge runs
+  inline exactly as before M41-11. The suite pins it to 0, so no worker thread
+  exists in a test process (a late worker was calling the NEXT test's patched
+  aux transport, and once reached a real socket the zero-network guard caught).
 - No new aux call: the worker runs the shipped judge, which already passes
   `record_failure=False`, so a judgement failure never counts toward the shared
   breaker. Two instrument defects found by measurement: `config_access.get`

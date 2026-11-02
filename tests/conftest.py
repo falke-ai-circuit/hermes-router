@@ -406,6 +406,18 @@ def _isolate_router_config(monkeypatch, request):
     monkeypatch.setattr(_pcard, "persona_card_chars_budget", lambda: 0, raising=True)
     monkeypatch.setattr(_rc, "pre_cooldown_seconds", lambda: 0, raising=True)
     monkeypatch.setattr(_rc, "post_audit_min_turns", lambda: 1, raising=True)
+    # M41-11: the POST judgement's async lane is pinned OFF for the suite.
+    # Budget 0 = the pre-M41-11 INLINE read (documented kill switch), so no
+    # worker thread exists to outlive a test — a deferred worker's aux call
+    # otherwise lands in the NEXT test's transport (measured: two cross-test reds
+    # and one real socket connect the zero-network guard caught). Tests of the
+    # async lane set their own budget (tests/features/test_m41_11_async_intent.py).
+    try:
+        from hermes_router.features.detection import deferred_intent as _di
+
+        monkeypatch.setattr(_di, "budget_ms", lambda: 0, raising=True)
+    except Exception:  # noqa: BLE001 — isolation must never break collection
+        pass
     # R16 (2026-09-22): consult cooldown pinned to legacy behavior (0=off)
     # suite-wide unless a test enables it (same isolation class as above).
     monkeypatch.setattr(_rc, "consult_cooldown_turns", lambda: 0, raising=True)
