@@ -21,8 +21,10 @@ CALLER CONTRACT
         The class only, schema-checked. An unreadable verdict is `failed`,
         never `delivered`.
     route_classes() / route_decision(intent)
-        `intent_probe.route_classes()` semantics carried over as data: which
-        classes this judge's consumer may act on, config-driven, pure.
+        Which classes this judge's consumer may act on, config-driven, pure.
+        The vocabulary is the judge's own now: the retired PRE probe's
+        `route_classes()` was deleted in M41-07b and this list is its successor,
+        not a copy of a live module.
 
 DETERMINISTIC FIRST (spec §D)
     Four checks run for free before any paid call, keyed by the criterion kind
@@ -563,7 +565,8 @@ def judge_turn(session_id: str, body: str, *,
 
 
 # ---------------------------------------------------------------------------
-# route classes — `intent_probe.route_classes()` semantics, carried over
+# route classes — the retired PRE probe's `route_classes()` vocabulary, now
+# owned here (the probe module was deleted in M41-07b; nothing imports it)
 # ---------------------------------------------------------------------------
 def route_classes() -> Tuple[str, ...]:
     """Which classes this judge's consumer may route on. Config, not a literal:

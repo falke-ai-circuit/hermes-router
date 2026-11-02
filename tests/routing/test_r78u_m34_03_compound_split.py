@@ -33,7 +33,6 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
         sys.path.insert(0, _p)
 
 import hermes_router as plugin  # noqa: E402
-from hermes_router import intent_probe as ip  # noqa: E402
 from hermes_router import state  # noqa: E402
 from hermes_router.features.detection import compound_split as cs  # noqa: E402
 from hermes_router.passes import dispatcher_post  # noqa: E402
@@ -91,8 +90,6 @@ RENDERED = SPLIT_BODY
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     state.clear()
-    ip.reset_cache()
-    ip.clear_turn_verdicts()
     monkeypatch.setattr(plugin, "_cfg", lambda: {
         "enabled": True,
         "classification": {"pre_classify": True, "post_classify": True,
@@ -102,8 +99,6 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     yield
     state.clear()
-    ip.reset_cache()
-    ip.clear_turn_verdicts()
 
 
 def _events(monkeypatch, sink):
@@ -116,12 +111,6 @@ def _prime(ask=ASK, session_id="s-m34-03"):
     state.stash_pending(session_id, "m1", ask, "rendered-stub")
     state.set_last_user_msg_hash(session_id, state.hash_text(ask))
     state.record_last_seen(session_id, ask)
-
-
-def _record(verdict, ask=ASK, session_id="s-m34-03"):
-    ip.record_turn_verdict(session_id, ask,
-                           {"verdict": verdict, "reason": "",
-                            "mode": ip.MODE_ROUTE})
 
 
 def _run(body, session_id="s-m34-03"):
@@ -217,7 +206,6 @@ def test_minors_ask_refuses_hard_with_no_route_and_no_render(monkeypatch):
     sink = []
     _events(monkeypatch, sink)
     _prime(ask=MINORS_ASK)
-    _record("denial", ask=MINORS_ASK)
     refusal = "No. Sexualized minors is a closed line. It stays a no."
     with mock.patch.object(plugin.router, "call",
                            side_effect=AssertionError("render must not fire")) as venice:
@@ -253,7 +241,6 @@ def test_compound_turn_routes_with_split_directive_and_grades_the_denial(monkeyp
     sink = []
     _events(monkeypatch, sink)
     _prime()
-    _record("denial")
     prompts = []
 
     def _call(prompt, **kw):
@@ -282,7 +269,6 @@ def test_compound_render_that_refuses_whole_is_rerendered_once(monkeypatch):
     sink = []
     _events(monkeypatch, sink)
     _prime()
-    _record("denial")
     bodies = [DENIAL_BODY, SPLIT_BODY]
     calls = []
 

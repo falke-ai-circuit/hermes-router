@@ -274,18 +274,12 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
        legacy_of="classification.aux_breaker_failures"),
     _k("classify.aux.breaker_cooldown_s", int, 600,
        legacy_of="classification.aux_breaker_cooldown_seconds"),
-    # M34-16 — PRE intent probe. Mode `off|observe|route`: observe runs the
-    # probe on every turn and logs the verdict without routing (the per-turn
-    # cost the design accepts); route puts the verdict on the PRE decision path
-    # and is M34-17's flip. Route classes are config so the `softening`
-    # decision is a switch, not a rewrite.
-    _k("classify.intent_probe", dict, {}),
-    _k("classify.intent_probe_mode", str, "route"),
-    _k("classify.intent_probe_route_classes", list, ["denial", "softening"]),
-    _k("classify.intent_probe_model", str, ""),
-    _k("classify.intent_probe_max_chars", int, 2000),
-    _k("classify.intent_probe_timeout_s", int, 8),
-    _k("classify.intent_probe_max_tokens", int, 24),
+    # M41-07b RETIREMENT: the seven retired PRE-probe `classify.*` keys are gone
+    # with the module (spec M41_BUILD_SPEC.md:313). No profile config carries
+    # any of them — verified by scanning all 11 /opt/data/profiles/*/config.yaml
+    # for the probe key prefix, zero hits — so no deprecation window is owed:
+    # an old config carrying a retired key is what load validation should flag,
+    # and no shipped config does.
 
     # --- anchor (LANE 2) ----------------------------------------------------
     _k("anchor.enabled", bool, True, legacy_of="anchor_chain.enabled"),

@@ -515,13 +515,13 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _hub()._strip_memory_context(content)
 
-        # M41-05 RETIREMENT (spec §E rule 2 / §F.2): the PRE intent probe's
-        # CONSULTATION path is gone. The trigger is now the POST intent judge
-        # graded against the acceptance criterion (M41-04), evaluated as row 2
-        # of the ordered rule table. `intent_probe.py` itself stays on disk —
-        # its module retirement is M41-09's ordered unit, not this one — but
-        # nothing at this seam calls it, and the POST read that consumed its
-        # token is retired with it.
+        # M41-05 RETIREMENT (spec §E rule 2 / §F.2), completed in M41-07b: the
+        # PRE intent probe's CONSULTATION path is gone and so is the module.
+        # The trigger is now the POST intent judge graded against the
+        # acceptance criterion (M41-04), evaluated as row 2 of the ordered rule
+        # table. Nothing at this seam called the retired PRE probe and nothing
+        # does; its module, script, tests and seven config keys were deleted in
+        # M41-07b with no live reference left behind.
 
         # R8b (2026-09-13) orientation-leak guard: a resume-after-interruption
         # turn must not have the PRE orientation envelope recited back as the

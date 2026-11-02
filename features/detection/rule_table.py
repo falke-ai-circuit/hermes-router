@@ -96,14 +96,19 @@ _TRIGGER_KINDS: Dict[str, str] = {
     PRED_SOFTENED_AND_GATE: "post_intent",
 }
 
-# Rows whose route REPLACES the delivered body (M41-06). Data, so the handler
-# never decides which rules swap: rule 1's declared shape has always been a
-# body-replacement, and rule 4 is the softened+flagged replacement. Rule 2 is a
-# route that the render chain also serves, but it is not the replacement arm
-# this unit wires; keeping the set explicit is what stops "route" from silently
-# meaning "replace" for every future row.
+# Rows whose route REPLACES the delivered body (M41-06, corrected by M41-07b).
+# Data, so the handler never decides which rules swap. The set is EVERY routing
+# predicate, and that is a measured fact, not a preference: the POST seam renders
+# and swaps for every action in {route, route_replace} — the render at
+# gate/orchestration.py:2900 and the canonical swap below it are unconditional
+# inside the routed block. Rule 2 was missing from this set, so a rule-2 turn
+# logged replace=0/replacement="" while its body WAS swapped (M41-07_FALSIFY §9
+# D1) and M41-08's replacement census would have missed every rule-2 turn.
+# A routing row that did not swap would need a second delivery path; there is
+# none, so adding a route row here is part of adding a route row at all.
 _REPLACING_PREDICATES: Tuple[str, ...] = (
     PRED_DECLARED_REFUSAL,
+    PRED_INTENT_DECLINED,
     PRED_SOFTENED_AND_GATE,
 )
 
