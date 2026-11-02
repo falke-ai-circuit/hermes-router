@@ -1246,6 +1246,46 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — strip never breaks delivery
             _hub().logger.debug("declaration strip error", exc_info=True)
 
+        # ------------------------------------------------------------------
+        # M34-05 (M35 §3 clause 5): NO PHANTOM SIDE EFFECTS.
+        # A body claiming "Saved to USER.md / MEMORY.md" is true only when a
+        # same-turn tool row proves the write landed. Proved -> sentence kept;
+        # tool row reports failure -> sentence replaced by the honest failure;
+        # no tool row -> fabricated, sentence stripped and logged. The guard
+        # runs on the body ENTERING the seam so every downstream edge (benign
+        # pass-through, render, persist) sees the same truthful text. An
+        # unreadable store is not proof and strips rather than keeps.
+        _phantom_changed = False
+        try:
+            from ..core import phantom_writes as _pw
+
+            _pre_phantom_text = response_text
+            _pw_res = _pw.apply_guard(
+                response_text, session_id,
+                log=lambda _e, **kw: _hub()._log_route(
+                    "POST", event_detail=_e, session_id=session_id, **kw))
+            if _pw_res.changed and isinstance(_pw_res.body, str):
+                response_text = _pw_res.body
+                _phantom_changed = True
+                # turn_finalizer persisted the entry body BEFORE this hook.
+                # Rewrite that row so the transcript never keeps a claim the
+                # user will not read (persisted == delivered, clause 4).
+                try:
+                    from ..core import canonical as _can_pw
+                    _pw_rewrote = _can_pw.rewrite_persisted_turn(
+                        session_id, _pre_phantom_text, response_text)
+                    _hub()._log_route(
+                        "POST", event_detail="phantom_write_persisted",
+                        rewritten=bool(_pw_rewrote),
+                        chars_from=len(_pre_phantom_text or ""),
+                        chars_to=len(response_text or ""),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — persistence never breaks delivery
+                    _hub().logger.debug("phantom persist rewrite error",
+                                        exc_info=True)
+        except Exception:  # noqa: BLE001 — the guard never breaks a turn
+            _hub().logger.debug("phantom write guard wiring error", exc_info=True)
+
         def _decl_passthrough() -> Optional[str]:
             """The pass-through return, tag-safe.
 
@@ -1254,7 +1294,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             So a stripped turn hands back the stripped body explicitly; an
             undeclared turn keeps the untouched pass-through contract.
             """
-            return response_text if _decl_stripped else None
+            return response_text if (_decl_stripped or _phantom_changed) else None
 
         if not _hub()._enabled() or not bool(_hub()._classification_cfg().get("post_classify", True)):
             _hub()._log_route("POST", event_detail="post_seam_skip",
@@ -2693,6 +2733,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # record's content_hash and state.db row both hash/store the CAPPED
         # text (canonical invariant: persisted == delivered).
         rendered = _hub().cap_render(rendered, _hub().render_max_chars())
+
+        # M34-05 at the RENDER edge: a render is the delivered body too. If it
+        # claims a memory write the turn's tool rows do not prove, the same
+        # three-state rule applies — strip / surface / keep. Runs BEFORE the
+        # canonical commit below so the rewritten transcript row carries the
+        # truthful text (persisted == delivered).
+        try:
+            from ..core import phantom_writes as _pw_r
+
+            _pw_rr = _pw_r.apply_guard(
+                rendered, session_id,
+                log=lambda _e, **kw: _hub()._log_route(
+                    "POST", event_detail=_e, session_id=session_id,
+                    edge="render", **kw))
+            if _pw_rr.changed and isinstance(_pw_rr.body, str):
+                rendered = _pw_rr.body
+        except Exception:  # noqa: BLE001 — guard never breaks delivery
+            _hub().logger.debug("phantom render guard error", exc_info=True)
 
         # A2 — OWN VOICE (spec §4, Goran 2026-10-28). The render becomes the
         # agent's OWN turn, so NO provenance footer rides it: the delivered

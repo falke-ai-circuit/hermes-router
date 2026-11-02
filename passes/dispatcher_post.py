@@ -170,11 +170,14 @@ def _is_refusal_shaped_public(text: str) -> bool:
 #       "the working convention", "the collaboration stalls").
 DELIVERABLE_MIN_CHARS = 600
 
-# Clause (c): a render that is really a tool call / a memory-save assertion is
-# not a reply. Shape only — no vocabulary beyond the two literal claims.
+# Clause (c): a render that is really a tool call is not a reply.
+# M34-05 DELETION: the blanket `Saved to (USER|MEMORY).md` arm is gone. It
+# rejected the claim as a whole-body class, which cannot distinguish a proved
+# write from a failed or fabricated one; `core/phantom_writes` now grades that
+# claim in three states (keep / surface failure / strip). Shape-only tool-call
+# detection stays here.
 _TOOL_CALL_SHAPE_RE = (
     r"<\s*[^>\n]{0,80}?tool call"          # <memory tool call … />, <x tool call>
-    r"|Saved to (?:USER|MEMORY)\.md"       # phantom memory-save claim
 )
 
 # Clause (b) second arm: a bare decline in the OPENING line plus a first-person
