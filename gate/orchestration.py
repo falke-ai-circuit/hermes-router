@@ -359,6 +359,11 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     payload.get("messages"), DECLARATION_RULE_ID,
                     declaration_contract_text())
                 try:
+                    _note_contract_delivered(
+                        _hub()._session_id_from_context(**context))
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
+                try:
                     _hub()._log_route(
                         "PRE", event_detail="declaration_delivered",
                         marker_pos=0,
@@ -1096,11 +1101,53 @@ _DECLARATION_CACHE: Dict[tuple, str] = {}
 _DECLARATION_LAST: Dict[str, tuple] = {}   # session -> (body_hash, monotonic ts)
 _DECLARATION_TTL_S = 300.0
 
+# M34-12 (half 2): CONTRACT DELIVERY, per session. The PRE seam knows whether
+# the contract went out; the POST seam is the only place `declaration_seen` is
+# written, and without this mark it could not tell "the contract never
+# reached the model" from "the model received it and emitted no tag" — both
+# logged UNKNOWN, which is how 88 of 126 turns read as a dead detector.
+# Bounded TTL: a POST that runs long after the last PRE delivery did not ride
+# on it, so its UNKNOWN is honest and says so.
+_CONTRACT_DELIVERED_AT: Dict[str, float] = {}   # session -> monotonic ts
+_CONTRACT_TTL_S = 900.0
+_CONTRACT_UNANSWERED = "MISSING_TAG"
+
+
+def _note_contract_delivered(session_id: str) -> None:
+    """Record that the declaration contract rode out on this session's payload."""
+    try:
+        _CONTRACT_DELIVERED_AT[str(session_id or "")] = __import__("time").monotonic()
+        if len(_CONTRACT_DELIVERED_AT) > 1024:
+            _CONTRACT_DELIVERED_AT.clear()
+    except Exception:  # noqa: BLE001 — the mark is telemetry only
+        pass
+
+
+def _contract_delivery_state(session_id: str) -> str:
+    """'delivered' when a PRE delivery is fresh for this session, else the
+    REASON it is not: 'router_disabled' | 'pre_classify_disabled' |
+    'stale_or_not_reached'. The reason is reported, so an UNKNOWN row names
+    its own cause instead of reading as a silent detector failure."""
+    try:
+        if not _hub()._enabled():
+            return "router_disabled"
+        if not bool(_hub()._classification_cfg().get("pre_classify", True)):
+            return "pre_classify_disabled"
+        ts = _CONTRACT_DELIVERED_AT.get(str(session_id or ""))
+        if ts is not None:
+            import time as _time
+            if (_time.monotonic() - ts) <= _CONTRACT_TTL_S:
+                return "delivered"
+        return "stale_or_not_reached"
+    except Exception:  # noqa: BLE001
+        return "stale_or_not_reached"
+
 
 def _reset_declaration_state() -> None:
     """Clear the declaration recall state (test isolation + turn boundary)."""
     _DECLARATION_CACHE.clear()
     _DECLARATION_LAST.clear()
+    _CONTRACT_DELIVERED_AT.clear()
 
 
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
@@ -1924,10 +1971,37 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # SPEC §2a.4: THE DECLARATION IS THE TRIGGER. One row, always written,
         # so "no declaration" is never indistinguishable from "declared but
         # the bit was ignored".
+        # M34-12 (half 2): name the contract's delivery state on the row. A
+        # delivered-contract turn that emits no tag is MISSING_TAG — never
+        # UNKNOWN — and gets its own loud row; an UNKNOWN row now carries the
+        # exact condition that produced it.
+        _contract_state = _contract_delivery_state(session_id)
+        if _declaration == "UNKNOWN" and _contract_state == "delivered":
+            _declaration = _CONTRACT_UNANSWERED
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="declaration_contract_unanswered",
+                    reason="contract_delivered_no_tag",
+                    chars=len(response_text or ""), session_id=session_id)
+                _hub().logger.warning(
+                    "declaration contract delivered but no tag emitted "
+                    "(session=%s chars=%d) — POST falls back to the classifier",
+                    session_id, len(response_text or ""))
+            except Exception:  # noqa: BLE001 — never blocks delivery
+                pass
+        elif _declaration == "UNKNOWN":
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="declaration_contract_absent",
+                    reason=_contract_state,
+                    chars=len(response_text or ""), session_id=session_id)
+            except Exception:  # noqa: BLE001 — never blocks delivery
+                pass
         try:
             _hub()._log_route(
                 "POST", event_detail="declaration_seen",
-                decl=_declaration, cls=(_denial_class or "unavailable"),
+                decl=_declaration, contract=_contract_state,
+                cls=(_denial_class or "unavailable"),
                 chars=len(response_text or ""), session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
