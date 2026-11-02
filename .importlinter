@@ -233,6 +233,7 @@ source_modules =
     hermes_router.features.detection.declaration
     hermes_router.features.detection.denial_class
     hermes_router.features.detection.domain_gate
+    hermes_router.features.detection.intent_judge
     hermes_router.features.detection.normalise
     hermes_router.features.detection.semantic_judge
     hermes_router.features.detection.structural
