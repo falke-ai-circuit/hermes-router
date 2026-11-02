@@ -809,13 +809,20 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     # is terse (live: 2 files + 5 tests reported in 264 chars lost its POST).
     if not paired and (not isinstance(response_text, str)
                        or len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-        # R78U M34-10: shape wins over size — a body that announces its own
-        # refusal routes to the consult however terse it is.
-        if isinstance(response_text, str) and is_refusal_shaped_body(response_text):
-            _log("audit_length_floor_refusal_shape", chars=len(response_text),
-                 pair=False, floor="eligible", session_id=session_id)
-        else:
-            return False, "response_too_short"
+        # M34-17 (Amendment A §A4): THE LENGTH GATE IS OUT OF THE DECISION.
+        # The M34-10 refusal-shape exception is DELETED, not disabled — with
+        # the PRE intent token deciding whether a refusal routes, a body's
+        # shape is no longer this arm's business, and a terse decline is no
+        # longer this floor's to rescue. What it still decides is SIZE (a
+        # one-liner does not buy a consult); what it observes (length, and
+        # shape as a boolean) is written to telemetry and decides nothing.
+        _log("audit_length_floor_observed",
+             chars=len(str(response_text or "")), pair=False,
+             floor="eligible",
+             refusal_shaped=bool(isinstance(response_text, str)
+                                 and is_refusal_shaped_body(response_text)),
+             session_id=session_id)
+        return False, "response_too_short"
     if paired and not isinstance(response_text, str):
         return False, "response_too_short"
     # R42: the ask-side complexity test is GONE from POST eligibility. POST
@@ -1126,19 +1133,21 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation because the agent reported it in 264 chars.
         if not isinstance(response_text, str) or (
                 not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-            # R78U M34-10: a refusal-SHAPED body is not "unpairable" because
-            # it is short. The floor keeps deciding for non-refusal short
-            # bodies; it stops deciding refusal shape.
-            if (isinstance(response_text, str) and not _pair
-                    and is_refusal_shaped_body(response_text)):
-                _log("audit_length_floor_refusal_shape",
-                     chars=len(response_text), pair=False, floor="audit_gate",
+            # M34-17 (Amendment A §A4): TELEMETRY ONLY. The M34-10
+            # refusal-shape exception is DELETED — shape cannot buy a terse
+            # body past this floor, because a body's shape is no longer what
+            # decides a refusal route (the PRE intent token does). The
+            # observation is written and used for nothing.
+            if isinstance(response_text, str):
+                _log("audit_length_floor_observed",
+                     chars=len(response_text), pair=bool(_pair),
+                     floor="audit_gate",
+                     refusal_shaped=is_refusal_shaped_body(response_text),
                      session_id=session_id)
-            else:
-                _skip("response_too_short_unpaired",
-                      chars=len(str(response_text or "")), pair=bool(_pair),
-                      session_id=session_id)
-                return None
+            _skip("response_too_short_unpaired",
+                  chars=len(str(response_text or "")), pair=bool(_pair),
+                  session_id=session_id)
+            return None
         # Leg 7 (single claim point, blueprint invariant #1): when the
         # gate's claim registry holds ANY claim for this session/turn,
         # the audit stands down — that claim owns the turn's one routing

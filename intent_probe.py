@@ -67,7 +67,7 @@ MODE_OFF = "off"
 MODE_OBSERVE = "observe"
 MODE_ROUTE = "route"
 
-DEFAULT_MODE = MODE_OBSERVE
+DEFAULT_MODE = MODE_ROUTE
 DEFAULT_MAX_CHARS = 2000          # the ask cap — the probe reads no more
 DEFAULT_TIMEOUT_S = 8             # aux starvation below 8s is a measured defect
 DEFAULT_MAX_TOKENS = 32           # one token + a short reason; the token is
@@ -146,6 +146,45 @@ def route_decision(verdict: Optional[str]) -> bool:
         return str(verdict or "") in route_classes()
     except Exception:  # noqa: BLE001
         return False
+
+
+# M34-17 — THE TRIGGER, as a three-state contract. These are the ONLY states
+# the POST decision may act on, and the names are the log vocabulary.
+#
+#   route     a strict in-vocabulary token that `route_classes()` covers.
+#   no_route  a strict in-vocabulary token that it does not cover (`full`).
+#   unknown   NO USABLE TOKEN: probe off/unavailable, timeout, transport error,
+#             empty answer, or an OFF-VOCABULARY answer.
+#
+# `unknown` is a fail-safe state, never a verdict. An off-vocabulary token is
+# UNKNOWN — never coerced to `denial` (a guess in the routing direction) and
+# never coerced to `full` (a guess that silently disables the lane). The caller
+# keeps its body gate for this state (Amendment A §B: the POST substance gate is
+# the backstop for a wrong prediction); `no_route` is the only state where the
+# body gate is authoritatively silenced, because the token said so.
+TRIGGER_ROUTE = "route"
+TRIGGER_NO_ROUTE = "no_route"
+TRIGGER_UNKNOWN = "unknown"
+
+TRIGGER_STATES = (TRIGGER_ROUTE, TRIGGER_NO_ROUTE, TRIGGER_UNKNOWN)
+
+
+def trigger_state(row: Any) -> str:
+    """`row` -> one of TRIGGER_ROUTE / TRIGGER_NO_ROUTE / TRIGGER_UNKNOWN.
+
+    Accepts the dict returned by `verdict_for_turn` (or `probe`), a bare
+    verdict string, or anything else. Never raises: a malformed row is
+    UNKNOWN, which is the fail-safe direction and the only one that keeps the
+    body gate alive."""
+    try:
+        verdict = row.get("verdict") if isinstance(row, dict) else row
+        verdict = str(verdict).strip().lower() if verdict is not None else ""
+        if verdict not in VERDICTS:
+            return TRIGGER_UNKNOWN
+        return TRIGGER_ROUTE if verdict in route_classes() else TRIGGER_NO_ROUTE
+    except Exception:  # noqa: BLE001
+        return TRIGGER_UNKNOWN
+
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +347,101 @@ def _cache_put(key: str, value: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# per-turn verdict store (M34-17) — what PRE recorded, what POST decides on
+# ---------------------------------------------------------------------------
+#
+# The probe runs on the PRE seam; the decision that consumes it happens at
+# POST (Amendment A §B: PRE reads the intent, POST exchanges the body for the
+# render). The token therefore has to survive between the two seams for ONE
+# turn. This store is that handoff and nothing else:
+#
+#   * keyed by session, so only the newest turn is ever visible;
+#   * the ask hash is stored with it, so a verdict can never attach to a
+#     different ask in the same session (a tool-loop continuation, a new turn
+#     after an empty-content pass, a retry with a rewritten ask);
+#   * TTL-bounded, so a stale verdict cannot outlive the turn it belongs to.
+#
+# `observe` never writes here — the design's whole point is that an observed
+# verdict routes nothing, so a store write would be a silent mode promotion.
+
+_TURN_LOCK = threading.Lock()
+_TURN_VERDICT: Dict[str, Dict[str, Any]] = {}
+_TURN_MAX = 512
+TURN_TTL_S = 900.0          # one turn; gateway-killed turns expire, never linger
+
+
+def ask_hash(content: Any) -> str:
+    """The ask identity used for the PRE->POST handoff and for the cache."""
+    try:
+        return hashlib.sha1(str(content or "").encode("utf-8", "replace")).hexdigest()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def record_turn_verdict(session_id: str, content: str, result: Dict[str, Any]) -> None:
+    """Store the PRE verdict for this turn. Never raises."""
+    try:
+        sid = str(session_id or "")
+        if not sid or not isinstance(result, dict):
+            return
+        row = {
+            "session_id": sid,
+            "ask_hash": ask_hash(content),
+            "verdict": result.get("verdict"),
+            "reason": result.get("reason") or "",
+            "state": trigger_state(result),
+            "ts": time.monotonic(),
+            "mode": result.get("mode"),
+        }
+        with _TURN_LOCK:
+            if len(_TURN_VERDICT) >= _TURN_MAX:
+                _TURN_VERDICT.clear()
+            _TURN_VERDICT[sid] = row
+    except Exception:  # noqa: BLE001 — the handoff never breaks a turn
+        pass
+
+
+def verdict_for_turn(session_id: str, content: Any = None,
+                     ttl_s: float = TURN_TTL_S) -> Optional[Dict[str, Any]]:
+    """The PRE verdict recorded for THIS turn, or None (UNKNOWN).
+
+    None is the fail-safe answer and the caller must treat it as UNKNOWN — a
+    missing row means no token was ever produced, which is never a verdict.
+    When `content` is supplied the ask hash must match, so a verdict cannot
+    ride a different ask."""
+    try:
+        sid = str(session_id or "")
+        if not sid:
+            return None
+        with _TURN_LOCK:
+            row = _TURN_VERDICT.get(sid)
+            row = dict(row) if row else None
+        if not row:
+            return None
+        if (time.monotonic() - float(row.get("ts") or 0.0)) > float(ttl_s):
+            return None
+        # Ask identity is REQUIRED: a verdict that cannot be matched to THIS
+        # ask is not usable. An empty/absent ask returns None (UNKNOWN) rather
+        # than reading the session's newest row on faith — measured: a verdict
+        # recorded for one turn was readable by a later turn in the same
+        # session, which is a silent wrong-route, not a cache hit.
+        if not str(content or "").strip():
+            return None
+        if row.get("ask_hash") != ask_hash(content):
+            return None
+        row.pop("ts", None)
+        return row
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def clear_turn_verdicts() -> None:
+    with _TURN_LOCK:
+        _TURN_VERDICT.clear()
+
+
+
+# ---------------------------------------------------------------------------
 # the probe
 # ---------------------------------------------------------------------------
 
@@ -447,8 +581,15 @@ def run_on_request(request: Any, session_id: str, content: str = "",
                 return None
             return None
         res = probe(content, session_id)
+        # M34-17: the token has to survive to the POST seam for THIS turn —
+        # that handoff is what makes `denial` (and, when configured,
+        # `softening`) the trigger. UNKNOWN is stored too, deliberately: a
+        # row saying "no usable token" is what lets POST prove it took the
+        # fail-safe body gate rather than guess.
+        record_turn_verdict(session_id, content, res)
         _emit(log, res, session_id, {"consume": "route",
-                                     "routes": route_decision(res.get("verdict"))})
+                                     "routes": route_decision(res.get("verdict")),
+                                     "state": trigger_state(res)})
         return res
     except Exception:  # noqa: BLE001 — the seam is never broken by the probe
         logger.debug("intent_probe.run_on_request error", exc_info=True)

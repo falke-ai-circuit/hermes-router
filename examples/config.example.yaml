@@ -72,7 +72,7 @@ hermes_router:
       breaker_failures: 3  # int | default 3 | consecutive failures before the aux breaker opens; unset = 3
       breaker_cooldown_s: 600   # int | default 600 | seconds the aux breaker stays open; unset = 600
     intent_probe: {}             # dict | container for the PRE intent-probe keys below
-    intent_probe_mode: observe   # str | default observe | PRE intent probe: off / observe (runs + logs, routes nothing) / route (verdict consumed by the gate); unset = observe
+    intent_probe_mode: route     # str | default route | PRE intent probe: off / observe (runs + logs, routes nothing) / route (verdict consumed by the gate); unset = route
     intent_probe_route_classes: [denial, softening]   # list | default [denial, softening] | which PRE verdicts route the turn; unset = both
     intent_probe_model: ""       # str | default "" | model id pinned for the probe call; unset = the profile aux model (a REASONING model is not repeat-stable here)
     intent_probe_max_chars: 2000 # int | default 2000 | ask characters the probe reads; unset = 2000

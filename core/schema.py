@@ -280,7 +280,7 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     # and is M34-17's flip. Route classes are config so the `softening`
     # decision is a switch, not a rewrite.
     _k("classify.intent_probe", dict, {}),
-    _k("classify.intent_probe_mode", str, "observe"),
+    _k("classify.intent_probe_mode", str, "route"),
     _k("classify.intent_probe_route_classes", list, ["denial", "softening"]),
     _k("classify.intent_probe_model", str, ""),
     _k("classify.intent_probe_max_chars", int, 2000),

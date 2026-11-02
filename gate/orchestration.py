@@ -1761,6 +1761,54 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         matches: List[str] = []
         semantic_verdict: Optional[str] = None
         _trigger_kind: Optional[str] = None
+
+        # ------------------------------------------------------------------
+        # M34-17 (Amendment A §A3 + §B): THE TRIGGER IS THE PRE INTENT TOKEN.
+        # The PRE probe asked the model, on the INCOMING ask and before any
+        # body existed, whether it was going to deny or soften. That token —
+        # not the delivered body — decides this turn:
+        #
+        #   route     -> the turn routes (denial always; softening only when
+        #                `classify.intent_probe_route_classes` covers it)
+        #   no_route  -> AUTHORITATIVE non-route (`full`). The body voters are
+        #                not consulted and cannot re-open the turn.
+        #   unknown   -> FAIL-SAFE: no usable token was produced (probe off,
+        #                timeout, transport error, empty answer, or an
+        #                OFF-VOCABULARY answer). The body gate below still
+        #                runs. UNKNOWN never routes on its own, and an
+        #                off-vocabulary token is never coerced to `full`
+        #                (that would silently disable the lane).
+        #
+        # The body-derived voters below (declaration bit, four-class denial
+        # voter, refusal-vocabulary sweep) are TELEMETRY whenever a token
+        # exists: logged, never deciding. Three voters that disagree is how a
+        # 429-char decline slipped while a 701-char hedge routed.
+        # ------------------------------------------------------------------
+        _probe_row: Optional[dict] = None
+        _probe_state = "unknown"
+        _probe_verdict = None
+        try:
+            from .. import intent_probe as _ipt
+            _probe_row = _ipt.verdict_for_turn(
+                session_id, _hub().state.get_last_seen(session_id) or "")
+            _probe_state = _ipt.trigger_state(_probe_row)
+            if isinstance(_probe_row, dict):
+                _probe_verdict = _probe_row.get("verdict")
+        except Exception:  # noqa: BLE001 — the handoff store never breaks delivery
+            _probe_row = None
+            _probe_state = "unknown"
+            _probe_verdict = None
+            _hub().logger.debug("intent-probe turn lookup error", exc_info=True)
+        try:
+            _hub()._log_route(
+                "POST", event_detail="intent_probe_trigger",
+                state=_probe_state,
+                verdict=str(_probe_verdict or "UNKNOWN"),
+                reason=str((_probe_row or {}).get("reason") or "")
+                if isinstance(_probe_row, dict) else "",
+                body_chars=len(response_text or ""), session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            pass
         _denial_class = ""
         try:
             from ..features.detection import denial_class as _dcls
@@ -1819,113 +1867,136 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 chars=len(response_text or ""), session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
-        if _declaration == "true":
-            # The half of the frozen contract that routes: identical shape to
-            # the action_denial class below, so it enters the SAME existing
-            # route path (post_class bypasses the shape-only demotion).
-            matches = ["action_denial"]
-            _trigger_kind = "post_class"
-            _hub()._log_route("POST", event_detail="declaration_route",
-                              decl="true", cls=(_denial_class or "unavailable"),
-                              chars=len(response_text or ""),
-                              session_id=session_id)
-        elif _declaration == "false":
-            # Authoritative NO-ROUTE. No classifier fallback, no aux spend, no
-            # judge: the model said it did not decline, and re-deriving that
-            # from prose is exactly the inference §2a replaces.
+        if _probe_state == "route":
+            # THE TRIGGER. One strict token, one decision: no body, no
+            # vocabulary, no length, no second voter.
+            matches = ["pre_intent_%s" % str(_probe_verdict or "denial")]
+            _trigger_kind = "pre_intent"
+            _hub()._log_route("POST", event_detail="intent_probe_route",
+                              verdict=str(_probe_verdict or ""),
+                              consume="route", session_id=session_id)
+        elif _probe_state == "no_route":
+            # The token said `full` (or a class the config excludes). That is
+            # authoritative: the body voters stay telemetry and cannot open a
+            # route the token closed.
             matches = []
             _trigger_kind = None
-            # `_class_authoritative` means "the trigger is settled; do not
-            # fall through to the semantic sweep". A declared-false turn is
-            # settled the same way, so the existing sweep gate (which is
-            # pinned by test_denial_class_primacy) keeps its shape and the
-            # sweep stays closed for this turn.
             _class_authoritative = True
-            _hub()._log_route("POST", event_detail="declaration_no_route",
-                              decl="false", cls=(_denial_class or "unavailable"),
-                              chars=len(response_text or ""),
-                              session_id=session_id)
-        elif _class_triggers:
-            # STAGE 2 (Goran 2026-10-29, "Route unknown — … we need to filter
-            # before somehow"): the class alone over-admits. Over 548 measured
-            # UNKNOWN bodies it also carried capacity limits ("I couldn't put all
-            # 50,000 primes in this reply"), capability limits ("I can't check
-            # logs"), fiction prose, task output, and an echo of our own injected
-            # PLATFORM RULE text. Routing those fires an uncensored render on
-            # ordinary work. The gate keeps the routable set to bodies that
-            # actually DECLINE THE ACTION.
-            #
-            # Both stages are deterministic — no aux call, no judge, no re-ask of
-            # the main model (a re-ask would pay a full call to re-derive what the
-            # declaration contract already asks for every turn).
-            # MODE knob (`unknown_route`): route (default) | filter | off.
-            # Default routes: measured organic volume is ~4 UNKNOWN turns/day, so
-            # the 13% non-refusal share costs ~0.5 wasted renders/day, while a
-            # demoted refusal costs a shipped denial.
-            try:
-                from ..features.detection.unknown_route_gate import should_route
-                _stage2, _stage2_reason = should_route(response_text)
-            except Exception:  # noqa: BLE001 — a gate error must not swallow a refusal
-                _stage2, _stage2_reason = True, "gate_error_fail_open"
-            if not _stage2:
-                matches = []
-                _trigger_kind = None
-                _hub()._log_route("POST", event_detail="unknown_route_demoted",
-                                  cls=_denial_class, routed=0,
-                                  reason=_stage2_reason,
-                                  body_chars=len(response_text or ""),
-                                  session_id=session_id)
-            else:
-                matches = ["action_denial"]
-                # The deterministic classifier IS the refusal semantics — the
-                # shape-only gate further down must not demote it, and the
-                # flinch-reason/grounding arms (which exist to second-guess a
-                # regex or a shape flag) do not apply to a class decision.
-                _trigger_kind = "post_class"
-            # NOTE on classification.mode: `flag_only` governs the AUX/semantic
-            # stage it was written for, not this detector. Scope it there —
-            # making it a router-wide dry switch silently stopped every
-            # structural route in the fleet's existing flag_only configurations.
-
-        elif _class_authoritative:
-            # HARD BLOCK (the defect this unit kills): a truth denial or an
-            # environment limit never routes. No aux spend, no judge, no
-            # shape gate. If honesty starts routing, the instrument has
-            # become a moralising judge and is worse than no instrument.
-            _hub()._log_route("POST", event_detail="detection_non_action_denial",
-                              cls=_denial_class, routed=0,
-                              body_chars=len(response_text),
+            _hub()._log_route("POST", event_detail="intent_probe_no_route",
+                              verdict=str(_probe_verdict or ""),
+                              consume="authoritative_no_route",
                               session_id=session_id)
         else:
-            # FAIL-OPEN to the legacy chain: not_a_denial (no recognised
-            # decline in the body — NOT proof of compliance) and a detector
-            # error both land here. Routing only ever happens if the legacy
-            # refusal-SEMANTICS gate confirms a decline (R33m), so the
-            # fail-closed direction the spec forbids — silently stopping
-            # routes for every register the classifier doesn't know — is
-            # avoided without re-admitting shape-only swaps.
-            matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
-            _trigger_kind = "stage1" if matches else None
-            # SPEC §2a (Goran 2026-10-28) — STRIP #2: no second LLM.
-            #
-            # A stage-1 miss used to fall into stage-2 here:
-            # _semantic_stage -> semantic_classifier.classify(), an AUX LLM
-            # deciding whether to route. It was live in the fleet on every
-            # profile (classification.aux_classify=true, mode=route), so any
-            # turn the regex missed was judged by a model.
-            #
-            # Goran: "we dont need semantic judge and llms. main model is asked
-            # to define denial and if its triggered route is activated. keep it
-            # simple."
-            #
-            # scan_post above is now the ONLY fallback. The denial decision
-            # surface is exactly two things:
-            #   (a) the model's own declaration (declined="true" -> route);
-            #   (b) deterministic vocabulary — scan_post + denial_class
-            #       (action_denial routes; truth_denial/capacity_limit do not).
-            # semantic_classifier.py itself stays: four other consumers (risk,
-            # refusal_doctrine, decision_head, intent_classifier) still call it.
-            # Only this call site is gone.
+            # FAIL-SAFE BODY GATE (UNKNOWN only). No usable PRE token exists,
+            # so the turn keeps the pre-M34-17 decision chain verbatim — this
+            # is the sanctioned fail-safe, not a flag-gated second trigger.
+            if _declaration == "true":
+                # The half of the frozen contract that routes: identical shape to
+                # the action_denial class below, so it enters the SAME existing
+                # route path (post_class bypasses the shape-only demotion).
+                matches = ["action_denial"]
+                _trigger_kind = "post_class"
+                _hub()._log_route("POST", event_detail="declaration_route",
+                                  decl="true", cls=(_denial_class or "unavailable"),
+                                  chars=len(response_text or ""),
+                                  session_id=session_id)
+            elif _declaration == "false":
+                # Authoritative NO-ROUTE. No classifier fallback, no aux spend, no
+                # judge: the model said it did not decline, and re-deriving that
+                # from prose is exactly the inference §2a replaces.
+                matches = []
+                _trigger_kind = None
+                # `_class_authoritative` means "the trigger is settled; do not
+                # fall through to the semantic sweep". A declared-false turn is
+                # settled the same way, so the existing sweep gate (which is
+                # pinned by test_denial_class_primacy) keeps its shape and the
+                # sweep stays closed for this turn.
+                _class_authoritative = True
+                _hub()._log_route("POST", event_detail="declaration_no_route",
+                                  decl="false", cls=(_denial_class or "unavailable"),
+                                  chars=len(response_text or ""),
+                                  session_id=session_id)
+            elif _class_triggers:
+                # STAGE 2 (Goran 2026-10-29, "Route unknown — … we need to filter
+                # before somehow"): the class alone over-admits. Over 548 measured
+                # UNKNOWN bodies it also carried capacity limits ("I couldn't put all
+                # 50,000 primes in this reply"), capability limits ("I can't check
+                # logs"), fiction prose, task output, and an echo of our own injected
+                # PLATFORM RULE text. Routing those fires an uncensored render on
+                # ordinary work. The gate keeps the routable set to bodies that
+                # actually DECLINE THE ACTION.
+                #
+                # Both stages are deterministic — no aux call, no judge, no re-ask of
+                # the main model (a re-ask would pay a full call to re-derive what the
+                # declaration contract already asks for every turn).
+                # MODE knob (`unknown_route`): route (default) | filter | off.
+                # Default routes: measured organic volume is ~4 UNKNOWN turns/day, so
+                # the 13% non-refusal share costs ~0.5 wasted renders/day, while a
+                # demoted refusal costs a shipped denial.
+                try:
+                    from ..features.detection.unknown_route_gate import should_route
+                    _stage2, _stage2_reason = should_route(response_text)
+                except Exception:  # noqa: BLE001 — a gate error must not swallow a refusal
+                    _stage2, _stage2_reason = True, "gate_error_fail_open"
+                if not _stage2:
+                    matches = []
+                    _trigger_kind = None
+                    _hub()._log_route("POST", event_detail="unknown_route_demoted",
+                                      cls=_denial_class, routed=0,
+                                      reason=_stage2_reason,
+                                      body_chars=len(response_text or ""),
+                                      session_id=session_id)
+                else:
+                    matches = ["action_denial"]
+                    # The deterministic classifier IS the refusal semantics — the
+                    # shape-only gate further down must not demote it, and the
+                    # flinch-reason/grounding arms (which exist to second-guess a
+                    # regex or a shape flag) do not apply to a class decision.
+                    _trigger_kind = "post_class"
+                # NOTE on classification.mode: `flag_only` governs the AUX/semantic
+                # stage it was written for, not this detector. Scope it there —
+                # making it a router-wide dry switch silently stopped every
+                # structural route in the fleet's existing flag_only configurations.
+
+            elif _class_authoritative:
+                # HARD BLOCK (the defect this unit kills): a truth denial or an
+                # environment limit never routes. No aux spend, no judge, no
+                # shape gate. If honesty starts routing, the instrument has
+                # become a moralising judge and is worse than no instrument.
+                _hub()._log_route("POST", event_detail="detection_non_action_denial",
+                                  cls=_denial_class, routed=0,
+                                  body_chars=len(response_text),
+                                  session_id=session_id)
+            else:
+                # FAIL-OPEN to the legacy chain: not_a_denial (no recognised
+                # decline in the body — NOT proof of compliance) and a detector
+                # error both land here. Routing only ever happens if the legacy
+                # refusal-SEMANTICS gate confirms a decline (R33m), so the
+                # fail-closed direction the spec forbids — silently stopping
+                # routes for every register the classifier doesn't know — is
+                # avoided without re-admitting shape-only swaps.
+                matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
+                _trigger_kind = "stage1" if matches else None
+                # SPEC §2a (Goran 2026-10-28) — STRIP #2: no second LLM.
+                #
+                # A stage-1 miss used to fall into stage-2 here:
+                # _semantic_stage -> semantic_classifier.classify(), an AUX LLM
+                # deciding whether to route. It was live in the fleet on every
+                # profile (classification.aux_classify=true, mode=route), so any
+                # turn the regex missed was judged by a model.
+                #
+                # Goran: "we dont need semantic judge and llms. main model is asked
+                # to define denial and if its triggered route is activated. keep it
+                # simple."
+                #
+                # scan_post above is now the ONLY fallback. The denial decision
+                # surface is exactly two things:
+                #   (a) the model's own declaration (declined="true" -> route);
+                #   (b) deterministic vocabulary — scan_post + denial_class
+                #       (action_denial routes; truth_denial/capacity_limit do not).
+                # semantic_classifier.py itself stays: four other consumers (risk,
+                # refusal_doctrine, decision_head, intent_classifier) still call it.
+                # Only this call site is gone.
         # SPEC §2a (Goran 2026-10-28): THE SEMANTIC JUDGE IS GONE FROM THE
         # DENIAL PATH.
         #
@@ -1943,8 +2014,28 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         #   _class_authoritative (truth/capacity) -> does NOT route
         #   anything else                         -> legacy stage-1/2 above
         # No LLM, no network, no aux spend is reachable from this decision.
+        # M34-17 (AMENDMENT A, closed line): soft denials are reported
+        # SEPARATELY, with their own scope label — never folded into the
+        # detection result, so a soft denial can never look like a detection
+        # failure and a detection failure can never hide inside one. `routed`
+        # records the config verdict for this turn (Variant A: softening is in
+        # `route_classes` and this row says routed=1; Variant B: it is not, and
+        # the row says routed=0 while nothing else in the decision changes).
+        if _probe_verdict == "softening" or \
+                str(_probe_verdict or "") == "softening":
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="soft_denial_out_of_scope",
+                    scope="soft_denial",
+                    routed=int(_probe_state == "route"),
+                    state=_probe_state,
+                    cls=(_denial_class or "unavailable"),
+                    body_chars=len(response_text or ""),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — reporting never breaks delivery
+                pass
+
         if matches:
-            # A turn that routed is answered by the render lane, not audited.
             # Logged so "no post consult" is never explainable by silence: the
             # six-week disappearance of this arm was invisible precisely
             # because every non-firing path returned without a row.
@@ -2176,7 +2267,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # non-tunable (csam-gate class). Fail-open: a gate error leaves the
         # route standing. The original body still delivers — this is a
         # delivery edge (parked banners consume exactly once here).
-        if matches and _trigger_kind not in ("t2_confirmed", "post_class"):
+        # M34-17: a turn the PRE intent token routed (`pre_intent`) is NOT
+        # subject to this body-shape veto. `has_refusal_semantics(response_text)`
+        # is a reader of the DELIVERED BODY — the exact inference the token
+        # replaces — so leaving it on the pre_intent path would let the body
+        # re-decide what the token already decided. It stays binding on the
+        # fail-safe body gate (UNKNOWN), where no token exists.
+        if matches and _trigger_kind not in ("t2_confirmed", "post_class",
+                                             "pre_intent"):
             try:
                 from ..features.detection import structural as _r33m_st
 
