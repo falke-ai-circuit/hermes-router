@@ -86,6 +86,17 @@ def on_transform_llm_output_guarded(**kwargs):
     _prov = None
     _turn = None
     try:
+        from .. import post_guards as _pg
+
+        _pc_token = _pg.open_pre_call(
+            kwargs.get("response_text", "") or "",
+            session_id=str(kwargs.get("session_id") or ""),
+            log_route=_hub_log_route(),
+        )
+    except Exception:  # noqa: BLE001 — no window = no pre-call gate, status quo
+        _pg = None
+        _pc_token = None
+    try:
         from ..core import turn_provenance as _prov_mod
 
         _prov = _prov_mod
