@@ -421,7 +421,8 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
 
 def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
                  record_success: bool = True, session_id: str = "",
-                 record_failure: bool = True) -> Optional[str]:
+                 record_failure: bool = True,
+                 detail: str = "stage2_classify") -> Optional[str]:
     """Single aux dispatch: free-text prompt in, extracted content out.
 
     Shared by classify() (refusal classes) and refusal_doctrine verdicts.
@@ -439,6 +440,12 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     gate calls in a row would otherwise silence the primary classifier for the
     whole breaker window, i.e. an optional lane degrading a required one.
     Default True: every pre-existing caller counts exactly as before.
+
+    `detail` (M41-04) names the ledger row's consumer tag, so the cost read
+    (`read_records` filtered on `detail`) can attribute spend to the gate or
+    the intent judge instead of folding both into `stage2_classify`. Default
+    preserves every pre-existing caller byte-for-byte — one tap, never two
+    rows for the same tokens.
     """
     try:
         cls = _classification_cfg(cfg)
@@ -504,7 +511,7 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
                     "aux", "hermes-auxiliary", session_id, _it, _ot,
                     (usage_ledger.estimate_cost(_aux_model, _it, _ot)
                      if _aux_model else 0.0),
-                    "stage2_classify",
+                    str(detail or "stage2_classify"),
                 )
         except Exception:  # noqa: BLE001 — observability must never break the lane
             pass
