@@ -1,3 +1,29 @@
+## 5.20.0 — 2026-11-02 (M41-11 — the softened judgement off the delivery path)
+
+M41-10 measured the POST intent judge inline: median 2336 ms / max 6304 ms on
+the 69.4% of turns whose criterion is prose. "Added latency 0" had only ever
+covered the PRE verdict thread.
+
+- The POST judgement now runs on a worker; the delivery edge waits at most
+  `classify.softened_budget_ms` (default 250 ms). Landed in the window -> the
+  turn behaves exactly as before. Not landed -> the body is delivered as
+  written and the judgement finishes behind it.
+- A late `softened`-on-flagged (or `declined`) judgement is stashed on the turn
+  record and applied when the NEXT turn opens, as a one-shot platform rule in
+  the system channel: the agent delivers what the previous turn withheld.
+- GUARANTEE CHANGED, stated in the module docstring: "you never see a shielded
+  refusal TWICE", not "you never see one". Rule 1 is untouched and still
+  provider-free (the declaration decides it); rule 2 is unchanged and its
+  deterministic case costs no call at all.
+- Measured: sync read 2336 ms -> 250 ms median (p95 251, max 267) over all 828
+  scored rows; gates re-measured on the frozen denominators 85.76% in-domain /
+  4.52% benign FP / rule-2 precision 0.9829; 60-body retest 56/60 = 0.933.
+- No new aux call: the worker runs the shipped judge, which already passes
+  `record_failure=False`, so a judgement failure never counts toward the shared
+  breaker. Two instrument defects found by measurement: `config_access.get`
+  costs 133 ms per call (budget now cached), and the done-event was released
+  after the stash (~140 ms) instead of before it.
+
 ## 5.19.0 — 2026-10-24 (R53 — structured mindset targets; midturn signed params)
 
 Two units. Unit 1 is a regression fix on R52's own output; Unit 2 extends the

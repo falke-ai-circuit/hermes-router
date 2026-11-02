@@ -57,6 +57,33 @@ def _isolate_banner_turn_records():
 
 
 @pytest.fixture(autouse=True)
+def _drain_deferred_intent_workers(_hermes_aux_no_network, _aux_hermes_adapter,
+                                   _zero_network_guard):
+    """M41-11: the POST judgement runs on a worker that may outlive its turn.
+
+    That is the design in production; in a test PROCESS a late worker's aux call
+    lands in the NEXT test's patched transport — measured as a cross-test red in
+    the routing suite (test_aux_raw_call_retry_then_breaker saw 3 transport
+    calls instead of 2) and, once, as a real socket connect recorded by
+    `_zero_network_guard` (a worker that reached the transport after the test's
+    monkeypatch had been undone).
+
+    The three fixtures in the signature are NOT decoration: declaring them makes
+    this fixture set up AFTER them and therefore tear down BEFORE them, so the
+    drain happens while the no-egress stubs are still installed. Without that
+    ordering the drain itself is what lets the worker reach the real endpoint.
+    """
+    yield
+    try:
+        from hermes_router.features.detection import deferred_intent as _di
+
+        _di.drain(10.0)
+        _di.clear()
+    except Exception:  # noqa: BLE001 — hygiene must never fail a test
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _isolate_daily_spend(monkeypatch, tmp_path):
     """The suite must not depend on how much this profile has ACTUALLY spent
     today. `cap_check` reads the live spend ledger, so once the real number

@@ -295,6 +295,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     # envelope never reaches the model (measured: the contract was absent from
     # the instructions while the pass reported success).
     _decl_injected = False
+    # M41-11: set when a deferred judgement from the PREVIOUS turn is applied to
+    # this request at turn open. Declared here (not at the apply site) because
+    # `_hs_pass()` is closed over earlier and is callable from the early returns.
+    _correction_injected = False
     try:
         # No contract when the router is off: a disabled plugin must be a
         # genuine no-op (pinned), and the contract is only useful if something
@@ -409,7 +413,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             propagates on its own flag: an in-place append that is not carried
             out here never reaches the model.
             """
-            if not (_hs_rule_injected or _decl_injected):
+            if not (_hs_rule_injected or _decl_injected or _correction_injected):
                 return {}
 
             return {"request": _deliver(request)}
@@ -436,6 +440,38 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 _hub()._session_id_from_context(**context), content)
         except Exception:  # noqa: BLE001 — ledger never breaks the PRE seam
             pass
+
+        # ------------------------------------------------------------------
+        # M41-11: THE DEFERRED JUDGEMENT'S CORRECTION IS APPLIED HERE.
+        # A turn whose POST judge did not land inside its budget delivered as
+        # written; the judgement finished behind it and, when it read
+        # `softened` on a flagged turn (or `declined`), it stashed a correction
+        # on the turn record. This is the turn-open edge that pops it: the note
+        # is delivered as a PLATFORM rule (system role — the platform's channel,
+        # never the agent's voice) and tells this turn to deliver what the
+        # previous one withheld. One shot; `consume_correction` refuses the same
+        # turn, so a replayed POST pass cannot consume its own note.
+        # ------------------------------------------------------------------
+        try:
+            from ..features.detection import deferred_intent as _di_corr
+
+            _corr_text = _di_corr.consume_correction(
+                _hub()._session_id_from_context(**context))
+            if _corr_text:
+                from ..frames import inject_platform_rule as _inject_corr_rule
+
+                if _inject_corr_rule(request, "deferred_intent_correction",
+                                     _corr_text, role="system", dedupe="call"):
+                    _correction_injected = True
+                    try:
+                        _hub()._log_route(
+                            "PRE", event_detail="deferred_intent_applied",
+                            chars=len(_corr_text), role="system",
+                            session_id=_hub()._session_id_from_context(**context))
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+        except Exception:  # noqa: BLE001 — a correction must never cost the turn
+            _hub().logger.debug("deferred intent correction error", exc_info=True)
 
         # Phase 1 route gate (BLUEPRINT-request-routing-2026-09-12): the
         # sentinel firewall + completion-audit delivery early-returns are
@@ -1951,35 +1987,62 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             return str(_verdict_g)
 
         def _read_intent() -> Optional[str]:
-            """The POST intent class, graded once against PRE's criterion.
+            """The POST intent class — BOUNDED by the delivery edge (M41-11).
 
-            M41-04's judge, read at the seam: it grades the body against the
-            criterion the turn was produced against (never re-extracting it).
-            An ungraded turn is `failed` — never `delivered` by default — and
-            `failed` is not a routing class, so a judge gap cannot route.
+            M41-10 measured this read inline: median 2336 ms / max 6304 ms on
+            the 69.4% of turns whose criterion is prose, i.e. the user waited on
+            a network judge before seeing anything. The judgement now runs on a
+            worker (`deferred_intent.sync_verdict`) and the delivery edge waits
+            at most `classify.softened_budget_ms` (default 250 ms):
+
+              landed in the window  -> the pre-M41-11 behaviour, exactly:
+                                       rules 2/4 read the real class and the
+                                       replacement chain is unchanged;
+              not landed            -> this turn delivers as written and the
+                                       judgement finishes behind it; a
+                                       `softened`-on-flagged (or a `declined`)
+                                       result is corrected when the NEXT turn
+                                       opens for this session.
+
+            The guarantee is therefore "you never see a shielded refusal
+            TWICE", not "you never see one" — stated in the module docstring,
+            not papered over. An ungraded turn is `failed`, never `delivered` by
+            default, and `failed` is not a routing class, so a judge gap cannot
+            route. A deferred turn carries NO class (None), which no rule
+            routes on: it falls through to the body path.
             """
             if "intent" in _intent_state:
                 return _intent_state["intent"]
             _read_gate_state()
-            _intent_verdict_g = "failed"
+            _intent_verdict_g: Optional[str] = None
             _intent_row_g: Optional[dict] = None
+            _deferred_g = False
             try:
+                from ..features.detection import deferred_intent as _di
                 from ..features.detection import intent_judge as _ij
 
-                _intent_row_g = _ij.judge_turn(
-                    session_id, response_text, row=_gate_state.get("row"))
-                _intent_verdict_g = _ij.verdict_class(_intent_row_g)
+                _intent_row_g = _di.sync_verdict(
+                    session_id, response_text, _gate_state.get("row"),
+                    gate=str(_gate_state.get("verdict") or "abstain"),
+                    log=_hub()._log_route)
+                if _intent_row_g is None:
+                    _deferred_g = True
+                else:
+                    _intent_verdict_g = _ij.verdict_class(_intent_row_g)
             except Exception:  # noqa: BLE001 — a judge gap must not break delivery
                 _intent_verdict_g = "failed"
                 _hub().logger.debug("intent judge POST error", exc_info=True)
-            _intent_state.update(intent=_intent_verdict_g, row=_intent_row_g)
+            _intent_state.update(intent=_intent_verdict_g, row=_intent_row_g,
+                                 deferred=_deferred_g)
             try:
                 _hub()._log_route(
                     "POST", event_detail="intent_judge_turn",
-                    intent=str(_intent_verdict_g),
+                    intent=str(_intent_verdict_g or ("deferred" if _deferred_g else "")),
                     source=str((_intent_row_g or {}).get("source") or ""),
                     why=str((_intent_row_g or {}).get("why") or ""),
                     graded=int(bool((_intent_row_g or {}).get("graded"))),
+                    deferred=int(bool(_deferred_g)),
+                    budget_ms=int(_deferred_g and _di.budget_ms() or 0),
                     criterion_kind=str((_gate_state.get("criterion") or {}).get("kind") or ""),
                     body_chars=len(response_text or ""),
                     session_id=session_id)
