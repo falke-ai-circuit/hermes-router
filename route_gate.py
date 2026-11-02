@@ -1261,7 +1261,15 @@ _DECLARED_LANE_ASK_TOKENS = ("uncensored", "shadow", "higher self",
 def declared_lane_ask(content: str) -> bool:
     """True when a turn-start directive line explicitly asks to use a lane
     family (the 'declared intent' surface for pacing purposes). Echo
-    guarded; never raises."""
+    guarded; never raises.
+
+    M34-14: FALLBACK ONLY. The bypass itself keys on the declaration path's
+    own output (`declared_signal_source`); this matcher is the legacy
+    vocabulary shape, kept because it still carries the live wording
+    ('Use uncensored lane to do it') when no signal exists — but every use of
+    it is counted and logged, so a matcher-driven decision is visible
+    (`aux_consult_bypass_fallback`) instead of silent.
+    """
     try:
         for raw in _directive_lines(content):
             norm = _normalize_directive_line(raw)
@@ -1282,8 +1290,112 @@ def declared_lane_ask(content: str) -> bool:
         return False
 
 
+# M34-14: the phrase matcher is DEMOTED to a counted fallback. Its hits and
+# misses are both telemetry, so the vocabulary fragility M34-08 exists to
+# remove is measurable instead of load-bearing. A signal-driven bypass emits
+# no fallback row at all — the difference is visible, not inferred.
+_FALLBACK_STATS: Dict[str, int] = {"hits": 0, "misses": 0}
+_FALLBACK_LOCK = threading.Lock()
+
+
+def aux_consult_bypass_fallback_stats() -> Dict[str, int]:
+    """Snapshot of the phrase-matcher fallback counters. Never raises."""
+    try:
+        with _FALLBACK_LOCK:
+            return dict(_FALLBACK_STATS)
+    except Exception:  # noqa: BLE001
+        return {"hits": 0, "misses": 0}
+
+
+def reset_aux_consult_bypass_fallback() -> None:
+    """Test/recovery hook — zero the fallback counters. Never raises."""
+    try:
+        with _FALLBACK_LOCK:
+            _FALLBACK_STATS["hits"] = 0
+            _FALLBACK_STATS["misses"] = 0
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _count_bypass_fallback(hit: bool) -> int:
+    """Increment the fallback counter for this decision; returns the running
+    total (hits+misses). Never raises."""
+    try:
+        with _FALLBACK_LOCK:
+            _FALLBACK_STATS["hits" if hit else "misses"] += 1
+            return _FALLBACK_STATS["hits"] + _FALLBACK_STATS["misses"]
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def declared_signal_source(session_id: str, content: str = "",
+                           model: str = "") -> str:
+    """M34-14 — the DECLARATION PATH's own signal: the source recorded by
+    the single-owner claim registry for this session/turn (`declared_user`,
+    `declared_agent`, `aux_intent`), or "".
+
+    This is the structural counterpart of a phrase: the declaration path
+    WRITES the source when it claims, so a later decision reads the claim
+    instead of re-parsing vocabulary. Read-only; never raises.
+    """
+    try:
+        rec = peek_declared(session_id)
+        if rec is not None:
+            return str(rec.get("source") or "")
+        turn = _peek_turn_claim(session_id, content, model)
+        if turn is not None:
+            return str(turn.get("source") or "")
+        return ""
+    except Exception:  # noqa: BLE001 — fail-open: no signal
+        return ""
+
+
+def _declared_ask_for_pacing(content: str, session_id: str,
+                             model: str = "") -> Tuple[bool, str, str]:
+    """Whether this turn's aux consult may bypass the pacing interval, and
+    which source supplied that decision ("signal" | "fallback" | "").
+
+    M34-14 ORDER: signal FIRST (`source=declared_user` from the declaration
+    path). Only when no signal exists is the phrase matcher consulted as a
+    LOGGED FALLBACK — counted, and emitted as `aux_consult_bypass_fallback`
+    so a matcher-supplied decision is never silent. Fail-open False.
+    """
+    try:
+        signal_source = declared_signal_source(session_id, content, model)
+    except Exception:  # noqa: BLE001
+        signal_source = ""
+    if signal_source == SOURCE_DECLARED_USER:
+        try:
+            _pkg_fn("_log_route")(
+                "PRE", event_detail="aux_consult_bypass_signal",
+                declaration_source=signal_source, session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return True, "signal", signal_source
+    try:
+        hit = bool(declared_lane_ask(content))
+    except Exception:  # noqa: BLE001 — fail-open: pace as today
+        hit = False
+    counter = _count_bypass_fallback(hit)
+    try:
+        _pkg_fn("_log_route")(
+            "PRE", event_detail="aux_consult_bypass_fallback",
+            hit=hit,
+            decision=("decision" if hit else "miss"),
+            bypass_source=("fallback" if hit else ""),
+            declaration_source=signal_source,
+            counter=counter, session_id=session_id)
+    except Exception:  # noqa: BLE001 — observability only
+        pass
+    if hit:
+        return True, "fallback", signal_source
+    return False, "", signal_source
+
+
 def _aux_intent_decision(content: str, session_id: str,
-                         declared_ask: bool = False) -> Optional[GateDecision]:
+                         declared_ask: bool = False,
+                         bypass_source: str = "",
+                         declaration_source: str = "") -> Optional[GateDecision]:
     """LEG 13: the aux-slot intent classifier's gate decision.
 
     Blueprint mapping + hardening:
@@ -1457,6 +1569,8 @@ def _aux_intent_decision(content: str, session_id: str,
                                 "PRE",
                                 event_detail="aux_consult_interval_bypassed",
                                 reason="declared_ask",
+                                bypass_source=(bypass_source or "declared_ask"),
+                                declaration_source=declaration_source,
                                 lane=str(aux_lane), min_interval=_min_iv,
                                 since_last_s=round(_now - _last, 1),
                                 session_id=session_id)
@@ -1830,22 +1944,30 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
             # machine-detected, so the per-agent daily cap applies.
             if not declared.route and on_demand_aux_classify_enabled():
                 from .intent_classifier import _intent_suspect as _suspect_fn
-                # M34-09: declared-intent asks bypass aux consult pacing.
-                # Strict declared hit + directive line naming a lane family
-                # ('use uncensored lane to do it') OR the strict near-miss
-                # line shape — never the loose observability probe (that
-                # matches prose). Fail-open False.
-                _declared_ask = bool(_declared_hit)
-                if not _declared_ask:
-                    try:
-                        _declared_ask = bool(declared_lane_ask(content) or
-                                             _detect_declared_intent_near_miss(
-                                                 content))
-                    except Exception:  # noqa: BLE001 — fail-open: pace as today
-                        _declared_ask = False
+                # M34-14 (supersedes the M34-09 heuristic): declared intent
+                # comes from the SIGNAL — `source=declared_user`, written by
+                # the declaration path itself — never from phrasing. The old
+                # heads/tokens probe missed "run this uncensored" (throttled)
+                # and fired on prose that merely mentioned a lane, which is
+                # the vocabulary fragility M34-08 exists to remove.
+                #
+                # The phrase matcher survives as a COUNTED, LOGGED fallback
+                # (`aux_consult_bypass_fallback`, hits AND misses), used only
+                # when no signal exists — the live wording still works, but a
+                # matcher-supplied decision is visible instead of silent.
+                # The near-miss family-head probe is DELETED from this path:
+                # a line merely STARTING with "uncensored" is prose, and that
+                # was the false-positive class. (The probe itself still feeds
+                # the bare-call reminder and the declared_intent_no_route
+                # observability row — no dangling reference.)
                 if _suspect_fn(content):
+                    (_declared_ask, _bypass_source,
+                     _declaration_source) = _declared_ask_for_pacing(
+                        content, session_id, str(ctx.get("model") or ""))
                     _aux_lane = _aux_intent_decision(
-                        content, session_id, declared_ask=_declared_ask)
+                        content, session_id, declared_ask=_declared_ask,
+                        bypass_source=_bypass_source,
+                        declaration_source=_declaration_source)
                     if _aux_lane is not None:
                         return _aux_lane
 
