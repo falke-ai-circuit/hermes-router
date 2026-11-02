@@ -87,6 +87,12 @@ def test_c_every_get_path_in_schema():
             for m in pat.finditer(src):
                 dotted = m.group(1)
                 if dotted not in known:
+                    # A dynamic join — config_access.get("paths." + name) — reaches this
+                    # regex as a PREFIX, not a path. Accept it only when the schema
+                    # declares at least one key under that prefix, so a join cannot
+                    # invent a namespace the schema does not know (M25-02 rule).
+                    if dotted.endswith(".") and any(k.startswith(dotted) for k in known):
+                        continue
                     unknown.append("%s: %s" % (rel, dotted))
     assert not unknown, "config paths not in SCHEMA: %s" % sorted(unknown)
 

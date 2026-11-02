@@ -38,7 +38,10 @@
 # --- required (9) --- every one red in every measured run
 tests/classification/test_p05_legacy_purge_guard.py::test_legacy_mention_allowlist_only_shrinks  # real: allowlist may only shrink; decision_midturn.py + reflex_weights.py read the legacy block
 tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_budgets  # real: bare max_tokens literals in api/router_tools.py and tools/detcorpus/* (signature widened since row 2)
-tests/config/test_p4_schema_budgets.py::test_c_every_get_path_in_schema  # real: closure_pass + features/detection/unknown_route_gate read config paths absent from core/schema.py
+# RE-PINNED 2026-11-02 (M25-02): test_c_every_get_path_in_schema is GREEN — closure_pass and
+# unknown_route are now declared, and a dynamic join ("paths." + name) is accepted only when
+# the schema declares a key under that prefix. Removed as a DECISION, not because a run
+# needed it to pass.
 tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics  # real: decline construction over-broad; a status report is read as a refusal (with the row below)
 tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics  # real: same construction as above, first-person account read as a refusal
 tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum  # accepted-debt: completion_audit passes fold_revision=False by design; the pin was never inverted
