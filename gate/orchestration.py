@@ -550,6 +550,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                         _hub()._log_route("PRE", event_detail="route_failed",
                                    pattern_groups="shadow_declared",
                                    render_lane="shadow", session_id=session_id)
+                        # R78U M34-11: the claim produced NOTHING. Release it
+                        # with a reason (the turn reopens for a later eligible
+                        # claim) — never leave a spent claim standing.
+                        try:
+                            _hub()._route_gate.release_turn_claim(
+                                session_id, "empty_render",
+                                claim_lane=_hub()._route_gate.LANE_SHADOW)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
                         return _hs_pass()
                     rendered = _hub().cap_render(rendered, _hub().render_max_chars())
                     # R9d (Goran 09-14): NO inline _debug_banner_pass here —
@@ -625,6 +634,16 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                         _hub()._route_gate.mark_shadow_rendered(session_id)
                     except Exception:  # noqa: BLE001 — observability only
                         pass
+                    # R78U M34-11: claimed means PRODUCED or RELEASED. The
+                    # render landed — this claim PRODUCED (event + flag on the
+                    # claim record, so every later pass and the audit gate see
+                    # delivery, not licence).
+                    try:
+                        _hub()._route_gate.mark_claim_produced(
+                            session_id, "render_delivered",
+                            rendered_chars=len(str(rendered or "")))
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
                 except Exception:  # noqa: BLE001 — never break delivery
                     _hub().logger.debug("shadow render branch error", exc_info=True)
                     # R9-3 (rider 9): a shadow render branch EXCEPTION with a
@@ -635,6 +654,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                                    pattern_groups="shadow_render_branch_error",
                                    render_lane="shadow", session_id=session_id)
                     except Exception:  # noqa: BLE001
+                        pass
+                    # R78U M34-11: an exception path produced NOTHING — release
+                    # the claim with its reason so the turn reopens instead of
+                    # leaving a spent licence standing.
+                    try:
+                        _hub()._route_gate.release_turn_claim(
+                            session_id, "render_branch_error",
+                            claim_lane=_hub()._route_gate.LANE_SHADOW)
+                    except Exception:  # noqa: BLE001 — observability only
                         pass
                 return _hs_pass()
             return _hs_pass()
@@ -664,17 +692,33 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             # without a render (source-allowlist miss, exception, kill-switch
             # stand-down) — fail loud.
             if (_turn_claim.get("lane") == _hub()._route_gate.LANE_SHADOW
-                    and not _turn_claim.get("rendered")):
+                    and not _turn_claim.get("rendered")
+                    and not _turn_claim.get("produced")):
                 _hub()._log_route("PRE", event_detail="route_failed",
                            pattern_groups="shadow_claim_consumed",
                            render_lane="shadow",
                            claim_source=str(_turn_claim.get("source") or ""),
                            session_id=session_id)
-            _hub()._log_route("PRE", event_detail="claim_standdown_uncensored",
-                       claim_lane=str(_turn_claim.get("lane") or ""),
-                       claim_source=str(_turn_claim.get("source") or ""),
-                       session_id=session_id)
-            return _hs_pass()
+                # R78U M34-11: a claim that was TAKEN (executed) and produced
+                # NOTHING is a spent licence — RELEASE it (event + reason) and
+                # fall through so a later eligible lane/leg may act. A merely
+                # REGISTERED claim (executed=False) still owes its one
+                # execution (execute-once) and is NOT released here.
+                if _turn_claim.get("executed") is True:
+                    try:
+                        if _hub()._route_gate.release_turn_claim(
+                                session_id, "consumed_without_render",
+                                claim_lane=str(_turn_claim.get("lane") or ""),
+                                claim_source=str(_turn_claim.get("source") or "")):
+                            _turn_claim = None
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+            if _turn_claim is not None:
+                _hub()._log_route("PRE", event_detail="claim_standdown_uncensored",
+                           claim_lane=str(_turn_claim.get("lane") or ""),
+                           claim_source=str(_turn_claim.get("source") or ""),
+                           session_id=session_id)
+                return _hs_pass()
 
         case_sensitive = bool(_hub()._classification_cfg().get("case_sensitive", False))
         # POST-ONLY LANE (spec /opt/data/tmp/unc_lane_post_spec.md §1,

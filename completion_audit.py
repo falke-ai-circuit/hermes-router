@@ -1054,12 +1054,59 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                          claim_lane="higher-pre",
                          claim_source=str(_claim.get("source") or ""),
                          session_id=session_id)
-                else:
+                elif _claim.get("produced") is True and str(
+                        _claim.get("lane") or "") in ("shadow", "uncensored"):
+                    # R78U M34-11: a PRODUCED render claim does not excuse the
+                    # audit ON THE CLAIM — the render FIREWALL below owns that
+                    # skip (evidence: the render landed), so attribution stops
+                    # being "a claim was taken". Fall through.
+                    pass
+                elif _claim.get("produced") is None:
+                    # Legacy/foreign record with no production field: legacy
+                    # behavior (single-claim-point stand-down). Our own writes
+                    # always carry the flag explicitly.
                     _skip("turn_claimed",
-                         claim_lane=str(_claim.get("lane") or ""),
-                         claim_source=str(_claim.get("source") or ""),
-                         session_id=session_id)
+                          claim_lane=str(_claim.get("lane") or ""),
+                          claim_source=str(_claim.get("source") or ""),
+                          session_id=session_id)
                     return None
+                elif _claim.get("produced"):
+                    # A produced non-render claim (staged consult) owns the
+                    # turn's one routing outcome — the invariant stands, and
+                    # the row now says WHY (produced=True).
+                    _skip("turn_claimed",
+                          claim_lane=str(_claim.get("lane") or ""),
+                          claim_source=str(_claim.get("source") or ""),
+                          produced=True, session_id=session_id)
+                    return None
+                else:
+                    # R78U M34-11: a claim that produced NOTHING is a spent
+                    # licence, never a reason to skip the audit. RELEASE it
+                    # (never silent) and RUN the leg. Live defect this kills:
+                    # declared_claim_execute_once claim_source=aux_intent ->
+                    # claim_standdown -> audit_gate_skip reason=turn_claimed —
+                    # the turn's one uncensored claim bought no render and the
+                    # audit excused itself BECAUSE the claim was taken.
+                    _released = False
+                    try:
+                        _released = _rg.release_turn_claim(
+                            session_id, "audit_gate_unproduced_claim",
+                            claim_lane=str(_claim.get("lane") or ""),
+                            claim_source=str(_claim.get("source") or ""))
+                    except Exception:  # noqa: BLE001 — fail-open to running
+                        _released = False
+                    if not _released:
+                        # Release refused (budget spent / record gone): the leg
+                        # still RUNS — an unproduced claim can never justify a
+                        # skip. The refusal is on record, never silent.
+                        try:
+                            _log("audit_claim_release_refused",
+                                 claim_lane=str(_claim.get("lane") or ""),
+                                 claim_source=str(_claim.get("source") or ""),
+                                 reason="claim_release_budget_exhausted",
+                                 session_id=session_id)
+                        except Exception:  # noqa: BLE001
+                            pass
         except Exception:  # noqa: BLE001 — fail-open
             pass
         if _pair is None:

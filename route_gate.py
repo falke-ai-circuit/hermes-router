@@ -936,7 +936,7 @@ def stamp_turn_claim(session_id: str, lane: str, source: str,
         with _CLAIM_LOCK:
             _TURN_CLAIMED[_turn_claim_key(session_id, content, model)] = {
                 "lane": str(lane or ""), "source": str(source or ""),
-                "executed": bool(executed),
+                "executed": bool(executed), "produced": False,
                 "ts": time.time()}
     except Exception:  # noqa: BLE001
         pass
@@ -966,7 +966,8 @@ def stamp_turn_claim_if_absent(session_id: str, lane: str, source: str,
             if key not in _TURN_CLAIMED:
                 _TURN_CLAIMED[key] = {
                     "lane": str(lane or ""), "source": str(source or ""),
-                    "executed": bool(executed), "ts": time.time()}
+                    "executed": bool(executed), "produced": False,
+                    "ts": time.time()}
     except Exception:  # noqa: BLE001
         pass
 
@@ -992,6 +993,117 @@ def mark_shadow_rendered(session_id: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# R78U M34-11 — claimed means PRODUCED or RELEASED
+# ---------------------------------------------------------------------------
+# A claim is the turn's LICENCE to act. Taking the licence and delivering
+# nothing is a silent drop (live shadow 2026-11-02 03:13:37Z:
+# declared_claim_execute_once claim_source=aux_intent -> claim_standdown ->
+# audit_gate_skip reason=turn_claimed: the claim was spent, no render was
+# produced, and the audit leg excused itself because the claim was taken).
+# Every consumed claim therefore ends in exactly ONE of two observable
+# outcomes:
+#   claim_produced            — the render/consult landed (reason recorded);
+#   claim_released_unproduced — released with a reason, the turn REOPENS so a
+#                               later eligible lane/leg can claim.
+# No path may stand down on a claim that produced nothing.
+
+_CLAIM_PRODUCE_GRACE_S = 1.0
+_MAX_CLAIM_RELEASES_PER_TURN = 1
+_TURN_RELEASES: Dict[str, int] = {}
+
+
+def mark_claim_produced(session_id: str, reason: str = "",
+                        **kw: Any) -> bool:
+    """The claim's outcome WAS delivered: mark produced + log claim_produced.
+
+    Both the pending declared claim and the turn-window record carry the flag
+    (the audit gate and every stand-down site read it). Never raises."""
+    try:
+        now = time.time()
+        lane = source = ""
+        with _CLAIM_LOCK:
+            _gc_claims_locked(now)
+            rec = _DECLARED_CLAIMS.get(str(session_id or ""))
+            if rec is not None:
+                rec["produced"] = True
+                lane = str(rec.get("lane") or "")
+                source = str(rec.get("source") or "")
+            trec = _TURN_CLAIMED.get(_turn_claim_key(str(session_id or "")))
+            if trec is not None:
+                trec["produced"] = True
+                lane = lane or str(trec.get("lane") or "")
+                source = source or str(trec.get("source") or "")
+        try:
+            _payload = {"claim_lane": lane, "claim_source": source,
+                        "reason": str(reason or ""), "session_id": session_id}
+            _payload.update(kw)  # caller detail wins, never a duplicate kwarg
+            _pkg_fn("_log_route")(
+                "PRE", event_detail="claim_produced", **_payload)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def release_turn_claim(session_id: str, reason: str, **kw: Any) -> bool:
+    """RELEASE an unproduced claim: drop the turn-window record AND the pending
+    declared claim so the turn reopens (a later eligible lane/leg can claim),
+    and log `claim_released_unproduced` with the reason. Never silent.
+
+    Refuses to release a PRODUCED claim (it delivered; it keeps the turn), and
+    refuses once this turn's release budget is spent (caller must fail loud —
+    `claim_release_budget_exhausted` — never a silent stand-down). Never
+    raises; returns True only when a claim was actually released."""
+    try:
+        lane = source = ""
+        released = False
+        key = _turn_claim_key(str(session_id or ""))
+        with _CLAIM_LOCK:
+            used = int(_TURN_RELEASES.get(key) or 0)
+            rec = _DECLARED_CLAIMS.get(str(session_id or ""))
+            trec = _TURN_CLAIMED.get(key)
+            produced = bool((rec or {}).get("produced")
+                            or (trec or {}).get("produced"))
+            if (rec is None and trec is None) or produced or \
+                    used >= _MAX_CLAIM_RELEASES_PER_TURN:
+                return False
+            _TURN_RELEASES[key] = used + 1
+            if rec is not None:
+                lane = str(rec.get("lane") or "")
+                source = str(rec.get("source") or "")
+                _DECLARED_CLAIMS.pop(str(session_id or ""), None)
+            if trec is not None:
+                lane = lane or str(trec.get("lane") or "")
+                source = source or str(trec.get("source") or "")
+                _TURN_CLAIMED.pop(key, None)
+            released = True
+        if released:
+            try:
+                _payload = {"claim_lane": lane, "claim_source": source,
+                            "reason": str(reason or ""),
+                            "session_id": session_id}
+                _payload.update(kw)  # caller detail wins, never a duplicate
+                _pkg_fn("_log_route")(
+                    "PRE", event_detail="claim_released_unproduced", **_payload)
+            except Exception:  # noqa: BLE001 — observability only
+                pass
+        return released
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def claim_released_count(session_id: str) -> int:
+    """How many unproduced claims were released this turn (budget read)."""
+    try:
+        with _CLAIM_LOCK:
+            return int(_TURN_RELEASES.get(_turn_claim_key(
+                str(session_id or ""))) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _peek_turn_claim(session_id: str, content: str = "",
                      model: str = "") -> Optional[Dict[str, Any]]:
     try:
@@ -1015,11 +1127,15 @@ def clear_turn_claims(session_id: Optional[str] = None) -> None:
         with _CLAIM_LOCK:
             if session_id is None:
                 _TURN_CLAIMED.clear()
+                _TURN_RELEASES.clear()
             else:
                 prefix = str(session_id or "") + "|"
                 for key in [k for k in _TURN_CLAIMED
                             if str(k).startswith(prefix)]:
                     _TURN_CLAIMED.pop(key, None)
+                for key in [k for k in _TURN_RELEASES
+                            if str(k).startswith(prefix)]:
+                    _TURN_RELEASES.pop(key, None)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1559,15 +1675,62 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
         if _turn is not None:
             _pending_declared = peek_declared(session_id)
             if _turn.get("executed") is True:
-                try:
-                    _pkg_fn("_log_route")(
-                        "PRE", event_detail="claim_standdown",
-                        claim_lane=str(_turn.get("lane") or ""),
-                        claim_source=str(_turn.get("source") or ""),
-                        session_id=session_id)
-                except Exception:  # noqa: BLE001 — observability only
-                    pass
-                return GateDecision(route=False, reason="turn_claim_exists")
+                # R78U M34-11: claimed means PRODUCED or RELEASED. An executed
+                # claim that produced NOTHING is a spent licence with no
+                # delivery — RELEASE it (claim_released_unproduced) so the turn
+                # reopens for a later eligible claim. Stand-down is legal ONLY
+                # on a claim that produced, or inside the produce-grace window
+                # (a concurrent provider call of the same turn may still be
+                # producing). No silent stand-down path survives.
+                if not _turn.get("produced"):
+                    _age = 0.0
+                    try:
+                        _age = time.time() - float(_turn.get("ts") or 0.0)
+                    except Exception:  # noqa: BLE001
+                        _age = 0.0
+                    if _age >= _CLAIM_PRODUCE_GRACE_S:
+                        if release_turn_claim(session_id,
+                                              "claimed_turn_unproduced",
+                                              claim_lane=str(_turn.get("lane") or ""),
+                                              claim_source=str(_turn.get("source") or "")):
+                            # Released: fall through — this pass may claim afresh.
+                            _turn = None
+                        else:
+                            # Budget spent or produced-race: fail LOUD, never
+                            # silently. (The release fn refuses a produced claim.)
+                            try:
+                                _pkg_fn("_log_route")(
+                                    "PRE",
+                                    event_detail="claim_release_budget_exhausted",
+                                    claim_lane=str(_turn.get("lane") or ""),
+                                    claim_source=str(_turn.get("source") or ""),
+                                    released=claim_released_count(session_id),
+                                    session_id=session_id)
+                            except Exception:  # noqa: BLE001 — observability
+                                pass
+                            return GateDecision(route=False,
+                                                reason="turn_claim_exists")
+                    else:
+                        try:
+                            _pkg_fn("_log_route")(
+                                "PRE", event_detail="claim_standdown",
+                                claim_lane=str(_turn.get("lane") or ""),
+                                claim_source=str(_turn.get("source") or ""),
+                                producing=True, session_id=session_id)
+                        except Exception:  # noqa: BLE001 — observability only
+                            pass
+                        return GateDecision(route=False,
+                                            reason="turn_claim_exists")
+                if _turn is not None:
+                    try:
+                        _pkg_fn("_log_route")(
+                            "PRE", event_detail="claim_standdown",
+                            claim_lane=str(_turn.get("lane") or ""),
+                            claim_source=str(_turn.get("source") or ""),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — observability only
+                        pass
+                    return GateDecision(route=False, reason="turn_claim_exists")
             # R19.16 FIX 2: a REGISTERED NOT-EXECUTED claim (staged
             # executed=False — request_routing tool or declared phrase) must
             # EXECUTE its one consult on this pass, not stand down. The old
@@ -1953,6 +2116,13 @@ def claim_pass(content: str, session_id: str, model: str,
                          executed=not (str(decision.source or "") in (
                              SOURCE_DECLARED_USER, SOURCE_DECLARED_AGENT,
                              SOURCE_AUX_INTENT)))
+        # R78U M34-11: an AUTO claim is produced by definition here — the
+        # auto-shape leg (_dispatch_pass) already staged its consult before
+        # this decision existed. Marking it keeps a billed consult from
+        # looking unproduced to the release contract (which would reopen the
+        # turn and bill a SECOND consult).
+        if str(decision.source or "") == SOURCE_AUTO:
+            mark_claim_produced(session_id, "auto_consult_staged")
     if decision.route and decision.source in (SOURCE_DECLARED_USER,
                                               SOURCE_DECLARED_AGENT,
                                               SOURCE_AUX_INTENT):
@@ -2028,6 +2198,13 @@ def claim_pass(content: str, session_id: str, model: str,
                     # pass of this turn stands down (register-time record
                     # executed=False).
                     mark_turn_claim_executed(session_id)
+                    # R78U M34-11: the consult was STAGED — the claim
+                    # PRODUCED (its one routing outcome exists). Without this
+                    # flag a produced auto claim would look unproduced to the
+                    # release contract and a later pass could re-claim it (a
+                    # SECOND billed consult in one turn).
+                    mark_claim_produced(session_id, "consult_staged",
+                                        staged=True)
                 _pkg_fn("_log_route")(
                     "PRE", event_detail="request_routing_executed",
                     lane=decision.lane, source=decision.source,
