@@ -348,6 +348,16 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     # empty default: unset means "use the code default host list", and the
     # accessor (config_access.provider_hosts) is what turns it into hostnames.
     _k("providers.abliteration.hosts", list, []),
+
+    # --- detection + closure runtime switches (M25-02 GATE 2) ----------------
+    # Both were READ and UNDECLARED (test_c's pinned red named exactly these
+    # two). They are real reads, so the schema declares them: a declared key
+    # gets a typed default, a load-time validation row and example coverage —
+    # an undeclared one gets none of that. Types/defaults equal the in-code
+    # literals the readers fall back to.
+    _k("unknown_route", (str, bool), "route"),
+    _k("closure_pass", dict, {}),
+    _k("closure_pass.enabled", bool, True),
 )
 
 SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS

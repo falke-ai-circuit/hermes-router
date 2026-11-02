@@ -225,6 +225,11 @@ hermes_router:
   pov_mode: auto                   # str | default auto | point-of-view mode for the complexity consult; unset = auto
   stage1: true                     # bool | default true | stage-1 heuristic gate before a consult; unset = on
   rescan_dedupe: true              # bool | default true | dedupe explicit rescans; unset = on
+  unknown_route: route             # str|bool | default route | UNKNOWN-refusal handling: route|filter|off (false reads as off); unset = route
+
+  # --- closure pass (agent closing-message revision) -----------------------
+  closure_pass:                    # dict | default {} | closure-pass block; unset = enabled
+    enabled: true                  # bool | default true | kill switch for the closure pass; unset = on
 
   # --- decision-lane internals (top-level knobs) ---------------------------
   backend: nous                    # str | default nous | decision backend id; unset = nous
