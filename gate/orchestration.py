@@ -325,6 +325,77 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     except Exception:  # noqa: BLE001 — delivery must never break the seam
         pass
     try:
+        def _deliver(payload):
+            """DELIVER the declaration contract on a COPY of the payload.
+
+            Portability rule: the plugin must carry its whole behaviour, so
+            the contract cannot live in agent system prompts — it ships
+            here. But the caller's request object belongs to the caller
+            (the reconcile path mutates it in place, and that contract is
+            asserted), so the contract is written onto a copy handed back
+            through the envelope. Head placement, part-list safe.
+
+            Every envelope path calls this — `_hs_pass()` for the routing
+            branches and `_carry_declaration()` for the gate's own early
+            returns. Delivery is logged: without a delivery event a payload
+            that never received the contract is indistinguishable from a
+            model that declined to emit the tag, which is how "no delivery"
+            read as "dead detector" for a whole night of turns.
+            """
+            if not _decl_injected:
+                return payload
+            try:
+                from ..frames import prepend_rule_to_first_system
+                # The rule id lives in the pass, NOT in the detection
+                # module: importing it from there raised ImportError, the
+                # fail-open swallowed it, and delivery silently became a
+                # no-op while the suite stayed green (measured live: 0/14).
+                from ..passes.dispatcher_pre import (
+                    DECLARATION_RULE_ID, declaration_contract_text)
+                if not isinstance(payload, dict):
+                    return payload
+                out = dict(payload)
+                out["messages"] = prepend_rule_to_first_system(
+                    payload.get("messages"), DECLARATION_RULE_ID,
+                    declaration_contract_text())
+                try:
+                    _hub()._log_route(
+                        "PRE", event_detail="declaration_delivered",
+                        marker_pos=0,
+                        messages=len(out.get("messages") or []),
+                        chars=len(declaration_contract_text() or ""),
+                        session_id=_hub()._session_id_from_context(**context))
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
+                return out
+            except Exception:  # noqa: BLE001 — delivery must never break
+                return payload
+
+        def _carry_declaration(env):
+            """Carry the contract out on a GATE-OWNED envelope.
+
+            The fence's early returns build their envelope from the request
+            directly (a stashed completion-audit verdict delivered on the
+            NEXT turn: route_gate.decide_turn -> deliver=_audit_delivery_pass
+            -> fence_pass returns it untouched). That branch never reaches
+            `_hs_pass()`, so it was the one delivery path that dropped the
+            declaration. Measured (M34-15) on shadow's live payload dumps:
+            the two turns carrying a `higher_self_audit_delivery` rule had no
+            declaration contract anywhere in the body, while every routed
+            turn did.
+            """
+            if not _decl_injected or not isinstance(env, dict):
+                return env
+            try:
+                payload = env.get("request")
+                if not isinstance(payload, dict):
+                    return env
+                out = dict(env)
+                out["request"] = _deliver(payload)
+                return out
+            except Exception:  # noqa: BLE001 — envelope must never break
+                return env
+
         def _hs_pass():
             """Propagate an in-place rule injection through the framework's
             {"request": ...} return contract; {} when nothing was injected.
@@ -335,36 +406,6 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             """
             if not (_hs_rule_injected or _decl_injected):
                 return {}
-
-            def _deliver(payload):
-                """DELIVER the declaration contract on a COPY of the payload.
-
-                Portability rule: the plugin must carry its whole behaviour, so
-                the contract cannot live in agent system prompts — it ships
-                here. But the caller's request object belongs to the caller
-                (the reconcile path mutates it in place, and that contract is
-                asserted), so the contract is written onto a copy handed back
-                through the envelope. Head placement, part-list safe.
-                """
-                if not _decl_injected:
-                    return payload
-                try:
-                    from ..frames import prepend_rule_to_first_system
-                    # The rule id lives in the pass, NOT in the detection
-                    # module: importing it from there raised ImportError, the
-                    # fail-open swallowed it, and delivery silently became a
-                    # no-op while the suite stayed green (measured live: 0/14).
-                    from ..passes.dispatcher_pre import (
-                        DECLARATION_RULE_ID, declaration_contract_text)
-                    if not isinstance(payload, dict):
-                        return payload
-                    out = dict(payload)
-                    out["messages"] = prepend_rule_to_first_system(
-                        payload.get("messages"), DECLARATION_RULE_ID,
-                        declaration_contract_text())
-                    return out
-                except Exception:  # noqa: BLE001 — delivery must never break
-                    return payload
 
             return {"request": _deliver(request)}
 
@@ -397,7 +438,12 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # F4/H3) — same position, same behavior, gate-owned envelope.
         _gate_env = _hub()._route_gate.fence_pass(content, request, context, _hs_pass)
         if _gate_env is not None:
-            return _gate_env
+            # M34-15: the gate's own early returns (audit-verdict delivery)
+            # build their envelope outside _hs_pass(), so the declaration
+            # contract must be carried onto them explicitly — otherwise the
+            # payload for that turn reaches the model with no contract at all
+            # and the POST seam can only log `declaration_seen decl=UNKNOWN`.
+            return _carry_declaration(_gate_env)
 
         # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
         # blocking, uncensored should not filter anything when asked"). The

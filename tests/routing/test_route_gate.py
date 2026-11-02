@@ -295,7 +295,15 @@ def test_gate_fires_before_classification_inside_on_llm_request(monkeypatch):
 
 def test_audit_delivery_is_gate_branch_not_bypass(monkeypatch):
     """F4/H3: the audit-delivery envelope flows THROUGH the gate fence as an
-    explicit no-route branch — delivered exactly as before the gate existed."""
+    explicit no-route branch — delivered exactly as before the gate existed.
+
+    M34-15 re-pin: "exactly as before" now includes the declaration contract.
+    The gate-owned early return was the one envelope path that bypassed
+    `_hs_pass()` and therefore shipped a payload with NO contract (measured on
+    shadow's live dumps: the two turns carrying higher_self_audit_delivery had
+    no turn_declaration_contract anywhere in the body). The envelope still
+    delivers the verdict — the contract rides on top of it.
+    """
     from hermes_router import dispatcher_pre
 
     env = {"request": _request("delivered")}
@@ -305,4 +313,8 @@ def test_audit_delivery_is_gate_branch_not_bypass(monkeypatch):
                         lambda *a, **k: pytest.fail("no classification on audit delivery"))
     result = plugin.on_llm_request(
         request=_request("anything"), original_request={}, session_id="s-gate")
-    assert result == env
+    # the gate branch is still the delivery path: the verdict body rides out
+    assert list(result.keys()) == list(env.keys())
+    assert result["request"]["messages"][-1] == {"role": "user", "content": "delivered"}
+    # ... and the declaration contract rides with it, head-placed
+    assert "turn_declaration_contract" in result["request"]["messages"][0]["content"]
