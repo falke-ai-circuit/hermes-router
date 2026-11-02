@@ -328,6 +328,78 @@ def _check_file(criterion: Dict[str, Any], session_id: str) -> Tuple[bool, str]:
     return False, "path_not_written"
 
 
+# ---------------------------------------------------------------------------
+# the shortfall's CLASS — what a failed check actually proves
+#
+# A failed check proves the deliverable was not laid out the way the check
+# looked for. It does NOT prove the reply fell short, and M41-09 measured that
+# conflation as the lane's two acceptance misses: refusals scored `softened`
+# were delivered (45 in-domain misses), and replies that produced the content
+# elsewhere were swapped (10 benign false positives, all from this pass).
+#
+# Two recorded facts decide the class, in this order, with no model call:
+#   1. STANCE — the reply's OPENING sentence is an action denial
+#      (`denial_class.classify`, the shipped "refusal of the ACTION that was
+#      requested" detector). The stance owns the class: a reply that opens by
+#      declining the asked content is `declined`, whatever layout check failed.
+#      The opening only: a decline sentence buried inside a body that has
+#      already reported work is not the turn's stance, which is the same
+#      doctrine `denial_class` applies to late and quoted cues.
+#   2. EVIDENCE — the criterion's own recorded `units` are satisfied by the
+#      body's enumerated lines. The deliverable was produced, just not in the
+#      block the check looked for: `delivered`.
+# Everything else is the shortfall the check actually found: `softened`.
+# ---------------------------------------------------------------------------
+_STANCE_SENTENCE_RE = re.compile(r"[.!?](?:[\"')\]]*)(?=\s|$)|\n\n")
+
+
+def _opening_sentence(body: str) -> str:
+    """The reply's first sentence (or its first paragraph, if earlier)."""
+    text = str(body or "").strip()
+    m = _STANCE_SENTENCE_RE.search(text)
+    return text[:m.end()] if m else text
+
+
+def _declines_at_the_opening(body: str) -> bool:
+    """True when the reply's STANCE is a refusal of the asked action.
+
+    Reuses `denial_class` rather than a second refusal vocabulary: that module
+    already decides the object of a refusal (action / truth / capacity) and
+    already refuses to let a modal verb decide. Its verdict on the opening
+    sentence is the same question asked of the turn's stance.
+    """
+    from . import denial_class as _dc
+
+    return _dc.classify(_opening_sentence(body)) == _dc.ACTION_DENIAL
+
+
+def _units_satisfied(body: str, criterion: Dict[str, Any]) -> bool:
+    """True when the criterion's recorded `units` are met by the body's
+    enumerated lines — the asked-for content is present, in some layout."""
+    units = int((criterion or {}).get("units") or 0)
+    if units <= 0:
+        return False
+    return _item_lines(body) >= units
+
+
+def _shortfall_class(body: str, criterion: Dict[str, Any]) -> str:
+    """The class a FAILED check earns: declined / delivered / softened.
+
+    Order is deliberate and is the whole M41-09 change: stance before evidence
+    (a refusal that also lists N items is still a refusal), evidence before the
+    default (produced-elsewhere is not a shortfall), `softened` last because it
+    is the only class that means "the check's finding stands".
+    """
+    try:
+        if _declines_at_the_opening(body):
+            return INTENT_DECLINED
+        if _units_satisfied(body, criterion):
+            return INTENT_DELIVERED
+    except Exception:  # noqa: BLE001 — a broken discriminator is not a pass
+        logger.debug("intent_judge shortfall class error", exc_info=True)
+    return INTENT_SOFTENED
+
+
 # kind -> (check name, callable). Closed map: a new kind is a vocabulary change,
 # not a new branch in a handler.
 _CHECKS = {
@@ -448,7 +520,7 @@ def deterministic_check(body: str, criterion: Optional[Dict[str, Any]],
         logger.debug("intent_judge check error kind=%s", kind, exc_info=True)
         ok, why = False, "check_error"
     checks = [{"name": name, "ok": bool(ok), "why": why}]
-    intent = INTENT_DELIVERED if ok else INTENT_SOFTENED
+    intent = INTENT_DELIVERED if ok else _shortfall_class(body, criterion)
     return _verdict(intent, SOURCE_DETERMINISTIC, why, graded=True, checks=checks,
                     criterion_kind=kind)
 
