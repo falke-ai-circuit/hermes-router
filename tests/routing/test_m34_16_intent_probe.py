@@ -220,15 +220,11 @@ def test_route_classes_are_a_config_switch(monkeypatch):
     assert ip.route_decision("softening") is False     # Variant B, one switch
 
 
-def test_pre_seam_invokes_the_probe():
-    """The probe is wired on the PRE seam, before generation — not POST."""
-    pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    src = open(os.path.join(pkg, "gate", "orchestration.py"), encoding="utf-8").read()
-    assert "_ip.run_on_request(" in src
-    idx_probe = src.index("_ip.run_on_request(")
-    # PRE seam only: the call sits inside on_llm_request, well before POST.
-    idx_post = src.index("def on_transform_llm_output")
-    assert idx_probe < idx_post
+# M41-05 retired `test_pre_seam_invokes_the_probe`: the PRE consultation path
+# is gone (spec §F.2). The probe module itself stays on disk until M41-09, so
+# its own parse/cache/mode tests above remain meaningful; what no longer exists
+# is the seam call this test pinned, and asserting its absence is the honest
+# replacement (see tests/features/test_m41_05_rule_table.py leg (e)/(f)).
 
 
 # ---------------------------------------------------------------------------

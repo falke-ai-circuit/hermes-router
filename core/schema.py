@@ -369,6 +369,11 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     # gets a typed default, a load-time validation row and example coverage —
     # an undeclared one gets none of that. Types/defaults equal the in-code
     # literals the readers fall back to.
+    # DEPRECATED (M41-05, spec §F.1): `unknown_route` was the retired body
+    # gate's mode knob. Its reader is deleted and the key has zero hits across
+    # /opt/data/profiles/*/config.yaml, so nothing reads it. The schema entry is
+    # kept for ONE release so an old config carrying the key still validates
+    # instead of failing loudly at load; the next release removes it.
     _k("unknown_route", (str, bool), "route"),
     _k("closure_pass", dict, {}),
     _k("closure_pass.enabled", bool, True),

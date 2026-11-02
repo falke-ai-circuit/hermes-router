@@ -206,10 +206,13 @@ def test_c_unextractable_criterion_degrades_to_abstain_like(monkeypatch):
     assert dg.read(SID) is None
     assert dg.verdict(None) == dg.GATE_ABSTAIN
 
-    # the POST handler follows the documented degrade: None -> no grading
+    # the POST handler follows the documented degrade: None -> no grading.
+    # M41-05 moved the read into `_read_gate_state` (lazy, so rule 1 never reads
+    # the gate), so the pin is now "exactly ONE criterion read at POST" rather
+    # than a named local variable — the invariant the original line protected.
     psrc = inspect.getsource(orchestration.on_transform_llm_output)
-    assert "_gate_criterion = _dgate.criterion_of(_gate_row)" in psrc
-    assert "criterion_available=0 if _gate_criterion is None else 1" in psrc
+    assert psrc.count("_dgate.criterion_of(") == 1
+    assert "criterion_available=0 if _criterion_g is None else 1" in psrc
 
 
 # ---------------------------------------------------------------------------

@@ -515,20 +515,14 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _hub()._strip_memory_context(content)
 
-        # M34-16 (Amendment A §B): the PRE INTENT probe. After the user request
-        # and BEFORE generation, ask the model whether it is going to deny or
-        # soften — read the INTENT, because at this seam no body exists yet.
-        # `observe` (default) runs it on every turn, logs the verdict and routes
-        # nothing, on a daemon thread so an unread verdict costs no latency;
-        # `route` is M34-17's flip and consumes the verdict inline. Fail-open:
-        # UNKNOWN never routes, and the probe never breaks the seam.
-        try:
-            from .. import intent_probe as _ip
+        # M41-05 RETIREMENT (spec §E rule 2 / §F.2): the PRE intent probe's
+        # CONSULTATION path is gone. The trigger is now the POST intent judge
+        # graded against the acceptance criterion (M41-04), evaluated as row 2
+        # of the ordered rule table. `intent_probe.py` itself stays on disk —
+        # its module retirement is M41-09's ordered unit, not this one — but
+        # nothing at this seam calls it, and the POST read that consumed its
+        # token is retired with it.
 
-            _ip.run_on_request(request, session_id, content=content,
-                               log=_hub()._log_route)
-        except Exception:  # noqa: BLE001 — the probe must never cost a turn
-            _hub().logger.debug("intent-probe wiring error", exc_info=True)
         # R8b (2026-09-13) orientation-leak guard: a resume-after-interruption
         # turn must not have the PRE orientation envelope recited back as the
         # reply — reinforce it as internal-only (one line, deduped, fail-open).
@@ -1893,98 +1887,116 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _trigger_kind: Optional[str] = None
 
         # ------------------------------------------------------------------
-        # M34-17 (Amendment A §A3 + §B): THE TRIGGER IS THE PRE INTENT TOKEN.
-        # The PRE probe asked the model, on the INCOMING ask and before any
-        # body existed, whether it was going to deny or soften. That token —
-        # not the delivered body — decides this turn:
+        # M41-05 (spec §E): THE TRIGGER IS THE ORDERED RULE TABLE.
+        # The six rules are DATA — the lane contract's `gate_semantics` tuple —
+        # and `rule_table.evaluate` walks them first-match-wins. The PRE intent
+        # token this block used to read is gone (retired with the consultation
+        # path); rule 2 now reads the POST judge's class, and rule 1 reads the
+        # declaration alone.
         #
-        #   route     -> the turn routes (denial always; softening only when
-        #                `classify.intent_probe_route_classes` covers it)
-        #   no_route  -> AUTHORITATIVE non-route (`full`). The body voters are
-        #                not consulted and cannot re-open the turn.
-        #   unknown   -> FAIL-SAFE: no usable token was produced (probe off,
-        #                timeout, transport error, empty answer, or an
-        #                OFF-VOCABULARY answer). The body gate below still
-        #                runs. UNKNOWN never routes on its own, and an
-        #                off-vocabulary token is never coerced to `full`
-        #                (that would silently disable the lane).
-        #
-        # The body-derived voters below (declaration bit, four-class denial
-        # voter, refusal-vocabulary sweep) are TELEMETRY whenever a token
-        # exists: logged, never deciding. Three voters that disagree is how a
-        # 429-char decline slipped while a 701-char hedge routed.
+        # Two facts are provided LAZILY, because the order is what makes rule 1
+        # unoverridable: the gate record is read only when a row needs it, so a
+        # declared refusal never consults — or is affected by — the gate.
         # ------------------------------------------------------------------
-        _probe_row: Optional[dict] = None
-        _probe_state = "unknown"
-        _probe_verdict = None
-        try:
-            from .. import intent_probe as _ipt
-            _probe_row = _ipt.verdict_for_turn(
-                session_id, _hub().state.get_last_seen(session_id) or "")
-            _probe_state = _ipt.trigger_state(_probe_row)
-            if isinstance(_probe_row, dict):
-                _probe_verdict = _probe_row.get("verdict")
-        except Exception:  # noqa: BLE001 — the handoff store never breaks delivery
-            _probe_row = None
-            _probe_state = "unknown"
-            _probe_verdict = None
-            _hub().logger.debug("intent-probe turn lookup error", exc_info=True)
-        try:
-            _hub()._log_route(
-                "POST", event_detail="intent_probe_trigger",
-                state=_probe_state,
-                verdict=str(_probe_verdict or "UNKNOWN"),
-                reason=str((_probe_row or {}).get("reason") or "")
-                if isinstance(_probe_row, dict) else "",
-                body_chars=len(response_text or ""), session_id=session_id)
-        except Exception:  # noqa: BLE001 — observability never breaks delivery
-            pass
-        # M41-02 (§C S6): read the PRE gate verdict from the shared per-session
-        # turn record. POST must NOT re-classify the ask. `verdict()` collapses
-        # None / pending / expired / turn-mismatch to `abstain`, which is a
-        # gate FAILURE that falls to the body path — never "safe". The ordered
-        # rows are read off the lane contract as DATA (`gate_semantics`); no
-        # lane id is compared here (review test: zero per-lane branches in the
-        # POST handler).
+        _gate_state: Dict[str, Any] = {}
+        _intent_state: Dict[str, Any] = {}
+
+        def _read_gate_state() -> str:
+            """The PRE gate verdict, read once, on first need (M41-02 §C S6).
+
+            `verdict()` collapses None / pending / expired / turn-mismatch to
+            `abstain`, which is a gate FAILURE that falls to the body path —
+            never "safe".
+            """
+            if "verdict" in _gate_state:
+                return str(_gate_state["verdict"])
+            _row_g = None
+            _verdict_g = "abstain"
+            _semantics_g: tuple = ()
+            _replacement_g = ""
+            _criterion_g: Optional[dict] = None
+            try:
+                from ..features.detection import domain_gate as _dgate
+
+                _row_g = _dgate.read(session_id)
+                _verdict_g = _dgate.verdict(_row_g)
+                _semantics_g = tuple((_row_g or {}).get("gate_semantics") or ())
+                _replacement_g = str((_row_g or {}).get("replacement") or "")
+                _criterion_g = _dgate.criterion_of(_row_g)
+            except Exception:  # noqa: BLE001 — the read never breaks delivery
+                _row_g = None
+                _verdict_g = "abstain"
+                _criterion_g = None
+                _hub().logger.debug("domain-gate POST read error", exc_info=True)
+            _gate_state.update(row=_row_g, verdict=_verdict_g,
+                               semantics=_semantics_g,
+                               replacement=_replacement_g,
+                               criterion=_criterion_g)
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="domain_gate_turn",
+                    gate=_verdict_g,
+                    domain=str((_row_g or {}).get("domain") or ""),
+                    question=str((_row_g or {}).get("question") or ""),
+                    reason=str((_row_g or {}).get("reason") or ""),
+                    criterion_kind=str((_criterion_g or {}).get("kind") or ""),
+                    criterion_units=int((_criterion_g or {}).get("units") or 0),
+                    criterion_available=0 if _criterion_g is None else 1,
+                    criterion_chars=len(str((_criterion_g or {}).get("verbatim") or "")),
+                    semantics_rows=len(_semantics_g),
+                    replacement=_replacement_g,
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability never breaks delivery
+                pass
+            return str(_verdict_g)
+
+        def _read_intent() -> Optional[str]:
+            """The POST intent class, graded once against PRE's criterion.
+
+            M41-04's judge, read at the seam: it grades the body against the
+            criterion the turn was produced against (never re-extracting it).
+            An ungraded turn is `failed` — never `delivered` by default — and
+            `failed` is not a routing class, so a judge gap cannot route.
+            """
+            if "intent" in _intent_state:
+                return _intent_state["intent"]
+            _read_gate_state()
+            _intent_verdict_g = "failed"
+            _intent_row_g: Optional[dict] = None
+            try:
+                from ..features.detection import intent_judge as _ij
+
+                _intent_row_g = _ij.judge_turn(
+                    session_id, response_text, row=_gate_state.get("row"))
+                _intent_verdict_g = _ij.verdict_class(_intent_row_g)
+            except Exception:  # noqa: BLE001 — a judge gap must not break delivery
+                _intent_verdict_g = "failed"
+                _hub().logger.debug("intent judge POST error", exc_info=True)
+            _intent_state.update(intent=_intent_verdict_g, row=_intent_row_g)
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="intent_judge_turn",
+                    intent=str(_intent_verdict_g),
+                    source=str((_intent_row_g or {}).get("source") or ""),
+                    why=str((_intent_row_g or {}).get("why") or ""),
+                    graded=int(bool((_intent_row_g or {}).get("graded"))),
+                    criterion_kind=str((_gate_state.get("criterion") or {}).get("kind") or ""),
+                    body_chars=len(response_text or ""),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability never breaks delivery
+                pass
+            return _intent_state["intent"]
+
+        # M41-02 (§C S6) read contract kept: `_gate_row` / `_gate_criterion`
+        # are the SAME single read, surfaced for the rows below.
         _gate_row: Optional[dict] = None
         _gate_verdict = "abstain"
         _gate_semantics: tuple = ()
+        # The gate record and criterion are read ONCE, by `_read_gate_state`
+        # above, on first need. The duplicate eager read that used to sit here
+        # is gone: eager reading is what let a gate state run ahead of rule 1.
         _gate_replacement = ""
-        # M41-03 (§B S5): the acceptance criterion the PRE leg extracted rides
-        # the SAME turn record — it is READ here, never re-extracted, so POST
-        # cannot disagree with the criterion the turn was produced against. None
-        # is the explicit "no criterion" state (same degrade as an abstained
-        # gate: grade nothing, fall to the body path), never an empty dict.
         _gate_criterion: Optional[dict] = None
-        try:
-            from ..features.detection import domain_gate as _dgate
-
-            _gate_row = _dgate.read(session_id)
-            _gate_verdict = _dgate.verdict(_gate_row)
-            _gate_semantics = tuple((_gate_row or {}).get("gate_semantics") or ())
-            _gate_replacement = str((_gate_row or {}).get("replacement") or "")
-            _gate_criterion = _dgate.criterion_of(_gate_row)
-        except Exception:  # noqa: BLE001 — the read never breaks delivery
-            _gate_row = None
-            _gate_verdict = "abstain"
-            _gate_criterion = None
-            _hub().logger.debug("domain-gate POST read error", exc_info=True)
-        try:
-            _hub()._log_route(
-                "POST", event_detail="domain_gate_turn",
-                gate=_gate_verdict,
-                domain=str((_gate_row or {}).get("domain") or ""),
-                question=str((_gate_row or {}).get("question") or ""),
-                reason=str((_gate_row or {}).get("reason") or ""),
-                criterion_kind=str((_gate_criterion or {}).get("kind") or ""),
-                criterion_units=int((_gate_criterion or {}).get("units") or 0),
-                criterion_available=0 if _gate_criterion is None else 1,
-                criterion_chars=len(str((_gate_criterion or {}).get("verbatim") or "")),
-                semantics_rows=len(_gate_semantics),
-                replacement=_gate_replacement,
-                session_id=session_id)
-        except Exception:  # noqa: BLE001 — observability never breaks delivery
-            pass
         _denial_class = ""
         try:
             from ..features.detection import denial_class as _dcls
@@ -2070,36 +2082,77 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 chars=len(response_text or ""), session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
-        if _probe_state == "route":
-            # THE TRIGGER. One strict token, one decision: no body, no
-            # vocabulary, no length, no second voter.
-            matches = ["pre_intent_%s" % str(_probe_verdict or "denial")]
-            _trigger_kind = "pre_intent"
-            _hub()._log_route("POST", event_detail="intent_probe_route",
-                              verdict=str(_probe_verdict or ""),
-                              consume="route", session_id=session_id)
-        elif _probe_state == "no_route":
-            # The token said `full` (or a class the config excludes). That is
-            # authoritative: the body voters stay telemetry and cannot open a
-            # route the token closed.
-            matches = []
-            _trigger_kind = None
-            _class_authoritative = True
-            _hub()._log_route("POST", event_detail="intent_probe_no_route",
-                              verdict=str(_probe_verdict or ""),
-                              consume="authoritative_no_route",
-                              session_id=session_id)
-        else:
-            # FAIL-SAFE BODY GATE (UNKNOWN only). No usable PRE token exists,
-            # so the turn keeps the pre-M34-17 decision chain verbatim — this
-            # is the sanctioned fail-safe, not a flag-gated second trigger.
+        # ------------------------------------------------------------------
+        # M41-05 (spec §E): RUN THE ORDERED TABLE, then dispatch on the ACTION.
+        # Rules are rows of the lane contract; the action is what this handler
+        # acts on. No lane id is compared here (review test: zero per-lane
+        # branches in the POST handler).
+        # ------------------------------------------------------------------
+        try:
+            from ..features.detection import rule_table as _rt
+
+            _rule: Dict[str, Any] = _rt.evaluate(
+                declaration=_declaration,
+                gate_provider=_read_gate_state,
+                intent_provider=_read_intent)
+        except Exception:  # noqa: BLE001 — a table error is the body path, never a route
+            _hub().logger.debug("rule table error", exc_info=True)
+            _rule = {"row": 0, "predicate": "", "action": "fallback_shape",
+                     "seed": "", "trigger_kind": "", "gate": None,
+                     "intent": None, "declaration": _declaration,
+                     "semantics_rows": 0, "reason": "table_error"}
+        _gate_row = _gate_state.get("row")
+        _gate_verdict = str(_gate_state.get("verdict") or "abstain")
+        _gate_semantics = tuple(_gate_state.get("semantics") or ())
+        _gate_replacement = str(_gate_state.get("replacement") or "")
+        _gate_criterion = _gate_state.get("criterion")
+        _rule_action = str(_rule.get("action") or "fallback_shape")
+        _rule_row = int(_rule.get("row") or 0)
+        # Never silent: every turn states which row decided it, with the gate
+        # and intent values the row actually consumed.
+        try:
+            _hub()._log_route(
+                "POST", event_detail="rule_table_decision",
+                rule=_rule_row, predicate=str(_rule.get("predicate") or ""),
+                action=_rule_action,
+                # The row's own consumed gate, else the gate the intent leg
+                # read for the criterion — labelled the same either way.
+                gate=(str(_rule.get("gate")) if _rule.get("gate")
+                      else str(_gate_state.get("verdict") or "")),
+                intent=str(_rule.get("intent") or ""),
+                decl=str(_declaration or ""),
+                rows=int(_rule.get("semantics_rows") or 0),
+                reason=str(_rule.get("reason") or ""),
+                replacement=_gate_replacement,
+                body_chars=len(response_text or ""), session_id=session_id)
+        except Exception:  # noqa: BLE001 — observability never breaks delivery
+            pass
+
+        if _rule_action in ("route", "route_replace"):
+            matches = [str(_rule.get("seed") or "action_denial")]
+            _trigger_kind = str(_rule.get("trigger_kind") or "post_class")
+            _hub()._log_route(
+                "POST", event_detail="rule_route",
+                rule=_rule_row, predicate=str(_rule.get("predicate") or ""),
+                action=_rule_action, trigger_kind=str(_trigger_kind or ""),
+                # rule 4 routes AND replaces on the chain the contract names
+                replacement=(_gate_replacement
+                             if _rule_action == "route_replace" else ""),
+                session_id=session_id)
+        elif _rule_action == "fallback_shape":
+            # RULES 3 / 6's FALLBACK: today's shape detector, unchanged.
+            # Rule 3 is the abstained gate — a gate failure is never read as
+            # "safe", so this is exactly where it lands. The rows below are the
+            # body path: declaration bit, four-class detector, refusal
+            # vocabulary. They route only on refusal EVIDENCE.
             if _declaration == "true":
-                # The half of the frozen contract that routes: identical shape to
-                # the action_denial class below, so it enters the SAME existing
-                # route path (post_class bypasses the shape-only demotion).
+                # RULE 1'S BACKSTOP. Rule 1 fires before this block can be
+                # reached; this line exists so a contract that lost its first
+                # row cannot turn a declared refusal into a shipped denial —
+                # and it says so on the row.
                 matches = ["action_denial"]
                 _trigger_kind = "post_class"
-                _hub()._log_route("POST", event_detail="declaration_route",
+                _hub()._log_route("POST", event_detail="rule1_backstop_route",
                                   decl="true", cls=(_denial_class or "unavailable"),
                                   chars=len(response_text or ""),
                                   session_id=session_id)
@@ -2125,42 +2178,20 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 # UNKNOWN bodies it also carried capacity limits ("I couldn't put all
                 # 50,000 primes in this reply"), capability limits ("I can't check
                 # logs"), fiction prose, task output, and an echo of our own injected
-                # PLATFORM RULE text. Routing those fires an uncensored render on
-                # ordinary work. The gate keeps the routable set to bodies that
-                # actually DECLINE THE ACTION.
+                # PLATFORM RULE text. The class keeps the routable set to bodies
+                # that actually DECLINE THE ACTION.
                 #
-                # Both stages are deterministic — no aux call, no judge, no re-ask of
-                # the main model (a re-ask would pay a full call to re-derive what the
-                # declaration contract already asks for every turn).
-                # MODE knob (`unknown_route`): route (default) | filter | off.
-                # Default routes: measured organic volume is ~4 UNKNOWN turns/day, so
-                # the 13% non-refusal share costs ~0.5 wasted renders/day, while a
-                # demoted refusal costs a shipped denial.
-                try:
-                    from ..features.detection.unknown_route_gate import should_route
-                    _stage2, _stage2_reason = should_route(response_text)
-                except Exception:  # noqa: BLE001 — a gate error must not swallow a refusal
-                    _stage2, _stage2_reason = True, "gate_error_fail_open"
-                if not _stage2:
-                    matches = []
-                    _trigger_kind = None
-                    _hub()._log_route("POST", event_detail="unknown_route_demoted",
-                                      cls=_denial_class, routed=0,
-                                      reason=_stage2_reason,
-                                      body_chars=len(response_text or ""),
-                                      session_id=session_id)
-                else:
-                    matches = ["action_denial"]
-                    # The deterministic classifier IS the refusal semantics — the
-                    # shape-only gate further down must not demote it, and the
-                    # flinch-reason/grounding arms (which exist to second-guess a
-                    # regex or a shape flag) do not apply to a class decision.
-                    _trigger_kind = "post_class"
-                # NOTE on classification.mode: `flag_only` governs the AUX/semantic
-                # stage it was written for, not this detector. Scope it there —
-                # making it a router-wide dry switch silently stopped every
-                # structural route in the fleet's existing flag_only configurations.
-
+                # M41-05 RETIREMENT (spec §F.1): the retired body gate decided
+                # this branch. Its default mode was `route`, under which it
+                # returned True unconditionally — a measured no-op (no profile
+                # sets that key). The call and the module are gone; this branch
+                # is what the default mode did.
+                matches = ["action_denial"]
+                # The deterministic classifier IS the refusal semantics — the
+                # shape-only gate further down must not demote it, and the
+                # flinch-reason/grounding arms (which exist to second-guess a
+                # regex or a shape flag) do not apply to a class decision.
+                _trigger_kind = "post_class"
             elif _class_authoritative:
                 # HARD BLOCK (the defect this unit kills): a truth denial or an
                 # environment limit never routes. No aux spend, no judge, no
@@ -2181,25 +2212,41 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 matches = _hub().classifier.scan_post(response_text, patterns=_hub()._post_patterns(), case_sensitive=case_sensitive)
                 _trigger_kind = "stage1" if matches else None
                 # SPEC §2a (Goran 2026-10-28) — STRIP #2: no second LLM.
-                #
-                # A stage-1 miss used to fall into stage-2 here:
-                # _semantic_stage -> semantic_classifier.classify(), an AUX LLM
-                # deciding whether to route. It was live in the fleet on every
-                # profile (classification.aux_classify=true, mode=route), so any
-                # turn the regex missed was judged by a model.
-                #
-                # Goran: "we dont need semantic judge and llms. main model is asked
-                # to define denial and if its triggered route is activated. keep it
-                # simple."
-                #
-                # scan_post above is now the ONLY fallback. The denial decision
-                # surface is exactly two things:
+                # scan_post above is the ONLY fallback in the body path. The
+                # denial decision surface is exactly two things:
                 #   (a) the model's own declaration (declined="true" -> route);
                 #   (b) deterministic vocabulary — scan_post + denial_class
                 #       (action_denial routes; truth_denial/capacity_limit do not).
                 # semantic_classifier.py itself stays: four other consumers (risk,
                 # refusal_doctrine, decision_head, intent_classifier) still call it.
-                # Only this call site is gone.
+        # else: action == "deliver" (rules 5 and 6) — matches stays empty and
+        # the benign delivery edge below runs. No render, by construction.
+        #
+        # M41-05: the CLOSED-LINE HARD BLOCK is checked on EVERY non-routing
+        # edge, not only on the routed one. It used to be reachable only when
+        # the turn routed, because the PRE probe token forced `matches`; with
+        # the probe retired a closed-line ask whose body is not a classifiable
+        # refusal would take the benign edge with no hold row. Closed lines stay
+        # closed whichever rule delivered the turn — the ASK is read, never the
+        # body.
+        if not matches:
+            try:
+                from ..features.detection import compound_split as _csplit_d
+
+                _closed_deliver = _csplit_d.hard_closed_class(
+                    str(context.get("user_message") or "")
+                    or (_hub().state.get_last_seen(session_id) or ""))
+            except Exception:  # noqa: BLE001 — grader gap must not break delivery
+                _closed_deliver = None
+            if _closed_deliver:
+                _hub()._log_route(
+                    "POST", event_detail="closed_line_held",
+                    line=_closed_deliver, routed=0, render=0, rule=_rule_row,
+                    body_chars=len(response_text or ""), session_id=session_id)
+                _report_original_delivery(session_id, "delivery_withheld",
+                                          answer=response_text)
+                return _hub()._deliver_parked_at_edge(
+                    session_id, response_text, "closed_line", _hook_remaining())
         # SPEC §2a (Goran 2026-10-28): THE SEMANTIC JUDGE IS GONE FROM THE
         # DENIAL PATH.
         #
@@ -2217,26 +2264,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         #   _class_authoritative (truth/capacity) -> does NOT route
         #   anything else                         -> legacy stage-1/2 above
         # No LLM, no network, no aux spend is reachable from this decision.
-        # M34-17 (AMENDMENT A, closed line): soft denials are reported
-        # SEPARATELY, with their own scope label — never folded into the
-        # detection result, so a soft denial can never look like a detection
-        # failure and a detection failure can never hide inside one. `routed`
-        # records the config verdict for this turn (Variant A: softening is in
-        # `route_classes` and this row says routed=1; Variant B: it is not, and
-        # the row says routed=0 while nothing else in the decision changes).
-        if _probe_verdict == "softening" or \
-                str(_probe_verdict or "") == "softening":
-            try:
-                _hub()._log_route(
-                    "POST", event_detail="soft_denial_out_of_scope",
-                    scope="soft_denial",
-                    routed=int(_probe_state == "route"),
-                    state=_probe_state,
-                    cls=(_denial_class or "unavailable"),
-                    body_chars=len(response_text or ""),
-                    session_id=session_id)
-            except Exception:  # noqa: BLE001 — reporting never breaks delivery
-                pass
+        # M41-05 RETIREMENT: the `soft_denial_out_of_scope` row was fed by the
+        # PRE probe's token (gone with the consultation path). Softening is
+        # now a judged class, carried on `intent_judge_turn` and acted on by
+        # row 4/5 of the table — one surface, not two.
+
 
         if matches:
             # Logged so "no post consult" is never explainable by silence: the
@@ -2476,8 +2508,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # replaces — so leaving it on the pre_intent path would let the body
         # re-decide what the token already decided. It stays binding on the
         # fail-safe body gate (UNKNOWN), where no token exists.
+        # M41-05: rule 2/4 route on the intent JUDGE, which already read the
+        # body against the criterion. Both kinds join the exemption tuple the
+        # spec names (§E obligations): a body-shape veto here would re-read a
+        # long fluent decline and demote it — the measured 61.9% ceiling.
         if matches and _trigger_kind not in ("t2_confirmed", "post_class",
-                                             "pre_intent"):
+                                             "pre_intent", "post_intent"):
             try:
                 from ..features.detection import structural as _r33m_st
 
@@ -2768,7 +2804,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # one would fabricate an answer. Unknown/aux-failure fail-opens to
         # ROUTE (a missed content-flinch strands the user; a technical
         # FP-route costs one bounded render). Knob: flinch_reason_gate on|off.
-        if _hub()._flinch_reason_gate() and _trigger_kind != "post_class":
+        # M41-05: `post_intent` is exempt for the same reason as `post_class` —
+        # the judge already graded the body against the criterion, so a
+        # capability-flinch classification re-deciding it is the same body
+        # inference the rule table replaces.
+        if _hub()._flinch_reason_gate() and _trigger_kind not in ("post_class",
+                                                                  "post_intent"):
             try:
                 from ..flinch_reason import classify_flinch_reason
 

@@ -112,6 +112,22 @@ def resolve_contract(lane_id: str) -> Optional[LaneContract]:
     return spec.contract if spec is not None else None
 
 
+def lane_for_post_question(question: str) -> Optional[str]:
+    """The lane id owning a POST question token, or None.
+
+    Symmetrical with `lane_for_pre_question`: the POST seam names its lane by
+    the token it implemented, never by comparing an id. Used by
+    `features/detection/rule_table.py` to resolve the ordered row table.
+    """
+    q = str(question or "")
+    if not q:
+        return None
+    for spec in _IDS.values():
+        if spec.contract is not None and spec.contract.post_question == q:
+            return spec.id
+    return None
+
+
 def lane_for_pre_question(question: str) -> Optional[str]:
     """The lane id owning a PRE question token, or None.
 
