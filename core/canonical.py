@@ -439,6 +439,41 @@ class _CountedCur:
         self.rowcount = int(n)
 
 
+def _newest_assistant_row(conn, session_id):
+    """The ONE row a substitution may ever touch: this session's newest
+    assistant row (turn_finalizer persists the reply BEFORE the POST hook
+    fires, so the delivered turn's row is by definition the newest one)."""
+    try:
+        return conn.execute(
+            "SELECT id, content FROM messages"
+            " WHERE session_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 1", (str(session_id),)).fetchone()
+    except Exception:  # noqa: BLE001 — read-only probe
+        return None
+
+
+def _tier_match(row_content, refusal_text) -> str:
+    """Strategy binding `refusal_text` to THIS row; "" when it does not bind.
+
+    Tiers are unchanged from R59g (exact / normalized / prefix ≥240); what
+    changed is the SCOPE — they are evaluated against one row, never against
+    a scan of the session's history.
+    """
+    _row = str(row_content or "")
+    _ref = str(refusal_text or "")
+    if not _ref:
+        return ""
+    if _row == _ref:
+        return "exact"
+    _want = " ".join(_ref.split())
+    if _want and " ".join(_row.split()) == _want:
+        return "normalized"
+    if len(_ref.strip()) >= 240:
+        if _row.strip().startswith(_ref.strip()[:240]):
+            return "prefix"
+    return ""
+
+
 def _match_and_write(conn, session_id: str, refusal_text: str,
                      delivered_text: str):
     """Rewrite the persisted row this router is substituting, named by strategy.
@@ -450,60 +485,35 @@ def _match_and_write(conn, session_id: str, refusal_text: str,
     equality turned that into a silent stale row, which is a wrong number for
     any audit that trusts state.db over the delivered body.
 
-    Ladder, narrowest first, each still scoped to ONE row of this session:
-      exact      -- byte equality (historical behaviour)
-      cascade    -- the last text this router itself delivered (R16-2b)
-      normalized -- whitespace-normalized equality
-      prefix     -- newest row that STARTS with the pre-pass text (banner or
-                    trailing append already on the row); needs a long shared
-                    prefix so a different turn can never match
-    Returns the cursor; sets _LAST_MATCH. Never matches arbitrary agent text.
+    M34-01 (M35 §2b, live shadow 2026-11-02): the tiers used to scan the
+    session's newest 20 assistant rows, i.e. rows belonging to OTHER TURNS --
+    a background-review body rewrote a reply the user already held. Every tier
+    is now evaluated against the ONE newest row; a text that is not on that row
+    gets NO write at all. "Rewrite the row that produced the text" is the
+    invariant, not "find something that looks like it".
+
+    Returns a rowcount carrier; sets _LAST_MATCH. Never matches arbitrary
+    agent text.
     """
-    _sql = ("UPDATE messages SET content = ?, api_content = NULL"
-            " WHERE id = (SELECT id FROM messages"
-            "            WHERE session_id = ? AND role = 'assistant'"
-            "              AND content = ?"
-            "            ORDER BY id DESC LIMIT 1)")
-    cur = conn.execute(_sql, (str(delivered_text), str(session_id),
-                              str(refusal_text)))
-    if cur.rowcount:
-        _LAST_MATCH[str(session_id)] = "exact"
-        return cur
-
-    _last = _LAST_REWRITE.get(str(session_id) or "")
-    if _last:
-        cur = conn.execute(_sql, (str(delivered_text), str(session_id),
-                                  str(_last)))
-        if cur.rowcount:
-            _LAST_MATCH[str(session_id)] = "cascade"
-            return cur
-
-    try:
-        _want = " ".join(str(refusal_text).split())
-        rows = conn.execute(
-            "SELECT id, content FROM messages"
-            " WHERE session_id = ? AND role = 'assistant'"
-            " ORDER BY id DESC LIMIT 20", (str(session_id),)).fetchall()
-    except Exception:  # noqa: BLE001
-        return cur
-    for _rid, _content in rows:
-        if " ".join(str(_content or "").split()) == _want and _want:
-            conn.execute("UPDATE messages SET content = ?, api_content = NULL"
-                         " WHERE id = ?", (str(delivered_text), _rid))
-            _LAST_MATCH[str(session_id)] = "normalized"
-            return _CountedCur(1)
-    # prefix: the row starts with what the hook was given (a trailing banner
-    # or append already landed on it). A meaningful prefix only.
-    _head = str(refusal_text or "")
-    if len(_head.strip()) >= 240:
-        _head = _head.strip()[:240]
-        for _rid, _content in rows:
-            if str(_content or "").strip().startswith(_head):
-                conn.execute("UPDATE messages SET content = ?, api_content = NULL"
-                             " WHERE id = ?", (str(delivered_text), _rid))
-                _LAST_MATCH[str(session_id)] = "prefix"
-                return _CountedCur(1)
-    return cur
+    if conn is None:
+        return _CountedCur(0)
+    row = _newest_assistant_row(conn, session_id)
+    if row is None:
+        return _CountedCur(0)
+    _rid, _content = row
+    _how = _tier_match(_content, refusal_text)
+    if not _how:
+        # R16-2b cascade: a second banner on the SAME turn matches the text
+        # this router itself last wrote -- still only on the newest row.
+        _last = _LAST_REWRITE.get(str(session_id) or "")
+        if _last and str(_content or "") == str(_last):
+            _how = "cascade"
+    if not _how:
+        return _CountedCur(0)
+    conn.execute("UPDATE messages SET content = ?, api_content = NULL"
+                 " WHERE id = ?", (str(delivered_text), _rid))
+    _LAST_MATCH[str(session_id)] = _how
+    return _CountedCur(1)
 
 
 def _rewrite_once(db_path: str, session_id: str, refusal_text: str,

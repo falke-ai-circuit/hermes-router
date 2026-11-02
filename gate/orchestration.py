@@ -1157,6 +1157,49 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                       else "post_classify_off"),
                               session_id=session_id)
             return _decl_passthrough()
+        # M34-01 (M35 §3 clause 1): ROUTING BINDS TO THE USER-FACING TURN.
+        # Only a body that is (or will be) the delivered reply may route.
+        # Ephemeral seams run in the SAME session_id with NO turn of their own:
+        # Hermes' background-review fork shares the parent session_id and sets
+        # `_persist_disabled = True` (agent/background_review.py), and its
+        # worker thread is DECLARED as `name="bg-review"` (run_agent.py:1825) —
+        # `curator.py:1750` likewise declares `name="curator-review"`. Those
+        # names are the positive, host-declared proof that this pass is not the
+        # user's turn. Live specimen 2026-11-02 02:30Z: a 701-char bg-review
+        # body — never delivered, never held — routed, rendered, and rewrote
+        # the denial the user was reading.
+        #
+        # Positive evidence ONLY: an unknown thread or an absent marker leaves
+        # routing untouched (fail OPEN). Absence of a matching row is NOT
+        # evidence of a seam — a legit turn whose row differs (mid-turn
+        # transform, seeded transcript) must keep routing.
+        _seam = ""
+        try:
+            import threading as _threading
+
+            _tname = str(_threading.current_thread().name or "")
+        except Exception:  # noqa: BLE001 — identity probe never breaks delivery
+            _tname = ""
+        for _mark in ("bg-review", "curator-review"):
+            if _tname == _mark or _tname.startswith(_mark + "-"):
+                _seam = "thread:" + _mark
+                break
+        if not _seam:
+            for _key in ("background_review", "background", "is_background",
+                         "ephemeral"):
+                try:
+                    if context.get(_key):
+                        _seam = "ctx:" + _key
+                        break
+                except Exception:  # noqa: BLE001
+                    continue
+        if _seam:
+            _hub()._log_route(
+                "POST", event_detail="post_seam_skip",
+                reason="ephemeral_seam_not_user_turn", seam=_seam,
+                chars=len(str(response_text or "")),
+                session_id=session_id)
+            return _decl_passthrough()
         # R20-D3 (rider 20): the host plugin runner kills this callback at
         # 30s ("timed out after 30s — skipping") and then SKIPS later
         # invocations ("skipped after previous timeout or while still
