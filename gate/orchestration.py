@@ -2108,6 +2108,29 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _gate_criterion = _gate_state.get("criterion")
         _rule_action = str(_rule.get("action") or "fallback_shape")
         _rule_row = int(_rule.get("row") or 0)
+        _rule_replace = bool(_rule.get("replace"))
+        # ------------------------------------------------------------------
+        # M41-06 (spec §B S9): THE REPLACEMENT CHAIN IS A LANE-CONTRACT FIELD.
+        # Resolved by TOKEN through the lane registry — never from the gate
+        # record and never by comparing a lane id. Reading it from the gate is
+        # exactly the dependency this unit removes: on a gate-less turn (rule 1
+        # with the gate absent) the token must still name the chain, or the
+        # declared refusal has no replacement path.
+        # ------------------------------------------------------------------
+        _replacement_token = ""
+        _replacement_entry: Optional[str] = None
+        try:
+            from ..features.detection import rule_table as _rt_chain
+            from ..lanes import registry as _lane_registry
+
+            _replacement_token = _rt_chain.replacement_token()
+            _replacement_entry = _lane_registry.resolve_replacement(
+                _replacement_token)
+        except Exception:  # noqa: BLE001 — a registry gap keeps the legacy call
+            _hub().logger.debug("replacement token error", exc_info=True)
+        # The contract field is authoritative for the log rows too; the gate
+        # row's copy (when it exists) is only a second witness.
+        _gate_replacement = _replacement_token or _gate_replacement
         # Never silent: every turn states which row decided it, with the gate
         # and intent values the row actually consumed.
         try:
@@ -2124,6 +2147,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 rows=int(_rule.get("semantics_rows") or 0),
                 reason=str(_rule.get("reason") or ""),
                 replacement=_gate_replacement,
+                replace=int(bool(_rule_replace)),
                 body_chars=len(response_text or ""), session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
@@ -2135,9 +2159,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 "POST", event_detail="rule_route",
                 rule=_rule_row, predicate=str(_rule.get("predicate") or ""),
                 action=_rule_action, trigger_kind=str(_trigger_kind or ""),
-                # rule 4 routes AND replaces on the chain the contract names
-                replacement=(_gate_replacement
-                             if _rule_action == "route_replace" else ""),
+                # the chain the CONTRACT names — present even when no gate
+                # record landed (rule 1's gate-absent turn).
+                replacement=(_gate_replacement if _rule_replace else ""),
+                replace=int(bool(_rule_replace)),
                 session_id=session_id)
         elif _rule_action == "fallback_shape":
             # RULES 3 / 6's FALLBACK: today's shape detector, unchanged.
@@ -2856,11 +2881,51 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                               closed=",".join(
                                   _csplit.closed_lines_in(original_user_message)),
                               session_id=session_id)
-        rendered = _hub().router.call(
-            original_user_message,
-            system_prompt=_system_prompt,
-            session_id=session_id,
-        )
+        # ------------------------------------------------------------------
+        # M41-06 (spec §B S9): THE REPLACEMENT ENTERS THE EXISTING CHAIN.
+        # A row the table marks `replace` (rule 1's declared shape, rule 4's
+        # softened+flagged arm) resolves its chain from the lane contract's
+        # `replacement` FIELD and enters `_render_with_retry_ladder` — the SAME
+        # ladder the PRE uncensored render uses (`passes/dispatcher_pre.py:702`,
+        # wrapped at this module's `_render_with_retry_ladder`). No new render
+        # function exists for it: the ladder's retries, the `cap_render` budget
+        # below, and the canonical swap further down are the pre-existing ones.
+        # A turn with no replacement row keeps the pre-existing direct call, so
+        # this unit adds no behaviour to rules 2/3/5/6.
+        # ------------------------------------------------------------------
+        _render_chain_used = ""
+        _render_retries = 0
+        rendered: Optional[str] = None
+        if _rule_replace and _replacement_entry:
+            _render_chain_used = str(_replacement_entry)
+            try:
+                rendered, _render_retries = _hub()._render_with_retry_ladder(
+                    original_user_message, list(matches), _system_prompt,
+                    session_id)
+            except Exception:  # noqa: BLE001 — chain gap falls to the legacy call
+                _hub().logger.debug("replacement ladder error", exc_info=True)
+                _render_chain_used = ""
+        if rendered is None:
+            # pre-existing direct render call: the remedy for a replacement
+            # whose chain did not answer, and the only path rules 2/3/5/6 take.
+            rendered = _hub().router.call(
+                original_user_message,
+                system_prompt=_system_prompt,
+                session_id=session_id,
+            )
+        if _render_chain_used:
+            # Budget + retry counts ride the row so a replacement is auditable
+            # even when it produced nothing.
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="replacement_chain",
+                    entry=_render_chain_used, token=_replacement_token,
+                    rule=_rule_row, retries=int(_render_retries or 0),
+                    budget_chars=int(_hub().render_max_chars() or 0),
+                    render_chars=len(str(rendered or "")),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — observability never breaks delivery
+                pass
         # M34-03: one bounded re-render when the render fails the split (a
         # whole-turn refusal, an unnamed line, or an invented line). The
         # escalation restates the split requirement; a second failure is
@@ -2950,9 +3015,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # the next request must carry the assimilation frame exactly once —
         # one frame per lane, role="system", consumed by the PRE injection
         # point. Marking is fail-quiet: a lost mark costs a frame, never a turn.
+        # M41-06: a replacement says so in the acceptance row (`render_swap`);
+        # the frame itself is unchanged and is what keeps the next turn
+        # continuous — the model reads that the delivered body is its own.
         try:
             from .. import assimilation as _assim_frame
-            _assim_frame.mark_turn_rendered(session_id)
+            _assim_frame.mark_turn_rendered(
+                session_id,
+                reason="render_swap" if _rule_replace else "delivered_render")
         except Exception:  # noqa: BLE001 — never breaks delivery
             _hub().logger.debug("assimilation mark error", exc_info=True)
 

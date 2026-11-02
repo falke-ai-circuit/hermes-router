@@ -158,12 +158,18 @@ _MARKED: Dict[str, int] = {}   # session_id -> rendered-turn counter
 _MARK_MAX = 512
 
 
-def mark_turn_rendered(session_id: str) -> None:
+def mark_turn_rendered(session_id: str, reason: str = "delivered_render") -> None:
     """Called by the POST delivery seam when a render IS the delivered turn.
 
     The next request consumes the mark and carries the frame once. Bounded so
     a long-lived process can't grow without limit (oldest keys pruned — every
-    pruned mark is DROPPED, so it is logged, never lost silently)."""
+    pruned mark is DROPPED, so it is logged, never lost silently).
+
+    M41-06: `reason` names HOW the body was delivered, in the closed
+    ACCEPT_REASONS vocabulary. A replacement (`render_swap`) is a different
+    event from a plain rendered turn, and the acceptance row has to say so or
+    a replaced turn is indistinguishable from a delivered one in the ledger.
+    """
     sid = str(session_id or "")
     if not sid:
         return
@@ -181,7 +187,7 @@ def mark_turn_rendered(session_id: str) -> None:
                    reason="capacity", turn=turn_no, mark_max=_MARK_MAX)
     # M3.1: the mark IS the lane's acceptance statement — one record per
     # delivered render, on the same channel, fail-quiet.
-    _report_mark_acceptance(sid)
+    _report_mark_acceptance(sid, reason=reason)
 
 
 def pending_turn(session_id: str) -> bool:
@@ -513,7 +519,8 @@ def report_delivery(session_id: str, acceptance: Any, *,
         return {}
 
 
-def _report_mark_acceptance(session_id: str) -> None:
+def _report_mark_acceptance(session_id: str,
+                            reason: str = "delivered_render") -> None:
     """Record the acceptance envelope for a marked render.
 
     mark_turn_rendered is called ONLY when a render IS the delivered turn (both
@@ -521,11 +528,18 @@ def _report_mark_acceptance(session_id: str) -> None:
     body itself already lives in render_inbox — the envelope names it as
     evidence instead of duplicating it. Fail-quiet: a missing record never
     costs a delivered turn.
+
+    M41-06: `reason` is left in the closed ACCEPT_REASONS set on purpose — an
+    unknown token is not coerced to a plausible one (that would be a false
+    provenance claim), it falls back to the plain rendered-turn reason.
     """
     try:
+        _r = str(reason or "")
+        if _r not in ACCEPT_REASONS:
+            _r = "delivered_render"
         report_delivery(
             session_id,
-            acceptance_token("post_transform", "delivered_render"),
+            acceptance_token("post_transform", _r),
             leg="post",
             evidence_refs=["render_inbox:%s" % str(session_id or "")],
             limitations="render_body_in_render_inbox",
