@@ -45,7 +45,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 SCHEMA_NAME = "decision-record"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2          # v2 = M35-01 provenance fields (lane/rule/gate/intent/replaced)
 DECISIONS_FILENAME = "hermes-router-decisions.jsonl"
 MAX_FILE_BYTES = 8 * 1024 * 1024
 _ROTATE_KEEP_LINES = 300
@@ -151,13 +151,42 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                     evidence_text: str = "", matched_pattern: str = "",
                     doctrine_line_ref: str = "",
                     fail_class: str = FAIL_CLASS_NONE,
-                    fail_detail: str = "") -> bool:
+                    fail_detail: str = "",
+                    lane: str = "", turn_id: str = "",
+                    gate_verdict: str = "", gate_reason: str = "",
+                    intent_class: str = "", intent_source: str = "",
+                    replaced: Optional[bool] = None,
+                    replacement_path: str = "",
+                    body_chars: int = 0, delivered_chars: int = 0) -> bool:
     """Enqueue one decision record. ASYNC — never blocks the turn beyond the
     serialize + put_nowait (O(1)); overflow drops (bounded). §12-6: a
     non-empty fail_class NEVER coexists with a policy-rejection outcome —
     provider_timeout/transport/http_status are infra facts, recorded as
     such, and policy_version stays advisory. Returns True when enqueued.
-    Never raises."""
+    Never raises.
+
+    M35-01 PROVENANCE (schema v2). A row that says only `action=pass` cannot
+    be graded, because nothing on it names the lane that produced the body.
+    These optional fields are the provenance row, written on EVERY eligible
+    turn — including one that did not route, since a benign turn's non-routing
+    is the evidence of selectivity:
+
+      lane              id of the lane whose text was DELIVERED ("main" = the
+                        agent's own path, no lane text reached the user)
+      rule              "rule_1".."rule_6" | "none" — which table row fired
+      gate_verdict      flagged | not_flagged | abstain
+      gate_reason       the gate record's reason token, or "not_consulted"
+      intent_class      the POST judge's class, or "" when never consulted
+      intent_source     deterministic | aux | unknown | not_consulted
+      replaced          True iff the delivered body came from a lane render
+      replacement_path  the replacement chain entry that produced it
+      latency_ms        SYNCHRONOUS time the turn spent inside the seam
+      turn_id           join key to the delivered body (with session_id)
+
+    `replaced=None` (the default) means "this call is not a delivery row" — the
+    field is omitted, so pre-M35 emit sites keep their exact v1 shape apart from
+    the version stamp.
+    """
     try:
         from .. import suggestions
 
@@ -180,6 +209,22 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
             "fail_class": str(fail_class or FAIL_CLASS_NONE)[:24],
             "fail_detail": (str(fail_detail or "")[:120] if fail_class else ""),
         }
+        # M35-01: the provenance block. Present only on a DELIVERY row
+        # (`replaced` is not None), so a pre-M35 caller keeps its v1 field set.
+        if replaced is not None:
+            rec.update({
+                "lane": str(lane or "")[:40],
+                "turn_id": str(turn_id or "")[:48],
+                "rule": str(rule_id or "none")[:40],
+                "gate_verdict": str(gate_verdict or "")[:16],
+                "gate_reason": str(gate_reason or "")[:40],
+                "intent_class": str(intent_class or "")[:24],
+                "intent_source": str(intent_source or "")[:20],
+                "replaced": bool(replaced),
+                "replacement_path": str(replacement_path or "")[:60],
+                "body_chars": int(body_chars or 0),
+                "delivered_chars": int(delivered_chars or 0),
+            })
         if doctrine_line_ref:
             rec["doctrine_line_ref"] = str(doctrine_line_ref)[:48]
         # §12-6 hard shape: failures are failures, not policy outcomes.

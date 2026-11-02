@@ -216,7 +216,10 @@ def test_decision_record_versioned_schema():
     recs = decisions.read_records()
     assert len(recs) == 1
     r = recs[0]
-    assert r["schema"] == "decision-record" and r["schema_version"] == 1
+    assert r["schema"] == "decision-record" and r["schema_version"] == 2
+    # M35-01: a non-delivery call (replaced unset) keeps the v1 field set —
+    # the provenance block belongs to a DELIVERY row, not every emit site.
+    assert "replaced" not in r and "lane" not in r
     assert r["rule_id"] == "ied_construction#2"
     assert len(r["evidence_ref"]) == 16  # hashed/bounded, not raw text
     assert "user text" not in json.dumps(r)  # raw content NEVER persisted

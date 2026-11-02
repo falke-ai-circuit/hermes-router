@@ -2172,6 +2172,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _rule_action = str(_rule.get("action") or "fallback_shape")
         _rule_row = int(_rule.get("row") or 0)
         _rule_replace = bool(_rule.get("replace"))
+        # M35-01: record WHICH row decided this turn and the facts it consumed.
+        # `gate=None` when the row never read the gate (rule 1) — the row then
+        # says `not_consulted` instead of borrowing a verdict it never saw.
+        try:
+            from ..core import turn_provenance as _prov_d
+
+            _gate_read = "verdict" in _gate_state
+            _intent_row_p = _intent_state.get("row") or {}
+            _prov_d.note_decision(
+                rule_row=_rule_row,
+                rule_predicate=str(_rule.get("predicate") or ""),
+                action=_rule_action,
+                gate=(_gate_verdict if _gate_read else None),
+                gate_reason=str((_gate_state.get("row") or {}).get("reason") or ""),
+                intent_class=str(_intent_state.get("intent") or ""),
+                intent_source=str((_intent_row_p or {}).get("source") or ""),
+                declaration=str(_declaration or "UNKNOWN"),
+                body_chars=len(response_text or ""))
+        except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
+            pass
         # ------------------------------------------------------------------
         # M41-06 (spec §B S9): THE REPLACEMENT CHAIN IS A LANE-CONTRACT FIELD.
         # Resolved by TOKEN through the lane registry — never from the gate
@@ -3145,6 +3165,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # (live R25 battery WONT sessions ...c745e6e0 / ...ec54bec1 /
         # ...21a0d4ce). The final capture below rewrites the drift.
         _persisted_render_text = rendered
+        # M35-01: the delivered body came from the LANE from here on — the
+        # fact the ledger could not state, and the reason the lane could not be
+        # graded. `rewritten` rides separately from `replaced`: a delivered
+        # render whose persisted rewrite missed is still a lane body (the
+        # split-brain the R31 pin names), and saying otherwise would repeat
+        # the M41-07b class where the flag contradicted the delivery.
+        try:
+            from ..core import turn_provenance as _prov_r
+
+            _prov_r.note_delivery(
+                lane="shadow", replaced=True,
+                replacement_path=str(_render_chain_used or _replacement_token or ""),
+                outcome=("replaced" if _rewrote else "replaced_unpersisted"))
+        except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
+            pass
         if semantic_verdict:
             # Auditable residual (reviewer §B.1): a SEMANTIC verdict routed a
             # response that stage-1's regexes did NOT consider a refusal.

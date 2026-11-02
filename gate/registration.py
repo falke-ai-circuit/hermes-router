@@ -83,25 +83,40 @@ def on_transform_llm_output_guarded(**kwargs):
     """
     _pg = None
     _pc_token = None
+    _prov = None
+    _turn = None
     try:
-        from .. import post_guards as _pg
+        from ..core import turn_provenance as _prov_mod
 
-        _pc_token = _pg.open_pre_call(
-            kwargs.get("response_text", "") or "",
-            session_id=str(kwargs.get("session_id") or ""),
-            log_route=_hub_log_route(),
-        )
-    except Exception:  # noqa: BLE001 — no window = no pre-call gate, status quo
-        _pg = None
-        _pc_token = None
+        _prov = _prov_mod
+        _turn = _prov.begin(session_id=str(kwargs.get("session_id") or ""),
+                            model=str(kwargs.get("model") or ""),
+                            body=str(kwargs.get("response_text") or ""))
+    except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
+        _prov = None
+        _turn = None
     try:
         out = orchestration.on_transform_llm_output(**kwargs)
+    except Exception:
+        try:
+            if _prov is not None:
+                _prov.finish(_turn, delivered=None, outcome="seam_error")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     finally:
         try:
             if _pg is not None:
                 _pg.close_pre_call(_pc_token)
         except Exception:  # noqa: BLE001 — closing never breaks delivery
             pass
+    # M35-01: the provenance row, written on EVERY pass (routed or not) so a
+    # benign turn's non-routing is on record and the lane can be graded.
+    try:
+        if _prov is not None:
+            _prov.finish(_turn, delivered=out)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from .. import post_guards as _pg
 
