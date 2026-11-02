@@ -91,13 +91,17 @@ def agent_identity() -> str:
 
     Spend must accumulate per AGENT across ALL sessions (blueprint H1:
     'per-agent caps') — keying by session_id made the cap unbindable
-    (a fresh session always read 0.0). The agent id is the profile name:
-    hermes_home = <home>/.hermes/profiles/<profile> (gateway process is
-    profile-scoped); fall back to the resolved home dir name, then to the
-    plugin module path's profiles/<name> parent. Cached in-process (the
-    identity never changes mid-process). NEVER empty — last-resort literal
-    'unknown-agent' so the cap always binds to SOMETHING stable. Never
-    raises."""
+    (a fresh session always read 0.0). Identity sources, in order:
+
+      0) HERMES_PROFILE — the explicit source. A shared/pip-style install has
+         no `profiles/<name>` in any path, so path derivation alone cannot name
+         the agent; the host that knows the profile must say so.
+      1) hermes home path: <home>/.hermes/profiles/<profile> (fallback)
+      2) the plugin install path: <profile>/plugins/hermes_router/... (fallback)
+
+    Cached in-process (the identity never changes mid-process). NEVER empty —
+    last-resort literal 'unknown-agent' so the cap always binds to SOMETHING
+    stable. Never raises."""
     global _AGENT_ID_CACHE
     if _AGENT_ID_CACHE:
         return _AGENT_ID_CACHE
@@ -106,6 +110,13 @@ def agent_identity() -> str:
             if _AGENT_ID_CACHE:
                 return _AGENT_ID_CACHE
             ident = ""
+            # 0) explicit identity (HERMES_PROFILE) — no path parsing. A value
+            #    carrying a separator is not a profile name: ignore it and let
+            #    the path fallbacks answer, rather than keying a ledger on a
+            #    path fragment.
+            explicit = (os.environ.get("HERMES_PROFILE") or "").strip()
+            if explicit and "/" not in explicit and "\\" not in explicit:
+                ident = explicit
             # 1) hermes home path: .../profiles/<profile-name>
             try:
                 import hermes_constants
@@ -114,7 +125,7 @@ def agent_identity() -> str:
             except Exception:  # noqa: BLE001
                 home = (os.environ.get("HERMES_HOME")
                         or os.path.expanduser("~/.hermes")).rstrip("/")
-            if home:
+            if not ident and home:
                 parts = home.split("/")
                 if len(parts) >= 2 and parts[-2] == "profiles":
                     ident = parts[-1]

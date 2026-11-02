@@ -83,6 +83,15 @@ def _hermes_home() -> Optional[str]:
 
 
 def _profile_name() -> str:
+    """The loading profile's name.
+
+    Explicit source first (HERMES_PROFILE): on a shared install HERMES_HOME is
+    the shared home, so the last path component names the *home*, not the agent.
+    The path split stays as the fallback for hosts that set no explicit name.
+    """
+    explicit = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if explicit and "/" not in explicit and "\\" not in explicit:
+        return explicit
     home = _hermes_home() or ""
     parts = [p for p in home.replace("\\", "/").split("/") if p]
     return parts[-1] if parts else ""

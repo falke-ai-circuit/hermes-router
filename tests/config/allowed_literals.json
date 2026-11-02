@@ -44,7 +44,7 @@
     "fork_sources.py:214": "abs_path: comment showing a sample tool payload used to explain the split bug; documentation only.",
     "fork_sources.py:257": "abs_path: comment quoting a sample matched string in the fork heuristic; documentation only.",
     "gate/orchestration.py:680": "abs_path: comment citing the POST-only lane spec section; documentation only.",
-    "instinct_frame.py:146": "abs_path: non-configurable constant — last-resort fallback to the fleet profiles root when HERMES_HOME and the gateway DB are both absent (comment above explains the probes/tests case).",
+    "instinct_frame.py:155": "abs_path: non-configurable constant — last-resort fallback to the fleet profiles root when HERMES_HOME and the gateway DB are both absent (comment above explains the probes/tests case).",
     "instinct_triggers.py:7": "abs_path: module docstring referencing an upstream guardrails file that was checked during design; documentation only.",
     "plugin.yaml:7": "url: manifest metadata — plugin homepage; not an endpoint the runtime dials.",
     "plugin.yaml:27": "url+provider_host: manifest metadata — venice api-key console link surfaced in UI help text.",

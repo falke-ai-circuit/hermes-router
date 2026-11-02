@@ -15,8 +15,8 @@ config keys: `core/schema.py` (single source of truth).
 
 ## Quickstart
 
-1. Install the plugin: `hermes plugins install` or a directory copy into the
-   profile's plugins path — see INSTALL.md. Zero config required to install.
+1. Install the plugin: `bash scripts/install.sh` from a clone — one route,
+   dry-run first. See INSTALL.md. Zero config required to install.
 2. Restart that profile's gateway; the plugin registers three seams
    (`on_llm_request`, `on_transform_llm_output`, `on_transform_terminal_output`)
    and starts routing with built-in defaults.

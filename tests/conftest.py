@@ -149,7 +149,7 @@ def _pre_impact_gate_open(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
-def _zero_network_guard(monkeypatch):
+def _zero_network_guard(monkeypatch, request):
     """v3.6.0 zero-network suite guard (Goran-direct stress phase, 2026-09-07):
     NO test may make an outbound network call. Two layers:
 
@@ -198,7 +198,14 @@ def _zero_network_guard(monkeypatch):
 
     monkeypatch.setattr(_socket.socket, "connect", _blocked_socket, raising=True)
     monkeypatch.setattr(_socket, "create_connection", _blocked_socket, raising=True)
-    monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
+    if request.node.get_closest_marker("local_exec") is not None:
+        # local_exec: the test runs a LOCAL, network-free process (e.g.
+        # scripts/install.sh — file copy only). The guard's subject is EGRESS,
+        # so sockets stay blocked above; only the blanket subprocess ban is
+        # lifted, and only for tests that say so explicitly.
+        pass
+    else:
+        monkeypatch.setattr(_subprocess, "run", _blocked_subprocess_run, raising=True)
 
     # R10/R10b: the provider-catalog seam (provider_prices
     # .provider_catalog_entries — the lane-scoped single fetch path) is a

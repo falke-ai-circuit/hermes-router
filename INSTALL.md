@@ -4,12 +4,27 @@ Works on any Hermes profile (any agent). Three steps + optional smoke test.
 
 ## 1. Install
 
+One route: copy the checkout into the Hermes home's `plugins/` directory — the
+directory the loader scans (`get_hermes_home()/plugins`).
+
 ```bash
-hermes plugins install falke-ai-circuit/hermes-router
+git clone https://github.com/falke-ai-circuit/hermes-router.git
+cd hermes-router
+bash scripts/install.sh --dry-run     # print the plan, write nothing
+bash scripts/install.sh               # install (same command, dry-run off)
 ```
 
-You will be prompted for `ABLITERATION_API_KEY` / `VENICE_API_KEY` if unset (saved to `~/.hermes/.env`).
-Alternatively use per-entry `key_file` paths in config (0600 files) — see README.
+The target is a parameter, never a baked-in path:
+`--hermes-home DIR` → `$HERMES_HOME` → `~/.hermes`, destination
+`<home>/plugins/hermes_router`. `--plugins-root DIR` installs into
+`DIR/hermes_router` instead; `--profile NAME` is a label for messages only
+(default `$HERMES_PROFILE`, never used to build a path).
+
+The script needs no `rsync` (file copy), **deletes nothing** (files the checkout
+does not ship are reported as stale and left in place), and is idempotent —
+running it twice yields the same tree. Provider keys are read from the
+environment (`~/.hermes/.env`) or from per-entry `key_file` paths in config
+(0600 files) — see README.
 
 ## 2. Enable for the profile
 
@@ -120,7 +135,6 @@ mechanical fallback. Behavior knobs are chat-settable at runtime — see the
 ## 3. Restart gateway
 
 ```bash
-find ~/.hermes/plugins/hermes-router -name __pycache__ -type d -exec rm -rf {} +
 hermes gateway restart
 ```
 
