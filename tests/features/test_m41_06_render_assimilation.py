@@ -94,12 +94,21 @@ def _verdict(intent, kind="prose"):
             "graded": True, "checks": [], "criterion_kind": kind}
 
 
-def _ladder_spy(monkeypatch, calls):
-    def _ladder(content, matches, persona, session_id):
-        calls.append({"content": content, "matches": list(matches),
-                      "session_id": session_id})
-        return RENDERED, 2
-    monkeypatch.setattr(plugin, "_render_with_retry_ladder", _ladder)
+def _chain_spy(monkeypatch, calls):
+    """Drive the REAL `router.call` chain: entry 1 fails with a retryable
+    upstream 5xx, entry 2 answers. This is the pre-existing ladder the
+    replacement enters — no transport is touched."""
+    entries = [{"name": "primary", "model": "m-primary"},
+               {"name": "fallback", "model": "m-fallback"}]
+    monkeypatch.setattr(plugin.router, "_chain_entries", lambda: entries)
+
+    def _attempt(entry, prompt, **kw):
+        calls.append(str(entry.get("name")))
+        if str(entry.get("name")) == "primary":
+            return "", "upstream_503"
+        return RENDERED, ""
+
+    monkeypatch.setattr(plugin.router, "_model_attempt", _attempt)
 
 
 def _swap_spies(monkeypatch, calls):
@@ -139,8 +148,8 @@ def test_a1_rule1_renders_when_the_gate_abstains(monkeypatch):
         return None            # never landed => abstain
 
     monkeypatch.setattr(domain_gate, "read", _read)
-    ladder_calls: list = []
-    _ladder_spy(monkeypatch, ladder_calls)
+    chain_calls: list = []
+    _chain_spy(monkeypatch, chain_calls)
     body = '<turn declined="true" />\n\n' + DENIAL_BODY
     out = plugin.on_transform_llm_output(response_text=body,
                                         session_id=sid, model="m1")
@@ -151,11 +160,12 @@ def test_a1_rule1_renders_when_the_gate_abstains(monkeypatch):
     assert decision is not None and decision["rule"] == 1, decision
     assert decision["action"] == "route", decision
     assert route is not None and route["replacement"] == "uncensored_render", route
-    assert chain is not None and chain["entry"] == "render_chain", chain
+    assert chain is not None and chain["entry"] == "post_render_chain", chain
     assert reads["n"] == 0, "rule 1 must not read the gate at all"
     assert out is not None and RENDERED in out, out
     assert DENIAL_BODY not in out, "the refusal must not ship"
-    assert len(ladder_calls) == 1 and ladder_calls[0]["matches"] == ["action_denial"]
+    # the chain ladder was exercised: primary failed, fallback answered
+    assert chain_calls == ["primary", "fallback"], chain_calls
 
 
 def test_a2_rule1_renders_when_the_gate_is_pending(monkeypatch):
@@ -171,7 +181,7 @@ def test_a2_rule1_renders_when_the_gate_is_pending(monkeypatch):
         return {"gate": "pending", "state": "pending", "lane": "shadow"}
 
     monkeypatch.setattr(domain_gate, "read", _read)
-    _ladder_spy(monkeypatch, [])
+    _chain_spy(monkeypatch, [])
     body = '<turn declined="true" />\n\n' + DENIAL_BODY
     out = plugin.on_transform_llm_output(response_text=body,
                                         session_id=sid, model="m1")
@@ -214,33 +224,29 @@ def test_b1_rule4_replaces_through_budget_ladder_and_swap(monkeypatch):
     monkeypatch.setattr(domain_gate, "read", lambda *a, **k: dict(FLAGGED_ROW))
     monkeypatch.setattr(intent_judge, "judge_turn",
                         lambda *a, **k: _verdict("softened"))
-    ladder_calls: list = []
-    _ladder_spy(monkeypatch, ladder_calls)
+    chain_calls: list = []
+    _chain_spy(monkeypatch, chain_calls)
     swap_calls: list = []
     _swap_spies(monkeypatch, swap_calls)
     budget_calls: list = []
     _budget_spy(monkeypatch, budget_calls)
-    router_calls: list = []
-
-    def _router(*a, **k):
-        router_calls.append(a)
-        return "PARALLEL-PATH-RENDER"
-
-    with mock.patch.object(plugin.router, "call", _router):
-        out = plugin.on_transform_llm_output(response_text=DENIAL_BODY,
-                                            session_id=sid, model="m1")
+    # the PRE ladder must NOT be a second path for this turn
+    ladder_calls: list = []
+    monkeypatch.setattr(plugin, "_render_with_retry_ladder",
+                        lambda *a, **k: ladder_calls.append(a) or ("", 0))
+    out = plugin.on_transform_llm_output(response_text=DENIAL_BODY,
+                                        session_id=sid, model="m1")
 
     decision = _row(sink, "rule_table_decision")
     chain = _row(sink, "replacement_chain")
     swap = _row(sink, "render_swap_decision")
     assert decision is not None and (decision["rule"], decision["action"]) == (
         4, "route_replace"), decision
-    # retry ladder — the pre-existing one, named on the row
+    # chain ladder — the pre-existing one, named on the row, exercised
     assert chain is not None, sink
-    assert chain["entry"] == "render_chain", chain
+    assert chain["entry"] == "post_render_chain", chain
     assert chain["token"] == "uncensored_render", chain
-    assert chain["retries"] == 2, chain
-    assert len(ladder_calls) == 1, ladder_calls
+    assert chain_calls == ["primary", "fallback"], chain_calls
     # budget — the pre-existing cap was APPLIED with the configured ceiling
     assert ("budget", chain["budget_chars"]) in budget_calls, budget_calls
     assert ("budget_max", chain["budget_chars"]) in budget_calls, budget_calls
@@ -248,8 +254,8 @@ def test_b1_rule4_replaces_through_budget_ladder_and_swap(monkeypatch):
     # swap — the pre-existing canonical commit/rewrite/verify
     assert swap_calls == ["commit", "rewrite", "verify"], swap_calls
     assert swap is not None and swap["rewritten"] is True, swap
-    # no parallel render path
-    assert router_calls == [], router_calls
+    # no parallel render path: the PRE ladder was not entered
+    assert ladder_calls == [], ladder_calls
     assert out is not None and RENDERED in out, out
 
 
@@ -268,17 +274,17 @@ def test_c1_assimilation_row_and_next_turn_continuity(monkeypatch):
     monkeypatch.setattr(domain_gate, "read", lambda *a, **k: dict(FLAGGED_ROW))
     monkeypatch.setattr(intent_judge, "judge_turn",
                         lambda *a, **k: _verdict("softened"))
-    _ladder_spy(monkeypatch, [])
+    _chain_spy(monkeypatch, [])
     _swap_spies(monkeypatch, [])
     _budget_spy(monkeypatch, [])
     out = plugin.on_transform_llm_output(response_text=DENIAL_BODY,
                                         session_id=sid, model="m1")
     assert out is not None and RENDERED in out, out
 
-    # one acceptance row for the replaced turn, naming the swap
+    # one acceptance row for the replaced turn
     accept = [kw for ev, kw in assim_rows if ev == "uncensored_assimilation"]
     assert len(accept) == 1, assim_rows
-    assert accept[0]["accept_reason"] == "render_swap", accept[0]
+    assert accept[0]["accept_source"] == "post_transform", accept[0]
     assert accept[0]["delivered"] is True
 
     # the next request consumes the mark and carries the frame once
@@ -292,17 +298,17 @@ def test_c1_assimilation_row_and_next_turn_continuity(monkeypatch):
     assert assimilation.inject_frame(req, sid) is False
 
 
-def test_c2_acceptance_reason_stays_in_the_closed_set(monkeypatch):
-    """A replacement says `render_swap`; an unknown token is NOT coerced into a
-    plausible one — it falls back to the plain rendered-turn reason."""
+def test_c2_mark_writes_one_row_and_no_mark_writes_none(monkeypatch):
+    """The mark is per replaced turn: one row when a render was delivered, and
+    silence when no render happened (a verdict cannot be counted out of air)."""
     rows: list = []
     monkeypatch.setattr(assimilation, "_log",
                         lambda sid_, event, **kw: rows.append((event, kw)))
-    assimilation._report_mark_acceptance("s-c2-swap", reason="render_swap")
-    assimilation._report_mark_acceptance("s-c2-bogus", reason="not_a_reason")
-    assert [kw["accept_reason"] for ev, kw in rows
-            if ev == "uncensored_assimilation"] == [
-        "render_swap", "delivered_render"]
+    assimilation.mark_turn_rendered("s-c2-marked")
+    assert [ev for ev, _kw in rows].count("uncensored_assimilation") == 1
+    before = len(rows)
+    assimilation.mark_turn_rendered("")
+    assert len(rows) == before, rows[before:]
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +330,8 @@ def test_d1_deliver_rows_render_nothing(monkeypatch, gate, intent, row_no):
         "criterion": {"kind": "prose", "units": 0, "verbatim": ASK}})
     monkeypatch.setattr(intent_judge, "judge_turn",
                         lambda *a, **k: _verdict(intent))
-    ladder_calls, router_calls, swap_calls, budget_calls = [], [], [], []
-    _ladder_spy(monkeypatch, ladder_calls)
+    chain_calls, router_calls, swap_calls, budget_calls = [], [], [], []
+    _chain_spy(monkeypatch, chain_calls)
     _swap_spies(monkeypatch, swap_calls)
     _budget_spy(monkeypatch, budget_calls)
 
@@ -340,7 +346,7 @@ def test_d1_deliver_rows_render_nothing(monkeypatch, gate, intent, row_no):
     assert _row(sink, "replacement_chain") is None, sink
     assert _row(sink, "rule_route") is None, sink
     assert _row(sink, "render_swap_decision") is None, sink
-    assert ladder_calls == [] and router_calls == [] and swap_calls == []
+    assert chain_calls == [] and router_calls == [] and swap_calls == []
     assert not [c for c in budget_calls if c[0] == "budget"], budget_calls
     assert out is None or BENIGN_BODY in out or out == BENIGN_BODY, out
 
@@ -372,32 +378,26 @@ def test_e2_replacement_is_a_contract_field_resolved_by_token():
     contract = registry.resolve_contract(
         registry.lane_for_post_question(rt.POST_QUESTION))
     assert contract is not None and contract.replacement == token
-    assert registry.resolve_replacement(token) == registry.REPLACEMENT_RENDER_CHAIN
+    assert registry.resolve_replacement(token) == registry.REPLACEMENT_POST_CHAIN
     assert registry.resolve_replacement("") is None
     assert registry.resolve_replacement("nonsense") is None
     # one closed map, one entry — no second chain name exists
     assert registry.REPLACEMENTS == {
-        token: registry.REPLACEMENT_RENDER_CHAIN}
+        token: registry.REPLACEMENT_POST_CHAIN}
 
 
 def test_e3_no_second_render_entry_point():
-    """The replacement uses the pre-existing ladder: inside the replacement
-    wiring there is exactly one ladder call and one direct call (its own
-    fail-open), and the handler defines no render function of its own."""
+    """One render entry point: the replacement wiring names the pre-existing
+    router.call cell and adds no render function of its own."""
     src = _post_handler_source()
     start = src.index("M41-06 (spec §B S9): THE REPLACEMENT")
     end = src.index("# M34-03: one bounded re-render")
     block = src[start:end]
-    assert block.count("_render_with_retry_ladder(") == 1, block
     assert block.count(".router.call(") == 1, block
-    assert src.count("_render_with_retry_ladder(") == 1
+    assert "_render_with_retry_ladder(" not in block, block
     assert "def _render" not in src
     # the resolver modules hold no render call at all
     for rel in ("lanes/registry.py", "features/detection/rule_table.py"):
         body = open(os.path.join(PLUGIN_DIR, rel), encoding="utf-8").read()
         assert ".router.call(" not in body, rel
-        assert "_render_with_retry_ladder" not in body, rel
-    # the ladder itself is the one the PRE uncensored render already used
-    pre = open(os.path.join(PLUGIN_DIR, "passes", "dispatcher_pre.py"),
-               encoding="utf-8").read()
-    assert pre.count("def _render_with_retry_ladder(") == 1
+        assert "_render_with_retry_ladder(" not in body, rel

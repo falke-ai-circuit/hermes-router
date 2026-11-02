@@ -108,15 +108,25 @@ def valid_lane_ids() -> tuple:
 # "which lane is this?" and never hardcodes a call: it resolves the contract's
 # field here and dispatches on the returned entry NAME.
 #
-# There is exactly ONE entry, because there is exactly one render chain:
-# `render_chain` is the pre-existing ladder (`passes/dispatcher_pre.py:702`,
-# wrapped at `gate/orchestration.py:239`) followed by the pre-existing cap,
-# canonical commit/rewrite and swap-decision block. A replacement token does
-# not open a second path — it selects that one.
-REPLACEMENT_RENDER_CHAIN = "render_chain"
+# There is exactly ONE entry, because there is exactly ONE chain a replacement
+# may enter: `post_render_chain` is the pre-existing POST route chain —
+# `router.call` (whose own ladder retries a retryable 5xx once and falls through
+# the ordered model chain), then `cap_render`/`render_max_chars` (the render
+# budget), then `commit_canonical_event` + `rewrite_persisted_turn` +
+# `verify_persisted_turn` + `render_swap_decision` (the swap), then the
+# assimilation mark. A replacement token does not open a second path — it
+# selects that one.
+#
+# NOT the PRE ladder (`passes/dispatcher_pre._render_with_retry_ladder`): that
+# one carries the M34-02 substance-acceptance gate, which re-grades the body
+# against the ask. Entering it from POST was measured in this unit to discard a
+# render the POST chain had accepted (`route_failed_substance
+# reason=substance_short`) and re-ship the refusal — the exact silent
+# suppression this lane exists to prevent.
+REPLACEMENT_POST_CHAIN = "post_render_chain"
 
 REPLACEMENTS: Dict[str, str] = {
-    "uncensored_render": REPLACEMENT_RENDER_CHAIN,
+    "uncensored_render": REPLACEMENT_POST_CHAIN,
 }
 
 
