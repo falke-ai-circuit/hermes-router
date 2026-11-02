@@ -100,6 +100,40 @@ def valid_lane_ids() -> tuple:
     return tuple(s.id for s in _IDS.values() if s.valid)
 
 
+# ---------------------------------------------------------------------------
+# the replacement registry (M41-06, spec §B) — a CLOSED map, held once
+# ---------------------------------------------------------------------------
+# `LaneContract.replacement` names a render chain by TOKEN. This map is the
+# only place a token becomes an entry point, so the POST handler never asks
+# "which lane is this?" and never hardcodes a call: it resolves the contract's
+# field here and dispatches on the returned entry NAME.
+#
+# There is exactly ONE entry, because there is exactly one render chain:
+# `render_chain` is the pre-existing ladder (`passes/dispatcher_pre.py:702`,
+# wrapped at `gate/orchestration.py:239`) followed by the pre-existing cap,
+# canonical commit/rewrite and swap-decision block. A replacement token does
+# not open a second path — it selects that one.
+REPLACEMENT_RENDER_CHAIN = "render_chain"
+
+REPLACEMENTS: Dict[str, str] = {
+    "uncensored_render": REPLACEMENT_RENDER_CHAIN,
+}
+
+
+def resolve_replacement(token: str) -> Optional[str]:
+    """The render-chain entry a replacement token names, or None.
+
+    Unknown / blank token => None, which the caller reads as "no replacement
+    chain named" and falls back to the pre-existing direct render call. Fail-
+    open by construction: a contract that lost its `replacement` field must not
+    turn a routed turn into a silent no-op.
+    """
+    try:
+        return REPLACEMENTS.get(str(token or "").strip())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def resolve_contract(lane_id: str) -> Optional[LaneContract]:
     """The lane's contract, or None when it declares none.
 

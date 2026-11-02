@@ -96,10 +96,40 @@ _TRIGGER_KINDS: Dict[str, str] = {
     PRED_SOFTENED_AND_GATE: "post_intent",
 }
 
+# Rows whose route REPLACES the delivered body (M41-06). Data, so the handler
+# never decides which rules swap: rule 1's declared shape has always been a
+# body-replacement, and rule 4 is the softened+flagged replacement. Rule 2 is a
+# route that the render chain also serves, but it is not the replacement arm
+# this unit wires; keeping the set explicit is what stops "route" from silently
+# meaning "replace" for every future row.
+_REPLACING_PREDICATES: Tuple[str, ...] = (
+    PRED_DECLARED_REFUSAL,
+    PRED_SOFTENED_AND_GATE,
+)
+
 # The contract's POST question token. Kept here so the table can resolve its
 # own rows without importing the judge at module load; a test asserts this is
 # the same string as intent_judge.POST_QUESTION.
 POST_QUESTION = "uncensored_intent"
+
+
+def replacement_token() -> str:
+    """The POST lane contract's `replacement` FIELD (M41-06, spec §B S9).
+
+    Resolved by token through the lane registry, exactly like the rows and the
+    question — never by comparing a lane id, and never from a gate record. That
+    second point is the silent-suppression guarantee: a declared refusal on a
+    turn where the gate never landed still knows which chain replaces its body,
+    because the answer came from the contract, not from the gate.
+    """
+    try:
+        from ...lanes import registry as _registry
+
+        lane_id = _registry.lane_for_post_question(POST_QUESTION)
+        contract = _registry.resolve_contract(str(lane_id or ""))
+        return str(getattr(contract, "replacement", "") or "")
+    except Exception:  # noqa: BLE001 — a registry gap must not break delivery
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +254,9 @@ def _decision(row: int, pred: str, action: str, state: Dict[str, Any],
         "action": action,
         "seed": _SEEDS.get(pred, ""),
         "trigger_kind": _TRIGGER_KINDS.get(pred, ""),
+        # Does this row's route REPLACE the body? Data (see _REPLACING_PREDICATES),
+        # so the handler dispatches on the table's own answer.
+        "replace": pred in _REPLACING_PREDICATES,
         "gate": state.get("gate"),
         "intent": state.get("intent"),
         "declaration": state.get("declaration"),
