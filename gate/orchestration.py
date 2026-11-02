@@ -509,6 +509,21 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # Router tuning (2026-09-09): strip the <memory-context> block once at
         # ingress — routing judges the ASK, not ask+memory-noise.
         content = _hub()._strip_memory_context(content)
+
+        # M34-16 (Amendment A §B): the PRE INTENT probe. After the user request
+        # and BEFORE generation, ask the model whether it is going to deny or
+        # soften — read the INTENT, because at this seam no body exists yet.
+        # `observe` (default) runs it on every turn, logs the verdict and routes
+        # nothing, on a daemon thread so an unread verdict costs no latency;
+        # `route` is M34-17's flip and consumes the verdict inline. Fail-open:
+        # UNKNOWN never routes, and the probe never breaks the seam.
+        try:
+            from .. import intent_probe as _ip
+
+            _ip.run_on_request(request, session_id, content=content,
+                               log=_hub()._log_route)
+        except Exception:  # noqa: BLE001 — the probe must never cost a turn
+            _hub().logger.debug("intent-probe wiring error", exc_info=True)
         # R8b (2026-09-13) orientation-leak guard: a resume-after-interruption
         # turn must not have the PRE orientation envelope recited back as the
         # reply — reinforce it as internal-only (one line, deduped, fail-open).

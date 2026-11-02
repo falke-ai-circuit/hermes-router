@@ -387,6 +387,15 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
             "max_tokens": payload.get("max_tokens", 2000),
             "temperature": 0.0,
         }
+        # M34-16: an explicit per-call model ("model" in the request body) wins
+        # over the profile's aux dispatch model. The PRE intent probe needs a
+        # NON-REASONING pin: a reasoning aux model is not repeat-stable at
+        # temperature 0 (measured 3/3 divergent) and a small max_tokens
+        # truncates its thinking to empty content. Absent key = unchanged
+        # behaviour for every existing caller.
+        override = payload.get("model")
+        if isinstance(override, str) and override.strip():
+            model = override.strip()
         if model:
             kwargs["model"] = model
         try:
