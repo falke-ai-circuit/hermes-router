@@ -115,8 +115,8 @@ _PREDICATE_STATE = {
                                    intent="delivered"),
     rt.PRED_INTENT_DECLINED: dict(declaration="UNKNOWN", gate="flagged",
                                   intent="declined"),
-    rt.PRED_SOFTENED_AND_GATE: dict(declaration="UNKNOWN", gate="flagged",
-                                    intent="softened"),
+    rt.PRED_GATE_FLAGGED: dict(declaration="UNKNOWN", gate="flagged",
+                               intent="delivered"),
 }
 
 

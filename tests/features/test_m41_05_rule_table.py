@@ -7,8 +7,13 @@ Contract under test:
   * rule 1 is unoverridable: a declared refusal routes, and the gate record is
     not even READ on that turn (lazy providers), so no gate state can silence
     it — the silent-suppression class this unit exists to kill;
-  * rule 3 (abstain) falls back to the SHAPE DETECTOR and a turn that abstains
-    is never silently dropped: every turn carries a `rule_table_decision` row;
+  * rule 3 (abstain) is an explicit DEFERRED judgement (M35-03 A3: the action
+    is `defer`, never a silent `fallback_shape` deliver) and the body path still
+    runs, so a refusal found there still routes: every turn carries a
+    `rule_table_decision` row;
+  * rule 4 is the GATE FLAG ALONE (M35-03 A1): a flagged in-domain turn can
+    never be closed by the body's own claim of delivery, so it cannot reach
+    rule 6 whatever the intent class says;
   * the table is TOTAL over every (gate, intent) cell — the B1/B2 fixes are two
     extra data rows, not code branches;
   * `unknown_route_gate` is gone with zero non-test references, and the POST
@@ -73,18 +78,21 @@ def test_a2_rule2_intent_declined_routes_whatever_gate_said():
         assert d["trigger_kind"] == "post_intent"
 
 
-def test_a3_rule3_gate_abstain_falls_back_to_shape():
+def test_a3_rule3_gate_abstain_defers_the_judgement():
+    """M35-03 A3: abstain is no longer terminal. It is a named `defer`."""
     for gate in ("abstain", "pending", None):
         d = _fire(gate=gate, intent="delivered")
         assert (d["row"], d["predicate"], d["action"]) == (
-            3, "gate_abstain", "fallback_shape"), gate
+            3, "gate_abstain", "defer"), gate
 
 
-def test_a4_rule4_softened_and_gate_flag_routes_and_replaces():
-    d = _fire(gate="flagged", intent="softened")
-    assert (d["row"], d["predicate"], d["action"]) == (
-        4, "intent_softened_and_gate_flag", "route_replace")
-    assert d["trigger_kind"] == "post_intent"
+def test_a4_rule4_gate_flag_routes_and_replaces_whatever_the_body_claims():
+    """M35-03 A1: the gate flag alone routes — delivered included."""
+    for intent in ("softened", "delivered", "deflected", "failed"):
+        d = _fire(gate="flagged", intent=intent)
+        assert (d["row"], d["predicate"], d["action"]) == (
+            4, "gate_flagged", "route_replace"), intent
+    assert d["trigger_kind"] == "pre_gate"
 
 
 def test_a5_rule5_softened_without_gate_flag_delivers():
@@ -108,7 +116,9 @@ def test_a0_rows_are_the_contract_not_a_copy():
     assert rows == tuple(contract.gate_semantics)
     assert [r[0] for r in rows] == [
         "declared_refusal", "intent_declined", "gate_abstain",
-        "intent_softened_and_gate_flag", "intent_softened", "else"]
+        "gate_flagged", "intent_softened", "else"]
+    assert [r[1] for r in rows] == [
+        "route", "route", "defer", "route_replace", "deliver", "deliver"]
     assert rt.POST_QUESTION == intent_judge.POST_QUESTION
 
 
@@ -233,7 +243,7 @@ def test_a2b_declined_intent_routes_through_the_seam(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# (c) rule 6's fallback reaches the shape detector; abstain never silent
+# (c) an abstained gate DEFERS the lane judgement and still runs the body path
 # ---------------------------------------------------------------------------
 
 def test_c1_abstain_reaches_the_shape_detector_and_routes_a_refusal(
@@ -248,7 +258,10 @@ def test_c1_abstain_reaches_the_shape_detector_and_routes_a_refusal(
                                             session_id=sid, model="m1")
     decision = _row(sink, "rule_table_decision")
     assert decision is not None, sink
-    assert decision["rule"] == 3 and decision["action"] == "fallback_shape", decision
+    # M35-03 A3: the table no longer calls this a fallback-delivery; the lane
+    # records that it could not decide (defer) and the body path still decides.
+    assert decision["rule"] == 3 and decision["action"] == "defer", decision
+    assert _row(sink, "lane_decision_deferred") is not None, sink
     # The shape detector is what decided: the denial class routed the turn.
     # (No `rule_route` row — that row means the TABLE routed; here the table
     # handed off, which is exactly rule 3's contract.)
@@ -267,7 +280,8 @@ def test_c2_abstain_benign_turn_is_delivered_and_never_silent(monkeypatch):
                                         session_id=sid, model="m1")
     decision = _row(sink, "rule_table_decision")
     assert decision is not None, "an abstained turn left no decision row"
-    assert decision["action"] == "fallback_shape", decision
+    assert decision["action"] == "defer", decision
+    assert _row(sink, "lane_decision_deferred") is not None, sink
     assert _row(sink, "rule_route") is None, sink
     # Delivered, untouched: the benign body is not swallowed.
     assert out is None or out == BENIGN_BODY or BENIGN_BODY in out
@@ -293,11 +307,13 @@ def test_d2_every_rule_is_reachable():
 
 def test_d3_b1b2_fixes_hold_as_data():
     """B2: abstain is reachable at row 3 and is NOT read as safe. B1: row 5 is
-    intent-only, so gate-flagged + delivered is matched by row 6, not lost."""
+    intent-only. M35-03: a gate-flagged cell can no longer reach row 6 at all."""
     by_cell = {d["cell"]: d for d in rt.walk_cells(declarations=("UNKNOWN",))}
     assert by_cell[("UNKNOWN", "abstain", "delivered")]["row"] == 3
+    assert by_cell[("UNKNOWN", "abstain", "delivered")]["action"] == "defer"
     assert by_cell[("UNKNOWN", "pending", "softened")]["row"] == 3
-    assert by_cell[("UNKNOWN", "flagged", "delivered")]["row"] == 6
+    assert by_cell[("UNKNOWN", "flagged", "delivered")]["row"] == 4
+    assert by_cell[("UNKNOWN", "flagged", "deflected")]["row"] == 4
     assert by_cell[("UNKNOWN", "flagged", "softened")]["row"] == 4
     assert by_cell[("UNKNOWN", "not_flagged", "softened")]["row"] == 5
     assert by_cell[("UNKNOWN", "not_flagged", "declined")]["row"] == 2

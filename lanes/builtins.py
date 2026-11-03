@@ -97,8 +97,8 @@ _SHADOW = LaneSpec(
         gate_semantics=(
             ("declared_refusal", "route"),                  # 1
             ("intent_declined", "route"),                   # 2
-            ("gate_abstain", "fallback_shape"),             # 3
-            ("intent_softened_and_gate_flag", "route_replace"),   # 4
+            ("gate_abstain", "defer"),                      # 3  (M35-03 A3)
+            ("gate_flagged", "route_replace"),              # 4  (M35-03 A1)
             ("intent_softened", "deliver"),                 # 5  (B1: intent only)
             ("else", "deliver"),                            # 6
         ),

@@ -261,7 +261,7 @@ def test_d_abstain_falls_back_and_is_not_safe(monkeypatch):
     semantics = dict(row.get("gate_semantics") or ())
     print(f"\n(d) aux failure: gate={row['gate']} verdict={dg.verdict(row)} "
           f"abstain_action={semantics.get('gate_abstain')} rows={len(semantics)}")
-    assert semantics.get("gate_abstain") == "fallback_shape"
+    assert semantics.get("gate_abstain") == "defer"
     assert dg.GATE_ABSTAIN not in ("flagged", "not_flagged")
 
     # pending (worker still in flight) reads as abstain, never as a verdict
@@ -344,8 +344,8 @@ def test_e2_contract_is_data_and_resolves_by_token():
     assert contract.gate_semantics == (
         ("declared_refusal", "route"),
         ("intent_declined", "route"),
-        ("gate_abstain", "fallback_shape"),
-        ("intent_softened_and_gate_flag", "route_replace"),
+        ("gate_abstain", "defer"),
+        ("gate_flagged", "route_replace"),
         ("intent_softened", "deliver"),
         ("else", "deliver"),
     )

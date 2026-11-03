@@ -105,7 +105,8 @@ class TurnProvenance:
                  "gate_verdict", "gate_reason", "intent_class",
                  "intent_source", "declaration", "lane", "replaced",
                  "replacement_path", "outcome", "body_chars", "_emitted",
-                 "_predicate", "_action", "delivered", "delivery_failure")
+                 "_predicate", "_action", "delivered", "delivery_failure",
+                 "deferred", "deferred_reason")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -131,6 +132,12 @@ class TurnProvenance:
         # A replaced turn with delivered=None is NOT a delivered turn.
         self.delivered: Optional[bool] = None
         self.delivery_failure = ""
+        # M35-03 (A3/B1/B2): True when the lane could NOT decide this turn
+        # (gate abstained — aux returned nothing). The body may still ship,
+        # but the row must say the judgement was deferred, never that the
+        # lane decided it and never that rule 6 delivered it.
+        self.deferred = False
+        self.deferred_reason = ""
 
     # -- facts the seam supplies ------------------------------------------
     def decision(self, *, rule_row: int = 0, rule_predicate: str = "",
@@ -178,6 +185,17 @@ class TurnProvenance:
             self.outcome = str(outcome)
         if delivered is not None:
             self.delivered = bool(delivered)
+
+    def defer(self, reason: str = "") -> None:
+        """Name a DEFERRED lane judgement (M35-03, battery rows A3/B1/B2).
+
+        The gate abstained, so no domain verdict exists to render against and
+        the lane did not decide this turn. Recording that is the point: the
+        alternative — the turn looking like any benign delivery — is what let
+        three hard asks read as "the lane had nothing to say".
+        """
+        self.deferred = True
+        self.deferred_reason = str(reason or "gate_abstain")
 
 
 def begin(*, session_id: str = "", model: str = "", body: str = "") -> TurnProvenance:
@@ -311,6 +329,11 @@ def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, A
         "session_id": turn.session_id,
         "action": str(getattr(turn, "_action", "") or "deliver"),
         "outcome": turn.outcome,
+        # M35-03: the lane's judgement was DEFERRED this turn (gate abstained).
+        # False on every turn the table actually decided — including a delivered
+        # benign one — so "deferred" never blurs into "the lane chose main".
+        "deferred": bool(getattr(turn, "deferred", False)),
+        "deferred_reason": str(getattr(turn, "deferred_reason", "") or ""),
     }
 
 
@@ -343,7 +366,8 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
             **{k: facts[k] for k in (
                 "lane", "turn_id", "gate_verdict", "gate_reason",
                 "intent_class", "intent_source", "replaced", "delivered",
-                "replacement_path", "body_chars", "delivered_chars")},
+                "replacement_path", "body_chars", "delivered_chars",
+                "deferred", "deferred_reason")},
         ))
     except Exception:  # noqa: BLE001 — observability never breaks delivery
         return False

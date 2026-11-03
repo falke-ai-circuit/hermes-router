@@ -7,11 +7,11 @@ WHAT THIS IS
     second lane is one `LaneSpec` literal, never an edit here or in the POST
     handler.
 
-WHY THE ORDER IS WHAT IT IS (spec §E, gaps B1/B2)
+WHY THE ORDER IS WHAT IT IS (spec §E, gaps B1/B2; M35-03 A1/A3)
     Round 1  declared_refusal                        -> route
     Round 2  intent_declined                         -> route
-    Round 3  gate_abstain                            -> fallback_shape
-    Round 4  intent_softened_and_gate_flag           -> route_replace
+    Round 3  gate_abstain                            -> defer
+    Round 4  gate_flagged                            -> route_replace
     Round 5  intent_softened                          -> deliver
     Round 6  else                                     -> deliver
 
@@ -23,6 +23,25 @@ WHY THE ORDER IS WHAT IT IS (spec §E, gaps B1/B2)
     data row. B1 is row 5's predicate: the gate term carried no information
     (the gate filters `softened` only), so row 5 is intent-only and row 6
     (`else`) makes the table TOTAL over every (gate, intent) cell.
+
+M35-03 (battery v2 rows A1, A3, B1, B2) — TWO STAND-DOWNS FIXED AS DATA
+    A1: the gate flagged the turn IN-DOMAIN and rule 6 delivered anyway,
+    because row 4 required `intent == softened` and the only other evidence
+    was the body's own claim of compliance. The fix is not an inversion of
+    precedence: row 4 is now the GATE FLAG ALONE (`gate_flagged`), so a
+    flagged in-domain cell can no longer reach row 6 whatever the body says
+    about itself. Rows 1-2 still outrank it — a declared refusal or a judged
+    decline on a flagged turn routes, as before — and rows 5-6 now see only
+    non-flagged cells. Changed population, exactly: gate=flagged with intent
+    in {delivered, deflected, failed, unread} was row 6 delivery, is now row 4
+    replacement. Gate=flagged + softened was already row 4.
+    A3: `abstain` (aux returned nothing / gate never landed) used to terminate
+    at `fallback_shape`, i.e. the shape detector's body path — the lane never
+    spoke. The action is now `defer`: an explicit, recorded deferred judgement
+    (the seam's `defer` branch writes it), never a silent `deliver` and never
+    a claim that the lane decided. `fallback_shape` remains the action for a
+    table that could not be read at all (row 0 / no contract), which is a
+    different failure and keeps its body path.
 
 TOTALITY IS STRUCTURAL
     `else` matches unconditionally, so any state whose earlier rows miss lands
@@ -47,7 +66,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 PRED_DECLARED_REFUSAL = "declared_refusal"
 PRED_INTENT_DECLINED = "intent_declined"
 PRED_GATE_ABSTAIN = "gate_abstain"
-PRED_SOFTENED_AND_GATE = "intent_softened_and_gate_flag"
+PRED_GATE_FLAGGED = "gate_flagged"
 PRED_INTENT_SOFTENED = "intent_softened"
 PRED_ELSE = "else"
 
@@ -55,7 +74,7 @@ PREDICATES: Tuple[str, ...] = (
     PRED_DECLARED_REFUSAL,
     PRED_INTENT_DECLINED,
     PRED_GATE_ABSTAIN,
-    PRED_SOFTENED_AND_GATE,
+    PRED_GATE_FLAGGED,
     PRED_INTENT_SOFTENED,
     PRED_ELSE,
 )
@@ -63,10 +82,12 @@ PREDICATES: Tuple[str, ...] = (
 ACTION_ROUTE = "route"
 ACTION_ROUTE_REPLACE = "route_replace"
 ACTION_FALLBACK_SHAPE = "fallback_shape"
+ACTION_DEFER = "defer"
 ACTION_DELIVER = "deliver"
 
 ACTIONS: Tuple[str, ...] = (
-    ACTION_ROUTE, ACTION_ROUTE_REPLACE, ACTION_FALLBACK_SHAPE, ACTION_DELIVER,
+    ACTION_ROUTE, ACTION_ROUTE_REPLACE, ACTION_FALLBACK_SHAPE, ACTION_DEFER,
+    ACTION_DELIVER,
 )
 
 # The gate's closed verdict set, plus the two non-verdict states a reader can
@@ -83,17 +104,19 @@ GATE_ABSTAIN_STATES = (GATE_ABSTAIN, GATE_PENDING)
 _SEEDS: Dict[str, str] = {
     PRED_DECLARED_REFUSAL: "action_denial",   # the existing declared shape
     PRED_INTENT_DECLINED: "intent_declined",
-    PRED_SOFTENED_AND_GATE: "intent_softened",
+    PRED_GATE_FLAGGED: "gate_flagged",        # a PRE verdict on the ASK
 }
 
 # Which trigger kind a routed row enters. `post_class` is the declared shape's
-# existing kind (it already bypasses the body-shape veto); `post_intent` is new
-# in this unit and must be added to that same exemption tuple, or a long fluent
-# decline is re-read and vetoed — the measured miss class.
+# existing kind (it already bypasses the body-shape veto); `post_intent` must be
+# added to that same exemption tuple, or a long fluent decline is re-read and
+# vetoed — the measured miss class. `pre_gate` (M35-03 row 4) is a PRE verdict
+# on the REQUEST: no body reading may demote it either, so it joins the same
+# exemption tuple.
 _TRIGGER_KINDS: Dict[str, str] = {
     PRED_DECLARED_REFUSAL: "post_class",
     PRED_INTENT_DECLINED: "post_intent",
-    PRED_SOFTENED_AND_GATE: "post_intent",
+    PRED_GATE_FLAGGED: "pre_gate",
 }
 
 # Rows whose route REPLACES the delivered body (M41-06, corrected by M41-07b).
@@ -109,7 +132,7 @@ _TRIGGER_KINDS: Dict[str, str] = {
 _REPLACING_PREDICATES: Tuple[str, ...] = (
     PRED_DECLARED_REFUSAL,
     PRED_INTENT_DECLINED,
-    PRED_SOFTENED_AND_GATE,
+    PRED_GATE_FLAGGED,
 )
 
 # The contract's POST question token. Kept here so the table can resolve its
@@ -238,8 +261,11 @@ def evaluate(*, declaration: str,
             matched = _intent() == "declined"
         elif pred == PRED_GATE_ABSTAIN:
             matched = _gate() in GATE_ABSTAIN_STATES
-        elif pred == PRED_SOFTENED_AND_GATE:
-            matched = _intent() == "softened" and _gate() == GATE_FLAGGED
+        elif pred == PRED_GATE_FLAGGED:
+            # M35-03 (A1): the gate's verdict ALONE. No body-derived term is
+            # read here — that is the stand-down this row removes: a flagged
+            # in-domain turn cannot be closed by the body's claim about itself.
+            matched = _gate() == GATE_FLAGGED
         elif pred == PRED_INTENT_SOFTENED:
             matched = _intent() == "softened"
         else:  # PRED_ELSE — unconditional, and that is what makes the table total

@@ -164,7 +164,7 @@ def test_b_benign_turn_row_shows_it_did_not_route(monkeypatch, _isolated_ledger)
     assert row["lane"] == "main", row
     assert row["replaced"] is False, row
     assert row["replacement_path"] == "", row
-    assert row["action"] in ("fallback_shape", "deliver"), row
+    assert row["action"] in ("defer", "deliver"), row
     assert row["rule"] in ("rule_3", "rule_6"), row
     assert row["body_chars"] == len(BENIGN_BODY), row
     # pass-through: the seam returned None, so the body the host delivers IS

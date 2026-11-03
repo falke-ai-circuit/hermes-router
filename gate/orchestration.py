@@ -2247,12 +2247,41 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 replacement=(_gate_replacement if _rule_replace else ""),
                 replace=int(bool(_rule_replace)),
                 session_id=session_id)
-        elif _rule_action == "fallback_shape":
+        elif _rule_action in ("fallback_shape", "defer"):
             # RULES 3 / 6's FALLBACK: today's shape detector, unchanged.
             # Rule 3 is the abstained gate — a gate failure is never read as
             # "safe", so this is exactly where it lands. The rows below are the
             # body path: declaration bit, four-class detector, refusal
             # vocabulary. They route only on refusal EVIDENCE.
+            #
+            # M35-03 (A3/B1/B2): an abstained gate is a lane that could NOT
+            # decide. That is now a NAMED deferred judgement on the turn record
+            # (`action=defer`, `deferred=true`), not a fallback that reads like
+            # any other benign delivery. The body path below still runs — a
+            # refusal found there still routes, and no body is swallowed — but
+            # the record no longer says the lane delivered by rule 6 when the
+            # truth is "the gate never answered".
+            if _rule_action == "defer":
+                _defer_reason = str((_gate_state.get("row") or {}).get("reason")
+                                    or ("no_record" if not _gate_state.get("row")
+                                        else "gate_abstain"))
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="lane_decision_deferred",
+                        rule=_rule_row, reason=_defer_reason,
+                        gate=str(_gate_state.get("verdict") or "abstain"),
+                        body_chars=len(response_text or ""),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — observability never breaks delivery
+                    pass
+                try:
+                    from ..core import turn_provenance as _prov_def
+
+                    _turn_def = _prov_def.current()
+                    if _turn_def is not None:
+                        _turn_def.defer(_defer_reason)
+                except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
+                    pass
             if _declaration == "true":
                 # RULE 1'S BACKSTOP. Rule 1 fires before this block can be
                 # reached; this line exists so a contract that lost its first
@@ -2621,7 +2650,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # spec names (§E obligations): a body-shape veto here would re-read a
         # long fluent decline and demote it — the measured 61.9% ceiling.
         if matches and _trigger_kind not in ("t2_confirmed", "post_class",
-                                             "pre_intent", "post_intent"):
+                                             "pre_intent", "post_intent",
+                                             "pre_gate"):
             try:
                 from ..features.detection import structural as _r33m_st
 
@@ -2917,7 +2947,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # capability-flinch classification re-deciding it is the same body
         # inference the rule table replaces.
         if _hub()._flinch_reason_gate() and _trigger_kind not in ("post_class",
-                                                                  "post_intent"):
+                                                                  "post_intent",
+                                                                  "pre_gate"):
             try:
                 from ..flinch_reason import classify_flinch_reason
 

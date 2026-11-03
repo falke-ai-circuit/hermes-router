@@ -206,6 +206,12 @@ def test_c_slow_judgement_defers_and_delivers_first(monkeypatch):
         return _verdict("softened")
 
     monkeypatch.setattr(intent_judge, "judge_turn", _slow)
+    # M35-03: PROSE_ROW is gate=flagged, and row 4 now routes on the gate flag
+    # alone — the lane owns an in-domain turn whatever the (deferred) intent
+    # class says. The render chain is stubbed to fail-open here so this test
+    # keeps measuring its own subject: the judgement never blocks delivery.
+    monkeypatch.setattr(plugin.router, "_chain_entries", lambda: [])
+    monkeypatch.setattr(plugin.router, "call", lambda *a, **k: None)
     t0 = time.monotonic()
     out = plugin.on_transform_llm_output(response_text=SOFT_BODY,
                                          session_id=sid, model="m1")
@@ -216,9 +222,10 @@ def test_c_slow_judgement_defers_and_delivers_first(monkeypatch):
     assert row["intent"] == "deferred", row
     assert elapsed < 0.5, "the turn waited %.3fs on a 60ms budget" % elapsed
     assert (out is None) or (SOFT_BODY in out), out   # None = unchanged body delivered
-    assert out is None or RENDERED not in out, "a deferred turn must not wait for a render"
     decision = _row(sink, "rule_table_decision")
-    assert decision is not None and decision["rule"] == 6, decision
+    # M35-03: the gate verdict decided the turn, not the body's self-assessment
+    assert decision is not None and decision["rule"] == 4, decision
+    assert decision["action"] == "route_replace", decision
 
     # the judgement finished behind delivery and named the turn
     rec = di.wait_for(sid, timeout=3.0)
@@ -238,6 +245,10 @@ def test_d_correction_is_applied_when_the_next_turn_opens(monkeypatch):
     monkeypatch.setattr(di, "budget_ms", lambda: 50)
     monkeypatch.setattr(intent_judge, "judge_turn",
                         lambda *a, **k: (time.sleep(0.5), _verdict("softened"))[1])
+    # M35-03: the flagged gate now routes; the chain is stubbed fail-open so the
+    # correction path is measured, not a live render.
+    monkeypatch.setattr(plugin.router, "_chain_entries", lambda: [])
+    monkeypatch.setattr(plugin.router, "call", lambda *a, **k: None)
 
     out_n = plugin.on_transform_llm_output(response_text=SOFT_BODY,
                                            session_id=sid, model="m1")

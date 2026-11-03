@@ -158,7 +158,9 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                     replaced: Optional[bool] = None,
                     delivered: Optional[bool] = None,
                     replacement_path: str = "",
-                    body_chars: int = 0, delivered_chars: int = 0) -> bool:
+                    body_chars: int = 0, delivered_chars: int = 0,
+                    deferred: bool = False,
+                    deferred_reason: str = "") -> bool:
     """Enqueue one decision record. ASYNC — never blocks the turn beyond the
     serialize + put_nowait (O(1)); overflow drops (bounded). §12-6: a
     non-empty fail_class NEVER coexists with a policy-rejection outcome —
@@ -225,6 +227,11 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                 "replacement_path": str(replacement_path or "")[:60],
                 "body_chars": int(body_chars or 0),
                 "delivered_chars": int(delivered_chars or 0),
+                # M35-03: the lane's judgement was deferred (gate abstained).
+                # Always present on a delivery row so a reader can tell "the
+                # lane decided main" from "the lane could not decide".
+                "deferred": bool(deferred),
+                "deferred_reason": str(deferred_reason or "")[:40],
             })
             # M35-02: WIRE TRUTH, separate from the decision.
             # `replaced` says the seam DECIDED to swap the body; `delivered`
