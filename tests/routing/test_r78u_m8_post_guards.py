@@ -124,7 +124,10 @@ def test_identity_rewrite_is_not_delivered():
                            return_value=BENIGN_IT_REWRITE) as venice:
         out = _post("m8-identity", BENIGN_IT)
     assert venice.called          # the route itself is not what we test here
-    assert out is None            # ... but the rewrite never replaces the body
+    # Since M35-02 the delivery edge returns the AGENT'S BODY (not None) when a
+    # guard keeps it; what must never happen is the rewrite reaching the wire.
+    assert out == BENIGN_IT
+    assert BENIGN_IT_REWRITE not in (out or "")
 
 
 def test_real_swap_still_delivers():
@@ -164,7 +167,10 @@ def test_benign_non_english_reply_is_not_rewritten():
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("m8-benign-it", BENIGN_IT)
     assert venice.called, "precondition: the classifier did route this body"
-    assert out is None, "a benign non-English answer must never be swapped"
+    # M35-02/M35-08: the delivered body is the agent's own, byte for byte —
+    # never the render, and no longer `None` (the passthrough is returned).
+    assert out == BENIGN_IT, "a benign non-English answer must never be swapped"
+    assert RENDER not in (out or "")
 
 
 def test_short_non_english_refusal_still_routes():

@@ -149,7 +149,18 @@ def _turn(monkeypatch, sid, body, gate_row, intent, ask=ASK_A):
 
 
 # ---------------------------------------------------------------------------
-# (a) A1 — gate flagged in-domain, body self-declares delivery: LANE RENDERS
+# (a) A1 — gate flagged in-domain, body self-declares delivery
+#
+# BAR CHANGE 2026-11-03 (Goran, acceptance bar 2 over the old "lane must
+# author" bar). This test was written under the OLD bar: a flagged in-domain
+# turn had to be RENDERED by the lane, even when the main body claimed it had
+# satisfied the ask. Under the current bar a body that already complies is a
+# PASS — keeping it is the correct outcome and a render that overwrites it is
+# the defect. The ROUTING half of the old assertion stands (rule 4 still
+# replaces on the gate flag, and the turn is still decided); only the DELIVERY
+# half is re-specified: the edge settles the compliant body as main_complied
+# and ships it byte-identical. The name is kept because it records the bar this
+# pin was born under; the assertion is what the bar says today.
 # ---------------------------------------------------------------------------
 
 def test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks(
@@ -159,10 +170,13 @@ def test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks(
     _events(monkeypatch, sink)
     out = _turn(monkeypatch, sid, SELF_DECLARING_BODY, FLAGGED, "delivered")
 
-    assert RENDERED in out, (
-        "the lane did not render on an in-domain flagged turn — the body's own "
-        f"claim of compliance closed it again: out={out!r}")
+    # The compliant body is what ships — un-replaced and byte-identical.
+    assert out == SELF_DECLARING_BODY, (
+        "a compliant in-domain body was replaced — bar 2 says the body that "
+        f"already satisfied the ask is a PASS: out={out!r}")
+    assert RENDERED not in out, out
 
+    # The decision is unchanged: rule 4 still routes on the gate flag alone.
     decision = _row(sink, "rule_table_decision")
     assert decision is not None, sink
     assert (decision["rule"], decision["predicate"], decision["action"]) == (
@@ -173,13 +187,17 @@ def test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks(
     rows = _rows(_isolated)
     assert len(rows) == 1, rows
     row = rows[0]
-    # (a) the row the battery asked for: lane=shadow, not lane=main
-    assert row["lane"] == "shadow", row
-    assert row["replaced"] is True, row
+    # the row the battery asked for: the keep is named, not a silent stand-down
+    assert row["lane"] == "main", row
+    assert row["replaced"] is False, row
     assert row["rule"] == "rule_4", row
     assert row["gate_verdict"] == "flagged", row
     assert row["intent_class"] == "delivered", row
     assert row["deferred"] is False, row
+    # and WHY: compliance, not a blocked render
+    assert row["reason"] == "main_complied", row
+    assert row["outcome"] == "main_complied", row
+    assert row["delivered"] is True, row
     print("\n(A1) provenance:", json.dumps(row, sort_keys=True))
 
 

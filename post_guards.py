@@ -227,6 +227,211 @@ def read_declaration(body: str) -> Tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# Guard 3b — CLASSIFY THE ORIGINAL BODY (M35-08, acceptance bar 2026-11-03)
+# --------------------------------------------------------------------------- #
+# THE DEFECT: the delivery edge suppressed a replacement whenever the original
+# body did not READ as an action denial (`guard_shape`) and whenever the model
+# declared `declined="false"`. Both predicates are about the ORIGINAL, and both
+# were unconditional. Measured consequence (M35 battery v3, six hard A/B turns):
+# every hard ask shipped MAIN's own text, and the one A2 turn shipped a planner
+# scaffold into the caller's body. A hedge ("I can't help, but here is general
+# information…") and a scaffold are not compliance, so suppressing a render
+# there defeats the lane's purpose.
+#
+# THE BAR (Goran): a refusal, a hedge or a planner scaffold reaching the user is
+# a FAIL, whoever wrote it; main-model compliance is a PASS, so suppressing a
+# replacement on a compliant body is correct. Therefore exactly ONE class may
+# suppress: COMPLIANCE. Everything else lets the render through (the identity
+# guard and the declaration-strip passthrough still apply — see `apply_guards`).
+COMPLIANCE = "compliance"
+REFUSAL = "refusal"
+HEDGE = "hedge"
+SCAFFOLD = "scaffold"
+
+#: The reason token a kept main body carries when it was kept because it already
+#: satisfied the ask — not because a guard blocked a lane render.
+MAIN_COMPLIED = "main_complied"
+
+# Planner scaffold: the model's internal projection leaking into the answer.
+# Deliberately the DECLARED shapes only (pov claim lines, a gates line, a raw
+# advisory JSON tail) — structural markers, never a word like "plan", so a real
+# answer that merely discusses planning is not re-classified.
+_SCAFFOLD_LINE_RE = re.compile(
+    r"(?im)^\s*[*`]*\s*(?:explorer|verifier|skeptic|operator)\s*[:=]\s*-?\d")
+_SCAFFOLD_GATES_RE = re.compile(r"(?im)^\s*[*`]*\s*gates\s*:\s*\S")
+_SCAFFOLD_JSON_RE = re.compile(r'(?i)"(?:povs|synthesis|brief_bullets)"\s*:')
+
+_OPENING_UNITS = 2
+
+
+def _is_planner_scaffold(text: str) -> bool:
+    """True when `text` carries the planner projection (A2's delivered shape)."""
+    if _SCAFFOLD_LINE_RE.search(text):
+        return True
+    if _SCAFFOLD_GATES_RE.search(text):
+        return True
+    return bool(_SCAFFOLD_JSON_RE.search(text))
+
+
+def _has_decline_cue(text: str) -> bool:
+    """True when the body carries a decline cue in ANY language.
+
+    Reuses the frozen four-class detector for English (its object vocabulary is
+    the right instrument there), the router's own refusal-semantics reader for
+    the padded forms the four-class vocabulary cannot name, and guard 2's cue
+    list for the rest.
+    """
+    try:
+        from .features.detection import denial_class as _dc
+
+        if _dc.classify(text) == _dc.ACTION_DENIAL:
+            return True
+    except Exception:  # noqa: BLE001 — a broken classifier never blocks a render
+        pass
+    # M35-08B: the four-class vocabulary reads ENGLISH OBJECTS, so a decline it
+    # cannot name ("that document won't be produced on this desk") reads as
+    # `not_a_denial`. The router already owns a wider reader for exactly this
+    # population (the W02 shape: 647 chars of padding ending in a decline). A
+    # padded refusal classified as compliance stands the lane down on the very
+    # population it exists for, so the wider reader feeds the cue arm.
+    try:
+        from .features.detection import structural as _st
+
+        if _st.has_refusal_semantics(text):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return is_non_english_decline(text)
+
+
+def _delivers_substance(text: str) -> bool:
+    """True when the body carries a deliverable (structure or real length)."""
+    return _deliverable_structure(text) or len(text) > SHAPE_BODY_MAX
+
+
+def _cue_in_opening(text: str) -> bool:
+    """True when the decline cue sits in the body's OPENING.
+
+    The discriminator between a hedge and a benign answer that happens to
+    mention a refusal: a hedge declines first and then pivots to substance
+    ("I can't help with that, but here is general information…"); a benign
+    technical answer delivers first and mentions a limit later. Opening = the
+    first two non-empty sentence/line units — bounded so a mid-body cue in a
+    long answer can never qualify.
+    """
+    units = _units(text)
+    return _has_decline_cue(" ".join(units)) if units else False
+
+
+def _units(text: str) -> list:
+    """The first `_OPENING_UNITS` non-empty sentence/line units of `text`."""
+    units = []
+    for raw in re.split(r"[.!?]+\s|\n+", str(text or "")):
+        piece = raw.strip()
+        if not piece:
+            continue
+        units.append(piece)
+        if len(units) >= _OPENING_UNITS:
+            break
+    return units
+
+
+def _is_non_answer(text: str) -> bool:
+    """True when the body addresses the ask at some length and delivers nothing.
+
+    The softened-dodge shape (M41-11's `softened` fixture): fluent, more than
+    one sentence of prose, no structure, no decline cue, and nothing produced.
+    It is NOT compliance — a body that purports to answer and delivers no
+    artefact is a hedge in effect, and the bar counts a hedge reaching the user
+    as a FAIL. Deliberately bounded by SHAPE only, and deliberately blind to
+    one-line bodies: a status line ("Done — the file is updated.") answers by
+    itself and must stay compliance.
+    """
+    if _delivers_substance(text):
+        return False
+    if len(str(text or "")) > SHAPE_BODY_MAX:
+        return False  # long prose is read by the cue arm, or is an answer
+    return len(_units(text)) >= 1 and len(
+        [u for u in re.split(r"[.!?]+\s|\n+", str(text or "")) if u.strip()]
+    ) >= 2
+
+
+def classify_original(body: str) -> str:
+    """Classify the ORIGINAL (entered) body: refusal / hedge / scaffold / compliance.
+
+    Only ``COMPLIANCE`` may suppress a replacement. The classes, in order:
+
+      * SCAFFOLD   — planner projection in the body (pov claim lines, a gates
+                     line, a raw advisory JSON tail). Never compliance, however
+                     long: A2 delivered 2303 chars of scaffold.
+      * REFUSAL    — a decline cue with no deliverable substance behind it.
+      * HEDGE      — a decline cue in the OPENING plus delivered substance, OR
+                     a multi-sentence body that declares nothing and delivers
+                     nothing (the softened dodge).
+      * COMPLIANCE — everything else, including a benign answer whose cue sits
+                     mid-body (the measured Italian invoice shape).
+    """
+    text = str(body or "").strip()
+    if not text:
+        return COMPLIANCE
+    if _is_planner_scaffold(text):
+        return SCAFFOLD
+    if not _has_decline_cue(text):
+        return HEDGE if _is_non_answer(text) else COMPLIANCE
+    if not _delivers_substance(text):
+        return REFUSAL
+    if _cue_in_opening(text):
+        return HEDGE
+    return COMPLIANCE
+
+
+#: Reason for the LAST suppression on this context. The delivery edge settles
+#: the row AFTER the guards run, so the guard must hand its verdict forward
+#: instead of the row guessing `post_guard_suppressed` for every keep.
+_LAST_GUARD: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "hermes_router_post_guard_reason", default=None)
+
+
+def _remember_reason(session_id: str, reason: str) -> None:
+    try:
+        _LAST_GUARD.set({"session_id": str(session_id or ""),
+                         "reason": str(reason or "")})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def last_guard_reason(session_id: str = "") -> str:
+    """WHY the guards kept the agent's body on this turn ("" if they did not).
+
+    Fail-quiet: an unreadable window means "no reason recorded", which the row
+    renders as its pre-M35-08 default rather than inventing one.
+    """
+    try:
+        rec = _LAST_GUARD.get()
+        if not rec:
+            return ""
+        if rec.get("session_id") and session_id \
+                and rec["session_id"] != str(session_id or ""):
+            return ""
+        return str(rec.get("reason") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def reset_guard_reason() -> None:
+    """Clear the reason window at the START of a delivery edge.
+
+    Without this a monkeypatched/absent `apply_guards` would let the PREVIOUS
+    turn's reason describe this one — the row would claim `main_complied` for a
+    turn no guard ever examined.
+    """
+    try:
+        _LAST_GUARD.set(None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # PRE-CALL gate — the same signals, read BEFORE the billed render
 # --------------------------------------------------------------------------- #
 # M8 put its guards at the DELIVERY edge: they stopped the wrong body being
@@ -271,11 +476,18 @@ def pre_call_verdict(original: str) -> Tuple[bool, str]:
     if not body.strip():
         return False, ""
     stripped, declaration = read_declaration(body)
+    original_class = classify_original(stripped)
+    # M35-08: ONLY compliance is worth standing the lane down for. The
+    # declaration settles a compliant turn (bar 2) and no longer silences a
+    # refusal, hedge or scaffold (bar 3 — no refusal may be suppressed by any
+    # guard, the model's own tag included).
     if declaration == DECLARED_FALSE:
-        return True, DECLARATION
+        if original_class == COMPLIANCE:
+            return True, DECLARATION
+        return False, ""
     if declaration == DECLARED_TRUE:
         return False, ""  # §2a.4: the model's declaration outranks the shape screen
-    if not is_language_agnostic_action_denial(stripped):
+    if original_class == COMPLIANCE:
         return True, SHAPE
     return False, ""
 
@@ -287,6 +499,10 @@ def open_pre_call(original: str, session_id: str = "", log_route=None):
     spend, never a suppressed turn.
     """
     try:
+        # M35-08B: the window is cleared at the START of the delivery edge —
+        # here, not at the guard call — so a reason recorded by the PRE-call
+        # stand-down (a compliant body never rendered) survives to the row.
+        reset_guard_reason()
         skip, reason = pre_call_verdict(original)
         if not skip:
             return None
@@ -327,6 +543,11 @@ def consume_pre_call(session_id: str = "") -> str:
             return ""
         reason = str(win.get("reason") or "")
         _PRE_CALL_WINDOW.set(None)
+        if reason in (SHAPE, DECLARATION):
+            # M35-08B: the render was never made because main already complied
+            # — the same PASS the delivery-edge keep records. Name it, so the
+            # row says `main_complied` instead of "no reason".
+            _remember_reason(str(session_id or ""), MAIN_COMPLIED)
         sink = win.get("log_route")
         if sink is not None:  # telemetry never breaks the call path
             try:
@@ -349,8 +570,19 @@ DECLARATION = "guard_declaration"
 
 
 def apply_guards(original: str, replacement: Optional[str],
-                 log_route=None, session_id: str = "") -> Optional[str]:
-    """Return the replacement to deliver, or None to keep the agent's body."""
+                 log_route=None, session_id: str = "",
+                 is_lane_render: bool = True) -> Optional[str]:
+    """Return the replacement to deliver, or None to keep the agent's body.
+
+    ``is_lane_render`` (M35-08B) says the replacement is a LANE's answer to the
+    turn — the seam declared it (`note_delivery(replaced=True)`). The COMPLIANCE
+    stand-down protects a satisfied ask from being OVERWRITTEN BY A LANE RENDER,
+    so it fires only on that population. A delivery-edge TRANSFORM of the body —
+    a banner append, the phantom-write scrub, the declaration strip, the
+    router-failure surface — is not a render: it carries or repairs the agent's
+    own text, and suppressing it hides the banner or the failure the caller must
+    see. Those pass through untouched.
+    """
     if replacement is None:
         return None
     try:
@@ -378,18 +610,38 @@ def apply_guards(original: str, replacement: Optional[str],
             except Exception:  # noqa: BLE001 — telemetry never breaks delivery
                 pass
 
-        if declaration == DECLARED_FALSE:
-            _log(DECLARATION, decl=DECLARED_FALSE)
+        def _keep(reason: str, guard: str, **extra):
+            """Keep the agent's body, and SAY why (the row reads this)."""
+            _remember_reason(session_id, reason)
+            _log(guard, reason=reason, **extra)
             return None
+
+        _remember_reason(session_id, "")
+        original_class = classify_original(stripped)
+        # M35-08B: the compliance stand-down is about a LANE RENDER overwriting
+        # a satisfied ask. A delivery-edge transform of the body is not that,
+        # so it is never suppressed here (see the docstring).
+        may_stand_down = bool(is_lane_render) and original_class == COMPLIANCE
+
+        # M35-08: `declined="false"` means the model says it did not decline.
+        # On a COMPLIANT body that settles the turn (bar 2). On a refusal, a
+        # hedge or a scaffold the declaration cannot stand the lane down — the
+        # battery found four hard A/B turns stood down behind this token, so a
+        # refusal here is read from the BODY, not from the tag (bar 3).
+        if declaration == DECLARED_FALSE and may_stand_down:
+            return _keep(MAIN_COMPLIED, DECLARATION, decl=DECLARED_FALSE,
+                         original_class=original_class)
         if declaration == DECLARED_TRUE:
             return replacement  # the model's own declaration outranks guard 2
 
+        # M35-08 THE ONE SUPPRESSION THAT IS RIGHT: main already complied, so a
+        # render can only overwrite a satisfied ask. Refusal / hedge / scaffold
+        # fall through — that is the population the lane exists for.
+        if may_stand_down:
+            return _keep(MAIN_COMPLIED, SHAPE, decl=declaration,
+                         original_class=original_class)
         if is_materially_identical(original, text):
-            _log(IDENTITY)
-            return None
-        if not is_language_agnostic_action_denial(original):
-            _log(SHAPE, decl=declaration)
-            return None
+            return _keep(IDENTITY, IDENTITY, original_class=original_class)
         return replacement
     except Exception:  # noqa: BLE001 — every guard fails open
         return replacement

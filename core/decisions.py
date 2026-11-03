@@ -161,7 +161,8 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                     body_chars: int = 0, delivered_chars: int = 0,
                     deferred: bool = False,
                     deferred_reason: str = "",
-                    skip_reason: str = "") -> bool:
+                    skip_reason: str = "",
+                    reason: str = "") -> bool:
     """Enqueue one decision record. ASYNC — never blocks the turn beyond the
     serialize + put_nowait (O(1)); overflow drops (bounded). §12-6: a
     non-empty fail_class NEVER coexists with a policy-rejection outcome —
@@ -237,6 +238,11 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                 # the seam). Empty on every turn the seam actually saw, so
                 # "skipped with a reason" can never be confused with "decided".
                 "skip_reason": str(skip_reason or "")[:40],
+                # M35-08: WHY the agent's own body was kept when it was.
+                # "main_complied" = the main body already satisfied the ask
+                # (a PASS, not a blocked render); other tokens name the guard
+                # that dropped a lane render.
+                "reason": str(reason or "")[:40],
             })
             # M35-02: WIRE TRUTH, separate from the decision.
             # `replaced` says the seam DECIDED to swap the body; `delivered`

@@ -58,6 +58,11 @@ _EPHEMERAL_THREAD_MARKS = ("bg-review", "curator-review")
 
 LANE_MAIN = "main"
 
+#: M35-08: the reason token for the one KEEP that is not a failure — the main
+#: body already satisfied the ask (acceptance bar 2). Kept as a literal rather
+#: than an import from `post_guards` so the row path has no cycle.
+MAIN_COMPLIED = "main_complied"
+
 #: The host plugin runner abandons an in-flight ``transform_llm_output`` at
 #: 30 s ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3).
 #: A render that settles at or after that wall time cannot reach the response
@@ -144,7 +149,7 @@ class TurnProvenance:
                  "intent_source", "declaration", "lane", "replaced",
                  "replacement_path", "outcome", "body_chars", "_emitted",
                  "_predicate", "_action", "delivered", "delivery_failure",
-                 "deferred", "deferred_reason", "skip_reason")
+                 "deferred", "deferred_reason", "skip_reason", "reason")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -179,6 +184,20 @@ class TurnProvenance:
         # lane decided it and never that rule 6 delivered it.
         self.deferred = False
         self.deferred_reason = ""
+        # M35-08: WHY the delivery edge kept the agent's own body, when it did.
+        # "" = no keep; "main_complied" = the bar-2 case (the main body already
+        # satisfied the ask); "guard_identity" / "post_guard_suppressed" = a
+        # guard blocked a lane render.
+        self.reason = ""
+
+    def route_declared(self) -> bool:
+        """True when the table's action declared a ROUTE (not a plain deliver).
+
+        Used by the delivery edge to decide whether a kept body is the bar-2
+        `main_complied` keep (a route was declared and main's body shipped) or
+        an ordinary benign delivery, whose row keeps its `delivered` outcome.
+        """
+        return str(self._action or "").startswith("route")
 
     # -- facts the seam supplies ------------------------------------------
     def decision(self, *, rule_row: int = 0, rule_predicate: str = "",
@@ -314,7 +333,8 @@ def note_delivery(**kwargs: Any) -> None:
 
 
 def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
-                    log=None, session_id: str = "") -> str:
+                    log=None, session_id: str = "",
+                    suppress_reason: str = "") -> str:
     """Reconcile the turn's row with the body that will ACTUALLY be returned.
 
     The seam decides a replacement (``replaced=True``) and the delivery edge
@@ -323,10 +343,16 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
     carries the main body, and a row that keeps saying ``replaced=True`` is
     the M35-02 defect — a ledger the caller's bytes contradict.
 
+    ``suppress_reason`` (M35-08) is the guard's own verdict for WHY the main
+    body was kept. It separates the two keep cases the ledger must not blur:
+    ``main_complied`` — the main body already satisfied the ask, so keeping it
+    is the correct outcome (bar 2, no failure) — from any other reason, where a
+    lane render was blocked and the suppression is the failure it names.
+
     Returns the named failure ("" when the turn's claim survives). On a guard
     drop the row is rewritten to the truth it can defend: lane=main,
-    replaced=False, delivered=True (the main body IS what shipped), outcome
-    names the suppression. Never raises.
+    replaced=False, the reason token, and a delivered flag that says whether
+    the render reached the wire. Never raises.
     """
     if turn is None:
         return ""
@@ -336,15 +362,54 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
         # infer: the turn is settled, and a later None must not relabel it.
         if turn.delivered is False and turn.replaced:
             return turn.delivery_failure or "render_not_delivered"
+        if final is None and not turn.replaced \
+                and str(suppress_reason or "") == MAIN_COMPLIED:
+            # M35-08B: the PRE-call stand-down never made a render (the body
+            # already satisfied the ask), so nothing was replaced and nothing
+            # was blocked. It is still a PASS, and the row must say so — the
+            # same token a guarded keep writes, so both stand-downs read alike.
+            turn.lane = LANE_MAIN
+            turn.reason = MAIN_COMPLIED
+            turn.outcome = MAIN_COMPLIED
+            turn.delivered = True
+            turn.delivery_failure = ""
+            if log is not None:
+                try:
+                    log("POST", event_detail="main_body_kept",
+                        reason=MAIN_COMPLIED, billed=0,
+                        body_chars=int(turn.body_chars or 0),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            return ""
         if turn.replaced and final is None:
             # `replaced` keeps its schema-v2 meaning — the DELIVERED body came
             # from a lane render — so a guard that keeps the agent's body makes
-            # it False. `delivered` keeps its M35-02 meaning — the render the
-            # seam selected reached the response surface — so it is False too.
-            # What ships is the main body, and the failure is named.
+            # it False.
             turn.replaced = False
             turn.lane = LANE_MAIN
             turn.replacement_path = ""
+            turn.reason = str(suppress_reason or "")
+            if turn.reason == MAIN_COMPLIED:
+                # M35-08 bar 2: main already complied. Nothing was blocked —
+                # the main body IS the correct delivery, byte for byte.
+                turn.delivered = True
+                turn.outcome = MAIN_COMPLIED
+                turn.delivery_failure = ""
+                if log is not None:
+                    try:
+                        log("POST", event_detail="main_body_kept",
+                            reason=MAIN_COMPLIED,
+                            body_chars=int(turn.body_chars or 0),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                # The caller still needs the passthrough body (the render may
+                # have replaced it in the store): the same token drives that.
+                return "post_guard_suppressed"
+            # `delivered` keeps its M35-02 meaning — the render the seam
+            # selected reached the response surface — so it is False here.
+            # What ships is the main body, and the failure is named.
             turn.delivered = False
             turn.outcome = "post_guard_suppressed"
             turn.delivery_failure = "post_guard_suppressed"
@@ -354,6 +419,7 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
                         reason="post_guard_suppressed",
                         severity="warning",
                         replaced_was=True,
+                        guard_reason=str(suppress_reason or ""),
                         body_chars=int(turn.body_chars or 0),
                         session_id=session_id)
                 except Exception:  # noqa: BLE001 — telemetry never breaks delivery
@@ -409,6 +475,9 @@ def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, A
         "deferred_reason": str(getattr(turn, "deferred_reason", "") or ""),
         # M35-04: the NAMED reason a skipped turn produced no decision.
         "skip_reason": str(getattr(turn, "skip_reason", "") or ""),
+        # M35-08: WHY the agent's own body was kept when it was
+        # ("main_complied" = the bar-2 keep), "" when the lane's body shipped.
+        "reason": str(getattr(turn, "reason", "") or ""),
     }
 
 
@@ -442,7 +511,7 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
                 "lane", "turn_id", "gate_verdict", "gate_reason",
                 "intent_class", "intent_source", "replaced", "delivered",
                 "replacement_path", "body_chars", "delivered_chars",
-                "deferred", "deferred_reason", "skip_reason")},
+                "deferred", "deferred_reason", "skip_reason", "reason")},
         ))
     except Exception:  # noqa: BLE001 — observability never breaks delivery
         return False

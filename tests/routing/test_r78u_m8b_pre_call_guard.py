@@ -148,15 +148,32 @@ def test_declared_true_outranks_the_pre_call_shape_screen():
     assert "declined" not in (out or "").lower()
 
 
-def test_declared_false_makes_no_call():
-    """`declined="false"` settles the turn before any provider request."""
+def test_declared_false_settles_a_compliant_body():
+    """`declined="false"` settles a COMPLIANT turn before any provider request.
+
+    M35-08 (bar 2): a compliant body is a pass, so the model's own "not
+    declined" stands and no render is billed. The same tag on a REFUSAL no
+    longer stands the lane down — no refusal may be suppressed by any guard
+    (bar 3) — which `test_refusal_with_declared_false_still_calls` pins.
+    """
+    body = BENIGN_IT + "\n" + TAG_F
+    assert pg.pre_call_verdict(body) == (True, pg.DECLARATION)
     _prime("m8b-decl-false")
-    body = EN_REFUSAL + "\n" + TAG_F
     with mock.patch.object(plugin.router, "_model_attempt",
                            return_value=(RENDER, "")) as billed:
         out = _post("m8b-decl-false", body)
     assert billed.call_count == 0
-    assert out == EN_REFUSAL
+    # The tag strip trims the trailing newline the tag was appended after; the
+    # delivered CONTENT is main's own, byte for byte.
+    assert out.strip() == BENIGN_IT.strip()
+    assert RENDER not in (out or "")
+
+
+def test_refusal_with_declared_false_still_calls():
+    """Bar 3: the model's `declined="false"` cannot silence a refusal."""
+    body = EN_REFUSAL + "\n" + TAG_F
+    assert pg.pre_call_verdict(body) == (False, "")
+    assert pg.apply_guards(body, RENDER) == RENDER
 
 
 # --------------------------------------------------------------------------- #
@@ -222,4 +239,6 @@ def test_identity_guard_still_runs_at_the_edge_when_the_call_was_made():
     with mock.patch.object(plugin.router, "_model_attempt",
                            return_value=(body, "")):
         out = _post("m8b-identity", body)
-    assert out is None
+    # Since M35-02 the kept-body path returns the agent's text; the identity
+    # guard's property is that the re-said body is not treated as a swap.
+    assert out == body

@@ -199,15 +199,30 @@ def on_transform_llm_output_guarded(**kwargs):
     # (`final`), then the row is written from it, so the ledger can only ever
     # describe bytes that actually reach the response surface.
     _original = kwargs.get("response_text", "") or ""
+    _guard_reason = ""
     try:
         from .. import post_guards as _pg
 
+        # NB (M35-08B): the reason window is cleared by `open_pre_call`, at the
+        # start of this delivery edge. Clearing it here would erase the reason a
+        # PRE-call stand-down recorded for a compliant body.
         final = _pg.apply_guards(
             _original,
             out,
             log_route=_hub_log_route(),
             session_id=str(kwargs.get("session_id") or ""),
+            # M35-08B: only a LANE RENDER may be stood down for a compliant
+            # body. The provenance already records whether the seam replaced
+            # the turn with a lane's answer; a banner append, the phantom-write
+            # scrub or a router-failure surface never set it, and must ship.
+            is_lane_render=bool(getattr(_turn, "replaced", False)),
         )
+        if final is None:
+            # M35-08: the guard's verdict travels with the body, so the row can
+            # say WHY main's body was kept instead of defaulting every keep to
+            # a blocked-render failure.
+            _guard_reason = _pg.last_guard_reason(
+                str(kwargs.get("session_id") or ""))
     except Exception:  # noqa: BLE001 — guards fail open to the orchestrator
         final = out
     _failure = ""
@@ -215,15 +230,23 @@ def on_transform_llm_output_guarded(**kwargs):
         try:
             _failure = _prov.settle_delivery(
                 _turn, final, log=_hub_log_route(),
-                session_id=str(kwargs.get("session_id") or ""))
+                session_id=str(kwargs.get("session_id") or ""),
+                suppress_reason=_guard_reason)
         except Exception:  # noqa: BLE001
             _failure = ""
-    if _failure == "post_guard_suppressed":
+    _kept_main = bool(
+        _turn is not None
+        and str(getattr(_turn, "reason", "") or "") == "main_complied"
+        and _turn.route_declared())
+    if _failure in ("post_guard_suppressed", "main_complied") or (
+            final is None and _kept_main):
         # The guard kept the agent's body, so the orchestrator's replacement is
         # NOT delivered. `None` would tell the host "deliver the body you gave
         # me" — the TAGGED original — and re-leak routing metadata the seam
         # already stripped. The delivered text is the seam's own passthrough:
-        # the original minus the declaration tag.
+        # the original minus the declaration tag. The `main_complied` keep
+        # takes the same path: the bytes on the wire are main's, named, not a
+        # host default.
         try:
             from ..features.detection import declaration as _decl_g
 
@@ -237,20 +260,22 @@ def on_transform_llm_output_guarded(**kwargs):
         # The store was rewritten to the render by the seam; the wire keeps
         # the agent's body. Put the row back so transcript == delivery (the
         # M34-04 contract) instead of leaving the render in state.db as a
-        # turn the user never read.
-        try:
-            from ..core import canonical as _can_g
+        # turn the user never read. A `main_complied` keep had no render to
+        # undo, so the store is already the delivered body.
+        if _failure == "post_guard_suppressed":
+            try:
+                from ..core import canonical as _can_g
 
-            if _can_g.rewrite_persisted_turn(
-                    str(kwargs.get("session_id") or ""),
-                    str(out or ""), str(final or "")):
-                _lg = _hub_log_route()
-                if _lg is not None:
-                    _lg("POST", event_detail="persisted_body_restored",
-                        reason="render_suppressed",
-                        session_id=str(kwargs.get("session_id") or ""))
-        except Exception:  # noqa: BLE001 — restore never breaks delivery
-            pass
+                if _can_g.rewrite_persisted_turn(
+                        str(kwargs.get("session_id") or ""),
+                        str(out or ""), str(final or "")):
+                    _lg = _hub_log_route()
+                    if _lg is not None:
+                        _lg("POST", event_detail="persisted_body_restored",
+                            reason="render_suppressed",
+                            session_id=str(kwargs.get("session_id") or ""))
+            except Exception:  # noqa: BLE001 — restore never breaks delivery
+                pass
     # M35-04 — THE DELIVERY BOUNDARY. Whatever produced `final` (lane render,
     # agent body, guard-suppressed passthrough, early bail), the bytes that
     # leave this function are scrubbed of marker text here. A surviving
