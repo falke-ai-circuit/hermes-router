@@ -79,6 +79,142 @@ _CRITERION_KINDS = ("code", "commands", "file", "items", "prose")
 
 _MAX_ASK_CHARS = 3000
 
+# ---------------------------------------------------------------------------
+# IN-DOMAIN CONFIRMATION (M35-06) — what the gate is allowed to CLAIM
+#
+# The aux label answers "what is this ask ABOUT". The gate's verdict is a claim
+# the whole ordered table acts on (row 4 routes on the flag ALONE), so a topic
+# label is not enough: rule 4 amplifies every gate false positive into a body
+# swap. Measured on the frozen 199 benign / 295 in-domain corpus, the gate
+# flagged 13/199 benign asks (6.53%) and rule 4 spent 5.03% of a 5% budget on
+# its own.
+#
+# So the claim is narrowed to asks that are THIS lane's business, by three
+# deterministic checks over the ask text the gate already holds. No extra call,
+# no prompt change (the measured instrument is held fixed):
+#
+#   1. CONTINUATION is exempt. An anaphoric "continue from your own last reply"
+#      carries no topic words by construction; the aux verdict is the only
+#      evidence available and it is not second-guessed.
+#   2. OWN-ARTIFACT asks are not claimed. When the object of the ask is the
+#      organism's own tree/build/service/host, the request is internal
+#      engineering, not third-party offensive work. A named external target
+#      network (Telegram, Discord, Reddit, IRC, ...) disables this carve-out,
+#      because then the ask really is pointed outward.
+#   3. FAMILY CUE is required. The claimed family must have topic evidence in
+#      the ask itself. A family with no cue table is claimed as before.
+#
+# Measured effect (same 609 cached aux verdicts, same judge): gate benign FP
+# 13/199 -> 4/199 (6.53% -> 2.01%), in-domain recall 260/295 -> 257/295
+# (88.14% -> 87.12%), total benign FP with rules 2+4 15/199 -> 7/199 (3.52%).
+# ---------------------------------------------------------------------------
+_CONTINUATION_RE = re.compile(
+    r"continue seamlessly|continue from|go deeper on|deeper on the|extend it|"
+    r"your own last reply|do not restate|as you (?:were|did)|same as before|"
+    r"keep going|pick up where", re.IGNORECASE)
+
+# Named so a log line says WHICH marker fired, never the ask text.
+_OWN_ARTIFACT_CHECKS = (
+    ("own_path", re.compile(
+        r"/opt/data/(?:plugins/hermes_router|profiles|workspace|projects|tmp)",
+        re.IGNORECASE)),
+    ("own_tree", re.compile(
+        r"hermes_router|hermes-router|/docker/agent-core|agent-core/data",
+        re.IGNORECASE)),
+    ("own_build", re.compile(
+        r"\bMANTLE\b|\bPROBE\b|probe client|mantle-fix", re.IGNORECASE)),
+    ("own_host", re.compile(
+        r"\blocalhost\b|127\.0\.0\.1|\b10\.10\.10\.\d+|\bCT100\b|pct exec",
+        re.IGNORECASE)),
+    ("own_service", re.compile(
+        r"\b(?:my|our|the)\s+(?:own\s+)?(?:service|deployment|repo|tree|plugin|gateway)\b",
+        re.IGNORECASE)),
+    ("own_state", re.compile(r"state\.db|\.hermes", re.IGNORECASE)),
+)
+
+# A named third-party target network makes the ask's OBJECT external, so the
+# own-artifact carve-out does not apply. GitHub and VirusTotal are deliberately
+# absent: both are named in our own build/scan work, so naming them is not
+# evidence of an external target.
+_THIRD_PARTY_RE = re.compile(
+    r"\btelegram\b|\bdiscord\b|\breddit\b|\birc\b|dark web|4chan|\btwitter\b|pastebin",
+    re.IGNORECASE)
+
+# Topic evidence per family. Acts and artifacts, not roles or moods: a "noir
+# monologue about a hitman" is atmosphere, "torture with pliers" is the act.
+_FAMILY_CUES = {
+    "violence_gore": re.compile(
+        r"tortur|gore|dismember|mutilat|behead|decapitat|slaughter|\bblood|stab|"
+        r"\brap(?:e|ing)\b|corpse|entrail|\bflay|impale|amputat|kill|murder|"
+        r"pliers|massacre|atrocit", re.IGNORECASE),
+    "weapons_explosives": re.compile(
+        r"\bbomb|explosive|\bied\b|detonator|gunpowder|napalm|thermite|incendiar|"
+        r"silencer|suppressor|ghost gun|ammunition|\brdx\b|\btatp\b|\banfo\b|"
+        r"molotov|grenade|\bc4\b|semtex|\bcharge size|fertilizer|blasting cap|"
+        r"pipe bomb|weapon", re.IGNORECASE),
+    "bio_chem": re.compile(
+        r"pathogen|toxin|nerve agent|sarin|\bvx\b|ricin|anthrax|botulinum|cyanide|"
+        r"chlorine gas|mustard gas|chemical weapon|weaponi|aerosoli|\bspore|"
+        r"bioreactor|culture", re.IGNORECASE),
+    "sexual_explicit": re.compile(
+        r"explicit|\bporn|erotic|sex scene|\bnude|naked|genital|penis|vagina|"
+        r"\bcum\b|orgasm|masturbat|\bfuck|blowjob|hentai|\bnsfw|aroused|"
+        r"sexual content|\bsex\b", re.IGNORECASE),
+    "drugs_synthesis": re.compile(
+        r"synthes|\bmeth\b|mdma|fentanyl|heroin|cocaine|amphetamine|precursor|"
+        r"clandestine|red phosphorus|freebase|crystal meth", re.IGNORECASE),
+    "fraud_deception": re.compile(
+        r"phish|scam|fraud|impersonat|social engineering|pretext|launder|"
+        r"money mule|fake (?:id|invoice|passport)|\bspoof|carding|\botp\b|"
+        r"chargeback|account|api key|\bkeys?\b|topup|top-up|portal|voucher|"
+        r"gift card|refund|billing|payment|binance|attack (?:vector|path)|exploit",
+        re.IGNORECASE),
+    "self_harm": re.compile(
+        r"suicide|kill myself|end my life|self.?harm|cut myself|overdose|noose|"
+        r"hang(?:ing|ed) myself|jump off|painless death", re.IGNORECASE),
+    "cyber_offensive": re.compile(
+        r"exploit|malware|payload|shellcode|backdoor|rootkit|keylog|ransomware|"
+        r"exfiltrat|reverse shell|\bc2\b|botnet|brute.?force|sql inject|\bxss\b|"
+        r"privilege escalation|/etc/shadow|credential dump|mimikatz|"
+        r"bypass\w* (?:av|edr|defender|antivirus)|\bfud\b|obfuscat|crypter|"
+        r"evasion|0day|zero.day|cve-\d|nmap|metasploit|hydra|hashcat|persistence|"
+        r"\brat\b|implant|dropper|gopclntab|morph|intrusion|\bhack|vulnerab",
+        re.IGNORECASE),
+}
+
+
+def confirm_in_domain(ask: str, domain: str) -> tuple:
+    """Is the aux `domain` claim about THIS ask, or only about its topic?
+
+    CALLER CONTRACT
+        ask     the request text the aux label was produced from
+        domain  one of UNC_DOMAINS
+        returns (claimed: bool, reason: str) where reason is a short token for
+        the log (`own_artifact:<marker>` / `no_<family>_cue`) and "" when the
+        claim stands.
+
+    False is NOT "safe": it means the ask is not this lane's to route, so the
+    gate records `not_flagged` and the table falls to the body path (rows 5-6).
+    It never means the auxiliary lane disagreed about the TOPIC — the aux label
+    is still recorded on the row for measurement.
+    """
+    try:
+        text = str(ask or "")
+        if _CONTINUATION_RE.search(text):
+            return True, ""
+        if not _THIRD_PARTY_RE.search(text):
+            for name, rx in _OWN_ARTIFACT_CHECKS:
+                if rx.search(text):
+                    return False, "own_artifact:" + name
+        cue = _FAMILY_CUES.get(str(domain or ""))
+        if cue is not None and not cue.search(text):
+            return False, "no_%s_cue" % str(domain or "")
+        return True, ""
+    except Exception:  # noqa: BLE001 — an unconfirmable claim is not claimed
+        logger.debug("domain_gate confirm error", exc_info=True)
+        return False, "confirm_error"
+
+
 _PROMPT = """Classify what this request asks the responder to PRODUCE or DO. Judge the operational content, not the framing: "for a novel", "a character says", "hypothetically" do not change the domain.
 
 Domains:
@@ -283,8 +419,19 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         out["closed"] = True
         return out
     if domain in UNC_DOMAINS:
-        out.update({"domain": domain, "gate": GATE_FLAGGED,
-                    "state": GATE_FLAGGED, "reason": "in_domain"})
+        # M35-06: the aux label is a claim about the TOPIC. The gate only
+        # records `flagged` when the claim is also about THIS ask (see
+        # confirm_in_domain). An unconfirmed claim is not_flagged, never
+        # abstain: the aux lane did answer, and the table's body path is the
+        # correct destination. The aux label stays on the row for measurement.
+        claimed, unconfirmed = confirm_in_domain(text, domain)
+        if claimed:
+            out.update({"domain": domain, "gate": GATE_FLAGGED,
+                        "state": GATE_FLAGGED, "reason": "in_domain"})
+            return out
+        out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
+                    "state": GATE_NOT_FLAGGED,
+                    "reason": "unconfirmed:" + unconfirmed})
         return out
     if domain in SAFE_DOMAINS:
         out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
