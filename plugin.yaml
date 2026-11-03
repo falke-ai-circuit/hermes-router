@@ -38,6 +38,7 @@ hooks:
   - transform_llm_output
   - transform_terminal_output
   - post_tool_call
+  - post_llm_call
 middleware:
   - llm_request
   - llm_execution

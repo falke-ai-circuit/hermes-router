@@ -12,6 +12,7 @@ import logging
 import sys as _sys
 
 from . import orchestration
+from . import turn_close
 
 # The hub logger is the PLUGIN ROOT module's logger — the registration
 # warning rows keep the exact logger name they had pre-move.
@@ -51,6 +52,57 @@ def _hub_log_route():
     """The plugin root's `_log_route`, or None outside a package context."""
     root = _sys.modules.get(_ROOT_NAME)
     return getattr(root, "_log_route", None) if root is not None else None
+
+
+#: M35-04 — the loud-failure body. Reached ONLY when marker text survived the
+#: strip: the turn is withheld rather than delivered, because routing metadata
+#: in a user's answer is a leak of internal plumbing, not a formatting wobble.
+WITHHELD_BODY = (
+    "[hermes-router] This turn was withheld: internal routing metadata reached "
+    "the delivery boundary and could not be removed. No answer text was "
+    "released. Re-run the ask."
+)
+
+
+def _sanitize_delivery(text, *, session_id: str = "") -> tuple:
+    """Strip marker text at the DELIVERY BOUNDARY. (body, outcome, marker).
+
+    The strip inside the orchestrator is one seam on ONE path; this one sits on
+    the edge where the bytes are settled, so it also covers the paths that never
+    entered the routing table (router disabled, guard fail-open, passthrough
+    early return). Well-formed tag lines are removed; a surviving fragment
+    (`<turn declined=…` truncated, malformed) withholds the whole body instead
+    of shipping it. Never raises: an unreadable body is delivered unchanged by
+    the caller's judgement, never by an exception.
+    """
+    try:
+        from ..features.detection import declaration as _decl
+
+        # `None` is the pass-through contract ("deliver the body you gave me"),
+        # not an empty body: sanitizing it to "" would blank the user's answer.
+        if text is None:
+            return None, "", ""
+        # Cheap fast path: no candidate marker ⇒ nothing to strip. The scan
+        # below is line-wise regex work on every delivered body, and the
+        # boundary sits on the delivery path.
+        if "<turn" not in str(text).lower():
+            return text, "", ""
+        clean, marker = _decl.scrub_markers(text)
+        if marker:
+            lg = _hub_log_route()
+            if lg is not None:
+                try:
+                    lg("POST", event_detail="marker_leak_withheld",
+                       reason="marker_survived_boundary_strip",
+                       marker=str(marker)[:32],
+                       severity="error",
+                       session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                    pass
+            return WITHHELD_BODY, "marker_leak_withheld", str(marker)
+        return clean, "", ""
+    except Exception:  # noqa: BLE001 — the boundary never breaks a turn
+        return text, "", ""
 
 
 @functools.wraps(orchestration.on_transform_llm_output)
@@ -100,6 +152,11 @@ def on_transform_llm_output_guarded(**kwargs):
         from ..core import turn_provenance as _prov_mod
 
         _prov = _prov_mod
+        # M35-04: the POST pass ARRIVED, so the turn the PRE edge armed is not
+        # a lost turn — disarm it before opening this pass's own record. Both
+        # the begin and the orchestration call below run inside the in-flight
+        # window so the PRE edge can predict a host skip (see `seam_blocked`).
+        _prov.disarm(str(kwargs.get("session_id") or ""))
         _turn = _prov.begin(session_id=str(kwargs.get("session_id") or ""),
                             model=str(kwargs.get("model") or ""),
                             body=str(kwargs.get("response_text") or ""))
@@ -107,15 +164,29 @@ def on_transform_llm_output_guarded(**kwargs):
         _prov = None
         _turn = None
     try:
+        if _prov is not None:
+            _prov.seam_enter()
         out = orchestration.on_transform_llm_output(**kwargs)
     except Exception:
         try:
             if _prov is not None:
+                # M35-04: an exception is not a decision. The turn is closed as
+                # SKIPPED with the error named, so a failed pass is attributable
+                # rather than reading like an ordinary delivery.
+                try:
+                    _turn.skip("seam_error")
+                except Exception:  # noqa: BLE001
+                    pass
                 _prov.finish(_turn, delivered=None, outcome="seam_error")
         except Exception:  # noqa: BLE001
             pass
         raise
     finally:
+        try:
+            if _prov is not None:
+                _prov.seam_exit()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if _pg is not None:
                 _pg.close_pre_call(_pc_token)
@@ -180,6 +251,35 @@ def on_transform_llm_output_guarded(**kwargs):
                         session_id=str(kwargs.get("session_id") or ""))
         except Exception:  # noqa: BLE001 — restore never breaks delivery
             pass
+    # M35-04 — THE DELIVERY BOUNDARY. Whatever produced `final` (lane render,
+    # agent body, guard-suppressed passthrough, early bail), the bytes that
+    # leave this function are scrubbed of marker text here. A surviving
+    # fragment turns the turn into a loud withholding, never a leak.
+    _marker_outcome = ""
+    try:
+        if final is None and _original:
+            # The host is being told "deliver the body you gave me" — so the
+            # ENTRY text is what ships, and it is the one a dropped replacement
+            # leaves unexamined (the M35-02 identity-rewrite guard path). Scrub
+            # it too; returning None while a marked original ships is the A2
+            # leak with extra steps.
+            _orig_clean, _orig_marker, _ = _sanitize_delivery(
+                _original, session_id=str(kwargs.get("session_id") or ""))
+            if _orig_marker:
+                final = _orig_clean
+                _marker_outcome = "marker_leak_withheld"
+            elif str(_orig_clean) != str(_original):
+                final = _orig_clean
+        else:
+            final, _marker_outcome, _marker_text = _sanitize_delivery(
+                final, session_id=str(kwargs.get("session_id") or ""))
+        if _marker_outcome and _prov is not None:
+            try:
+                _turn.withhold("marker_survived_boundary_strip")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001 — the boundary never breaks delivery
+        pass
     # M35-01: the provenance row, written on EVERY pass (routed or not) so a
     # benign turn's non-routing is on record and the lane can be graded.
     try:
@@ -232,6 +332,13 @@ def register(ctx) -> None:
     _reg("register.transform_llm_output",
          lambda: ctx.register_hook("transform_llm_output",
                                    on_transform_llm_output_guarded))
+    # M35-04: the TURN-CLOSE edge. post_llm_call observes the body the
+    # finalizer is about to deliver, and it runs even when the host skipped
+    # transform_llm_output — the edge that closes an otherwise unattributable
+    # turn and catches a marker that reached the delivered bytes.
+    _reg("register.post_llm_call",
+         lambda: ctx.register_hook("post_llm_call",
+                                   turn_close.on_post_llm_call))
     # R19.2 ADDENDUM 4: midturn decision hook SEAM 1 — fires after every
     # terminal tool result, mid-run. Registration failure never disables
     # other lanes.

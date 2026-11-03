@@ -66,6 +66,44 @@ LANE_MAIN = "main"
 #: Patchable for tests; the value is the host's contract, not a preference.
 HOST_HOOK_KILL_S = 30.0
 
+# ---------------------------------------------------------------------------
+# M35-04 TOTALITY — a turn cannot leave the seam without a row.
+#
+# THE DEFECT: the row was written by the transform hook's `finally`. When the
+# host never calls that hook — it skips an invocation after a slow/overlapping
+# one, and it does not call it at all on an interrupted or empty turn — the
+# turn produced NO row (M35 battery rows A2 and C1: two of ten turns absent
+# from the ledger, so nothing could say what became of them).
+#
+# THE FIX: the PRE middleware ARMS a pending turn, the POST edge DISARMS it,
+# and two close edges write the skipped row when POST never arrives — the
+# post_llm_call observer (which sees the delivered body) and a deadline
+# sweeper (which sees the turn nobody observed at all). One row, always.
+# ---------------------------------------------------------------------------
+SEAM_SKIPPED_ACTION = "skipped"
+SEAM_SKIPPED_OUTCOME = "seam_skipped"
+SKIP_REASON_UNNAMED = "unnamed_skip"
+SKIP_REASON_POST_SEAM_NOT_REACHED = "post_seam_not_reached"
+SKIP_REASON_NO_DELIVERY_EDGE = "no_delivery_edge_within_deadline"
+SKIP_REASON_SUPERSEDED = "superseded_by_next_turn"
+
+#: Longest a turn may sit armed before the sweeper closes it. The previous
+#: hook invocation is abandoned at HOST_HOOK_KILL_S, so a turn whose POST pass
+#: has not arrived well after that is not coming: 15 s of margin covers the
+#: finalizer writing the transcript and the platform emitting the body.
+SKIP_DEADLINE_S = HOST_HOOK_KILL_S + 15.0
+_PENDING_MAX = 1024
+_SWEEP_INTERVAL_S = 1.0
+
+_PENDING: Dict[str, Dict[str, Any]] = {}
+_PENDING_LOCK = threading.Lock()
+_SWEEPER_STARTED = False
+
+#: transform passes currently inside the seam, thread id -> monotonic start.
+#: Used ONLY to predict the host's skip at the PRE edge (see `seam_blocked`).
+_INFLIGHT: Dict[int, float] = {}
+
+
 
 def render_is_deliverable(elapsed_s: float,
                           budget_s: float = HOST_HOOK_KILL_S) -> bool:
@@ -106,7 +144,7 @@ class TurnProvenance:
                  "intent_source", "declaration", "lane", "replaced",
                  "replacement_path", "outcome", "body_chars", "_emitted",
                  "_predicate", "_action", "delivered", "delivery_failure",
-                 "deferred", "deferred_reason")
+                 "deferred", "deferred_reason", "skip_reason")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -128,6 +166,9 @@ class TurnProvenance:
         self._predicate = ""
         self._action = ""
         self._emitted = False
+        # M35-04: WHY a turn produced no routing decision — the named reason a
+        # `skipped` row carries. Empty on every turn the seam actually saw.
+        self.skip_reason = ""
         # M35-02: wire truth — None until the response surface is settled.
         # A replaced turn with delivered=None is NOT a delivered turn.
         self.delivered: Optional[bool] = None
@@ -196,6 +237,38 @@ class TurnProvenance:
         """
         self.deferred = True
         self.deferred_reason = str(reason or "gate_abstain")
+
+    def skip(self, reason: str = "") -> None:
+        """Name a turn that left the seam WITHOUT a POST pass (M35-04).
+
+        The M35 battery shipped two turns with no row at all (A2, C1) because
+        the host skipped the transform hook; there was nothing on disk to say
+        the turn had happened, let alone what became of it. This marks the
+        turn as SKIPPED — an outcome, with a reason — rather than silence.
+        Routing is untouched: the turn was never decided, and the row says so.
+        """
+        self._action = SEAM_SKIPPED_ACTION
+        self.outcome = SEAM_SKIPPED_OUTCOME
+        self.skip_reason = str(reason or SKIP_REASON_UNNAMED)
+        # No lane body was ever selected: what the user received was the
+        # agent's own path, unexamined.
+        self.lane = LANE_MAIN
+        self.replaced = False
+        self.replacement_path = ""
+
+    def withhold(self, reason: str = "") -> None:
+        """Name a turn whose body was WITHHELD at the delivery boundary.
+
+        Reached when marker text survived the strip: the bytes are not
+        delivered at all (a loud failure body goes out instead), so the row
+        must not read like an ordinary delivery of the agent's text.
+        """
+        self._action = "withheld"
+        self.outcome = "marker_leak_withheld"
+        self.skip_reason = str(reason or "marker_survived_boundary_strip")
+        self.lane = LANE_MAIN
+        self.replaced = False
+        self.replacement_path = ""
 
 
 def begin(*, session_id: str = "", model: str = "", body: str = "") -> TurnProvenance:
@@ -334,6 +407,8 @@ def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, A
         # benign one — so "deferred" never blurs into "the lane chose main".
         "deferred": bool(getattr(turn, "deferred", False)),
         "deferred_reason": str(getattr(turn, "deferred_reason", "") or ""),
+        # M35-04: the NAMED reason a skipped turn produced no decision.
+        "skip_reason": str(getattr(turn, "skip_reason", "") or ""),
     }
 
 
@@ -367,7 +442,7 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
                 "lane", "turn_id", "gate_verdict", "gate_reason",
                 "intent_class", "intent_source", "replaced", "delivered",
                 "replacement_path", "body_chars", "delivered_chars",
-                "deferred", "deferred_reason")},
+                "deferred", "deferred_reason", "skip_reason")},
         ))
     except Exception:  # noqa: BLE001 — observability never breaks delivery
         return False
@@ -376,3 +451,204 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
             _CURRENT.set(None)
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# M35-04 — the pending-turn registry: PRE arms, POST disarms, two edges close.
+# ---------------------------------------------------------------------------
+
+
+def _turn_id_for(session_id: str) -> str:
+    """The session's current turn identity ("" when unavailable). Never raises."""
+    try:
+        from . import state as _state
+
+        return str(_state.current_turn_id(session_id or ""))
+    except Exception:  # noqa: BLE001 — identity is a join key, never a gate
+        return ""
+
+
+def seam_enter() -> None:
+    """Mark this thread's transform pass as IN FLIGHT.
+
+    Cheap (one dict write) and only read by `seam_blocked`. The host kills a
+    callback at HOST_HOOK_KILL_S and then SKIPS later invocations while it is
+    still running; knowing that at the PRE edge is what lets the router stop
+    asking for a marker it can no longer strip.
+    """
+    try:
+        _INFLIGHT[threading.get_ident()] = time.monotonic()
+    except Exception:  # noqa: BLE001 — instrumentation never breaks a turn
+        pass
+
+
+def seam_exit() -> None:
+    """Clear this thread's in-flight mark."""
+    try:
+        _INFLIGHT.pop(threading.get_ident(), None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def seam_blocked(now: Optional[float] = None) -> bool:
+    """True when an earlier transform pass has already overrun the host kill.
+
+    That is the measured skip condition ("skipped after previous timeout or
+    while still running"): the host will not invoke this turn's transform hook,
+    so anything the router asked the model to emit can no longer be stripped.
+    Advisory only — it never blocks a turn, it only suppresses an unremovable
+    marker request.
+    """
+    try:
+        stamp = time.monotonic() if now is None else float(now)
+        return any(stamp - started >= HOST_HOOK_KILL_S
+                   for started in list(_INFLIGHT.values()))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def arm(session_id: str, *, body_chars: int = 0, model: str = "") -> bool:
+    """Arm the pending turn at the PRE edge. Idempotent per (session, turn).
+
+    Tool-loop passes of the SAME turn re-arm without touching the original
+    deadline — a long turn must not look like a lost one. A genuinely NEW turn
+    on a session that still holds an armed one closes the old as
+    `superseded_by_next_turn`: that turn left without a POST pass, and the row
+    says so instead of the entry being overwritten in silence.
+    """
+    sid = str(session_id or "")
+    if not sid:
+        return False
+    turn_id = _turn_id_for(sid)
+    superseded = None
+    try:
+        with _PENDING_LOCK:
+            prev = _PENDING.get(sid)
+            if prev is not None:
+                if str(prev.get("turn_id") or "") == turn_id:
+                    prev["body_chars"] = max(int(prev.get("body_chars") or 0),
+                                             int(body_chars or 0))
+                    return True
+                superseded = _PENDING.pop(sid)
+            _PENDING[sid] = {"session_id": sid, "turn_id": turn_id,
+                             "model": str(model or ""),
+                             "started": time.monotonic(),
+                             "body_chars": int(body_chars or 0)}
+            while len(_PENDING) > _PENDING_MAX:
+                _PENDING.pop(next(iter(_PENDING)))
+    except Exception:  # noqa: BLE001 — the registry never breaks a turn
+        return False
+    if superseded is not None:
+        _emit_skipped(superseded, SKIP_REASON_SUPERSEDED)
+    _ensure_sweeper()
+    return True
+
+
+def disarm(session_id: str) -> bool:
+    """Remove the pending turn (the POST edge arrived). True when one was armed."""
+    try:
+        with _PENDING_LOCK:
+            return _PENDING.pop(str(session_id or ""), None) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pending_count() -> int:
+    """How many turns are armed but not closed (observability + tests)."""
+    try:
+        with _PENDING_LOCK:
+            return len(_PENDING)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _emit_skipped(pending: Dict[str, Any], reason: str, *,
+                  delivered: Any = None, outcome: str = "") -> bool:
+    """Write the `skipped` row for an armed turn that never reached POST."""
+    try:
+        if is_ephemeral_seam():
+            return False
+        turn = TurnProvenance(session_id=str(pending.get("session_id") or ""),
+                              model=str(pending.get("model") or ""),
+                              turn_id=str(pending.get("turn_id") or ""))
+        turn.started = float(pending.get("started") or turn.started)
+        turn.body_chars = int(pending.get("body_chars") or 0)
+        turn.skip(reason)
+        return finish(turn, delivered=delivered,
+                      outcome=str(outcome or SEAM_SKIPPED_OUTCOME))
+    except Exception:  # noqa: BLE001 — observability never breaks delivery
+        return False
+
+
+def close_skipped(session_id: str, *, reason: str,
+                  delivered: Any = None, outcome: str = "") -> bool:
+    """Close an armed turn as `skipped`. No-op when POST already closed it.
+
+    Called from the post_llm_call observer (which sees the delivered body, so
+    the row can carry its real size) and from the sweeper (which sees a turn
+    nothing observed).
+    """
+    try:
+        with _PENDING_LOCK:
+            pending = _PENDING.pop(str(session_id or ""), None)
+    except Exception:  # noqa: BLE001
+        return False
+    if pending is None:
+        return False
+    return _emit_skipped(pending, reason, delivered=delivered, outcome=outcome)
+
+
+def sweep_once(now: Optional[float] = None) -> int:
+    """Close every armed turn older than SKIP_DEADLINE_S. Returns rows written."""
+    try:
+        stamp = time.monotonic() if now is None else float(now)
+        stale = []
+        with _PENDING_LOCK:
+            for sid, entry in list(_PENDING.items()):
+                started = float(entry.get("started") or stamp)
+                if stamp - started >= SKIP_DEADLINE_S:
+                    stale.append(_PENDING.pop(sid))
+    except Exception:  # noqa: BLE001
+        return 0
+    written = 0
+    for entry in stale:
+        if _emit_skipped(entry, SKIP_REASON_NO_DELIVERY_EDGE):
+            written += 1
+    return written
+
+
+def _sweeper_loop() -> None:
+    while True:
+        time.sleep(_SWEEP_INTERVAL_S)
+        try:
+            sweep_once()
+        except Exception:  # noqa: BLE001 — a sweeper error never kills the thread
+            pass
+
+
+def _ensure_sweeper() -> None:
+    """Start the one deadline sweeper (daemon, never joined)."""
+    global _SWEEPER_STARTED
+    try:
+        if _SWEEPER_STARTED:
+            return
+        with _PENDING_LOCK:
+            if _SWEEPER_STARTED:
+                return
+            thread = threading.Thread(target=_sweeper_loop,
+                                      name="router-provenance-sweeper",
+                                      daemon=True)
+            thread.start()
+            _SWEEPER_STARTED = True
+    except Exception:  # noqa: BLE001 — no sweeper is still better than a crash
+        pass
+
+
+def reset_pending_for_tests() -> None:
+    """Clear the registry (test isolation only)."""
+    try:
+        with _PENDING_LOCK:
+            _PENDING.clear()
+        _INFLIGHT.clear()
+    except Exception:  # noqa: BLE001
+        pass

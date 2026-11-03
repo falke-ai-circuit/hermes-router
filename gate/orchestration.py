@@ -303,8 +303,29 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # No contract when the router is off: a disabled plugin must be a
         # genuine no-op (pinned), and the contract is only useful if something
         # reads the tag.
+        #
+        # M35-04: AND no contract when the seam is already blocked. The host
+        # skips a transform invocation while an earlier one is still running
+        # (measured A2/C1), so a tag requested on THIS turn could never be
+        # stripped — that is exactly how routing metadata shipped inside a
+        # user's answer. Asking for a marker we cannot remove is the leak's
+        # cause; not asking removes it at the source. Routing is unchanged:
+        # an absent tag is the documented UNKNOWN -> classifier fallback.
         if _hub()._enabled() and bool(_hub()._classification_cfg().get("pre_classify", True)):
-            _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
+            _seam_blocked = False
+            try:
+                from ..core import turn_provenance as _ptot_pre
+
+                _seam_blocked = bool(_ptot_pre.seam_blocked())
+            except Exception:  # noqa: BLE001 — the guard never breaks the seam
+                _seam_blocked = False
+            if _seam_blocked:
+                _hub()._log_route(
+                    "PRE", event_detail="declaration_contract_suppressed",
+                    reason="post_seam_blocked",
+                    session_id=_hub()._session_id_from_context(**context))
+            else:
+                _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
     except Exception:  # noqa: BLE001 — injection must never break the seam
         pass
 
@@ -586,6 +607,20 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 is_continuation=bool(_is_tool_loop))
         except Exception:  # noqa: BLE001 — fail-open, never block delivery
             pass
+        # M35-04 TOTALITY: ARM the turn. The POST seam DISARMS it; when the host
+        # never calls that seam (skip after a slow/overlapping invocation, an
+        # interrupted turn, an error before the finalizer) the post_llm_call
+        # observer or the deadline sweeper closes it as `skipped` with a named
+        # reason. Two of ten live turns were absent from the ledger because
+        # nothing armed them; silence is no longer a possible outcome.
+        try:
+            from ..core import turn_provenance as _ptot
+
+            _ptot.arm(session_id,
+                      body_chars=len(str(content or "")),
+                      model=str(request.get("model") or ""))
+        except Exception:  # noqa: BLE001 — arming never breaks a turn
+            _hub().logger.debug("provenance arm error", exc_info=True)
         # M41-02 (§C S1): the PRE DOMAIN gate — a squelch that classifies what
         # the ask wants PRODUCED or DONE (never its framing) and records the
         # verdict on the SHARED per-session turn record for POST to read.

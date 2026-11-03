@@ -227,6 +227,45 @@ def routes(declaration: object) -> bool:
         return False
 
 
+# M35-04: the DELIVERY BOUNDARY's residual scan. `strip_tag` removes every
+# well-formed tag LINE; what survives it is a malformed or truncated fragment
+# of the same marker (`<turn declined=maybe`, `<turn declined`, a tag with the
+# closing quote lost to an output cap). Those are not declarations, but they
+# are still the router's internal marker text and must never be user bytes —
+# so the delivery edge asks this predicate AFTER the strip and withholds the
+# body when it still matches.
+_MARKER_RESIDUAL_RE = re.compile(r"<turn[ \t]*declined", re.IGNORECASE)
+
+
+def residual_marker(text: object) -> str:
+    """The surviving marker text in a body, or ``""`` when the body is clean.
+
+    Used at the delivery boundary, after :func:`strip_tag`. Total, never
+    raises: a scan error reports a clean body rather than a false leak.
+    """
+    try:
+        match = _MARKER_RESIDUAL_RE.search(_coerce(text))
+        return match.group(0) if match else ""
+    except Exception:  # noqa: BLE001 — total function, never raises
+        return ""
+
+
+def scrub_markers(text: object) -> Tuple[str, str]:
+    """Split a DELIVERED body into (clean_body, surviving_marker).
+
+    Two passes, and both are needed: :func:`strip_tag` removes the well-formed
+    tag lines wherever they sit (§2a.6), then :func:`residual_marker` reports
+    whether any marker text survived that removal. A caller that receives a
+    non-empty second value must NOT deliver the first — the whole point is
+    that the marker never ships, even as a fragment.
+    """
+    try:
+        body, _declaration = strip_tag(text)
+        return body, residual_marker(body)
+    except Exception:  # noqa: BLE001 — total function, never raises
+        return _coerce(text), ""
+
+
 def has_tag(text: object) -> bool:
     """True when a well-formed declaration tag line was found (and stripped).
 
