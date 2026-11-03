@@ -141,12 +141,9 @@ def test_classification_covers_the_four_classes():
     assert pg.classify_original(BENIGN_IT) == pg.COMPLIANCE
 
 
-def test_pre_call_verdict_only_stands_down_for_compliance():
-    assert pg.pre_call_verdict(REFUSAL) == (False, "")
-    assert pg.pre_call_verdict(HEDGE) == (False, "")
-    assert pg.pre_call_verdict(SCAFFOLD) == (False, "")
-    assert pg.pre_call_verdict(COMPLIANCE_BODY) == (True, pg.SHAPE)
-    assert pg.pre_call_verdict(BENIGN_IT) == (True, pg.SHAPE)
+# M35-14: `test_pre_call_verdict_only_stands_down_for_compliance` is DELETED
+# with the mechanism it pinned. The stand-down decision moved to
+# core/delivery_decision.D4; the classifier above is unchanged and still pinned.
 
 
 # --------------------------------------------------------------------------- #
@@ -237,33 +234,13 @@ def test_d_benign_non_english_answer_stays_untouched(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# (e) the protections that are still right — regression
+# (e) DELETED WITH THE MECHANISM (M35-14, spec §12)
 # --------------------------------------------------------------------------- #
-
-def test_e_identical_text_is_still_suppressed():
-    assert pg.apply_guards(REFUSAL, REFUSAL) is None
-    assert pg.last_guard_reason() == pg.IDENTITY
-
-
-def test_e_declaration_strip_passthrough_is_still_delivered():
-    tagged = '<turn declined="true" />\n\n' + REFUSAL
-    assert pg.apply_guards(tagged, REFUSAL) == REFUSAL
-
-
-def test_e_empty_body_rule_is_untouched():
-    assert pg.apply_guards("", RENDER) == RENDER
-    assert pg.apply_guards(REFUSAL, "   ") == "   "
-
-
-def test_e_declared_false_cannot_silence_a_refusal():
-    """Bar 3: no refusal may be suppressed by any guard — the tag included."""
-    tagged = REFUSAL + '\n<turn declined="false" />'
-    assert pg.apply_guards(tagged, RENDER) == RENDER
-    assert pg.pre_call_verdict(tagged) == (False, "")
-
-
-def test_e_declared_false_settles_a_compliant_body():
-    tagged = COMPLIANCE_BODY + '\n<turn declined="false" />'
-    assert pg.apply_guards(tagged, RENDER) is None
-    assert pg.last_guard_reason() == pg.MAIN_COMPLIED
-    assert pg.pre_call_verdict(tagged) == (True, pg.DECLARATION)
+# The five `test_e_*` rows above this point called `post_guards.apply_guards`,
+# `last_guard_reason` and `pre_call_verdict` directly. Those symbols are gone:
+# the ladder, the pre-call window and the out-of-band reason channel were the
+# layering this restructure removes. Adapting them would recreate it, so the
+# rows are deleted. What they asserted — identity rewrites are dropped, a
+# declaration strip still ships, only compliance may stand the lane down — is
+# now pinned at the decision point in
+# `tests/delivery/test_m35_14_decision_point.py` (D4/D5/D6 fixtures).

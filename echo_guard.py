@@ -224,55 +224,14 @@ EVENT_BLOCKED = "advisory_echo_blocked"
 EVENT_STRIPPED = "advisory_echo_stripped"
 EVENT_WITHHELD = "advisory_echo_withheld"
 
-# R34-17 item 2 — TRUTH IN THE NOTICE. Whatever path produces a user-facing
-# notice, the notice may not assert a fact this code did not check.
-#
-# HAND_BACK_TEXT is only delivered on the NO-WORK path, where the work-signal
-# predicate WAS evaluated (`reason=no_work_signal`); on that path the claim
-# "nothing was executed" is a checked fact, not a guess.
-HAND_BACK_TEXT = (
-    "[router] turn ended on the router's own advisory echo, not work product. "
-    "No tool activity or file write was observed this turn, so nothing was "
-    "executed. Re-send the ask to run this turn again."
-)
-
-# NO_WORK_TEXT is the fail-open body when the echo guard withheld the turn AND
-# the one permitted re-prompt (echo_reprompt) also produced nothing an agent
-# could own. It states only what was checked — the reply was the router's own
-# text, a re-prompt produced no answer, and the work predicate saw no tool
-# activity. It deliberately carries NO "re-send the ask" instruction: the
-# dead-end notice must never be the only content of a turn.
-NO_WORK_TEXT = (
-    "[router] this turn produced no work product. The model's reply was the "
-    "router's own advisory text, and a single re-prompt produced no answer "
-    "either. No tool activity or file write was observed this turn, so nothing "
-    "was executed."
-)
-
-# WITHHELD_TEXT is the fallback when work DID happen but the echo could not
-# be separated from the report. It claims nothing about execution — only what
-# the guard knows: the body was withheld and the log names the reason.
-WITHHELD_TEXT = (
-    "[router] this turn's body was withheld: it was the router's own advisory "
-    "echo and the work report could not be separated from it. This notice "
-    "says nothing about whether work ran — see the route log "
-    "(advisory_echo_withheld, reason=strip_failed). Re-send the ask if you "
-    "need the report."
-)
-
-# R62b: the projection-is-the-body case is not a work-report problem -- the turn
-# produced no answer at all, only the router's own note. Saying "the work report
-# could not be separated" would imply work existed. The notice may only assert
-# what was checked.
-NO_ANSWER_TEXT = (
-    "[router] no answer was delivered for this turn: the body was the router's "
-    "own internal note, not the agent's reply, so it was withheld rather than "
-    "shown as the answer. Re-send the ask to get a reply."
-)
+# M35-14 (§7 item 6): "", "", "" and
+# "" are DELETED as delivery strings. Router prose substituted for
+# an answer is the A2 defect; the echo guard now WITHHOLDS (action + reason),
+# and the delivery decision voids the body (D2) or replaces it (D5).
 
 # A stripped remainder must still look like a report; below this many
 # non-space characters the strip is treated as a failure (and the truthful
-# WITHHELD_TEXT is used instead of shipping a fragment).
+# "" is used instead of shipping a fragment).
 MIN_REPORT_CHARS = 24
 
 # --- stripping the echoed advisory out of a work turn ---------------------
@@ -704,7 +663,7 @@ def enforce_execution_echo(text: str, session_id: str = "",
                 _route(log_route, EVENT_WITHHELD, action="withhold_echo",
                        reason="projection_is_the_body", frame=_reg,
                        chars=int(_cut), session_id=str(session_id or ""))
-                return EchoResult("withhold_echo", NO_ANSWER_TEXT,
+                return EchoResult("withhold_echo", "",
                                   ["pov_projection_head"], _cut,
                                   {"reason": "projection_is_the_body"})
         _families_pre = detect_envelope_echo_families(text)
@@ -740,7 +699,7 @@ def enforce_execution_echo(text: str, session_id: str = "",
                        reason="body_is_advisory", frame=_reg,
                        families="|".join(_families_pre),
                        session_id=str(session_id or ""))
-                return EchoResult("withhold_echo", WITHHELD_TEXT, _families_pre,
+                return EchoResult("withhold_echo", "", _families_pre,
                                   removed, {"reason": "body_is_advisory"})
             # Clean body and nothing removable: leave it exactly as written.
             _route(log_route, "advisory_tail_unstrippable", action="log_only",
@@ -782,9 +741,9 @@ def enforce_execution_echo(text: str, session_id: str = "",
                                   removed, work)
             _route(log_route, EVENT_WITHHELD, action="withhold_echo",
                    reason="strip_failed", **base)
-            return EchoResult("withhold_echo", WITHHELD_TEXT, families,
+            return EchoResult("withhold_echo", "", families,
                               chars - len(stripped), work)
-        # TRUTH IN THE NOTICE, second correction. HAND_BACK_TEXT asserts "No tool activity or
+        # TRUTH IN THE NOTICE, second correction. "" asserts "No tool activity or
         # file write was observed this turn". `has_work` is deliberately strict - only a
         # terminal run or a write qualifies - so a turn that spent itself reading (the commonest
         # real investigation shape: eight reads and no writes) lands here with the predicate
@@ -793,10 +752,10 @@ def enforce_execution_echo(text: str, session_id: str = "",
         if int(work.get("tools") or 0) > 0:
             _route(log_route, EVENT_WITHHELD, action="withhold_echo",
                    reason="read_only_tool_activity", **base)
-            return EchoResult("withhold_echo", WITHHELD_TEXT, families, chars, work)
+            return EchoResult("withhold_echo", "", families, chars, work)
         _route(log_route, EVENT_BLOCKED, action="handback_failure",
                reason="no_work_signal", **base)
-        return EchoResult("handback_failure", HAND_BACK_TEXT, families,
+        return EchoResult("handback_failure", "", families,
                           chars, work)
     except Exception:  # noqa: BLE001
         return None

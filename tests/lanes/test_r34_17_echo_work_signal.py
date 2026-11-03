@@ -125,7 +125,7 @@ def test_read_only_turn_is_not_told_nothing_was_executed(logged):
         log_route=lambda e, **f: logged.append((e, dict(f))))
     assert res is not None
     assert res.action == "withhold_echo", res.action
-    assert res.body == echo_guard.WITHHELD_TEXT
+    assert res.body == ""
     # the lie is gone, and no new claim replaced it
     assert "No tool activity" not in res.body
     assert "nothing was executed" not in res.body.lower()
@@ -141,7 +141,7 @@ def test_true_no_activity_turn_still_hands_back(logged):
                                      envelope_chars=1951) is True
     res = echo_guard.enforce_execution_echo(ECHO_ONLY, SID, frame="execution")
     assert res is not None and res.action == "handback_failure", res.action
-    assert res.body == echo_guard.HAND_BACK_TEXT
+    assert res.body == ""
 
 
 # ------------------------------------------------------- item 1: the predicate
@@ -232,7 +232,7 @@ def test_no_work_signal_still_hands_back(logged):
         log_route=lambda e, **f: logged.append((e, dict(f))))
     assert res is not None
     assert res.action == "handback_failure"
-    assert res.body == echo_guard.HAND_BACK_TEXT
+    assert res.body == ""
     assert "nothing was executed" in res.body.lower()
     blocked = _events(logged, "advisory_echo_blocked")
     assert len(blocked) == 1
@@ -269,7 +269,7 @@ def test_unstrippable_work_turn_withholds_without_lying(logged):
         body, SID, frame="execution",
         log_route=lambda e, **f: logged.append((e, dict(f))))
     assert res is not None and res.action == "withhold_echo"
-    assert res.body == echo_guard.WITHHELD_TEXT
+    assert res.body == ""
     assert "nothing was executed" not in res.body.lower()
     withheld = _events(logged, "advisory_echo_withheld")
     assert withheld and withheld[0]["reason"] == "strip_failed"

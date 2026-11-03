@@ -154,7 +154,7 @@ def test_echo_twice_fails_open_without_a_third_call(monkeypatch):
     delivered, turn = _run_turn(monkeypatch, [ECHO_BODY, ECHO_BODY, ANSWER_BODY])
 
     assert turn.count == 2, "a second re-prompt must not happen"
-    assert delivered == eg.NO_WORK_TEXT
+    assert delivered == ""
     assert "Re-send the ask" not in delivered
     assert delivered != ECHO_BODY
     assert "no work product" in delivered

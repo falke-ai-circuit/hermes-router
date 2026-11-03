@@ -239,7 +239,7 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                 # "skipped with a reason" can never be confused with "decided".
                 "skip_reason": str(skip_reason or "")[:40],
                 # M35-08: WHY the agent's own body was kept when it was.
-                # "main_complied" = the main body already satisfied the ask
+                # the bar-2 token = the main body already satisfied the ask
                 # (a PASS, not a blocked render); other tokens name the guard
                 # that dropped a lane render.
                 "reason": str(reason or "")[:40],

@@ -61,7 +61,9 @@ LANE_MAIN = "main"
 #: M35-08: the reason token for the one KEEP that is not a failure — the main
 #: body already satisfied the ask (acceptance bar 2). Kept as a literal rather
 #: than an import from `post_guards` so the row path has no cycle.
-MAIN_COMPLIED = "main_complied"
+#: M35-14: the kept-body token has ONE definition — the decision module owns
+#: it; this row only renders it.
+from .delivery_decision import REASON_MAIN_COMPLIED as MAIN_COMPLIED
 
 #: The host plugin runner abandons an in-flight ``transform_llm_output`` at
 #: 30 s ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3).
@@ -185,7 +187,7 @@ class TurnProvenance:
         self.deferred = False
         self.deferred_reason = ""
         # M35-08: WHY the delivery edge kept the agent's own body, when it did.
-        # "" = no keep; "main_complied" = the bar-2 case (the main body already
+        # "" = no keep; MAIN_COMPLIED = the bar-2 case (the main body already
         # satisfied the ask); "guard_identity" / "post_guard_suppressed" = a
         # guard blocked a lane render.
         self.reason = ""
@@ -194,7 +196,7 @@ class TurnProvenance:
         """True when the table's action declared a ROUTE (not a plain deliver).
 
         Used by the delivery edge to decide whether a kept body is the bar-2
-        `main_complied` keep (a route was declared and main's body shipped) or
+        the bar-2 token keep (a route was declared and main's body shipped) or
         an ordinary benign delivery, whose row keeps its `delivered` outcome.
         """
         return str(self._action or "").startswith("route")
@@ -345,7 +347,7 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
 
     ``suppress_reason`` (M35-08) is the guard's own verdict for WHY the main
     body was kept. It separates the two keep cases the ledger must not blur:
-    ``main_complied`` — the main body already satisfied the ask, so keeping it
+    `the bar-2 token` — the main body already satisfied the ask, so keeping it
     is the correct outcome (bar 2, no failure) — from any other reason, where a
     lane render was blocked and the suppression is the failure it names.
 
@@ -479,7 +481,7 @@ def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, A
         # M35-04: the NAMED reason a skipped turn produced no decision.
         "skip_reason": str(getattr(turn, "skip_reason", "") or ""),
         # M35-08: WHY the agent's own body was kept when it was
-        # ("main_complied" = the bar-2 keep), "" when the lane's body shipped.
+        # (MAIN_COMPLIED = the bar-2 keep), "" when the lane's body shipped.
         "reason": str(getattr(turn, "reason", "") or ""),
     }
 

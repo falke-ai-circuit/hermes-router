@@ -11,7 +11,7 @@ WHY THE ORDER IS WHAT IT IS (spec §E, gaps B1/B2; M35-03 A1/A3)
     Round 1  declared_refusal                        -> route
     Round 2  intent_declined                         -> route
     Round 3  gate_abstain                            -> defer
-    Round 4  gate_flagged                            -> route_replace
+    Round 4  gate_flagged                            -> route
     Round 5  intent_softened                          -> deliver
     Round 6  else                                     -> deliver
 
@@ -80,14 +80,14 @@ PREDICATES: Tuple[str, ...] = (
 )
 
 ACTION_ROUTE = "route"
-ACTION_ROUTE_REPLACE = "route_replace"
+# M35-14 (§7 item 8): the swap action is DELETED. The table is attribution
+# only — it may not claim swap authority it does not own.
 ACTION_FALLBACK_SHAPE = "fallback_shape"
 ACTION_DEFER = "defer"
 ACTION_DELIVER = "deliver"
 
 ACTIONS: Tuple[str, ...] = (
-    ACTION_ROUTE, ACTION_ROUTE_REPLACE, ACTION_FALLBACK_SHAPE, ACTION_DEFER,
-    ACTION_DELIVER,
+    ACTION_ROUTE, ACTION_FALLBACK_SHAPE, ACTION_DEFER, ACTION_DELIVER,
 )
 
 # The gate's closed verdict set, plus the two non-verdict states a reader can
@@ -119,21 +119,10 @@ _TRIGGER_KINDS: Dict[str, str] = {
     PRED_GATE_FLAGGED: "pre_gate",
 }
 
-# Rows whose route REPLACES the delivered body (M41-06, corrected by M41-07b).
-# Data, so the handler never decides which rules swap. The set is EVERY routing
-# predicate, and that is a measured fact, not a preference: the POST seam renders
-# and swaps for every action in {route, route_replace} — the render at
-# gate/orchestration.py:2900 and the canonical swap below it are unconditional
-# inside the routed block. Rule 2 was missing from this set, so a rule-2 turn
-# logged replace=0/replacement="" while its body WAS swapped (M41-07_FALSIFY §9
-# D1) and M41-08's replacement census would have missed every rule-2 turn.
-# A routing row that did not swap would need a second delivery path; there is
-# none, so adding a route row here is part of adding a route row at all.
-_REPLACING_PREDICATES: Tuple[str, ...] = (
-    PRED_DECLARED_REFUSAL,
-    PRED_INTENT_DECLINED,
-    PRED_GATE_FLAGGED,
-)
+# M35-14 (§7 item 8): `_REPLACING_PREDICATES` is DELETED. The table no longer
+# answers "does this row swap?" — every routed row enters the one replacement
+# chain, and `core/delivery_decision.decide()` decides whether the render is
+# delivered. Two answers to that question was the layering being removed.
 
 # The contract's POST question token. Kept here so the table can resolve its
 # own rows without importing the judge at module load; a test asserts this is
@@ -285,9 +274,6 @@ def _decision(row: int, pred: str, action: str, state: Dict[str, Any],
         "action": action,
         "seed": _SEEDS.get(pred, ""),
         "trigger_kind": _TRIGGER_KINDS.get(pred, ""),
-        # Does this row's route REPLACE the body? Data (see _REPLACING_PREDICATES),
-        # so the handler dispatches on the table's own answer.
-        "replace": pred in _REPLACING_PREDICATES,
         "gate": state.get("gate"),
         "intent": state.get("intent"),
         "declaration": state.get("declaration"),

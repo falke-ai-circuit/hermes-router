@@ -13,6 +13,7 @@ import sys as _sys
 
 from . import orchestration
 from . import turn_close
+from ..core import delivery_decision as _dd
 
 # The hub logger is the PLUGIN ROOT module's logger — the registration
 # warning rows keep the exact logger name they had pre-move.
@@ -133,21 +134,12 @@ def on_transform_llm_output_guarded(**kwargs):
     answer is returned unchanged, and any guard exception returns it too. The
     echo guard and the declaration contract are read, never modified.
     """
-    _pg = None
-    _pc_token = None
     _prov = None
     _turn = None
-    try:
-        from .. import post_guards as _pg
-
-        _pc_token = _pg.open_pre_call(
-            kwargs.get("response_text", "") or "",
-            session_id=str(kwargs.get("session_id") or ""),
-            log_route=_hub_log_route(),
-        )
-    except Exception:  # noqa: BLE001 — no window = no pre-call gate, status quo
-        _pg = None
-        _pc_token = None
+    # M35-14: the closed-line grader is read ONCE, here, BEFORE the seam runs —
+    # a closed line is a property of the ASK, so no render may be billed for it
+    # and no case may open it later.
+    _closed_hit = _closed_line_hit(kwargs)
     try:
         from ..core import turn_provenance as _prov_mod
 
@@ -163,10 +155,21 @@ def on_transform_llm_output_guarded(**kwargs):
     except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
         _prov = None
         _turn = None
+    _original = kwargs.get("response_text", "") or ""
+    # D3 lives at the DECISION (spec §2 P2), not before the seam: consulting
+    # early would change which table row fires and therefore whether the lane
+    # renders at all — the routing decision is the table's, and this
+    # restructure changes only WHICH BODY IS DELIVERED. A withheld or
+    # non-compliant turn still reaches decide(), which asks for the gate once
+    # and re-enters (attempt=1) when the table's own row demanded a swap.
+    _pre_attempt = 0
     try:
         if _prov is not None:
             _prov.seam_enter()
-        out = orchestration.on_transform_llm_output(**kwargs)
+        # A HOLD_CLOSED ask never enters the seam: no render, no split, no
+        # replacement. The decision below names the entered body unchanged.
+        out = (None if _closed_hit
+               else orchestration.on_transform_llm_output(**kwargs))
     except Exception:
         try:
             if _prov is not None:
@@ -187,110 +190,76 @@ def on_transform_llm_output_guarded(**kwargs):
                 _prov.seam_exit()
         except Exception:  # noqa: BLE001
             pass
-        try:
-            if _pg is not None:
-                _pg.close_pre_call(_pc_token)
-        except Exception:  # noqa: BLE001 — closing never breaks delivery
-            pass
-    # M35-02: THE DELIVERY EDGE OWNS THE ROW.
-    # The row was finished BEFORE the guards ran, so a guard that drops the
-    # replacement produced a row claiming replaced=True while the caller got
-    # the main body — B3's shape, one seam earlier. The body is settled FIRST
-    # (`final`), then the row is written from it, so the ledger can only ever
-    # describe bytes that actually reach the response surface.
-    _original = kwargs.get("response_text", "") or ""
+    # M35-14: THE DELIVERY EDGE OWNS THE ROW — and ONE decision names the
+    # bytes. The facts record is built here, `decide()` is called (twice only
+    # when D3 asks for the gate and then re-enters), and the row is written
+    # from the bytes that decision named. No guard ladder, no pre-call window,
+    # no post-hoc classification repair survives on this path.
+    _decision = None
     _guard_reason = ""
-    try:
-        from .. import post_guards as _pg
-
-        # NB (M35-08B): the reason window is cleared by `open_pre_call`, at the
-        # start of this delivery edge. Clearing it here would erase the reason a
-        # PRE-call stand-down recorded for a compliant body.
-        final = _pg.apply_guards(
-            _original,
-            out,
-            log_route=_hub_log_route(),
-            session_id=str(kwargs.get("session_id") or ""),
-            # M35-08B: only a LANE RENDER may be stood down for a compliant
-            # body. The provenance already records whether the seam replaced
-            # the turn with a lane's answer; a banner append, the phantom-write
-            # scrub or a router-failure surface never set it, and must ship.
-            is_lane_render=bool(getattr(_turn, "replaced", False)),
-        )
-        # M35-08: the guard's verdict travels with the body, so the row can say
-        # WHY main's body was kept instead of defaulting every keep to a
-        # blocked-render failure. M35-10: the reason is read on EVERY pass, not
-        # only when the guard returned None — a kept-body turn whose transform
-        # is not a suppression (the bar-2 `main_complied` case) carries its
-        # token through the same window.
-        _guard_reason = _pg.last_guard_reason(
-            str(kwargs.get("session_id") or ""))
-        # M35-10 (bar 2, D2): the ordinary benign turn returns None from the
-        # orchestrator ("deliver the body you gave me"), so no guard ever
-        # classified it and the row shipped with reason="". The bar requires
-        # the token on EVERY kept-body row: when nothing was replaced and no
-        # guard spoke, classify the original body here and name the PASS.
-        if final is None and not bool(getattr(_turn, "replaced", False)) \
-                and not _guard_reason:
-            try:
-                _clean, _tag = _pg.read_declaration(_original)
-                if _pg.classify_original(_clean) == _pg.COMPLIANCE:
-                    _guard_reason = _pg.MAIN_COMPLIED
-            except Exception:  # noqa: BLE001 — an unreadable body keeps the old row
-                pass
-    except Exception:  # noqa: BLE001 — guards fail open to the orchestrator
-        final = out
     _failure = ""
-    if _prov is not None:
+    final = None
+    try:
+        _facts = _build_facts(_original, kwargs, _turn, out, _closed_hit,
+                               attempt=_pre_attempt)
+        _decision = _decide(_facts)
+        if _decision.action == _dd.CONSULT_REENTER:
+            _decision = _decide(_consult_gate(_facts, kwargs))
+        final = _delivered_bytes(_decision, _original)
+        if _decision.delivered_source == _dd.SOURCE_MAIN:
+            _guard_reason = (_dd.REASON_MAIN_COMPLIED
+                             if _decision.case_id == _dd.D4
+                             else _decision.reason)
+            _force_main_row(_turn, _decision)
+        if _decision.action == _dd.FAIL_TERMINAL:
+            _failure = "delivery_terminal_failure"
+            try:
+                if _turn is not None:
+                    _turn.withhold("delivery_terminal_failure")
+            except Exception:  # noqa: BLE001
+                pass
+        _log_decision(_decision, kwargs)
+    except Exception as _dd_err:  # noqa: BLE001 — a seam bug is loud, not silent
+        _decision = None
+        final = ""
+        _failure = "delivery_decision_error"
+        try:
+            _lg_err = _hub_log_route()
+            if _lg_err is not None:
+                _lg_err("POST", event_detail="delivery_decision_error",
+                        severity="error", error=type(_dd_err).__name__,
+                        detail=str(_dd_err)[:160],
+                        session_id=str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001
+            pass
+    if _prov is not None and _decision is not None:
         try:
             _failure = _prov.settle_delivery(
                 _turn, final, log=_hub_log_route(),
                 session_id=str(kwargs.get("session_id") or ""),
-                suppress_reason=_guard_reason)
+                suppress_reason=_guard_reason) or _failure
         except Exception:  # noqa: BLE001
-            _failure = ""
-    _kept_main = bool(
-        _turn is not None
-        and str(getattr(_turn, "reason", "") or "") == "main_complied"
-        and _turn.route_declared())
-    if _failure in ("post_guard_suppressed", "main_complied") or (
-            final is None and _kept_main):
-        # The guard kept the agent's body, so the orchestrator's replacement is
-        # NOT delivered. `None` would tell the host "deliver the body you gave
-        # me" — the TAGGED original — and re-leak routing metadata the seam
-        # already stripped. The delivered text is the seam's own passthrough:
-        # the original minus the declaration tag. The `main_complied` keep
-        # takes the same path: the bytes on the wire are main's, named, not a
-        # host default.
+            _failure = _failure or ""
+    # A main-body delivery whose render already rewrote the store must put the
+    # row back — transcript == delivery (the M34-04 contract), or the next turn
+    # reads a body the user never saw.
+    if (_decision is not None
+            and _decision.delivered_source == _dd.SOURCE_MAIN
+            and _turn is not None
+            and bool(getattr(_turn, "replaced", False))):
         try:
-            from ..features.detection import declaration as _decl_g
+            from ..core import canonical as _can_g
 
-            _stripped_g, _tag_g = _decl_g.strip_tag(_original)
-            if _tag_g is not None and str(_stripped_g) != str(_original):
-                final = str(_stripped_g)
-            else:
-                final = str(_original or "")
-        except Exception:  # noqa: BLE001 — keep the guard's answer
-            final = str(_original or "")
-        # The store was rewritten to the render by the seam; the wire keeps
-        # the agent's body. Put the row back so transcript == delivery (the
-        # M34-04 contract) instead of leaving the render in state.db as a
-        # turn the user never read. A `main_complied` keep had no render to
-        # undo, so the store is already the delivered body.
-        if _failure == "post_guard_suppressed":
-            try:
-                from ..core import canonical as _can_g
-
-                if _can_g.rewrite_persisted_turn(
-                        str(kwargs.get("session_id") or ""),
-                        str(out or ""), str(final or "")):
-                    _lg = _hub_log_route()
-                    if _lg is not None:
-                        _lg("POST", event_detail="persisted_body_restored",
-                            reason="render_suppressed",
-                            session_id=str(kwargs.get("session_id") or ""))
-            except Exception:  # noqa: BLE001 — restore never breaks delivery
-                pass
+            if _can_g.rewrite_persisted_turn(
+                    str(kwargs.get("session_id") or ""),
+                    str(out or ""), str(final or "")):
+                _lg_r = _hub_log_route()
+                if _lg_r is not None:
+                    _lg_r("POST", event_detail="persisted_body_restored",
+                          reason="delivery_decision_main",
+                          session_id=str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 — restore never breaks delivery
+            pass
     # M35-04 — THE DELIVERY BOUNDARY. Whatever produced `final` (lane render,
     # agent body, guard-suppressed passthrough, early bail), the bytes that
     # leave this function are scrubbed of marker text here. A surviving
@@ -328,6 +297,174 @@ def on_transform_llm_output_guarded(**kwargs):
     except Exception:  # noqa: BLE001
         pass
     return final
+
+
+
+# --------------------------------------------------------------------------- #
+# M35-14 — THE DELIVERY DECISION EDGE (spec §1, §4, §5, §6)
+# --------------------------------------------------------------------------- #
+def _ask_for(kwargs) -> str:
+    """The turn's ASK, recovered the same way the seam recovers it.
+
+    Used by exactly two callers: the closed-line grader (a property of the ask,
+    read before anything runs) and D3's consult. Never raises.
+    """
+    try:
+        from ..core import state as _st
+
+        sid = str(kwargs.get("session_id") or "")
+        ctx = kwargs.get("context")
+        ask = ""
+        if isinstance(ctx, dict):
+            ask = str(ctx.get("user_message") or "")
+        return ask or str(_st.get_last_seen(sid) or "")
+    except Exception:  # noqa: BLE001 — ask recovery never blocks a turn
+        return ""
+
+
+def _closed_line_hit(kwargs) -> str:
+    """THE single call to `compound_split.hard_closed_class` (spec §5).
+
+    Membership of the line list is untouched — this only collapses the two
+    call sites (routed edge + benign edge) into one fact read before delivery.
+    A grader gap returns "" and the turn proceeds; the decision then carries
+    `unjudged` and the ledger counts it. Never raises.
+    """
+    try:
+        from ..features.detection import compound_split as _cs
+
+        return str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
+    except Exception:  # noqa: BLE001 — a gap opens no line and closes none
+        return ""
+
+
+def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0):
+    """Build the frozen facts record ONCE at the delivery edge (spec §1.1).
+
+    `gate_consulted` has NO default-true: it is True only when a gate record
+    for THIS turn exists (`domain_gate.read` already enforces the turn binding
+    and the TTL). Absence is False; "we assume the gate ran" is not
+    representable.
+    """
+    from ..features.detection import domain_gate as _dgate
+    from .. import post_guards as _pg
+
+    sid = str(kwargs.get("session_id") or "")
+    clean, _removed = _dd.strip_markers(entered)
+    row = None
+    try:
+        row = _dgate.read(sid)
+    except Exception:  # noqa: BLE001 — an unreadable gate is an absent gate
+        row = None
+    consulted = isinstance(row, dict)
+    verdict = _dgate.verdict(row) if consulted else "abstain"
+    reason = str((row or {}).get("reason") or "") or (
+        "no_record" if consulted else "not_consulted")
+    rule_id = "none"
+    try:
+        rule_id = str(getattr(turn, "rule", "") or "none")
+    except Exception:  # noqa: BLE001
+        rule_id = "none"
+    return _dd.DeliveryFacts(
+        entered_body=str(entered or ""),
+        body_class=_pg.classify_original(clean),
+        gate_consulted=consulted,
+        gate_verdict=verdict,
+        gate_reason=reason,
+        rule_id=rule_id,
+        closed_line_hit=str(closed_hit or ""),
+        lane_render=(None if lane_render is None else str(lane_render)),
+        attempt=int(attempt or 0),
+    )
+
+
+def _decide(facts):
+    """THE single decision call site in the plugin (spec §4.3).
+
+    The static test asserts this is the only textual `decide(` in the module,
+    so no second suppression path can grow beside it.
+    """
+    return _dd.decide(facts)
+
+
+def _consult_gate(facts, kwargs):
+    """D3's bounded consult: ask the gate, then re-enter exactly once.
+
+    Failure is `abstain` with a named reason — `abstain` is a FAILURE and falls
+    to the body ladder, never read as "safe". Never raises.
+    """
+    from ..features.detection import domain_gate as _dgate
+
+    sid = str(kwargs.get("session_id") or "")
+    ask = _ask_for(kwargs)
+    # The gate module's own worker: evaluate, then WRITE the turn record
+    # (`mark_pre_domain`, turn-bound + TTL-bound). Landed synchronously and
+    # bounded by evaluate's own timeout — a consult that cannot answer leaves
+    # `abstain`, which is a FAILURE and falls to the body ladder, never "safe".
+    try:
+        _dgate._worker(sid, ask, None)  # noqa: SLF001 — the module's own half
+    except Exception:  # noqa: BLE001 — an unanswerable gate is a failure
+        pass
+    row = None
+    try:
+        row = _dgate.read(sid)
+    except Exception:  # noqa: BLE001
+        row = None
+    verdict = _dgate.verdict(row) if isinstance(row, dict) else "abstain"
+    reason = str((row or {}).get("reason") or "") or _dd.REASON_GATE_UNAVAILABLE
+    return _dd.reenter_after_consult(facts, gate_verdict=verdict,
+                                     gate_reason=reason)
+
+
+def _delivered_bytes(decision, entered: str = "") -> str:
+    """The exact bytes this decision named. Nothing composes a body here.
+
+    `None` is the host's documented pass-through contract — "deliver the body
+    you gave me". It is returned ONLY when the decision chose the entered body
+    unmodified (`source=main`, `strip_bytes=0`), because then the passthrough
+    IS the bytes `decide()` named, byte for byte. Any other choice — a lane
+    render, an attributed strip, a hold — returns explicit bytes: the seam may
+    never let the host deliver something the decision did not name.
+    """
+    if decision is None or decision.action == _dd.FAIL_TERMINAL:
+        return ""
+    if decision.body is None:
+        return ""
+    body = str(decision.body)
+    if (decision.delivered_source == _dd.SOURCE_MAIN
+            and int(decision.strip_bytes) == 0
+            and body == str(entered or "")):
+        return None
+    return body
+
+
+def _force_main_row(turn, decision) -> None:
+    """A main-body delivery is `main`/replaced=False on the row, whoever wrote
+    the store. Without this the ledger could claim a lane body the caller never
+    received — the M35-02 defect one layer up."""
+    if turn is None:
+        return
+    try:
+        turn.replaced = False
+        turn.lane = "main"
+        turn.replacement_path = ""
+        turn.reason = str(decision.reason or "")
+        turn.delivered = True
+    except Exception:  # noqa: BLE001 — instrumentation never breaks a turn
+        pass
+
+
+def _log_decision(decision, kwargs) -> None:
+    """One `delivery_decision` event per delivery edge (spec §10)."""
+    try:
+        lg = _hub_log_route()
+        if lg is None or decision is None:
+            return
+        lg("POST", event_detail="delivery_decision",
+           **decision.as_record(),
+           session_id=str(kwargs.get("session_id") or ""))
+    except Exception:  # noqa: BLE001 — observability never breaks delivery
+        pass
 
 
 # The plugin attribute IS the registered hook (identity pin:

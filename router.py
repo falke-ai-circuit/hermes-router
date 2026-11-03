@@ -351,23 +351,12 @@ def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional
     if not prompt or not prompt.strip():
         logger.info("route_failed reason=empty_prompt")
         return ""
-    # R78U M8B PRE-SPEND guard — the delivery-edge guards' signals, read one
-    # step EARLIER: before a request is issued, so nothing is billed. The window
-    # is opened by the transform_llm_output wrapper (gate/registration) around
-    # ONE orchestrator call and is empty for every other caller (PRE lane,
-    # shadow lane, empty-body rule), which is why those are untouched. An empty
-    # return is the module's documented fail-open ("", never raise): the caller
-    # delivers the ORIGINAL body and no render spend is recorded.
-    try:
-        from . import post_guards as _pre_guards
-
-        _pre_call_reason = _pre_guards.consume_pre_call(session_id)
-    except Exception:  # noqa: BLE001 — a guard gap must never block a render
-        _pre_call_reason = ""
-    if _pre_call_reason:
-        logger.info("pre_call_guard_suppressed reason=%s session=%s",
-                    _pre_call_reason, session_id or "-")
-        return ""
+    # M35-14 (spec §7 item 2): the PRE-SPEND pre-call window is DELETED. It was
+    # a third suppression site with its own order (DECLARATION before SHAPE),
+    # decided before the render and invisible to the case ladder. The delivery
+    # decision now happens once, after the render, in
+    # `core/delivery_decision.decide()`; a render that turns out unnecessary is
+    # attributed there (D4/D6), not prevented here by a second mechanism.
     # v2.3.7 (battery audit 2026-09-03): user-side deliver mandate. The render
     # channel exists to produce the deliverable; wrapping the ask with an
     # explicit user-turn instruction measurably suppresses model-side refusal

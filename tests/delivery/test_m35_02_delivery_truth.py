@@ -176,48 +176,12 @@ def test_a_replaced_turn_body_is_the_render(monkeypatch):
 # (b) a render the edge cannot ship: named failure, delivered=False, no silence
 # ---------------------------------------------------------------------------
 
-def test_b_suppressed_render_is_named_and_not_claimed(monkeypatch):
-    """The POST guard drops the replacement (returns None = keep the agent's
-    body). The caller reads the main body — so the row may NOT claim a
-    replacement, and the drop must be a named failure, not a silent one."""
-    sid = "s-m35-02-b"
-    sink = _events(monkeypatch)
-    rows = _rows(monkeypatch)
-    store = _store_spy(monkeypatch)
-    _prime(sid)
-    _declared_refusal(monkeypatch)
-    _chain(monkeypatch)
-    monkeypatch.setattr(post_guards, "apply_guards",
-                        lambda original, replacement, **kw: None)
+# M35-14: `test_b_suppressed_render_is_named_and_not_claimed` is DELETED. It
+# monkeypatched `post_guards.apply_guards` — the ladder this restructure
+# removes. The behaviour it described (a render the edge cannot ship is a
+# NAMED failure, never a silent claim) is pinned by the delivery-decision
+# fixtures in tests/delivery/test_m35_14_decision_point.py.
 
-    body_in = '<turn declined="true" />\n\n' + DENIAL
-    out = plugin.on_transform_llm_output(response_text=body_in,
-                                         session_id=sid, model="m1")
-
-    # the main body is what ships (the guard decided) — but not in silence
-    assert out is not None and DENIAL in out, out
-    assert RENDERED not in out, out
-    ev = _row(sink, "render_not_delivered")
-    assert ev is not None, sink
-    assert ev["reason"] == "post_guard_suppressed", ev
-    assert ev["replaced_was"] is True, ev
-
-    row = rows[0]
-    assert row["replaced"] is False, row          # no claim the render shipped
-    assert row["lane"] == "main", row
-    assert row["delivered"] is False, row         # the render never reached the wire
-    assert row["outcome"] == "post_guard_suppressed", row
-    assert row["delivered_chars"] == len(out), row
-
-    # (d) the store was put back to the delivered body, not left holding the render
-    assert store, store
-    assert store[-1][1] == out, store
-    assert RENDERED not in store[-1][1], store
-
-
-# ---------------------------------------------------------------------------
-# (c) the B3 SHAPE end to end: render settles AFTER the host's hook kill
-# ---------------------------------------------------------------------------
 
 def test_c_b3_shape_late_render_is_not_claimed_as_delivered(monkeypatch):
     """44.683 s of synchronous seam time — the host killed the hook at 30 s, so

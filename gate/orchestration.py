@@ -763,7 +763,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                                 _hub()._log_route("PRE", lane="shadow", **_sh_rec)
                     except Exception:  # noqa: BLE001 — banner never breaks the turn
                         _hub().logger.debug("shadow debug banner error", exc_info=True)
-                    rendered = _hub()._provenance_footer_pass(rendered)
+                    # M35-14 (§7 item 10): the lane render ships as the
+                    # answer, not as the answer plus a footer. Provenance
+                    # is out-of-band (route log), never body bytes.
                     _hub()._deliver_render_pass(request, content, rendered, model,
                                          session_id, ["shadow_declared"])
                     # initiator tag on the render-chain spend (leg 6/8):
@@ -974,55 +976,14 @@ def _deliver_parked_at_edge(session_id: str, response_text: str,
                                       else "no_park_this_turn"),
                               session_id=session_id)
             return None
-        try:
-            from ..features.banners import turn_record as _turn
-
-            _merged = _turn.emit_once(str(response_text or ""), session_id,
-                                      extra_segment=_parked, kind="anchor",
-                                      edge=edge, prefix="\n")
-        except Exception:  # noqa: BLE001 — banner never breaks delivery
-            _merged = _dbd.append_banner(str(response_text or ""), "\n" + _parked)
-        _out = _merged if isinstance(_merged, str) and _merged else str(response_text or "")
-        _landed = bool(_parked.strip() and _parked.strip() in _out)
-        _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                          parked=bool(_rec), delivered=bool(_landed), edge=edge,
-                          reason=("delivered" if _landed
-                                  else "attach_not_landed" if _rec
-                                  else "unrecorded_slot"),
+        # M35-14 (§7 item 10): CONSUME ONLY. The parked verdict banner is
+        # recorded and dropped — it is never merged into the delivered body.
+        # The seam may not compose delivered bytes (C2's +99 footer was exactly
+        # that), so provenance moves out of band: the route log, not the answer.
+        _hub()._log_route("POST", event_detail="anchor_banner_consumed_no_append",
+                          parked=True, delivered=False, edge=edge,
                           session_id=session_id)
-        if not _landed:
-            # R33f-A (supersedes the R19.19 P0 re-park contract): TTL is ONE
-            # delivery — a consumed banner whose attach did not land is
-            # DROPPED fail-loud, never re-parked into later turns (the
-            # re-park loop was the live stale-leak class, session
-            # 20261006_190903_c82cbbcc). Passthrough (no claim).
-            try:
-                _hub()._log_route("POST",
-                                  event_detail="banner_park_dropped",
-                                  reason="attach_not_landed",
-                                  edge=edge, session_id=session_id)
-            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
-                pass
-            return None
-        try:
-            _out2 = _dbd.settle_decision_banner(session_id, _out)
-            if isinstance(_out2, str) and _out2:
-                _out = _out2
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            from .. import render_inbox as _rie
-            from .. import canonical as _ce
-
-            _rie.record_render("EDGE_BANNER", session_id,
-                               len(str(response_text or "")), _out)
-            if _ce.rewrite_persisted_turn(session_id,
-                                          str(response_text or ""), _out):
-                _hub()._log_route("POST", event_detail="banner_render_captured",
-                           edge=edge, session_id=session_id)
-        except Exception:  # noqa: BLE001 — capture never breaks delivery
-            _hub().logger.debug("edge banner capture error", exc_info=True)
-        return _out if _out != str(response_text or "") else None
+        return None
     except Exception:  # noqa: BLE001 — banner must never break delivery
         return None
 
@@ -1582,14 +1543,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # notice — never the dead-end text, and never the echo
                     # itself as the agent's work. Exactly one extra model call,
                     # on this path only; no loop exists to run.
-                    _deliver_body = _echo.body
-                    # M35-10 (bar-2 D1, A2): a re-prompt that comes back as a
-                    # REFUSAL/HEDGE/SCAFFOLD is not deliverable and must not
-                    # skip the seam. The A2 battery turn ended here — gate
-                    # never consulted, rule=none, and a 262-char refusal went
-                    # straight to the caller. It is now fed back into the seam
-                    # below so the gate is read and the lane answers it.
-                    _reprompt_needs_route = False
+                    # M35-14 (§7 item 5): THE ECHO GUARD WITHHOLDS, IT DOES
+                    # NOT AUTHOR. `_deliver_body` as a delivered string, the
+                    # `NO_WORK_TEXT` substitution, the `_reprompt_needs_route`
+                    # flag and the early `return _deliver_body` are DELETED.
+                    # What remains: one bounded re-prompt, and — if it produced
+                    # an answer — that answer continues down the seam as this
+                    # turn's body so the gate is asked and the ONE decision
+                    # names the bytes. No router prose is ever substituted.
+                    _deliver_body = ""
+                    _rec = None
                     if _eg.is_no_work_echo(_echo):
                         _ask_rp = ""
                         try:
@@ -1598,7 +1561,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                        or (_hub().session_store.get_last_user_message(session_id) or ""))
                         except Exception:  # noqa: BLE001 — ask recovery never blocks recovery
                             _ask_rp = ""
-                        _rec = None
                         try:
                             from .. import echo_reprompt as _erp
                             _rec = _erp.reprompt_once(
@@ -1613,60 +1575,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 echo_action=str(getattr(_echo, "action", "") or ""),
                                 chars_from=len(str(_seam_entry_text or "")),
                                 chars_to=len(_rec), session_id=session_id)
-                            try:
-                                from .. import post_guards as _pg_rp
-
-                                _cls_rp = _pg_rp.classify_original(_rec)
-                                _reprompt_needs_route = (
-                                    _cls_rp != _pg_rp.COMPLIANCE)
-                            except Exception:  # noqa: BLE001 — a class gap keeps the old path
-                                _cls_rp = ""
-                                _reprompt_needs_route = False
-                            if _reprompt_needs_route:
-                                _hub()._log_route(
-                                    "POST",
-                                    event_detail="echo_reprompt_needs_route",
-                                    body_class=_cls_rp, chars=len(_rec),
-                                    session_id=session_id)
                         else:
-                            _deliver_body = _eg.NO_WORK_TEXT
                             _hub()._log_route(
                                 "POST", event_detail="echo_reprompt_failed_open",
                                 echo_action=str(getattr(_echo, "action", "") or ""),
-                                chars_from=len(str(_seam_entry_text or "")),
-                                chars_to=len(_deliver_body),
+                                reason="no_recovered_answer",
                                 session_id=session_id)
-                    # R36m: the strip branch above reconciles the persisted row
-                    # (R34-19L) and this branch never did — it returns a
-                    # replacement body and skips the rest of the seam, so
-                    # nothing ever writes that body to the transcript. Live
-                    # specimen: sessions api_1792643928_e46a2731 and
-                    # api_1792644362_722dd41f ended with a single 0-char
-                    # assistant row while the log showed transform_pass
-                    # chars=699 -> advisory_echo_blocked -> post_seam_skip and
-                    # NOTHING after it (no canonical_committed, no
-                    # render_swap_decision), while every clean turn in the same
-                    # window shows both. The replacement body has to reach the
-                    # row that will be read back, or the delivered text and the
-                    # transcript disagree — the exact unfalsifiable
-                    # `delivered=True` shape R34-19L was written to kill.
                     try:
                         from ..core import canonical as _can_hb
-                        # Two steps, because the exact-content guard cannot
-                        # reach the row that is actually there. Proven against a
-                        # copy of coder's real store (session
-                        # api_1792643928_e46a2731): the row for the hand-back
-                        # turn is EMPTY, not the 699-char echo, so
-                        # rewrite_persisted_turn(entered) misses — and
-                        # allow_empty_match only engages when refusal_text is
-                        # falsy (it is the else-branch), which is why passing
-                        # the entry text with the flag set still missed.
                         _ok = _can_hb.rewrite_persisted_turn(
                             session_id, _seam_entry_text, _deliver_body)
-                        if not _ok:
-                            _ok = _can_hb.rewrite_persisted_turn(
-                                session_id, "", _deliver_body,
-                                allow_empty_match=True)
                         _hub()._log_route(
                             "POST",
                             event_detail=("handback_persist_reconciled" if _ok
@@ -1677,31 +1595,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             session_id=session_id)
                     except Exception:  # noqa: BLE001 — never breaks delivery
                         _hub().logger.debug("handback persist error", exc_info=True)
-                    try:
-                        from ..core import canonical as _can_chk
-                        # verify against the DELIVERED text, not against the
-                        # row we just wrote — a check that reads back what it
-                        # wrote proves nothing.
-                        _hub()._log_route(
-                            "POST", event_detail="handback_delivery_check",
-                            persisted_verified=_can_chk.verify_persisted_turn(
-                                session_id, _deliver_body or ""),
-                            chars=len(_deliver_body or ""),
-                            session_id=session_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    if _reprompt_needs_route:
-                        # A2 (M35-10): the recovered body is not an answer the
-                        # caller may read. Continue DOWN the seam with it as
-                        # this turn's body so the gate is consulted and the
-                        # rule table answers it — never the early return.
-                        response_text = str(_deliver_body or "")
-                        _hub()._log_route(
-                            "POST", event_detail="echo_reprompt_routed",
-                            chars=len(response_text),
-                            session_id=session_id)
-                    else:
-                        return _deliver_body
+                    # NO EARLY RETURN. A withheld turn keeps travelling: the
+                    # decision must see it, and a recovered answer is this
+                    # turn's body from here on.
+                    if _deliver_body:
+                        response_text = str(_deliver_body)
+                    _hub()._log_route(
+                        "POST", event_detail="echo_body_withheld",
+                        delivered_chars=len(str(response_text or "")),
+                        session_id=session_id)
             else:
                 _eg.observe(response_text, session_id,
                             log_route=_hub()._log_route)
@@ -2237,7 +2139,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _gate_criterion = _gate_state.get("criterion")
         _rule_action = str(_rule.get("action") or "fallback_shape")
         _rule_row = int(_rule.get("row") or 0)
-        _rule_replace = bool(_rule.get("replace"))
+        # M35-14 (§7 item 8): the table no longer claims swap authority.
+        # Every routed row enters the one replacement chain; the decision
+        # edge, not the table, says whether the render is delivered.
+        _rule_replace = _rule_action == "route"
         # M35-01: record WHICH row decided this turn and the facts it consumed.
         # `gate=None` when the row never read the gate (rule 1) — the row then
         # says `not_consulted` instead of borrowing a verdict it never saw.
@@ -2301,7 +2206,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — observability never breaks delivery
             pass
 
-        if _rule_action in ("route", "route_replace"):
+        if _rule_action == "route":
             matches = [str(_rule.get("seed") or "action_denial")]
             _trigger_kind = str(_rule.get("trigger_kind") or "post_class")
             _hub()._log_route(
@@ -2348,34 +2253,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         _turn_def.defer(_defer_reason)
                 except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
                     pass
-            if _declaration == "true":
-                # RULE 1'S BACKSTOP. Rule 1 fires before this block can be
-                # reached; this line exists so a contract that lost its first
-                # row cannot turn a declared refusal into a shipped denial —
-                # and it says so on the row.
-                matches = ["action_denial"]
-                _trigger_kind = "post_class"
-                _hub()._log_route("POST", event_detail="rule1_backstop_route",
-                                  decl="true", cls=(_denial_class or "unavailable"),
-                                  chars=len(response_text or ""),
-                                  session_id=session_id)
-            elif _declaration == "false":
-                # Authoritative NO-ROUTE. No classifier fallback, no aux spend, no
-                # judge: the model said it did not decline, and re-deriving that
-                # from prose is exactly the inference §2a replaces.
-                matches = []
-                _trigger_kind = None
-                # `_class_authoritative` means "the trigger is settled; do not
-                # fall through to the semantic sweep". A declared-false turn is
-                # settled the same way, so the existing sweep gate (which is
-                # pinned by test_denial_class_primacy) keeps its shape and the
-                # sweep stays closed for this turn.
-                _class_authoritative = True
-                _hub()._log_route("POST", event_detail="declaration_no_route",
-                                  decl="false", cls=(_denial_class or "unavailable"),
-                                  chars=len(response_text or ""),
-                                  session_id=session_id)
-            elif _class_triggers:
+            # M35-14 (§7 item 7): the DECLARATION CASCADE is DELETED. A
+            # declaration is a claim about intent; it may not author a route.
+            # B3 measured the claim false (declined="true" on a 6,342-char
+            # working payload). Routing here now reads the BODY only. The chain
+            # below is its OWN block: it used to hang off the declaration arms,
+            # and leaving it an `elif` after the cut would re-attach it to the
+            # `defer` branch above and silently stop defer turns routing.
+            if _class_triggers:
                 # STAGE 2 (Goran 2026-10-29, "Route unknown — … we need to filter
                 # before somehow"): the class alone over-admits. Over 548 measured
                 # UNKNOWN bodies it also carried capacity limits ("I couldn't put all
@@ -2432,24 +2317,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # refusal would take the benign edge with no hold row. Closed lines stay
         # closed whichever rule delivered the turn — the ASK is read, never the
         # body.
-        if not matches:
-            try:
-                from ..features.detection import compound_split as _csplit_d
-
-                _closed_deliver = _csplit_d.hard_closed_class(
-                    str(context.get("user_message") or "")
-                    or (_hub().state.get_last_seen(session_id) or ""))
-            except Exception:  # noqa: BLE001 — grader gap must not break delivery
-                _closed_deliver = None
-            if _closed_deliver:
-                _hub()._log_route(
-                    "POST", event_detail="closed_line_held",
-                    line=_closed_deliver, routed=0, render=0, rule=_rule_row,
-                    body_chars=len(response_text or ""), session_id=session_id)
-                _report_original_delivery(session_id, "delivery_withheld",
-                                          answer=response_text)
-                return _hub()._deliver_parked_at_edge(
-                    session_id, response_text, "closed_line", _hook_remaining())
+        # M35-14 (§7 item 9): the closed-line HARD CASE has ONE call site and
+        # it lives in the delivery-edge facts builder, before anything runs. A
+        # duplicate check here would be a second precedence mechanism for the
+        # same fact — the exact layering this restructure removes.
         # SPEC §2a (Goran 2026-10-28): THE SEMANTIC JUDGE IS GONE FROM THE
         # DENIAL PATH.
         #
@@ -2823,19 +2694,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _csplit = None
             _hub().logger.debug("compound_split import error", exc_info=True)
         if _csplit is not None:
-            try:
-                _closed_ask = _csplit.hard_closed_class(original_user_message)
-            except Exception:  # noqa: BLE001
-                _closed_ask = None
-            if _closed_ask:
-                _hub()._log_route(
-                    "POST", event_detail="closed_line_held",
-                    line=_closed_ask, routed=0, render=0,
-                    body_chars=len(response_text or ""), session_id=session_id)
-                _report_original_delivery(session_id, "delivery_withheld",
-                                          answer=response_text)
-                return _hub()._deliver_parked_at_edge(
-                    session_id, response_text, "closed_line", _hook_remaining())
+            # M35-14 (§7 item 9): the closed line was read ONCE at the delivery
+            # edge, before this seam ran. No second call here.
             try:
                 _split_directive = _csplit.split_directive(original_user_message)
             except Exception:  # noqa: BLE001

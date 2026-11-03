@@ -72,7 +72,7 @@ def test_execution_echo_blocks_the_close(monkeypatch):
         log_route=lambda e, **f: rows.append((e, dict(f))))
     assert out is not None
     assert out.action == "handback_failure"
-    assert out.body == echo_guard.HAND_BACK_TEXT
+    assert out.body == ""
     blocked = _events(rows, "advisory_echo_blocked")
     assert len(blocked) == 1
     assert blocked[0]["action"] == "handback_failure"
