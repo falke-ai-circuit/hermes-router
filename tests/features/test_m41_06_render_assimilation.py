@@ -161,7 +161,14 @@ def test_a1_rule1_renders_when_the_gate_abstains(monkeypatch):
     assert decision["action"] == "route", decision
     assert route is not None and route["replacement"] == "uncensored_render", route
     assert chain is not None and chain["entry"] == "post_render_chain", chain
-    assert reads["n"] == 0, "rule 1 must not read the gate at all"
+    # M35-15 (old case: row 1 ROUTE, no gate read; new case: D3
+    # GATE_UNCONSULTED -> consult -> D5). M35-14 §2.1 moved the consult to
+    # the DELIVERY edge: any replaceable turn must ask the gate before the
+    # decision exists, so a rule-1 turn reads it once for the facts and at
+    # most once more for the bounded re-entry. The property that matters
+    # (and what the old zero-read pin protected) is that the consult is
+    # BOUNDED — one attempt, never a loop.
+    assert 1 <= reads["n"] <= 2, reads["n"]
     assert out is not None and RENDERED in out, out
     assert DENIAL_BODY not in out, "the refusal must not ship"
     # the chain ladder was exercised: primary failed, fallback answered
@@ -188,7 +195,14 @@ def test_a2_rule1_renders_when_the_gate_is_pending(monkeypatch):
     decision = _row(sink, "rule_table_decision")
     assert decision is not None and decision["rule"] == 1, decision
     assert decision["action"] == "route", decision
-    assert reads["n"] == 0, "rule 1 must not read the gate at all"
+    # M35-15 (old case: row 1 ROUTE, no gate read; new case: D3
+    # GATE_UNCONSULTED -> consult -> D5). M35-14 §2.1 moved the consult to
+    # the DELIVERY edge: any replaceable turn must ask the gate before the
+    # decision exists, so a rule-1 turn reads it once for the facts and at
+    # most once more for the bounded re-entry. The property that matters
+    # (and what the old zero-read pin protected) is that the consult is
+    # BOUNDED — one attempt, never a loop.
+    assert 1 <= reads["n"] <= 2, reads["n"]
     assert out is not None and RENDERED in out, out
 
 
@@ -208,7 +222,12 @@ def test_a3_table_level_gate_absent_cells():
 
         d = rt.evaluate(declaration="true", gate_provider=_g, intent_provider=_i)
         assert (d["row"], d["action"]) == (1, "route"), gate
-        assert d["replace"] is True
+        # M35-15: `replace` was the route_replace row's own flag. M35-14 §7
+        # item 8 deleted the distinction (and the flag with it): row 1 now
+        # routes, and whether the lane REPLACES is decided at the delivery
+        # edge (core/delivery_decision D5), not by the table.
+        assert "replace" not in d, d
+        assert d["action"] == "route", d
         assert calls == {"gate": 0, "intent": 0}, (gate, calls)
 
 
@@ -241,7 +260,7 @@ def test_b1_rule4_replaces_through_budget_ladder_and_swap(monkeypatch):
     chain = _row(sink, "replacement_chain")
     swap = _row(sink, "render_swap_decision")
     assert decision is not None and (decision["rule"], decision["action"]) == (
-        4, "route_replace"), decision
+        4, "route"), decision
     # chain ladder — the pre-existing one, named on the row, exercised
     assert chain is not None, sink
     assert chain["entry"] == "post_render_chain", chain

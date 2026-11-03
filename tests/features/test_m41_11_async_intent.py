@@ -151,7 +151,13 @@ def test_a_rule1_is_synchronous_and_never_starts_a_judge(monkeypatch):
     assert decision is not None and (decision["rule"], decision["action"]) == (
         1, "route"), decision
     assert calls["n"] == 0, "rule 1 must never start the intent judge"
-    assert elapsed < 0.5, elapsed
+    # M35-15 (old: rule 1 never consults, so the turn was sub-0.5s; new:
+    # D3 asks the gate synchronously before the decision exists — §2.1).
+    # The 0.5s bar measured a path that no longer exists. What the pin
+    # must still forbid is an UNBOUNDED wait: the consult carries the
+    # gate worker's own hard timeout, so a turn that hangs past it is the
+    # defect this now catches.
+    assert elapsed < 10.0, elapsed
     assert out is not None and RENDERED in out, out
 
 
@@ -225,7 +231,8 @@ def test_c_slow_judgement_defers_and_delivers_first(monkeypatch):
     decision = _row(sink, "rule_table_decision")
     # M35-03: the gate verdict decided the turn, not the body's self-assessment
     assert decision is not None and decision["rule"] == 4, decision
-    assert decision["action"] == "route_replace", decision
+    # M35-15: "route_replace" -> "route" (M35-14 §7 item 8).
+    assert decision["action"] == "route", decision
 
     # the judgement finished behind delivery and named the turn
     rec = di.wait_for(sid, timeout=3.0)
@@ -322,7 +329,7 @@ def test_f_fast_judgement_keeps_the_synchronous_replace(monkeypatch):
     decision = _row(sink, "rule_table_decision")
     row = _row(sink, "intent_judge_turn")
     assert decision is not None and (decision["rule"], decision["action"]) == (
-        4, "route_replace"), decision
+        4, "route"), decision
     assert row is not None and row["deferred"] == 0, row
     assert out is not None and RENDERED in out, out
     assert di.correction_pending(sid) is False, "an in-budget turn needs no correction"

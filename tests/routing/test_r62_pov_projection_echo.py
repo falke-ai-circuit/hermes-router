@@ -115,8 +115,17 @@ def test_projection_head_with_a_real_answer_below_is_kept_and_stripped():
     assert "The photogate" in str(res.body)
 
 
-def test_the_no_answer_notice_claims_nothing_about_work():
+def test_the_withheld_echo_claims_nothing_about_work():
+    """M35-15: the four notice strings were deleted (spec §7 item 6) — the
+    guard withholds the echoed body and substitutes NO router prose.
+
+    Old case: the withheld body was the `no answer was delivered` notice.
+    New case: the withheld body is empty; what survives, and what this pin
+    really bought, is that no claim about work is ever shipped.
+    """
     res = eg.enforce_execution_echo(LIVE_NOTE, session_id="t", frame="impulse")
-    body = str(res.body)
-    assert "no answer was delivered" in body
+    body = str(res.body or "")
+    assert res.action == "withhold_echo"
+    assert body.strip() == "", body          # no substitute prose at all
     assert "work report" not in body
+    assert "explorer" not in body

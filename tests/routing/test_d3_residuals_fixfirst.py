@@ -144,10 +144,16 @@ def test_midrun_sweep_wipe_still_delivers_next_turn(rr_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="follow-up body",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    assert out and "follow-up body" in out
-    assert TAG not in out, out  # R20
-    assert 'impulse (decision)' in out
-    assert "impulse (decision)" in out
+    # M35-15 (old case: the parked verdict banner was merged into the
+    # delivered body; new case: spec §7 item 10 deleted the body-side merge).
+    # A benign compliant body is D4 with strip_bytes=0 -> the passthrough, so
+    # what the wire carries is exactly the entry text; the banner is consumed
+    # and must neither ride the body nor replay onto the next turn.
+    assert out is None or "follow-up body" in (out or ""), out
+    assert TAG not in (out or ""), out  # R20
+    assert "impulse (decision)" not in (out or "")
+    from hermes_router import debug_banner as _DBd
+    assert _DBd._ANCHOR_BANNERS.get(SID) in (None, ""), "banner must be consumed"
     crec = [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"]
     assert len(crec) == 1 and crec[0].get("parked") is True \

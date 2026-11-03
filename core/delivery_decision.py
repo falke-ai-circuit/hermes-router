@@ -76,6 +76,7 @@ CASE_NAMES = {
 SOURCE_MAIN = "main"
 SOURCE_LANE = "lane"
 SOURCE_NONE = "none"
+SOURCE_SEAM = "seam"
 
 COMPLIANCE = "compliance"
 REFUSAL = "refusal"
@@ -95,6 +96,7 @@ REASON_GATE_UNAVAILABLE = "gate_unavailable_after_consult"
 REASON_LANE_DELIVERED = "lane_delivered"
 REASON_NO_LANE = "no_admissible_lane"
 REASON_MARKER_VIOLATION = "marker_violation"
+REASON_SEAM_FAILURE = "seam_failure"
 
 # --------------------------------------------------------------------------- #
 # the marker set — DATA. Extended only by adding to this tuple.
@@ -199,6 +201,9 @@ class DeliveryFacts:
     closed_line_hit: str = ""
     lane_render: Optional[str] = None
     attempt: int = 0
+    #: A failure the SEAM ITSELF declared (delivery integrity). Not a body
+    #: classification: no case may deliver an answer over it.
+    seam_failure: str = ""
 
 
 @dataclass(frozen=True)
@@ -289,6 +294,18 @@ def decide(facts: DeliveryFacts) -> Decision:
             diag["_strip"] = entered_strip
             return _terminal(D2, REASON_MARKER_VOID, diag)
 
+        # ---- P1b: a SEAM-DECLARED failure outranks every body case --------
+        # The hook already decided this turn failed (transcript divergence).
+        # D6 is defined as "a post-condition (§7) was violated", and here the
+        # post-condition failed BEFORE any body was considered — so the only
+        # bytes this decision may name are the failure body itself. Without
+        # this, a compliant entered body won D4, the failure body was dropped,
+        # and the turn "passed through" as if it had been answered.
+        if str(getattr(facts, "seam_failure", "") or ""):
+            diag["seam_failure"] = str(facts.seam_failure)
+            return Decision(FAIL_TERMINAL, D6, REASON_SEAM_FAILURE, SOURCE_SEAM,
+                            0, diag, (lane_clean or None))
+
         # ---- P2 D3: the decision must not exist before the gate was asked -
         replaceable = (body_class != COMPLIANCE
                        or rule_id in TARGETED_RULES)
@@ -298,7 +315,14 @@ def decide(facts: DeliveryFacts) -> Decision:
                             SOURCE_NONE, 0, diag, None)
 
         # ---- P3 D4: compliance outranks every rule -----------------------
-        if body_class == COMPLIANCE:
+        # `entered_ok` is load-bearing: D4's action is DELIVER_ENTERED, and a
+        # void entered body (empty after strip, or wholly router prose) has no
+        # bytes to deliver. Without it an empty body — which classify_original
+        # names COMPLIANCE by its own "everything else" rule — won D4 and the
+        # admissible lane beside it (the empty-body VISIBLE FAILURE the
+        # orchestrator had already composed) was silently dropped, producing
+        # exactly the 0-char turn UNC-POST-1 forbids.
+        if body_class == COMPLIANCE and entered_ok:
             diag["rule_replace_ignored"] = rule_id in TARGETED_RULES
             diag["main_complied"] = True
             reason = (REASON_COMPLIANCE_OUTRANKS_RULE

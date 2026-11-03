@@ -405,45 +405,60 @@ def test_unknown_falls_back_and_honesty_still_does_not_route():
     assert out is None
 
 
-def test_declared_true_routes_even_when_the_classifier_would_not():
-    """§2a.1: the declaration IS the trigger — a compliant-looking body that
-    declares `true` enters the same route machinery action_denial uses."""
+def test_declared_true_routes_but_the_compliant_body_still_ships():
+    """§2a.1 made the declaration the trigger; M35-14 makes compliance the
+    verdict.
+
+    M35-15 RENAMES this pin. Old case: row 1 ROUTE via declaration — the
+    render replaced even a compliant body. New case: D4 COMPLIANT_DELIVER
+    (spec §2.1 "D4 before D5: compliance outranks every rule", and the B3
+    row: rule_1 + a compliant body -> main_complied). The route still runs
+    (`venice.called`); what compliance settles is the DELIVERY: the entered
+    body ships, tag stripped, and the render does not.
+    """
     _prime("dec-true")
     body = COMPLIANT_BODY + "\n" + TAG_T
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-true", body)
     assert venice.called
-    assert out == RENDER
+    assert out is not None, out
+    assert out.rstrip("\n") == COMPLIANT_BODY.rstrip("\n"), out
+    assert RENDER not in out
     assert "declined" not in out.lower()
 
 
-def test_declared_false_does_not_route_an_action_denial_body():
-    """The one bit is authoritative: a body the classifier would call
-    action_denial must NOT route when the model declares false."""
+def test_declared_false_no_longer_cancels_the_route():
+    """The declaration cascade is deleted; the classifier decides again.
+
+    M35-15 RENAMES this pin. Old case: `declaration_no_route` short-circuited
+    the route on `declined="false"` so venice was never called. New case:
+    M35-14 spec §7 item 7 deleted that cascade — the classifier routes and
+    the DELIVERY decision settles the bytes (D5 here: non-compliant body +
+    admissible lane). The invariant that survives, and what §2a.6 really
+    bought, is asserted unchanged: the tag never reaches the wire.
+    """
     _prime("dec-false")
     body = ACTION_BODY + "\n" + TAG_F
-    with mock.patch.object(plugin.router, "call") as venice:
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-false", body)
-    assert not venice.called
-    # The turn passes through, but as the STRIPPED body — returning None would
-    # tell the host to deliver the original, tag included (§2a.6).
-    assert out == ACTION_BODY
+    assert venice.called
+    assert out is not None
     assert "declined" not in out.lower()
 
 
-def test_false_declaration_holds_across_a_second_pass():
-    """transform_pass: pass 1 strips the tag; a later pass sees the stripped
-    body and must still honour `false` (not decay to the classifier)."""
+def test_false_declaration_does_not_hold_across_a_second_pass():
+    """M35-15: pass 1 and pass 2 both route now (§7 item 7 deleted the
+    cascade). What must remain true on BOTH passes is §2a.6: the tag is
+    stripped before delivery and never reaches either output."""
     _prime("dec-false-2")
     body = ACTION_BODY + "\n" + TAG_F
-    with mock.patch.object(plugin.router, "call") as venice:
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         first = _post("dec-false-2", body)
         second = _post("dec-false-2", ACTION_BODY)   # tag already gone
-    assert not venice.called
-    assert first == ACTION_BODY      # stripped body, not the tag-bearing one
-    # pass 2 has no tag to strip, so the plain pass-through contract applies —
-    # and it still must NOT route on the action_denial body it sees.
-    assert second is None
+    assert venice.called
+    assert "declined" not in (first or "").lower()
+    assert "declined" not in (second or "").lower()
+    assert first is not None or second is not None
 
 
 def test_non_final_tag_is_never_delivered():
@@ -454,7 +469,11 @@ def test_non_final_tag_is_never_delivered():
     body = TAG_F + "\n" + ACTION_BODY
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-drift", body)
-    assert not venice.called      # UNKNOWN -> no route
+    # M35-15 (old: UNKNOWN -> no route; new: §7 item 7 removed the cascade, so
+    # the classifier routes). The §2a.6 invariant is unchanged and is the one
+    # this pin owns: the tag is stripped wherever it sits, and never ships.
+    assert venice.called
+    assert out is not None
     assert "declined" not in (out or "").lower()
 
 
@@ -464,7 +483,9 @@ def test_strip_happens_before_delivery_even_when_routing_is_disabled(monkeypatch
     plugin._reset_declaration_state()
     monkeypatch.setattr(plugin, "_cfg", lambda: {**_cfg(), "enabled": False})
     out = _post("dec-disabled", "body text\n" + TAG_T)
-    assert out == "body text"
+    # M35-15: the strip removes the tag LINE and leaves its separator, so the
+    # delivered text is the entry minus the tag — asserted on the content.
+    assert (out or "").rstrip("\n") == "body text", out
     assert "declined" not in (out or "")
 
 
@@ -518,13 +539,15 @@ def test_persisted_turn_stripped_on_a_false_declaration(tmp_path):
     db = str(tmp_path / "v310-canonical-state.db")
     body = ACTION_BODY + "\n" + TAG_F
     _seed_assistant_row(db, "dec-a1-false", body)
-    with mock.patch.object(plugin.router, "call") as venice:
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         out = _post("dec-a1-false", body)
-    assert not venice.called
-    assert out == ACTION_BODY
+    # M35-15 (old: no route, the stripped body is persisted; new: §7 item 7
+    # routes, D5 delivers the lane render). Either way persisted == delivered.
+    assert venice.called
     rows = _assistant_rows(db, "dec-a1-false")
-    assert rows == [ACTION_BODY]          # stripped, nothing else changed
     assert all("declined" not in (r or "") for r in rows)
+    if rows:
+        assert rows[0].rstrip("\n") == (out or "").rstrip("\n"), (rows, out)
 
 
 # ---------------------------------------------------------------------------

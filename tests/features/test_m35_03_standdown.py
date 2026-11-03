@@ -145,7 +145,10 @@ def _turn(monkeypatch, sid, body, gate_row, intent, ask=ASK_A):
     state.advance_turn_identity(sid, state.hash_text(ask))
     out = plugin.on_transform_llm_output(response_text=body, session_id=sid,
                                         model="m1")
-    return str(out or "")
+    # M35-15: return the seam's own answer. `None` IS the passthrough contract
+    # ("deliver the body you gave me"), and coercing it to "" hid the
+    # difference between a D4 byte-identical delivery and a blank one.
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -171,18 +174,31 @@ def test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks(
     out = _turn(monkeypatch, sid, SELF_DECLARING_BODY, FLAGGED, "delivered")
 
     # The compliant body is what ships — un-replaced and byte-identical.
-    assert out == SELF_DECLARING_BODY, (
+    # M35-15 (old case: the edge returned the kept body explicitly; new case:
+    # D4 COMPLIANT_DELIVER with strip_bytes=0, i.e. the passthrough — the host
+    # ships exactly the bytes it handed us). A replacement would show up here
+    # as a DIFFERENT string, which is the defect this pin owns.
+    assert out is None, (
         "a compliant in-domain body was replaced — bar 2 says the body that "
         f"already satisfied the ask is a PASS: out={out!r}")
-    assert RENDERED not in out, out
+    assert RENDERED not in (out or ""), out
 
     # The decision is unchanged: rule 4 still routes on the gate flag alone.
     decision = _row(sink, "rule_table_decision")
     assert decision is not None, sink
+    # M35-15: row 4's action was "route_replace"; §7 item 8 collapsed
+    # route/route_replace into "route" (keep-vs-replace now belongs to the
+    # delivery decision), and the row's own `replace` flag went with it.
     assert (decision["rule"], decision["predicate"], decision["action"]) == (
-        4, "gate_flagged", "route_replace"), decision
+        4, "gate_flagged", "route"), decision
     assert decision["gate"] == "flagged", decision
-    assert decision["replace"] == 1, decision
+    # M35-15: the row's own `replace` flag belonged to route_replace; the
+    # keep-vs-replace verdict now lives on the delivery decision, which must
+    # name D4/main for this compliant body.
+    dd = _row(sink, "delivery_decision")
+    assert dd is not None, sink
+    assert dd.get("case_id") == "D4", dd
+    assert dd.get("delivered_source") == "main", dd
 
     rows = _rows(_isolated)
     assert len(rows) == 1, rows
@@ -265,7 +281,8 @@ def test_c1_flagged_cells_never_stand_down():
             assert d["action"] == "route", d["cell"]
             continue
         if d["cell"][2] in ("delivered", "deflected", "failed"):
-            assert (d["row"], d["action"]) == (4, "route_replace"), d["cell"]
+            # M35-15: row 4 action "route_replace" -> "route" (§7 item 8).
+            assert (d["row"], d["action"]) == (4, "route"), d["cell"]
         assert d["action"] != "deliver", d["cell"]
     print("\n(c) precedence:", PRECEDENCE)
 
@@ -292,7 +309,7 @@ def test_c4_benign_turn_still_delivers_the_main_body(monkeypatch, _isolated):
     """The seam side of c3: a not-flagged turn does not suddenly render."""
     sid = "m35-03-c4"
     out = _turn(monkeypatch, sid, BENIGN_BODY, NOT_FLAGGED, "delivered")
-    assert RENDERED not in out, out
+    assert RENDERED not in (out or ""), out
     row = _rows(_isolated)[0]
     assert (row["rule"], row["lane"], row["replaced"], row["deferred"]) == (
         "rule_6", "main", False, False), row

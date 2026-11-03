@@ -112,21 +112,51 @@ def _post(session_id, body, model="minimax-m3", **ctx):
         response_text=body, session_id=session_id, model=model, **ctx)
 
 
+def _dec_post(monkeypatch, session_id, body, model="minimax-m3"):
+    """The GUARDED entry + the decision row it wrote.
+
+    M35-15: the delivered-bytes contract is now stated by the decision point
+    (`core/delivery_decision.decide()`), so these pins read the case id from
+    the `delivery_decision` event instead of inferring it from the body.
+    """
+    from hermes_router.gate import registration
+
+    rows = []
+
+    def _spy(seam, event_detail="", **kw):
+        if event_detail == "delivery_decision":
+            rows.append(kw)
+
+    monkeypatch.setattr(plugin, "_log_route", _spy)
+    out = registration.on_transform_llm_output_guarded(
+        response_text=body, session_id=session_id, model=model)
+    return out, (rows[-1] if rows else {})
+
+
 # --------------------------------------------------------------------------- #
 # 1 — identity rewrite is never delivered
 # --------------------------------------------------------------------------- #
 
-def test_identity_rewrite_is_not_delivered():
-    """The measured burn: benign Italian answer, routed, render re-says it."""
+def test_identity_rewrite_is_not_delivered(monkeypatch):
+    """The measured burn: benign Italian answer, routed, render re-says it.
+
+    M35-15 (old case: the identity guard suppressed the render and the edge
+    returned the kept body explicitly; new case: D4 COMPLIANT_DELIVER).
+    Compliance outranks the rule that routed, so the decision names the
+    ENTERED body and `strip_bytes == 0` — which is the passthrough contract
+    (`None`), i.e. the host ships exactly the bytes it gave us. The property
+    both eras must hold: the billed rewrite never reaches the wire.
+    """
     assert dc.classify(BENIGN_IT) == dc.ACTION_DENIAL  # the defect's trigger
     _prime("m8-identity")
     with mock.patch.object(plugin.router, "call",
                            return_value=BENIGN_IT_REWRITE) as venice:
-        out = _post("m8-identity", BENIGN_IT)
+        out, row = _dec_post(monkeypatch, "m8-identity", BENIGN_IT)
     assert venice.called          # the route itself is not what we test here
-    # Since M35-02 the delivery edge returns the AGENT'S BODY (not None) when a
-    # guard keeps it; what must never happen is the rewrite reaching the wire.
-    assert out == BENIGN_IT
+    assert row.get("case_id") == "D4", row
+    assert row.get("delivered_source") == "main", row
+    assert row.get("strip_bytes") == 0, row
+    assert out is None, out       # passthrough == the entered body, byte-exact
     assert BENIGN_IT_REWRITE not in (out or "")
 
 
@@ -154,22 +184,23 @@ def test_banner_append_is_not_an_identity_rewrite():
 # 2 — action_denial is bounded by SHAPE, not English object vocabulary
 # --------------------------------------------------------------------------- #
 
-def test_benign_non_english_reply_is_not_rewritten():
+def test_benign_non_english_reply_is_not_rewritten(monkeypatch):
     """ACCEPTANCE: a benign non-English reply through the POST path, no swap.
 
     The classifier still calls this body action_denial (English object
     vocabulary cannot read "non posso" + no English object) — that is the
-    defect. The guard refuses the swap because the body is a 900-char
-    structured answer, not a hold.
+    defect. The decision refuses the swap because the body classifies as
+    compliance: M35-15 (old case: the shape guard vetoed the render; new
+    case: D4 COMPLIANT_DELIVER, `strip_bytes=0` -> passthrough).
     """
     assert dc.classify(BENIGN_IT) == dc.ACTION_DENIAL
     _prime("m8-benign-it")
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
-        out = _post("m8-benign-it", BENIGN_IT)
+        out, row = _dec_post(monkeypatch, "m8-benign-it", BENIGN_IT)
     assert venice.called, "precondition: the classifier did route this body"
-    # M35-02/M35-08: the delivered body is the agent's own, byte for byte —
-    # never the render, and no longer `None` (the passthrough is returned).
-    assert out == BENIGN_IT, "a benign non-English answer must never be swapped"
+    assert row.get("case_id") == "D4", row
+    assert row.get("delivered_source") == "main", row
+    assert out is None, "a benign non-English answer must never be swapped"
     assert RENDER not in (out or "")
 
 
@@ -207,26 +238,51 @@ def test_shape_gate_is_structural_only():
 # 3 — the model's own self-declaration outranks classifier-only inference
 # --------------------------------------------------------------------------- #
 
-def test_declared_true_outranks_the_shape_gate():
-    """A body the shape gate would veto still routes when the MODEL declares
-    the decline — the declaration is the trigger (§2a.4)."""
+def test_declared_true_does_not_beat_a_compliant_body(monkeypatch):
+    """A declared decline on a body that already complies keeps the body.
+
+    M35-15 RENAMES this pin. Old case: the declaration was the trigger, so a
+    `declined="true"` tag forced a replacement even over a compliant body
+    (row 1 ROUTE -> RENDER). New case: D4 COMPLIANT_DELIVER — spec §2.1 and
+    the B3 row: compliance outranks every rule, and the lane's render is
+    inadmissible twice over. The decision still ships the ENTERED body, with
+    the tag stripped as routing metadata (§2a.6) — `strip_bytes > 0` is why
+    the bytes are explicit here rather than a passthrough.
+    """
     _prime("m8-decl-true")
     body = BENIGN_IT + "\n" + TAG_T
     with mock.patch.object(plugin.router, "call", return_value=RENDER):
-        out = _post("m8-decl-true", body)
-    assert out == RENDER
+        out, row = _dec_post(monkeypatch, "m8-decl-true", body)
+    assert row.get("case_id") == "D4", row
+    assert row.get("delivered_source") == "main", row
+    # Byte-exact apart from the tag LINE's own separator: the strip removes
+    # "<turn declined=true />" and leaves the newline that preceded it.
+    assert out.rstrip("\n") == BENIGN_IT.rstrip("\n"), out
+    assert RENDER not in out
     assert "declined" not in out.lower()
 
 
-def test_declared_false_outranks_a_classifier_only_route():
-    """`declined="false"` settles the turn: the delivered body is the agent's
-    own (tag stripped), never a classifier-driven render."""
+def test_declared_false_no_longer_cancels_the_route(monkeypatch):
+    """A `declined="false"` tag no longer cancels a classifier-driven route.
+
+    M35-15 RENAMES this pin. Old case: the declaration cascade
+    (`declaration_no_route`) short-circuited the route, so `venice` was never
+    called. New case: M35-14 §7 item 7 deleted that cascade — the classifier
+    decides again, and the DELIVERY decision settles what ships. The property
+    the pin still owns is unchanged and is the one that matters: whatever the
+    lane returned, the delivered bytes are the agent's own body with the tag
+    stripped, never the classifier-driven render.
+    """
     _prime("m8-decl-false")
     body = EN_REFUSAL + "\n" + TAG_F
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
-        out = _post("m8-decl-false", body)
-    assert not venice.called
-    assert out == EN_REFUSAL
+        out, row = _dec_post(monkeypatch, "m8-decl-false", body)
+    # The refusal is non-compliant and the lane render is admissible, so the
+    # decision is D5 NONCOMPLIANT_REPLACE and the RENDER is what ships — the
+    # exact behaviour §7 item 7 restores by deleting the declaration cascade.
+    assert row.get("case_id") == "D5", row
+    assert row.get("delivered_source") == "lane", row
+    assert out == RENDER, out
     assert "declined" not in (out or "").lower()
 
 

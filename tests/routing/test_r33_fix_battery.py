@@ -115,8 +115,13 @@ def test_f03_d_sentinel_skip_unchanged(env, monkeypatch):
     with mock.patch.object(sj_mod, "judge_turn") as judge:
         out = plugin.on_transform_llm_output(
             response_text=text, session_id="f03d", model="test-model")
-    assert out is None
-    assert not judge.called
+    # M35-15 (old case: no detection -> plain passthrough; new case: D2
+    # MARKER_VOID). The body here is nothing but a sentinel line, so after the
+    # strip there is no deliverable text: the turn is withheld with the named
+    # failure notice instead of shipping routing metadata to the user (§2a.6).
+    assert not judge.called, "a sentinel turn must not start the semantic judge"
+    assert out is not None and out != text, out
+    assert "UNCENSORED-ROUTER INJECTION" not in (out or "")
 
 
 def test_f03_signal_via_tier1_out():

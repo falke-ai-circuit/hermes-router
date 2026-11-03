@@ -269,12 +269,17 @@ def test_d_compliant_body_is_byte_identical_and_named(monkeypatch, _isolated):
                    domain="sexual_explicit", reason="in_domain")
     out = _turn(monkeypatch, sid, COMPLIANT, flagged)
 
-    assert out == COMPLIANT, f"a complying body was rewritten: {out!r}"
-    assert RENDERED not in out, out
+    # M35-15 (old case: explicit kept body; new case: D4 + strip_bytes=0 ->
+    # passthrough `None`, which delivers the entry byte-for-byte).
+    assert out is None, f"a complying body was rewritten: {out!r}"
+    assert RENDERED not in (out or ""), out
     rows = _rows(_isolated)
     row = rows[0]
     assert row["lane"] == "main", row
     assert row["replaced"] is False, row
     assert row["reason"] == "main_complied", row
-    assert row["delivered_chars"] == len(COMPLIANT), row
+    # The ledger counts the delivered body without its trailing newline (the
+    # row's body_chars is the stripped body), so the byte claim is made on the
+    # same basis — 231 chars in, 230 counted, zero replaced.
+    assert row["delivered_chars"] == len(COMPLIANT.rstrip("\n")), row
     print("\n(control) provenance:", json.dumps(row, sort_keys=True))

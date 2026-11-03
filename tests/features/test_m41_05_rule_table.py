@@ -91,7 +91,7 @@ def test_a4_rule4_gate_flag_routes_and_replaces_whatever_the_body_claims():
     for intent in ("softened", "delivered", "deflected", "failed"):
         d = _fire(gate="flagged", intent=intent)
         assert (d["row"], d["predicate"], d["action"]) == (
-            4, "gate_flagged", "route_replace"), intent
+            4, "gate_flagged", "route"), intent
     assert d["trigger_kind"] == "pre_gate"
 
 
@@ -118,7 +118,11 @@ def test_a0_rows_are_the_contract_not_a_copy():
         "declared_refusal", "intent_declined", "gate_abstain",
         "gate_flagged", "intent_softened", "else"]
     assert [r[1] for r in rows] == [
-        "route", "route", "defer", "route_replace", "deliver", "deliver"]
+        # M35-15: row 4 action was "route_replace" (old case: ROUTE_REPLACE,
+        # row 4). M35-14 §7 item 8 deleted the route/route_replace
+        # distinction — the delivery decision point (core/delivery_decision)
+        # now owns keep-vs-replace, so the table action is the one "route".
+        "route", "route", "defer", "route", "deliver", "deliver"]
     assert rt.POST_QUESTION == intent_judge.POST_QUESTION
 
 

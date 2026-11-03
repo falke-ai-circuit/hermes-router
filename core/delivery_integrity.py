@@ -338,6 +338,15 @@ def audit_last_delivery(session_id: str, *, db_path: Optional[str] = None,
     return result
 
 
+"""First sentence of `failure_body` — the seam-failure recogniser.
+
+`gate/registration.py` reads this prefix to mark a turn the SEAM itself
+declared failed, so the delivery decision can never deliver a normal
+answer over it. One spelling, one place.
+"""
+FAILURE_PREFIX = "Router failure: transcript divergence"
+
+
 def failure_body(result: Divergence) -> str:
     """Operator-facing hard-failure text for a diverged turn.
 
@@ -345,7 +354,7 @@ def failure_body(result: Divergence) -> str:
     so the failure is auditable without re-leaking the content.
     """
     return (
-        "Router failure: transcript divergence. The transcript row for this "
+        FAILURE_PREFIX + ". The transcript row for this "
         "session does not match the body the user was delivered "
         "({} chars persisted vs {} chars delivered; row {} / obligation {}). "
         "The turn is withheld rather than delivered as if it were answered."

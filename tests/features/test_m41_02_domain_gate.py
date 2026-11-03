@@ -349,7 +349,9 @@ def test_e2_contract_is_data_and_resolves_by_token():
         ("declared_refusal", "route"),
         ("intent_declined", "route"),
         ("gate_abstain", "defer"),
-        ("gate_flagged", "route_replace"),
+        # M35-15: was "route_replace"; M35-14 §7 item 8 collapsed
+        # route/route_replace into the single table action "route".
+        ("gate_flagged", "route"),
         ("intent_softened", "deliver"),
         ("else", "deliver"),
     )

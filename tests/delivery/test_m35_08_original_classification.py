@@ -209,7 +209,10 @@ def test_d_compliance_is_kept_and_the_row_says_main_complied(monkeypatch):
 
     out = _post("m35-08-d", COMPLIANCE_BODY)
 
-    assert out == COMPLIANCE_BODY, out             # byte-identical to main's
+    # M35-15 (old case: the kept body was returned explicitly; new case: D4
+    # COMPLIANT_DELIVER, strip_bytes=0 -> the passthrough contract). `None`
+    # means the host delivers exactly the entry text, which IS byte-identical.
+    assert out is None, out
     assert RENDER not in (out or ""), out
     row = rows[0]
     assert row["lane"] == "main", row
@@ -226,7 +229,8 @@ def test_d_benign_non_english_answer_stays_untouched(monkeypatch):
 
     out = _post("m35-08-d-it", BENIGN_IT)
 
-    assert out == BENIGN_IT, out
+    # M35-15: same D4 passthrough as above — the invoice shape is compliance.
+    assert out is None, out
     row = rows[0]
     assert row["lane"] == "main", row
     assert row["replaced"] is False, row

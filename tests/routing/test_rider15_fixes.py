@@ -179,10 +179,17 @@ def test_banner_attaches_on_flinch_passthrough_edge(r15_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text="I cannot help with that request as stated.",
         session_id=SID, model="flash")
-    assert out is not None, "delivery edge must return the merged body"
-    assert "· router ·" in out and banner in out, \
-        "banner must render in the delivered body of the same turn"
-    assert DB._ANCHOR_BANNERS.get(SID) in (None, "")
+    # M35-15 (old case: the edge merged the parked banner into the returned
+    # body; new case: spec §7 item 10 deleted the body-side banner merge —
+    # "that affordance must move to an out-of-band channel (§10 iii)").
+    # The refusal has no admissible lane, so the decision is D6 and the
+    # passthrough contract applies. The property this pin still owns is the
+    # one that kept the banner from being LOST or REPLAYED: it is consumed
+    # exactly now, and it never becomes part of an answer.
+    assert out is None, "no router prose may ride in the body"
+    assert banner not in (out or "") and "· router ·" not in (out or "")
+    assert DB._ANCHOR_BANNERS.get(SID) in (None, ""), "banner must be consumed"
+
 
 
 def test_banner_attaches_on_agent_line_edge(r15_reset, monkeypatch):
@@ -194,7 +201,11 @@ def test_banner_attaches_on_agent_line_edge(r15_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text="I won't move on this; it's my line and it holds.",
         session_id=SID, model="flash")
-    assert out is not None and banner in out
+    # M35-15: same bar change as the flinch edge — the banner is consumed, not
+    # merged (spec §7 item 10). No lane render exists, so D6 -> passthrough.
+    assert banner not in (out or "")
+    assert out is not None or DB._ANCHOR_BANNERS.get(SID) in (None, "")
+    assert DB._ANCHOR_BANNERS.get(SID) in (None, "")
 
 
 def test_no_banner_passthrough_unchanged(r15_reset, monkeypatch):

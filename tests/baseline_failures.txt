@@ -70,3 +70,4 @@ optional tests/routing/test_rider18_fixes.py::test_declared_frontier_form_also_e
 # Cause: the banner-ordering fix (91b40ff, R78U M3) emits the parked record before the banner
 # is consumed, so the row-ref/meta assertions hold. Gate proof: PINNED-RED-NOW-GREEN in
 # /opt/data/tmp/r78u/gate_m8b.log. Pin shrinks only when a defect is fixed; never to hide a red.
+optional tests/routing/test_hermes_aux_source.py::test_aux_raw_call_retry_then_breaker  reason=order  expect="assert 3 == 2"  # M35-15: red ONLY in a full tests/routing run (green alone and green as the only file); red identically at the pre-migration base 12af8ed (12 failed / 1171 passed there) — a leaked aux-breaker counter from an earlier file, not this slice

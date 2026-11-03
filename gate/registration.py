@@ -243,10 +243,18 @@ def on_transform_llm_output_guarded(**kwargs):
     # A main-body delivery whose render already rewrote the store must put the
     # row back — transcript == delivery (the M34-04 contract), or the next turn
     # reads a body the user never saw.
+    # M35-15: the reconciliation is no longer main-only. The capture that runs
+    # INSIDE the render can persist text the delivery edge then strips (the
+    # lane's attribution line is router bytes, so it never ships) — leaving the
+    # transcript holding a body the user never read, the M34-04 defect one
+    # layer down. Whenever the settled bytes differ from what the seam handed
+    # back, the store is put back to `final`; canonical's own cascade matches
+    # the row this router rewrote last, so the exact pre-strip text is not
+    # needed here.
     if (_decision is not None
-            and _decision.delivered_source == _dd.SOURCE_MAIN
             and _turn is not None
-            and bool(getattr(_turn, "replaced", False))):
+            and isinstance(final, str) and isinstance(out, str)
+            and str(out) != str(final)):
         try:
             from ..core import canonical as _can_g
 
@@ -365,7 +373,17 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
         rule_id = str(getattr(turn, "rule", "") or "none")
     except Exception:  # noqa: BLE001
         rule_id = "none"
+    seam_failure = ""
+    try:
+        from ..core import delivery_integrity as _dintf
+
+        if isinstance(lane_render, str) and lane_render.startswith(
+                _dintf.FAILURE_PREFIX):
+            seam_failure = "transcript_divergence"
+    except Exception:  # noqa: BLE001 — recognition never blocks a turn
+        seam_failure = ""
     return _dd.DeliveryFacts(
+        seam_failure=seam_failure,
         entered_body=str(entered or ""),
         body_class=_pg.classify_original(clean),
         gate_consulted=consulted,
@@ -426,8 +444,35 @@ def _delivered_bytes(decision, entered: str = "") -> str:
     render, an attributed strip, a hold — returns explicit bytes: the seam may
     never let the host deliver something the decision did not name.
     """
-    if decision is None or decision.action == _dd.FAIL_TERMINAL:
+    if decision is None:
         return ""
+    if decision.action == _dd.FAIL_TERMINAL:
+        # A decision that NAMED bytes (the seam's own failure body) ships
+        # them: that body is the visible failure, not a substitute answer.
+        if decision.body:
+            return str(decision.body)
+        # M35-15: FAIL_TERMINAL has TWO wire outcomes, because the two cases
+        # fail for different reasons and the host contract treats "" and None
+        # identically (turn_finalizer.py:558 — only a NON-EMPTY string
+        # replaces; ""/None both leave the model's text in place).
+        #
+        #   * D6 on a real, non-void body (a refusal, a hedge, a scaffold the
+        #     agent actually wrote, no admissible lane): there ARE bytes and
+        #     they are the agent's own. The spec forbids substituting router
+        #     prose for an answer, and this seam has no channel to withhold a
+        #     body it did not replace — so the honest statement of "no router
+        #     answer" is the pass-through: None. The turn still closes as a
+        #     FAILED turn (provenance withholds it and the decision event is
+        #     logged at error severity); what it does not do is lie about
+        #     having produced bytes it never wrote.
+        #   * D2 (nothing admissible) and a marker violation (D6 by
+        #     post-condition) have NO shippable bytes: passing those through
+        #     would deliver void text or leak routing metadata. Those ship the
+        #     one non-empty string that is a failure NOTICE, never an answer.
+        if (decision.case_id == _dd.D6
+                and decision.reason != _dd.REASON_MARKER_VIOLATION):
+            return None
+        return WITHHELD_BODY
     if decision.body is None:
         return ""
     body = str(decision.body)

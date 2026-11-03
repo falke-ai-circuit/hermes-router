@@ -217,9 +217,18 @@ def test_minors_ask_refuses_hard_with_no_route_and_no_render(monkeypatch):
     assert _row(sink, "route_fired") is None
     assert _row(sink, "route_fired_no_stash") is None
     assert _row(sink, "compound_split_directive") is None
-    held = _row(sink, "closed_line_held")
-    assert held is not None and held["line"] == "minors"
-    assert held["routed"] == 0 and held["render"] == 0
+    # M35-15: the duplicate closed-line call sites are gone (§7 item 9 — one
+    # read survives, in the facts builder), so the hold is named by the ONE
+    # delivery decision instead of a second `closed_line_held` event.
+    # Old case: a bare closed_line_held row. New case: D1 CLOSED_LINE_HOLD,
+    # action HOLD_CLOSED, entered body delivered unchanged (source=main),
+    # with routed=0/render=0 expressed as "no route events, strip_bytes=0".
+    held = _row(sink, "delivery_decision")
+    assert held is not None, sink
+    assert held.get("case_id") == "D1", held
+    assert held.get("action") == "HOLD_CLOSED", held
+    assert held.get("delivered_source") == "main", held
+    assert held.get("strip_bytes") == 0, held
 
 
 def test_pure_weapon_ask_is_left_on_its_existing_route_path():

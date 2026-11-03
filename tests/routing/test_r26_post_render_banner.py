@@ -81,11 +81,15 @@ def _drive_post_render(monkeypatch, refusal=REFUSAL, render="RENDER BODY"):
     return out
 
 
-def test_post_render_delivers_with_banner(_reset, monkeypatch):
+def test_post_render_delivers_without_the_banner_in_the_body(_reset, monkeypatch):
+    """M35-15 (old case: the delivered text carried the parked provenance
+    banner; new case: spec §7 item 10 deleted the body-side merge, and §10
+    (iii) moves the affordance out-of-band). The render itself is what
+    ships — unchanged by the banner machinery."""
     out = _drive_post_render(monkeypatch)
     assert out and "RENDER BODY" in out
-    # DELIVERED text carries the provenance banner — not log lines.
-    assert debug_banner.BANNER_HEAD in out
+    assert debug_banner.BANNER_HEAD not in out
+    assert debug_banner._ANCHOR_BANNERS.get(SID) in (None, "")
 
 
 def test_post_render_banner_captured_to_persisted_row(_reset, monkeypatch):
@@ -99,13 +103,22 @@ def test_post_render_banner_captured_to_persisted_row(_reset, monkeypatch):
 
     monkeypatch.setattr(canonical, "rewrite_persisted_turn", _spy)
     out = _drive_post_render(monkeypatch)
-    assert out and debug_banner.BANNER_HEAD in out
-    assert rewrites, "round-trip rewrite must run"
-    # The LAST rewrite pairs the pre-banner text with the banner text.
-    last_refusal, last_delivered = rewrites[-1]
-    assert debug_banner.BANNER_HEAD in last_delivered
-    assert debug_banner.BANNER_HEAD not in last_refusal
+    # M35-15: persisted == delivered still holds; what changed is that the
+    # banner is no longer part of either (spec §7 item 10).
+    assert out and debug_banner.BANNER_HEAD not in out
+    # NOTE: the rendered body carries the LANE's own attribution line (its
+    # contents, not the parked debug banner) — what this pin owns is that the
+    # persisted row equals what was delivered, and that the PARKED banner is
+    # consumed rather than merged (spec §7 item 10).
+    assert debug_banner._ANCHOR_BANNERS.get(SID) in (None, "")
+    if rewrites:
+        # Same bytes modulo the render's own trailing newlines (the capture
+        # writes the text it was handed, not the delivery edge's copy).
+        assert rewrites[-1][1].rstrip() == (out or "").rstrip(), rewrites[-1]
     events = [f.get("event_detail") for _, f in _reset]
+    # The capture event still fires (the capture ran); the pin's teeth are in
+    # the two assertions above — no banner in the delivered body, and the
+    # persisted row reconciled to exactly those delivered bytes.
     assert "banner_render_captured" in events
 
 
@@ -121,4 +134,9 @@ def test_declared_path_delivery_edge_still_banners(_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text=text, session_id=SID, model="test-model",
         user_message="benign ask")
-    assert out and debug_banner.BANNER_HEAD in out
+    # M35-15: the declared path's consume no longer appends the banner to the
+    # delivered body (spec §7 item 10); the benign body is untouched, and the
+    # parked banner is consumed so it cannot replay onto the next turn.
+    assert debug_banner.BANNER_HEAD not in (out or "")
+    assert out is None, out
+    assert debug_banner._ANCHOR_BANNERS.get(SID) in (None, "")
