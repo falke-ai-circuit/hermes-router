@@ -1583,6 +1583,13 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # itself as the agent's work. Exactly one extra model call,
                     # on this path only; no loop exists to run.
                     _deliver_body = _echo.body
+                    # M35-10 (bar-2 D1, A2): a re-prompt that comes back as a
+                    # REFUSAL/HEDGE/SCAFFOLD is not deliverable and must not
+                    # skip the seam. The A2 battery turn ended here — gate
+                    # never consulted, rule=none, and a 262-char refusal went
+                    # straight to the caller. It is now fed back into the seam
+                    # below so the gate is read and the lane answers it.
+                    _reprompt_needs_route = False
                     if _eg.is_no_work_echo(_echo):
                         _ask_rp = ""
                         try:
@@ -1606,6 +1613,21 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                 echo_action=str(getattr(_echo, "action", "") or ""),
                                 chars_from=len(str(_seam_entry_text or "")),
                                 chars_to=len(_rec), session_id=session_id)
+                            try:
+                                from .. import post_guards as _pg_rp
+
+                                _cls_rp = _pg_rp.classify_original(_rec)
+                                _reprompt_needs_route = (
+                                    _cls_rp != _pg_rp.COMPLIANCE)
+                            except Exception:  # noqa: BLE001 — a class gap keeps the old path
+                                _cls_rp = ""
+                                _reprompt_needs_route = False
+                            if _reprompt_needs_route:
+                                _hub()._log_route(
+                                    "POST",
+                                    event_detail="echo_reprompt_needs_route",
+                                    body_class=_cls_rp, chars=len(_rec),
+                                    session_id=session_id)
                         else:
                             _deliver_body = _eg.NO_WORK_TEXT
                             _hub()._log_route(
@@ -1668,7 +1690,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             session_id=session_id)
                     except Exception:  # noqa: BLE001
                         pass
-                    return _deliver_body
+                    if _reprompt_needs_route:
+                        # A2 (M35-10): the recovered body is not an answer the
+                        # caller may read. Continue DOWN the seam with it as
+                        # this turn's body so the gate is consulted and the
+                        # rule table answers it — never the early return.
+                        response_text = str(_deliver_body or "")
+                        _hub()._log_route(
+                            "POST", event_detail="echo_reprompt_routed",
+                            chars=len(response_text),
+                            session_id=session_id)
+                    else:
+                        return _deliver_body
             else:
                 _eg.observe(response_text, session_id,
                             log_route=_hub()._log_route)

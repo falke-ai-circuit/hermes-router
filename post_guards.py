@@ -642,6 +642,14 @@ def apply_guards(original: str, replacement: Optional[str],
                          original_class=original_class)
         if is_materially_identical(original, text):
             return _keep(IDENTITY, IDENTITY, original_class=original_class)
+        # M35-10 (bar 2): a COMPLIANT body that ships as the agent's own text is
+        # a PASS, and the row must SAY so on every kept-body turn — not only on
+        # the turns where a lane render was suppressed. A transform of the
+        # body (banner append, phantom-write scrub, declaration strip) is still
+        # the agent's own text, so it takes the same token; the bytes are
+        # untouched either way.
+        if not is_lane_render and original_class == COMPLIANCE:
+            _remember_reason(session_id, MAIN_COMPLIED)
         return replacement
     except Exception:  # noqa: BLE001 — every guard fails open
         return replacement

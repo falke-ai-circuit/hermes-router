@@ -217,12 +217,27 @@ def on_transform_llm_output_guarded(**kwargs):
             # scrub or a router-failure surface never set it, and must ship.
             is_lane_render=bool(getattr(_turn, "replaced", False)),
         )
-        if final is None:
-            # M35-08: the guard's verdict travels with the body, so the row can
-            # say WHY main's body was kept instead of defaulting every keep to
-            # a blocked-render failure.
-            _guard_reason = _pg.last_guard_reason(
-                str(kwargs.get("session_id") or ""))
+        # M35-08: the guard's verdict travels with the body, so the row can say
+        # WHY main's body was kept instead of defaulting every keep to a
+        # blocked-render failure. M35-10: the reason is read on EVERY pass, not
+        # only when the guard returned None — a kept-body turn whose transform
+        # is not a suppression (the bar-2 `main_complied` case) carries its
+        # token through the same window.
+        _guard_reason = _pg.last_guard_reason(
+            str(kwargs.get("session_id") or ""))
+        # M35-10 (bar 2, D2): the ordinary benign turn returns None from the
+        # orchestrator ("deliver the body you gave me"), so no guard ever
+        # classified it and the row shipped with reason="". The bar requires
+        # the token on EVERY kept-body row: when nothing was replaced and no
+        # guard spoke, classify the original body here and name the PASS.
+        if final is None and not bool(getattr(_turn, "replaced", False)) \
+                and not _guard_reason:
+            try:
+                _clean, _tag = _pg.read_declaration(_original)
+                if _pg.classify_original(_clean) == _pg.COMPLIANCE:
+                    _guard_reason = _pg.MAIN_COMPLIED
+            except Exception:  # noqa: BLE001 — an unreadable body keeps the old row
+                pass
     except Exception:  # noqa: BLE001 — guards fail open to the orchestrator
         final = out
     _failure = ""

@@ -362,12 +362,15 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
         # infer: the turn is settled, and a later None must not relabel it.
         if turn.delivered is False and turn.replaced:
             return turn.delivery_failure or "render_not_delivered"
-        if final is None and not turn.replaced \
-                and str(suppress_reason or "") == MAIN_COMPLIED:
+        if not turn.replaced and str(suppress_reason or "") == MAIN_COMPLIED:
             # M35-08B: the PRE-call stand-down never made a render (the body
             # already satisfied the ask), so nothing was replaced and nothing
             # was blocked. It is still a PASS, and the row must say so — the
             # same token a guarded keep writes, so both stand-downs read alike.
+            # M35-10: the SAME token covers the ordinary kept-body turn (the
+            # seam took the deliver/defer path and the guards passed main's
+            # text through on `final`). Bar 2 requires the reason on EVERY
+            # kept-body row, not only where a render was suppressed.
             turn.lane = LANE_MAIN
             turn.reason = MAIN_COMPLIED
             turn.outcome = MAIN_COMPLIED
