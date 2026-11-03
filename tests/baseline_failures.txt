@@ -71,3 +71,13 @@ optional tests/routing/test_rider18_fixes.py::test_declared_frontier_form_also_e
 # is consumed, so the row-ref/meta assertions hold. Gate proof: PINNED-RED-NOW-GREEN in
 # /opt/data/tmp/r78u/gate_m8b.log. Pin shrinks only when a defect is fixed; never to hide a red.
 optional tests/routing/test_hermes_aux_source.py::test_aux_raw_call_retry_then_breaker  reason=order  expect="assert 3 == 2"  # M35-15: red ONLY in a full tests/routing run (green alone and green as the only file); red identically at the pre-migration base 12af8ed (12 failed / 1171 passed there) — a leaked aux-breaker counter from an earlier file, not this slice
+
+# --- named by M34-08 (2026-11-03) — PRE-EXISTING, measured at HEAD 968d629 ---
+# tests/shadow/ was never in an earlier pin, so this red had no row and would
+# have been read as a regression. Measured, not asserted: at a clean worktree
+# of 968d629 this row is red BOTH alone (1 failed, 5 passed) and inside
+# tests/shadow/ (1 failed, 49 passed); with the M34-08 tree it is red the same
+# way (1 failed, 58 passed). POST falls back to the classifier for the
+# declaration contract, so no '· router ·' tag reaches the delivery edge.
+# Deterministic, so 'required' (red in every run), not 'optional'.
+tests/shadow/test_shadow_banner.py::test_banner_consumed_at_delivery_edge  # pre-existing at 968d629: declaration contract delivered, no tag emitted -> POST classifier fallback emits no banner

@@ -60,6 +60,7 @@ this module owns _DECLARED_CLAIMS; nothing else writes it.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -123,14 +124,17 @@ _DECLARED_UNCENSORED_HEADS = ("uncensored take on", "uncensored take",
 _DECLARED_INTENT_LOOSE = ("higher self", "higher-self", "shadow self",
                           "shadow self read", "the shadow", "uncensored")
 
-# LEG 12 FIX 2 (Goran FP doctrine): when family intent words are present in
-# a turn-start directive-ish line but NO strict variant matched, the
-# middleware injects a ONE-LINE advisory reminder — the agent must use the
-# router_control request_routing action, never hand-roll model calls. The
-# near-miss detection REUSES the same strict line-shape rules as the
-# declared variants (turn-start directive lines only; quoted/echoed lines
-# and mid-sentence prose are inert — _directive_lines echo guard). This is
-# advisory only: it never routes, never claims, fail-open, once per turn.
+# LEG 12 FIX 2 (Goran FP doctrine) — M34-08 REKEYED: the guard injects a
+# ONE-LINE advisory reminder when THIS TURN CARRIES A ROUTING REQUEST (the
+# turn-claim record the declaration path stamped, a pending declared claim in
+# the single-owner registry, or the emitted `request_routing` tool call) and
+# no lane claimed it — the agent must execute the request through the router,
+# never hand-roll model calls. The KEY IS THE REQUEST, NEVER THE WORD:
+# `_detect_declared_intent_near_miss` survives only as `word_evidence` on the
+# log row, so a status report, a quoted log line or a brief that merely
+# MENTIONS the lane cannot fire the guard. No request -> no fire, and the row
+# says `reason=no_routing_request`. Advisory only: never routes, never
+# claims, fail-open, once per turn.
 ROUTER_BARE_CALL_REMINDER_MARKER = "ROUTER BARE-CALL GUARD"
 ROUTER_BARE_CALL_REMINDER = (
     "[" + ROUTER_BARE_CALL_REMINDER_MARKER + "] user requested "
@@ -522,13 +526,18 @@ def _detect_declared_intent_loose(content: str) -> bool:
 
 
 def _detect_declared_intent_near_miss(content: str) -> bool:
-    """LEG 12 FIX 2 near-miss probe for the bare-call reminder — STRICT
-    line-shape rule per the Goran FP doctrine: a directive-ISH line is one
-    that STARTS with a family word (after the standard politeness-prefix
-    strip). 'what does uncensored routing mean' (starts 'what'), 'the
-    uncensored chain uses abliterated' (starts 'the'), mid-sentence
-    mentions, and quoted lines are INERT. Signal only; NEVER routes.
-    Never raises."""
+    """M34-08: WORD EVIDENCE — demoted, never decisive.
+
+    LEG 12 FIX 2 near-miss probe, kept as an OBSERVABILITY input only: it
+    reports that a directive-ISH line STARTS with a family word (after the
+    standard politeness-prefix strip). It cannot fire the bare-call guard by
+    itself — `bare_call_guard` keys on a ROUTING REQUEST and records this
+    result as `word_evidence` on the log row. A line merely STARTING with
+    "uncensored" is prose ('uncensored lane: ON' in a status report), and
+    that was the false-positive class M34-08 removes. 'what does uncensored
+    routing mean' (starts 'what'), mid-sentence mentions, and quoted lines
+    are inert. Never raises.
+    """
     try:
         for raw in _directive_lines(content):
             norm = _normalize_directive_line(raw)
@@ -542,6 +551,156 @@ def _detect_declared_intent_near_miss(content: str) -> bool:
         return False
     except Exception:  # noqa: BLE001
         return False
+
+
+# ---------------------------------------------------------------------------
+# M34-08 — the bare-call guard's KEY: a routing REQUEST, not a word
+# ---------------------------------------------------------------------------
+# A request exists for a turn when the router's own structured record says so.
+# Three sources, all structural, none vocabulary-based:
+#   1. the turn-claim record the declaration path stamped for THIS turn
+#      (`_peek_turn_claim`: keyed by session+TURN ID, 120s window) — a lane
+#      was requested and its one execution is still owed;
+#   2. a fresh pending declared claim in the single-owner registry
+#      (`peek_declared`) — an agent `request_routing` action;
+#   3. the emitted `request_routing` tool call visible in the prompt (an
+#      assistant tool_calls entry) — the lane-request the router already emits.
+# Nothing else counts. A prompt that merely says the WORD carries no request,
+# so the guard cannot fire on it.
+_ROUTER_CONTROL_TOOL_NAMES = ("router_control", "hermes_router_control",
+                             "router_tool", "router_status")
+_LANE_REQUEST_ACTION = "request_routing"
+
+
+def _lane_request_from_messages(request: Any) -> Optional[Dict[str, Any]]:
+    """The emitted `request_routing` tool call, read structurally off the
+    prompt. Returns {origin, lane, source} or None.
+
+    Only an ASSISTANT `tool_calls`/`function_call` entry whose router-control
+    function carries action=request_routing matches. Prose, quoted log text
+    and tool OUTPUT that mention the action are different message roles and
+    different shapes — this function never reads their content. Never raises.
+    """
+    try:
+        msgs = (request or {}).get("messages")
+        if not isinstance(msgs, list):
+            return None
+        for m in msgs:
+            if not isinstance(m, dict) or m.get("role") != "assistant":
+                continue
+            calls = m.get("tool_calls")
+            if not isinstance(calls, list):
+                calls = []
+            fc = m.get("function_call")
+            if isinstance(fc, dict):
+                calls = list(calls) + [{"function": fc}]
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(
+                    call.get("function"), dict) else {}
+                name = str(fn.get("name") or call.get("name") or "")
+                if name not in _ROUTER_CONTROL_TOOL_NAMES:
+                    continue
+                raw = fn.get("arguments", call.get("arguments"))
+                args: Any = raw
+                if isinstance(raw, str):
+                    try:
+                        args = json.loads(raw)
+                    except Exception:  # noqa: BLE001 — malformed args, not a request
+                        continue
+                if not isinstance(args, dict):
+                    continue
+                if str(args.get("action") or "").strip().lower() != \
+                        _LANE_REQUEST_ACTION:
+                    continue
+                return {"origin": "request_routing_tool_call",
+                        "lane": str(args.get("lane") or ""),
+                        "source": SOURCE_DECLARED_AGENT}
+        return None
+    except Exception:  # noqa: BLE001 — fail-open: no request read
+        return None
+
+
+def lane_request_for_turn(session_id: str, content: str = "",
+                          model: str = "",
+                          request: Any = None) -> Optional[Dict[str, Any]]:
+    """M34-08 — the routing REQUEST this turn carries, or None.
+
+    None is a real answer, not a guess: no request exists, so the bare-call
+    guard must not fire and records `reason=no_routing_request`. Read-only;
+    never raises.
+    """
+    try:
+        turn = _peek_turn_claim(session_id, content, model)
+        if turn is not None:
+            return {"origin": "turn_claim",
+                    "lane": str(turn.get("lane") or ""),
+                    "source": str(turn.get("source") or "")}
+    except Exception:  # noqa: BLE001 — try the next structural source
+        pass
+    try:
+        rec = peek_declared(session_id)
+        if rec is not None:
+            return {"origin": "claim_registry",
+                    "lane": str(rec.get("lane") or ""),
+                    "source": str(rec.get("source") or "")}
+    except Exception:  # noqa: BLE001 — try the next structural source
+        pass
+    return _lane_request_from_messages(request)
+
+
+def bare_call_guard(content: str, session_id: str, model: str = "",
+                    request: Any = None) -> bool:
+    """M34-08 — the bare-call guard, keyed on a REQUEST.
+
+    Fires ONLY when a routing request exists for this turn and no lane claimed
+    it (the caller's `not route` condition): the agent asked for a lane, the
+    lane did not execute, and the turn is about to hand-roll a bare model
+    call. The word probe (`_detect_declared_intent_near_miss`) is computed and
+    recorded as `word_evidence`; it is NEVER decisive.
+
+    One route-log row either way, so the negative is as visible as the hit:
+      bare_call_guard_skipped      reason=no_routing_request word_evidence=…
+      bare_call_reminder_injected  reason=routing_request_present lane=…
+                                   request_source=… request_origin=…
+    Advisory only — never routes, never claims. Returns True when the reminder
+    was injected. Never raises.
+    """
+    try:
+        evidence = bool(_detect_declared_intent_near_miss(content))
+    except Exception:  # noqa: BLE001 — evidence must never decide
+        evidence = False
+    try:
+        request_rec = lane_request_for_turn(session_id, content, model,
+                                            request=request)
+    except Exception:  # noqa: BLE001 — fail-open: treat as no request
+        request_rec = None
+    try:
+        log = _pkg_fn("_log_route")
+    except Exception:  # noqa: BLE001
+        log = None
+    if request_rec is None:
+        if log is not None:
+            try:
+                log("PRE", event_detail="bare_call_guard_skipped",
+                    reason="no_routing_request", word_evidence=evidence,
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry never breaks a turn
+                pass
+        return False
+    injected = inject_bare_call_reminder(request)
+    if log is not None:
+        try:
+            log("PRE", event_detail="bare_call_reminder_injected",
+                reason="routing_request_present",
+                lane=str(request_rec.get("lane") or ""),
+                request_source=str(request_rec.get("source") or ""),
+                request_origin=str(request_rec.get("origin") or ""),
+                word_evidence=evidence, session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry never breaks a turn
+            pass
+    return injected
 
 
 def inject_bare_call_reminder(request: Any) -> bool:

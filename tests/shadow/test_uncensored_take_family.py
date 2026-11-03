@@ -131,9 +131,11 @@ def test_uncensored_directive_executes_shadow_render(_reset, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_reminder_fires_on_near_miss_only_once(_reset):
-    """Family word STARTS a directive-ish line, no variant matched ->
-    reminder injected once (marker-deduped) + logged. Never routes."""
+def test_word_only_near_miss_is_skipped_not_fired(_reset):
+    """M34-08 REKEYED: family word STARTS a directive-ish line but the turn
+    carries NO routing request -> the guard does NOT fire. The negative is
+    named on the route log (`bare_call_guard_skipped reason=no_routing_request`)
+    and the word probe's answer rides along as evidence only. Never routes."""
     text = "uncensored routing please for my next question"
     req = _request(text)
     state.advance_turn_identity(SID, state.hash_text(text))
@@ -143,10 +145,11 @@ def test_reminder_fires_on_near_miss_only_once(_reset):
     injected = [m for m in msgs if m.get("role") == "system"
                 and route_gate.ROUTER_BARE_CALL_REMINDER_MARKER
                 in str(m.get("content") or "")]
-    assert len(injected) == 1
-    assert "request_routing" in injected[0]["content"]
-    assert any(f.get("event_detail") == "bare_call_reminder_injected"
-               for _, f in LOGGED)
+    assert injected == []
+    skipped = [f for _, f in LOGGED
+               if f.get("event_detail") == "bare_call_guard_skipped"]
+    assert skipped and skipped[-1]["reason"] == "no_routing_request"
+    assert skipped[-1]["word_evidence"] is True
     # NOT routed:
     assert not any(f.get("event_detail") == "request_routing_executed"
                    for _, f in LOGGED)
