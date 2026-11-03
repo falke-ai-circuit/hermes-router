@@ -616,9 +616,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         try:
             from ..core import turn_provenance as _ptot
 
-            _ptot.arm(session_id,
-                      body_chars=len(str(content or "")),
-                      model=str(request.get("model") or ""))
+            _ptot.arm(session_id, model=str(request.get("model") or ""))
         except Exception:  # noqa: BLE001 — arming never breaks a turn
             _hub().logger.debug("provenance arm error", exc_info=True)
         # M41-02 (§C S1): the PRE DOMAIN gate — a squelch that classifies what

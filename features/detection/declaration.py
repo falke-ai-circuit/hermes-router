@@ -261,6 +261,9 @@ def scrub_markers(text: object) -> Tuple[str, str]:
     """
     try:
         body, _declaration = strip_tag(text)
+        # Removing the leading tag line leaves the blank line that separated it
+        # from the answer; a delivered body must not open with an empty line.
+        body = body.lstrip("\n") if isinstance(body, str) else body
         return body, residual_marker(body)
     except Exception:  # noqa: BLE001 — total function, never raises
         return _coerce(text), ""

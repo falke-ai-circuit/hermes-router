@@ -519,6 +519,10 @@ def arm(session_id: str, *, body_chars: int = 0, model: str = "") -> bool:
     sid = str(session_id or "")
     if not sid:
         return False
+    # A declared ephemeral seam never delivers a user turn — a row about it
+    # would be a row about a body nobody read (same contract as `finish`).
+    if is_ephemeral_seam():
+        return False
     turn_id = _turn_id_for(sid)
     superseded = None
     try:

@@ -57,6 +57,28 @@ def _isolate_banner_turn_records():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_pending_turns():
+    """M35-04: the provenance registry arms a turn at PRE and closes it at the
+    delivery edge / deadline sweeper. A test that drives `on_llm_request`
+    without a POST edge would leave an armed turn behind, and the sweeper would
+    write its `skipped` row INTO A LATER TEST's patched ledger (or, worse, into
+    the live one once the patch is undone). Clear it per test."""
+    try:
+        from hermes_router.core import turn_provenance as _tp
+
+        _tp.reset_pending_for_tests()
+    except Exception:  # noqa: BLE001 — a missing module must not break the suite
+        pass
+    yield
+    try:
+        from hermes_router.core import turn_provenance as _tp
+
+        _tp.reset_pending_for_tests()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _drain_deferred_intent_workers(_hermes_aux_no_network, _aux_hermes_adapter,
                                    _zero_network_guard):
     """M41-11: the POST judgement runs on a worker that may outlive its turn.
