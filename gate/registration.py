@@ -121,24 +121,73 @@ def on_transform_llm_output_guarded(**kwargs):
                 _pg.close_pre_call(_pc_token)
         except Exception:  # noqa: BLE001 — closing never breaks delivery
             pass
-    # M35-01: the provenance row, written on EVERY pass (routed or not) so a
-    # benign turn's non-routing is on record and the lane can be graded.
-    try:
-        if _prov is not None:
-            _prov.finish(_turn, delivered=out)
-    except Exception:  # noqa: BLE001
-        pass
+    # M35-02: THE DELIVERY EDGE OWNS THE ROW.
+    # The row was finished BEFORE the guards ran, so a guard that drops the
+    # replacement produced a row claiming replaced=True while the caller got
+    # the main body — B3's shape, one seam earlier. The body is settled FIRST
+    # (`final`), then the row is written from it, so the ledger can only ever
+    # describe bytes that actually reach the response surface.
+    _original = kwargs.get("response_text", "") or ""
     try:
         from .. import post_guards as _pg
 
-        return _pg.apply_guards(
-            kwargs.get("response_text", "") or "",
+        final = _pg.apply_guards(
+            _original,
             out,
             log_route=_hub_log_route(),
             session_id=str(kwargs.get("session_id") or ""),
         )
     except Exception:  # noqa: BLE001 — guards fail open to the orchestrator
-        return out
+        final = out
+    _failure = ""
+    if _prov is not None:
+        try:
+            _failure = _prov.settle_delivery(
+                _turn, final, log=_hub_log_route(),
+                session_id=str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001
+            _failure = ""
+    if _failure == "post_guard_suppressed":
+        # The guard kept the agent's body, so the orchestrator's replacement is
+        # NOT delivered. `None` would tell the host "deliver the body you gave
+        # me" — the TAGGED original — and re-leak routing metadata the seam
+        # already stripped. The delivered text is the seam's own passthrough:
+        # the original minus the declaration tag.
+        try:
+            from ..features.detection import declaration as _decl_g
+
+            _stripped_g, _tag_g = _decl_g.strip_tag(_original)
+            if _tag_g is not None and str(_stripped_g) != str(_original):
+                final = str(_stripped_g)
+            else:
+                final = str(_original or "")
+        except Exception:  # noqa: BLE001 — keep the guard's answer
+            final = str(_original or "")
+        # The store was rewritten to the render by the seam; the wire keeps
+        # the agent's body. Put the row back so transcript == delivery (the
+        # M34-04 contract) instead of leaving the render in state.db as a
+        # turn the user never read.
+        try:
+            from ..core import canonical as _can_g
+
+            if _can_g.rewrite_persisted_turn(
+                    str(kwargs.get("session_id") or ""),
+                    str(out or ""), str(final or "")):
+                _lg = _hub_log_route()
+                if _lg is not None:
+                    _lg("POST", event_detail="persisted_body_restored",
+                        reason="render_suppressed",
+                        session_id=str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 — restore never breaks delivery
+            pass
+    # M35-01: the provenance row, written on EVERY pass (routed or not) so a
+    # benign turn's non-routing is on record and the lane can be graded.
+    try:
+        if _prov is not None:
+            _prov.finish(_turn, delivered=final)
+    except Exception:  # noqa: BLE001
+        pass
+    return final
 
 
 # The plugin attribute IS the registered hook (identity pin:

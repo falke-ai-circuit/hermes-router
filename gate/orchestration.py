@@ -2998,6 +2998,48 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — observability never breaks delivery
                 pass
+        # M35-02 (M35 battery v2, row B3): A RENDER THAT SETTLES AFTER THE HOST
+        # GAVE UP CANNOT REACH THE WIRE.
+        # Live evidence 2026-11-02 23:55Z: the hook was killed at 30 s
+        # ("timed out after 30s — skipping"), the render settled at 44.7 s, the
+        # canonical swap then wrote it into state.db and the ledger recorded a
+        # replacement — while the caller's HTTP body was the pre-swap refusal.
+        # The seam cannot make the host wait, so the honest thing is to SAY so:
+        # a named failure, delivered=False on the row, and NO store rewrite
+        # (transcript stays equal to what the user actually read).
+        _late = False
+        _elapsed_late = 0.0
+        try:
+            from ..core import turn_provenance as _prov_late
+
+            _turn_late = _prov_late.current()
+            _elapsed_late = (
+                (_hub().time.monotonic() - _turn_late.started)
+                if _turn_late is not None else
+                (_hub().time.monotonic() - _hook_t0))
+            _late = not _prov_late.render_is_deliverable(_elapsed_late)
+        except Exception:  # noqa: BLE001 — a broken clock never suppresses a render
+            _late = False
+        if _late:
+            _hub()._log_route(
+                "POST", event_detail="render_not_delivered",
+                reason="render_settled_after_host_hook_kill",
+                severity="error", turn_failed=1,
+                elapsed_s=round(float(_elapsed_late), 3),
+                render_chars=len(str(rendered or "")),
+                refusal_chars=len(str(response_text or "")),
+                session_id=session_id)
+            try:
+                _prov_late.note_delivery(
+                    lane="shadow", replaced=True,
+                    replacement_path=str(_render_chain_used
+                                         or _replacement_token or ""),
+                    outcome="render_not_delivered", delivered=False)
+            except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
+                pass
+            # The pre-swap body is what the caller already has. It is not
+            # silent: the row says delivered=False and the event is an error.
+            return _decl_passthrough()
         # M34-03: one bounded re-render when the render fails the split (a
         # whole-turn refusal, an unnamed line, or an invented line). The
         # escalation restates the split requirement; a second failure is

@@ -58,6 +58,31 @@ _EPHEMERAL_THREAD_MARKS = ("bg-review", "curator-review")
 
 LANE_MAIN = "main"
 
+#: The host plugin runner abandons an in-flight ``transform_llm_output`` at
+#: 30 s ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3).
+#: A render that settles at or after that wall time cannot reach the response
+#: surface: the host has already emitted the pre-hook body. Measured, not
+#: assumed — B3's render settled at 44.7 s and the wire carried the refusal.
+#: Patchable for tests; the value is the host's contract, not a preference.
+HOST_HOOK_KILL_S = 30.0
+
+
+def render_is_deliverable(elapsed_s: float,
+                          budget_s: float = HOST_HOOK_KILL_S) -> bool:
+    """True when a render settling after ``elapsed_s`` can still be delivered.
+
+    False means the host has already given up on this hook invocation, so the
+    body it returned to the caller is the PRE-swap text. Calling that a
+    replacement is the defect (B3): the render exists in the store, the user
+    read the refusal. Never raises — an unreadable clock is treated as
+    deliverable so a broken clock cannot suppress a good render.
+    """
+    try:
+        return float(elapsed_s) < float(budget_s)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 
 def is_ephemeral_seam() -> bool:
     """True only on a DECLARED ephemeral thread. Unknown threads are eligible —
@@ -80,7 +105,7 @@ class TurnProvenance:
                  "gate_verdict", "gate_reason", "intent_class",
                  "intent_source", "declaration", "lane", "replaced",
                  "replacement_path", "outcome", "body_chars", "_emitted",
-                 "_predicate", "_action")
+                 "_predicate", "_action", "delivered", "delivery_failure")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -102,6 +127,10 @@ class TurnProvenance:
         self._predicate = ""
         self._action = ""
         self._emitted = False
+        # M35-02: wire truth — None until the response surface is settled.
+        # A replaced turn with delivered=None is NOT a delivered turn.
+        self.delivered: Optional[bool] = None
+        self.delivery_failure = ""
 
     # -- facts the seam supplies ------------------------------------------
     def decision(self, *, rule_row: int = 0, rule_predicate: str = "",
@@ -134,13 +163,21 @@ class TurnProvenance:
             self.body_chars = int(body_chars)
 
     def delivery(self, *, lane: str, replaced: bool,
-                 replacement_path: str = "", outcome: str = "") -> None:
-        """The delivered body's provenance — set where the body is settled."""
+                 replacement_path: str = "", outcome: str = "",
+                 delivered: Optional[bool] = None) -> None:
+        """The delivered body's provenance — set where the body is settled.
+
+        `delivered` is the WIRE fact, not the decision: leave it None when the
+        caller cannot say what the response surface will carry. The row then
+        refuses to claim delivery for a replaced turn (see `row`).
+        """
         self.lane = str(lane or LANE_MAIN)
         self.replaced = bool(replaced)
         self.replacement_path = str(replacement_path or "")
         if outcome:
             self.outcome = str(outcome)
+        if delivered is not None:
+            self.delivered = bool(delivered)
 
 
 def begin(*, session_id: str = "", model: str = "", body: str = "") -> TurnProvenance:
@@ -185,11 +222,65 @@ def note_delivery(**kwargs: Any) -> None:
         pass
 
 
+def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
+                    log=None, session_id: str = "") -> str:
+    """Reconcile the turn's row with the body that will ACTUALLY be returned.
+
+    The seam decides a replacement (``replaced=True``) and the delivery edge
+    may still drop it: the POST guards return ``None`` to keep the agent's own
+    body, and the host abandons the hook at its kill time. Either way the wire
+    carries the main body, and a row that keeps saying ``replaced=True`` is
+    the M35-02 defect — a ledger the caller's bytes contradict.
+
+    Returns the named failure ("" when the turn's claim survives). On a guard
+    drop the row is rewritten to the truth it can defend: lane=main,
+    replaced=False, delivered=True (the main body IS what shipped), outcome
+    names the suppression. Never raises.
+    """
+    if turn is None:
+        return ""
+    try:
+        # A wire failure already recorded at the render edge (the host killed
+        # the hook before the render settled) outranks anything this edge can
+        # infer: the turn is settled, and a later None must not relabel it.
+        if turn.delivered is False and turn.replaced:
+            return turn.delivery_failure or "render_not_delivered"
+        if turn.replaced and final is None:
+            # `replaced` keeps its schema-v2 meaning — the DELIVERED body came
+            # from a lane render — so a guard that keeps the agent's body makes
+            # it False. `delivered` keeps its M35-02 meaning — the render the
+            # seam selected reached the response surface — so it is False too.
+            # What ships is the main body, and the failure is named.
+            turn.replaced = False
+            turn.lane = LANE_MAIN
+            turn.replacement_path = ""
+            turn.delivered = False
+            turn.outcome = "post_guard_suppressed"
+            turn.delivery_failure = "post_guard_suppressed"
+            if log is not None:
+                try:
+                    log("POST", event_detail="render_not_delivered",
+                        reason="post_guard_suppressed",
+                        severity="warning",
+                        replaced_was=True,
+                        body_chars=int(turn.body_chars or 0),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                    pass
+            return "post_guard_suppressed"
+        turn.delivered = True
+        return ""
+    except Exception:  # noqa: BLE001 — the settle never breaks delivery
+        return ""
+
+
 def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, Any]:
     """The ledger fields for one turn. Pure — builds the dict, emits nothing."""
     if turn is None:
         return {}
     delivered_chars = 0
+    delivered_flag = bool(turn.delivered) if turn.delivered is not None \
+        else (not turn.replaced)
     try:
         if delivered is None:
             # The pass-through contract: `None` tells the host "deliver the
@@ -212,6 +303,7 @@ def row(turn: Optional[TurnProvenance], *, delivered: Any = None) -> Dict[str, A
         "intent_class": turn.intent_class,
         "intent_source": turn.intent_source,
         "replaced": bool(turn.replaced),
+        "delivered": bool(delivered_flag),
         "replacement_path": turn.replacement_path,
         "latency_ms": latency_ms,
         "body_chars": turn.body_chars,
@@ -250,7 +342,7 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
             latency_ms=float(facts.get("latency_ms") or 0.0),
             **{k: facts[k] for k in (
                 "lane", "turn_id", "gate_verdict", "gate_reason",
-                "intent_class", "intent_source", "replaced",
+                "intent_class", "intent_source", "replaced", "delivered",
                 "replacement_path", "body_chars", "delivered_chars")},
         ))
     except Exception:  # noqa: BLE001 — observability never breaks delivery

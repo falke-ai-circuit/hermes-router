@@ -156,6 +156,7 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                     gate_verdict: str = "", gate_reason: str = "",
                     intent_class: str = "", intent_source: str = "",
                     replaced: Optional[bool] = None,
+                    delivered: Optional[bool] = None,
                     replacement_path: str = "",
                     body_chars: int = 0, delivered_chars: int = 0) -> bool:
     """Enqueue one decision record. ASYNC — never blocks the turn beyond the
@@ -225,6 +226,16 @@ def record_decision(*, detector_version: str, rule_id: str, action: str,
                 "body_chars": int(body_chars or 0),
                 "delivered_chars": int(delivered_chars or 0),
             })
+            # M35-02: WIRE TRUTH, separate from the decision.
+            # `replaced` says the seam DECIDED to swap the body; `delivered`
+            # says the swap reached the response surface. The B3 defect was a
+            # row claiming replaced=True while the caller received the main
+            # agent's refusal — a pair no reader could falsify. Keeping the
+            # two facts apart makes that state expressible instead of
+            # invisible: replaced=True + delivered=False IS the defect
+            # signature, and it is now a row a battery can count.
+            if delivered is not None:
+                rec["delivered"] = bool(delivered)
         if doctrine_line_ref:
             rec["doctrine_line_ref"] = str(doctrine_line_ref)[:48]
         # §12-6 hard shape: failures are failures, not policy outcomes.
