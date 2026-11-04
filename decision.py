@@ -2465,14 +2465,24 @@ SESSION_CONTEXT_ROW_CHARS = 300   # per-row cap
 # already call: no new wire shape, no prompt change.
 # ---------------------------------------------------------------------------
 
-_GOAL_WORDS = ("all", "every", "each", "any", "none", "only", "entire",
-               "whole", "always", "never", "exclusively", "solely")
-# Tokens that BIND scope. A follow-up may legitimately widen the work ("and do
-# the docs too"), so losses are detected over the whole closed class but only
-# the binding ones are NAMED in `goal_guard_tokens` — the pinned acceptance
-# test for this unit requires exactly ["only"] for the widening case.
-_GOAL_RESTRICTORS = frozenset(("only", "exclusively", "solely", "none",
-                               "never", "entire", "whole", "always"))
+_GOAL_TOKENS = (
+    # (token, named) — ONE closed class, ONE table. `named` marks the BINDING
+    # tokens reported in `goal_guard_tokens`: a follow-up may legitimately widen
+    # the work ("and do the docs too"), so losses are detected over the whole
+    # class but only the binding ones are NAMED. The pinned acceptance test for
+    # this unit requires exactly ["only"] for that widening case.
+    ("all", False), ("every", False), ("each", False), ("any", False),
+    ("none", True), ("only", True), ("entire", True), ("whole", True),
+    ("always", True), ("never", True), ("exclusively", True), ("solely", True),
+)
+_GOAL_WORDS = tuple(token for token, _named in _GOAL_TOKENS)
+_GOAL_NAMED = frozenset(token for token, named in _GOAL_TOKENS if named)
+
+
+def _goal_named(tokens: List[str]) -> List[str]:
+    """The BINDING subset of a lost-token list; a bound (`<op>:<n>`) always binds."""
+    return sorted(t for t in tokens if t in _GOAL_NAMED or ":" in t)
+
 
 _GOAL_BOUND_RE = re.compile(
     r"\b(at least|at most|no more than|no fewer than|exactly|up to|"
@@ -2577,20 +2587,32 @@ def _goal_write(session_id: str, objective: str, rolling_text: str,
 
 
 def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
-                newest_row: str) -> None:
+                newest_row: str, derived_task: str = "") -> None:
     """Apply the stored goal to the derived anchor; label the turn.
 
     Sets `goal_guard` ∈ {persisted, drift, superseded} and
     `goal_guard_tokens` ([] unless drift). First call for a session writes the
     baseline; an acknowledgement retains the stored rolling text instead of
     replacing the task with itself. Never raises.
+
+    `derived_task` is the CURRENT derivation `session_anchor` just selected,
+    and this function is its ONE writer to `out["rolling_task"]`: the caller no
+    longer assigns the key, so a later line cannot overwrite the guard's
+    decision. The guard also captures the CURRENT derivation of the objective
+    before replacing the field with the stored baseline, because the drift
+    check (SPEC §3) compares that derivation's fingerprint to the recorded one.
+
+    `db_path` here means the LEDGER store; the same argument is the MESSAGES
+    store in `session_anchor` (F4 — no non-test caller passes it today).
     """
     try:
         row = str(newest_row or "")
+        derived_task = str(derived_task or row or out.get("final_objective", ""))
+        out["rolling_task"] = derived_task[:SESSION_TASK_CHARS]   # ONE writer
         stored = _goal_read(session_id, db_path)
         if stored is None:
             _goal_write(session_id, out.get("final_objective", ""),
-                        out.get("rolling_task", ""),
+                        out["rolling_task"],
                         _goal_quantifiers(out.get("final_objective", "")),
                         db_path)
             out["goal_guard"] = "persisted"
@@ -2603,7 +2625,7 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             # the user is replacing the objective: the baseline moves.
             baseline = row[:SESSION_OBJECTIVE_CHARS]
             out["final_objective"] = baseline
-            out["rolling_task"] = (row or baseline)[:SESSION_TASK_CHARS]
+            out["rolling_task"] = baseline[:SESSION_TASK_CHARS]
             _goal_write(session_id, baseline, out["rolling_task"],
                         _goal_quantifiers(baseline), db_path,
                         baseline_ts=stored["baseline_ts"] or None)
@@ -2611,15 +2633,19 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             out["goal_guard_tokens"] = []
             return
 
-        out["final_objective"] = stored["objective"] or out.get(
-            "final_objective", "")
+        # the CURRENT derivation, captured before the stored baseline lands.
+        derived_objective = str(out.get("final_objective", "") or "")
+        out["final_objective"] = stored["objective"] or derived_objective
 
-        if stored["objective_sha"] != _goal_sha(stored["objective"]):
-            # the recorded objective no longer matches its fingerprint.
+        # SPEC.md:87 — recompute the objective fingerprint EVERY turn and
+        # compare it to the recorded one. A mismatch with no supersede marker is
+        # drift on the OBJECTIVE itself (M2/M3: the baseline text moved), and the
+        # lost tokens are named rather than reported as an empty finding.
+        if stored["objective_sha"] != _goal_sha(derived_objective):
+            current_q = set(_goal_quantifiers(derived_objective))
             out["goal_guard"] = "drift"
-            out["goal_guard_tokens"] = []
-            out["rolling_task"] = (out.get("rolling_task") or
-                                   stored["rolling_text"])[:SESSION_TASK_CHARS]
+            out["goal_guard_tokens"] = _goal_named(
+                [t for t in stored["quantifiers"] if t not in current_q])
             return
 
         non_intent = bool(row) and len(row) <= 24 and bool(
@@ -2632,14 +2658,11 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             out["goal_guard_tokens"] = []
             return
 
-        out["rolling_task"] = (out.get("rolling_task")
-                               or stored["rolling_text"])[:SESSION_TASK_CHARS]
         current_q = set(_goal_quantifiers(row))
         lost = [t for t in stored["quantifiers"] if t not in current_q]
         if lost:
             out["goal_guard"] = "drift"
-            out["goal_guard_tokens"] = sorted(
-                t for t in lost if t in _GOAL_RESTRICTORS or ":" in t)
+            out["goal_guard_tokens"] = _goal_named(lost)
         else:
             out["goal_guard"] = "persisted"
             out["goal_guard_tokens"] = []
@@ -2724,13 +2747,15 @@ def session_anchor(session_id: str, db_path: str = "") -> Dict[str, str]:
 
         _newest_user_row = _pick(True)
         out["final_objective"] = _pick(False)[:SESSION_OBJECTIVE_CHARS]
-        out["rolling_task"] = (_newest_user_row
-                               or out["final_objective"])[:SESSION_TASK_CHARS]
-        out["rolling_task"] = out["rolling_task"][:SESSION_TASK_CHARS]
-        # R78 M42-01: recorded baseline + quantifier guard. The store is the
-        # caller's explicit db seam when given (tests), else the plugin ledger
-        # store (hermes_router_state.db) — never the messages db implicitly.
-        _goal_guard(out, sid, db_path or "", _newest_user_row)
+        # R78 M42-01: `_goal_guard` is the ONE writer of out["rolling_task"] — it
+        # receives the derivation instead of session_anchor assigning the key, so
+        # no second writer can overwrite the guard's decision (F2).
+        # db_path is the MESSAGES store here and the LEDGER store in
+        # `_goal_guard`: two stores under one parameter name (F4 — latent; no
+        # non-test caller passes it today).
+        _goal_guard(out, sid, db_path or "", _newest_user_row,
+                    derived_task=(_newest_user_row
+                                  or out["final_objective"]))
 
         rows = conn.execute(
             "SELECT role, content, tool_name, tool_calls FROM messages"

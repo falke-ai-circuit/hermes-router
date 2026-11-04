@@ -68,3 +68,52 @@ def test_goal_persists_across_a_non_intent_turn_and_quantifier_loss_is_flagged(t
     fourth = decision.session_anchor(SID, db_path=db)
     assert fourth["goal_guard"] == "superseded"
     assert fourth["final_objective"].startswith("actually scratch that")
+
+
+def _set_first_row(path, content):
+    """Rewrite turn 1's text in place (what a compaction/edit of row 1 does)."""
+    c = sqlite3.connect(path)
+    c.execute("UPDATE messages SET content=? WHERE id=1", (content,))
+    c.commit()
+    c.close()
+
+
+def _set_stored_sha(path, sha):
+    """Corrupt/age the recorded fingerprint without touching the text."""
+    c = sqlite3.connect(path)
+    c.execute("UPDATE goal_ledger SET objective_sha=?", (sha,))
+    c.commit()
+    c.close()
+
+
+def test_objective_drift_fires_when_the_current_derivation_no_longer_matches(tmp_path):
+    """SPEC.md:87 — recompute the objective sha EVERY turn, compare to stored.
+
+    FAILS on the shipped comparison (`stored sha == sha(stored objective)`,
+    which cannot differ): phase A reports `persisted`, phase B names no tokens.
+    """
+    # phase A: the derivation moves, every quantifier survives -> only the
+    # fingerprint can catch it.
+    db = tmp_path / "a"
+    db.mkdir()
+    db = _db(db)
+    assert decision.session_anchor(SID, db_path=db)["goal_guard"] == "persisted"
+    _set_first_row(db, "Rebuild the parser (v2). Keep ALL existing behaviour, "
+                       "and only touch the escapes.")
+    drifted = decision.session_anchor(SID, db_path=db)
+    assert drifted["goal_guard"] == "drift"
+    assert drifted["goal_guard_tokens"] == []        # nothing lost, honest []
+    assert drifted["final_objective"] == OBJ        # the RECORD is what is served
+
+    # phase B: a stale recorded sha AND a lost binding token -> named drift.
+    db2 = tmp_path / "b"
+    db2.mkdir()
+    db2 = _db(db2)
+    decision.session_anchor(SID, db_path=db2)
+    _set_stored_sha(db2, "deadbeefdeadbeef")
+    _set_first_row(db2, "Rebuild the parser. Keep ALL existing behaviour, "
+                        "touch the escapes.")
+    stale = decision.session_anchor(SID, db_path=db2)
+    assert stale["goal_guard"] == "drift"
+    assert stale["goal_guard_tokens"] == ["only"]   # FAILS TODAY: []
+
