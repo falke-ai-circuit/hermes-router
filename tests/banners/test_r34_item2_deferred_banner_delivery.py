@@ -48,7 +48,6 @@ def env(monkeypatch, tmp_path):
     debug_banner._ANCHOR_TASKS.clear()
     debug_banner._ANCHOR_SEGS.clear()
     debug_banner._PARK_RECORDS.clear()
-    debug_banner._HELD_DECISIONS.clear()
     LOGGED = []
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
@@ -112,9 +111,10 @@ def test_deferred_banner_reaches_the_next_delivered_body(env, monkeypatch):
     delivered = _lc.LIFECYCLE.deliver(SID, "the actual answer body",
                                       "anchor", "benign")
     assert "the actual answer body" in delivered
-    assert debug_banner.BANNER_HEAD in delivered, (
-        "banner must ride the DELIVERED body, not only the log")
-    assert "shadow-self (uncensored" in delivered
+    # M35-17: the banner rides the RECORD, never the delivered body.
+    assert debug_banner.BANNER_HEAD not in delivered
+    from hermes_router.features.banners import turn_record as _tr
+    assert "shadow-self (uncensored" in _tr.render(SID)
 
     # one delivery only — the next edge attaches nothing
     second = _lc.LIFECYCLE.deliver(SID, "next turn body", "anchor", "benign")

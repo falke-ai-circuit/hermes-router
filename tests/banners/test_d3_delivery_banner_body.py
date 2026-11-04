@@ -121,14 +121,19 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
     out1 = plugin.on_transform_llm_output(response_text="t1 plain answer",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    assert out1 and "t1 plain answer" in out1
-    assert TAG not in out1                        # R20: delivered bodies drop the provenance prefix
-    assert "impulse (decision)" in out1           # rollup provenance line
+    # M35-17: the seam hands back the agent's own bytes (None = pass-through).
+    assert out1 is None or out1 == "t1 plain answer"
+    assert debug_banner.BANNER_HEAD not in str(out1 or "")
+    assert TAG not in str(out1 or "")             # R20: delivered bodies drop the provenance prefix
+    # M35-17: the rollup provenance is a RECORD line, never a body suffix.
+    assert "impulse (decision)" not in str(out1 or "")
     # R34-3 supersedes the F2 all-ids tail: the tail renders the CHOSEN
     # OPTION'S LABEL (truncated at a clause boundary) + confidence, not the
     # bare option id the reader cannot decode.
-    assert "Top verdicts: ship the fix now (~0.78)" in out1
-    assert "Top verdicts: opt-1" not in out1
+    from hermes_router.features.banners import turn_record as _tr
+    rec_block = _tr.render(SID)
+    assert "Top verdicts: ship the fix now (~0.78)" in rec_block
+    assert "Top verdicts: opt-1" not in rec_block
     crec = [f for e, f in LOGGED
             if f.get("event_detail") == "anchor_banner_consume"]
     assert len(crec) == 1 and crec[0].get("parked") is True \
@@ -161,9 +166,12 @@ def test_verdict_after_turn_close_delivers_next_turn(r2_reset, monkeypatch):
     out2 = plugin.on_transform_llm_output(response_text="follow-up turn",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    assert out2 and "follow-up turn" in out2
-    assert TAG not in out2                        # R20: standardized delivered shape
-    assert "impulse (decision)" in out2
+    # M35-17: the unchanged body is the host's own bytes; the aggregate is a
+    # RECORD line for the next turn.
+    assert debug_banner.BANNER_HEAD not in str(out2 or "")
+    assert TAG not in str(out2 or "")             # R20: standardized delivered shape
+    from hermes_router.features.banners import turn_record as _tr
+    assert "impulse (decision)" in _tr.render(SID)
 
 
 def test_tag_byte_exact_and_single(r2_reset):

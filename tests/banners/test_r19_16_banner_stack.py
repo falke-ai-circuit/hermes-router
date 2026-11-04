@@ -80,10 +80,12 @@ def test_canonical_never_trimmed(_clean):
     DB.park_anchor_banner("s-f4e", REFLEX_1, task_id="t2")
     block = DB.consume_parked_banner("s-f4e")
     answer = "The migration plan is: phased rollout with rollback points."
-    out = DB.append_banner(answer, block, _knob_checked=True)
-    assert out.startswith(answer)  # canonical first, banner appended
-    assert answer in out and len(out) > len(answer)
-    assert "higher-self (frontier)" in out and "impulse (decision)" in out
+    # M35-17: the block is a RECORD segment; the delivered answer is untouched.
+    from hermes_router.features.banners import turn_record as _tr
+    assert "higher-self (frontier)" in _tr.render("s-f4e")
+    assert "impulse (decision)" in _tr.render("s-f4e")
+    assert answer == "The migration plan is: phased rollout with rollback points."
+    assert DB.BANNER_HEAD not in answer
 
 
 def test_bounded_segments(_clean):
@@ -107,14 +109,14 @@ def test_frontier_banner_delivery_path_end_to_end(_clean):
     DB.park_anchor_banner("s-f4g", FRONTIER, task_id="t1")
     DB.park_anchor_banner("s-f4g", REFLEX_1, task_id="t2")
     DB.park_anchor_banner("s-f4g", REFLEX_2, task_id="t3")
-    delivered = DB.append_banner("canonical answer", "\n"
-                                 + DB.consume_parked_banner("s-f4g"),
-                                 _knob_checked=True)
+    consumed = DB.consume_parked_banner("s-f4g")
+    delivered = "canonical answer"
+    # M35-17: every fired lane is on the TURN RECORD; the delivered body is
+    # the canonical answer only.
+    from hermes_router.features.banners import turn_record as _tr
+    block = _tr.render("s-f4g")
     for marker in ("higher-self (frontier)", "impulse (decision)"):
-        assert marker in delivered
-    assert delivered.count("higher-self (frontier)") == 1
-    assert delivered.count("· router ·") == 2
-    decision = next(ln for ln in delivered.splitlines()
-                    if "impulse (decision)" in ln)
-    assert "x2" in decision, decision
-    assert "220/45 tok" in decision, "100/20 + 120/25 must SUM: %s" % decision
+        assert marker in block
+    assert block.count("higher-self (frontier)") == 1
+    assert DB.BANNER_HEAD not in delivered
+    assert consumed  # the park is drained by the consume

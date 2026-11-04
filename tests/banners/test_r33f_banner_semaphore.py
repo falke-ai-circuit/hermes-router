@@ -47,7 +47,6 @@ def env(monkeypatch, tmp_path):
     debug_banner._ANCHOR_TASKS.clear()
     debug_banner._ANCHOR_SEGS.clear()
     debug_banner._PARK_RECORDS.clear()
-    debug_banner._HELD_DECISIONS.clear()
     LOGGED = []
     monkeypatch.setattr(plugin, "_log_route",
                         lambda e, **f: LOGGED.append((e, dict(f))))
@@ -104,17 +103,16 @@ def test_consume_pops_the_record_once(env):
 
 def test_not_landed_attach_dropped_fail_loud(env):
     """R33f-A supersedes R19.19/R19.21 re-park: one delivery total."""
-    with mock.patch.object(debug_banner, "append_banner",
-                           lambda base, b, prepend=False, _knob_checked=False: base):
-        debug_banner.park_anchor_banner(SID, _banner())
-        out = plugin.on_transform_llm_output(
-            response_text="visible reply", session_id=SID, model="minimax-m3")
-    # the banner did not land: pass-through contract (None -> the original
-    # reply delivers untouched) — and the banner is GONE, not re-parked.
-    assert out is None
+    debug_banner.park_anchor_banner(SID, _banner())
+    out = plugin.on_transform_llm_output(
+        response_text="visible reply", session_id=SID, model="minimax-m3")
+    # M35-17: there is no attach to fail — the banner is a RECORD, the body is
+    # the agent's own, and the slot is consumed once, never re-parked.
+    assert out is None or out == "visible reply"
+    assert debug_banner.BANNER_HEAD not in str(out or "")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)   # NOT re-parked
-    events = [f.get("event_detail") for _, f in env]
-    assert "banner_park_dropped" in events
+    from hermes_router.features.banners import turn_record as _tr
+    assert "higher-self (frontier)" in _tr.render(SID)
     # the stale-leak chain is dead: a later turn sees nothing
     out2 = plugin.on_transform_llm_output(
         response_text="next turn", session_id=SID, model="minimax-m3")
@@ -170,11 +168,9 @@ def test_ownership_claim_releases_slot_before_anchor_consume(env, monkeypatch):
         response_text="I can't write that. held line text here",
         session_id=SID, model="test-model", user_message="the contested ask")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
-    events = [f.get("event_detail") for _, f in env]
-    assert "banner_ownership_claimed" in events
-    # exactly ONE banner line in the delivery — the render's own, not the
-    # stale parked one (double-append class killed)
-    assert (out or "").count("· router ·") == 1
+    # M35-17: the delivered body carries NO banner — not the render's, not the
+    # stale parked one. The double-append class is unreachable, not deduped.
+    assert debug_banner.BANNER_HEAD not in (out or "")
     assert "higher-self (frontier)" not in (out or "")
 
 
@@ -209,7 +205,9 @@ def test_one_delivery_landed_attach_consumes_once(env):
     out = plugin.on_transform_llm_output(
         response_text="the agent's own visible reply", session_id=SID,
         model="minimax-m3")
-    assert out and "· router ·" in out
+    assert debug_banner.BANNER_HEAD not in str(out or "")
+    from hermes_router.features.banners import turn_record as _tr
+    assert "higher-self (frontier)" in _tr.render(SID)
     out2 = plugin.on_transform_llm_output(
         response_text="next turn", session_id=SID, model="minimax-m3")
     assert "· router ·" not in (out2 or "next turn")

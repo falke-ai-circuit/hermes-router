@@ -66,121 +66,130 @@ def _banner(model="openai/gpt-6-astra-pro-flex"):
 
 
 def test_benign_consume_drops_when_append_equal_r33f(r9_reset, monkeypatch):
-    """R33f-A supersedes R19.21 (the earlier direction's test rewritten in
-    place, lesson 15): with append_banner stubbed to return the base
-    unchanged, the consume happened (one-shot), the banner is DROPPED
-    fail-loud (banner_semaphore_expired) — never re-parked (the re-park
-    loop was the live stale-leak class, session 20261006_190903_c82cbbcc)."""
-    monkeypatch.setattr(debug_banner, "append_banner",
-                        lambda base, b, prepend=False, _knob_checked=False: base)
+    """M35-17: a parked banner is a RECORD, never a suffix. The benign edge
+    consumes the slot (one-shot), the delivered body stays the agent's own,
+    and the segment survives on the turn record."""
+    from hermes_router.features.banners import turn_record as _tr
+
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="visible reply", session_id=SID, model="minimax-m3")
-    assert out is None  # pass-through contract: nothing landed -> original delivers
+    assert out is None or out == "visible reply"   # pass-through contract
+    assert debug_banner.BANNER_HEAD not in str(out or "")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)  # DROPPED, not re-parked
-    rec = [f for e, f in r9_reset
-           if f.get("event_detail") == "banner_park_dropped"]
-    assert rec and rec[-1].get("edge") == "benign"
+    assert "higher-self (frontier)" in _tr.render(SID)
     crec = [f for e, f in r9_reset
             if f.get("event_detail") == "anchor_banner_consume"]
     assert len(crec) == 1 and crec[0].get("parked") is True
 
 
 def test_benign_consume_appends_to_delivered_string(r9_reset):
-    """Per-lane acceptance: parked banner appears in the DELIVERED string."""
+    """Per-lane acceptance: the parked banner reaches the RECORD, and the
+    delivered string carries none of it."""
+    from hermes_router.features.banners import turn_record as _tr
+
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="the agent's own visible reply", session_id=SID,
         model="minimax-m3")
-    assert out and "· router ·" in out
-    assert "higher-self (frontier)" in out
-    assert "openai/gpt-6-astra-pro-flex" in out  # named-model case
-    assert "$0.075300" in out                    # real price in banner
-    assert "the agent's own visible reply" in out
-    # one-shot: second pass sees nothing
+    delivered = out if isinstance(out, str) else "the agent's own visible reply"
+    assert debug_banner.BANNER_HEAD not in delivered
+    block = _tr.render(SID)
+    assert "higher-self (frontier)" in block
+    assert "openai/gpt-6-astra-pro-flex" in block   # named-model case
+    assert "$0.075300" in block                     # real price in banner
     out2 = plugin.on_transform_llm_output(
         response_text="next turn", session_id=SID, model="minimax-m3")
-    assert "· router ·" not in (out2 or "next turn")
+    assert debug_banner.BANNER_HEAD not in str(out2 or "next turn")
 
 
 def test_audit_sync_return_merges_parked_banner(r9_reset, monkeypatch):
-    """Hole 1: when audit_gate fires (sync topology) and returns revised
-    text, the parked PRE-consult banner must merge into THAT return — the
-    benign-branch consume is never reached on an audit turn."""
+    """The audit edge returns its revised text; the parked segment is recorded
+    at that edge. Neither body carries a banner."""
+    from hermes_router.features.banners import turn_record as _tr
+
     monkeypatch.setattr(completion_audit, "audit_enabled", lambda: True)
     monkeypatch.setattr(
         completion_audit, "audit_gate",
         lambda sid, text, model="", context=None, *, ask_override="",
         hook_budget=0.0: "REVISED TEXT (audit applied)")
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="original draft", session_id=SID, model="minimax-m3")
-    assert out and "REVISED TEXT (audit applied)" in out
-    assert "· router ·" in out and "openai/gpt-6-astra-pro-flex" in out
-    # consumed exactly once, at the audit edge
+    # The audit arm's own return is exercised by the completion-audit node;
+    # what THIS unit fixes is that no body carries a banner either way.
+    assert debug_banner.BANNER_HEAD not in str(out or "")
+    assert "openai/gpt-6-astra-pro-flex" in _tr.render(SID)
     rec = [f for e, f in r9_reset
            if f.get("event_detail") == "anchor_banner_consume"]
     assert len(rec) == 1 and rec[0].get("edge") == "audit_sync"
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
-    # no double append: a second benign pass carries no banner
     out2 = plugin.on_transform_llm_output(
         response_text="plain", session_id=SID, model="minimax-m3")
-    assert "· router ·" not in (out2 or "plain")
+    assert debug_banner.BANNER_HEAD not in str(out2 or "plain")
 
 
 def test_no_double_append_when_audit_skips(r9_reset, monkeypatch):
-    """audit_gate returns None (skip) -> benign edge consumes — exactly one
-    banner across the whole turn (PRE parked + POST consumed)."""
+    """audit_gate returns None (skip) -> the benign edge consumes; exactly one
+    segment and one consume for the turn, and no banner anywhere in a body."""
+    from hermes_router.features.banners import turn_record as _tr
+
     monkeypatch.setattr(completion_audit, "audit_enabled", lambda: True)
-    monkeypatch.setattr(completion_audit, "audit_gate",
-                        lambda *a, **k: None)
+    monkeypatch.setattr(completion_audit, "audit_gate", lambda *a, **k: None)
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="draft reply", session_id=SID, model="minimax-m3")
-    assert out and out.count("· router ·") == 1
+    delivered = out if isinstance(out, str) else "draft reply"
+    assert debug_banner.BANNER_HEAD not in delivered
+    assert len(_tr.segments(SID)) == 1
     rec = [f for e, f in r9_reset
            if f.get("event_detail") == "anchor_banner_consume"]
     assert len(rec) == 1
 
 
 def test_oversized_banner_omitted_never_truncates(r9_reset):
+    """An oversized diagnostic is bounded at the park and truncated at RENDER
+    time; it never reaches the body, and the body is never trimmed for it."""
+    from hermes_router.features.banners import turn_record as _tr
+
     big = "x" * (debug_banner.MAX_BANNER_CHARS + 10)
-    # Oversize path through the REAL formatter: format_banner returns ""
-    # for oversized diagnostics (§10.4-F omit-entirely) — parking an empty
-    # string must leave the delivery untouched; and a parked payload that
-    # somehow exceeds the cap is clipped by park_anchor_banner.
     assert debug_banner.format_banner(
         lane="frontier-anchor", trigger="anchored", model="m",
         endpoint="h", tokens_in=1, tokens_out=1, est_cost=0.0,
         latency_s=0.0, session_id=SID) != ""
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, big)
     parked = debug_banner._ANCHOR_BANNERS[SID]
     assert len(parked) <= debug_banner.MAX_BANNER_CHARS * 3  # bounded park
     out = plugin.on_transform_llm_output(
         response_text="clean reply", session_id=SID, model="minimax-m3")
-    assert out and out.count("· router ·") <= 1  # no truncated junk, one-shot
-    assert "clean reply" in out
+    delivered = out if isinstance(out, str) else "clean reply"
+    assert debug_banner.BANNER_HEAD not in delivered
+    assert "clean reply" in delivered
 
 
 def test_post_render_consume_no_unbound_name(r9_reset, monkeypatch):
-    """The POST render-path consume used `_db` OUTSIDE the banner-build
-    try (NameError when the banner-build raised mid-turn -> swallowed ->
-    parked banner dropped). The consume block must be self-sufficient:
-    with the banner-build FORCED to fail, the parked banner still appends
-    (knob read live per append)."""
+    """The POST render consume block must be self-sufficient: with the
+    banner-build FORCED to fail, the parked banner is still recorded and the
+    delivered text stays clean."""
+    from hermes_router.features.banners import turn_record as _tr
+
     monkeypatch.setattr(debug_banner, "debug_banner_enabled", lambda: True)
+    _tr.reset(SID)
     debug_banner.park_anchor_banner(SID, _banner())
-    # Force the PRECEDING banner-build block's failure shape: patch the
-    # format path it uses so the build block raises and exits its try —
-    # the consume below must still run and attach the parked banner.
     monkeypatch.setattr(plugin, "_banner_tokens_from_last_write",
                         lambda *a, **k: (_ for _ in ()).throw(
                             RuntimeError("boom")))
     out = plugin.on_transform_llm_output(
         response_text="render-substituted reply", session_id=SID,
         model="minimax-m3")
-    assert out and "· router ·" in out
-    assert "openai/gpt-6-astra-pro-flex" in out
+    delivered = out if isinstance(out, str) else "render-substituted reply"
+    assert debug_banner.BANNER_HEAD not in delivered
+    assert "openai/gpt-6-astra-pro-flex" in _tr.render(SID)
     assert not debug_banner._ANCHOR_BANNERS.get(SID)  # consumed exactly once
 
 

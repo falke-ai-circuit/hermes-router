@@ -21,12 +21,10 @@ def _clean_parks():
     DB._ANCHOR_BANNERS.clear()
     DB._ANCHOR_SEGS.clear()
     DB._ANCHOR_TASKS.clear()
-    DB._HELD_DECISIONS.clear()
     yield
     DB._ANCHOR_BANNERS.clear()
     DB._ANCHOR_SEGS.clear()
     DB._ANCHOR_TASKS.clear()
-    DB._HELD_DECISIONS.clear()
 
 
 def _lifecycle():
@@ -100,8 +98,10 @@ def test_deliver_chokepoint_illegal_edge_raises_and_fail_open(monkeypatch):
     from hermes_router import debug_banner as _DB
 
     monkeypatch.setattr(_DB, "debug_banner_enabled", lambda: True)
-    assert _lifecycle().deliver("s-p5b", "body", "anchor",
-                                "benign") == "body\n\n\nBANNER"
+    # M35-17: the body is returned untouched; the segment is recorded.
+    from hermes_router.features.banners import turn_record as _tr
+    assert _lifecycle().deliver("s-p5b", "body", "anchor", "benign") == "body"
+    assert "BANNER" in _tr.render("s-p5b")
 
 
 def test_deliver_append_drops_on_vanish_r33f(monkeypatch):
@@ -125,8 +125,12 @@ def test_deliver_body_mode_is_the_banner_itself():
     _lifecycle().park(kinds.get("anchor"), "s-p5d", "midturn", "MT")
     out = _lifecycle().deliver("s-p5d", "", "anchor", "empty_body",
                                mode="body")
-    assert out == "MT"
+    # M35-17: mode="body" no longer substitutes the banner for the body — the
+    # parked text becomes a record segment and the body is returned untouched.
+    assert out == ""
     assert _lifecycle().peek("s-p5d") == ""  # one-shot consume
+    from hermes_router.features.banners import turn_record as _tr
+    assert "MT" in _tr.render("s-p5d")
 
 
 def test_deliver_discard_mode_releases_without_log_row():

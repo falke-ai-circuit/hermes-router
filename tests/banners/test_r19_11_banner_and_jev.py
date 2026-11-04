@@ -33,102 +33,15 @@ DECISION_BANNER = ("· router · decision | midturn | glm | tok 10/5 | "
 
 def _reset_banners():
     debug_banner._ANCHOR_BANNERS.clear()
-    debug_banner._HELD_DECISIONS.clear()
+
+
+GOOD = json.dumps({"choice": "opt-1", "confidence": 0.9,
+                   "alternatives": []})
 
 
 # ------------------------------------------------------------------
 # BUG 1 — decision banner survives render replacement
 # ------------------------------------------------------------------
-
-def test_benign_delivery_then_render_reemits_banner(monkeypatch):
-    """Two-lane turn: invocation 1 (benign) consumes + appends the decision
-    banner; invocation 2 (uncensored render REPLACES the tail) must still
-    deliver the decision banner."""
-    _reset_banners()
-    state.clear()
-    # production reality: the debug-banner knob is ON when banners are
-    # delivered (conftest forces it off for isolation — force it back).
-    monkeypatch.setattr(debug_banner, "debug_banner_enabled", lambda: True)
-    monkeypatch.setattr(plugin, "_cfg", lambda: {
-        "enabled": True,
-        "classification": {"pre_classify": True, "post_classify": True,
-                           "match_threshold": 1},
-        "log_routes": False,
-    })
-    monkeypatch.setattr(plugin, "_dry_run", lambda: False)
-    sid = "s-two-lane"
-
-    # a decision-lane banner is parked mid-turn
-    debug_banner.park_anchor_banner(sid, DECISION_BANNER, task_id="midturn")
-
-    # invocation 1: benign edge consumes + appends (delivered text had it —
-    # but the platform then replaced the tail with the render)
-    benign = "Here is the analysis you asked for."
-    out1 = plugin.on_transform_llm_output(
-        response_text=benign, session_id=sid, model="m")
-    assert out1 and DECISION_BANNER in out1  # consumed+appended on edge 1
-    assert debug_banner._HELD_DECISIONS.get(sid)  # hold recorded
-
-    # invocation 2: the uncensored render REPLACES the turn (refusal path)
-    state.stash_pending(sid, "m", ORIGINAL, "rendered-stub")
-    state.set_last_user_msg_hash(sid, state.hash_text(ORIGINAL))
-    with mock.patch.object(plugin.router, "call", return_value=RENDERED):
-        out2 = plugin.on_transform_llm_output(
-            response_text=REFUSAL, session_id=sid, model="m")
-    assert out2 == RENDERED or (out2 and RENDERED in out2)
-    # THE FIX: the decision banner survives the render replacement
-    assert DECISION_BANNER in out2
-    assert "· router · decision" in out2
-    _reset_banners()
-
-
-def test_delivered_edge_leaves_hold_ttl_expires(monkeypatch):
-    """A single-lane benign delivery does NOT duplicate the banner on a
-    later unrelated delivery after the TTL."""
-    _reset_banners()
-    # delivered edge carries the marker -> hold left alone, then expires
-    debug_banner.note_consumed_decision("s1", DECISION_BANNER)
-    out = debug_banner.settle_decision_banner(
-        "s1", "text with " + DECISION_BANNER + " inline")
-    assert DECISION_BANNER in out
-    # fresh hold + text WITHOUT marker -> re-emitted once
-    debug_banner.note_consumed_decision("s2", DECISION_BANNER)
-    out2 = debug_banner.settle_decision_banner("s2", "clean render text")
-    assert DECISION_BANNER in out2
-    # second call: hold already popped -> no duplicate
-    out3 = debug_banner.settle_decision_banner("s2", "another delivery")
-    assert DECISION_MARK_ABSENT(out3)
-    _reset_banners()
-
-
-def DECISION_MARK_ABSENT(text):
-    return "· router · decision" not in text
-
-
-def test_non_decision_banner_never_held():
-    _reset_banners()
-    debug_banner.note_consumed_decision(
-        "s3", "· router · frontier-anchor | anchored | glm | tok 1/1 | $0")
-    assert "s3" not in debug_banner._HELD_DECISIONS
-    _reset_banners()
-
-
-def test_hold_respects_max_banner_chars():
-    _reset_banners()
-    huge = DECISION_BANNER + "x" * 1000
-    debug_banner.note_consumed_decision("s4", huge)
-    held = debug_banner._HELD_DECISIONS["s4"][0]
-    assert len(held) <= debug_banner.MAX_BANNER_CHARS
-    _reset_banners()
-
-
-# ------------------------------------------------------------------
-# BUG 2 — Jev parse hardening
-# ------------------------------------------------------------------
-
-GOOD = json.dumps({"choice": "opt-1", "confidence": 0.9,
-                   "alternatives": []})
-
 
 def test_robust_json_plain():
     assert json.loads(decision._robust_json_content(GOOD))["choice"] == "opt-1"

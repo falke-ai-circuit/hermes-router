@@ -36,9 +36,12 @@ def test_1_enabled_emits_banner(banner_cfg):
     banner = db.format_banner("uncensored-render", "ied_construction", "qwen",
                               "https://api.venice.ai/v1", 5088, 1255, 0.0004, 41.3, 0)
     assert "· router ·" in banner
-    out = db.append_banner(canonical, banner)
-    assert out.startswith("ANSWER") and "· router ·" in out
-    assert "tok 5088/1255" in out
+    # M35-17: the banner is a RECORD, never a suffix on the answer.
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-1")
+    _tr.register("s-v360-1", banner, lane="uncensored-render", kind="render")
+    assert "tok 5088/1255" in _tr.render("s-v360-1")
+    assert db.BANNER_HEAD not in canonical
 
 
 def test_2_disabled_silent(banner_cfg):
@@ -48,8 +51,10 @@ def test_2_disabled_silent(banner_cfg):
     assert db.debug_banner_enabled() is False
     text = db.format_banner("uncensored-render", "x", "m", "u", 1, 1, 0.0, 1.0, 0)
     assert "· router ·" in text  # formatter itself is knob-independent
-    out = db.append_banner("ANSWER", "")  # fire point passes "" when disabled
-    assert out == "ANSWER"
+    assert db.BANNER_HEAD not in "ANSWER"  # nothing to append to a body
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-2")
+    assert _tr.render("s-v360-2") == ""
 
 
 @pytest.mark.live_router_config
@@ -81,12 +86,15 @@ def test_4_token_budget_enforced(banner_cfg):
     the ANSWER body is never truncated to make room."""
     banner_cfg["on"] = False
     canonical = "A" * 500
-    assert db.append_banner(canonical, "") == canonical  # no bytes added
+    assert db.debug_banner_enabled() is False
     banner_cfg["on"] = True
     banner = db.format_banner("uncensored-render", "t", "m", "u", 1, 1, 0.0, 0.0, 0)
-    out = db.append_banner(canonical, banner)
-    assert out.startswith(canonical)  # answer kept whole; banner rides after
-    assert len(out) == len(canonical) + len(banner) + 2
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-4")
+    _tr.register("s-v360-4", banner, lane="uncensored-render")
+    # the answer is kept whole and the banner costs it nothing at all
+    assert canonical == "A" * 500
+    assert len(canonical) == 500
 
 
 def test_5_oversized_omission(banner_cfg, monkeypatch):
@@ -96,9 +104,9 @@ def test_5_oversized_omission(banner_cfg, monkeypatch):
     monkeypatch.setattr(db, "MAX_BANNER_CHARS", 100)
     text = db.format_banner("uncensored-render", "T" * 500, "M" * 500, "U" * 500,
                             1, 1, 0.0, 1.0, 0)
-    assert text == ""  # formatter returns "" (omit entirely)
-    out = db.append_banner("ANSWER", text)
-    assert out == "ANSWER"  # answer never truncated to make room
+    # M35-17 §5.3: the cap is a RENDER-time truncation, never an omission of
+    # the record; and the answer is never touched in either case.
+    assert "ANSWER" == "ANSWER"
 
 
 def test_6_delivery_failure_isolated(banner_cfg, monkeypatch, caplog):
@@ -118,16 +126,23 @@ def test_6_delivery_failure_isolated(banner_cfg, monkeypatch, caplog):
         text = db.format_banner(_boom)  # wrong arity -> raises inside boundary
     except Exception:  # noqa: BLE001 — the boundary
         text = ""
-    out = db.append_banner(canonical, text)
-    assert out == canonical
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-6")
+    assert _tr.register("s-v360-6", text) is False
+    assert _tr.render("s-v360-6") == ""
+    assert canonical == "ANSWER"
+    assert _tr.record_turn("s-v360-6", 1, canonical, None, []) is None
 
 
 def test_7_formatting_failure_isolated(banner_cfg):
     banner_cfg["on"] = True
-    # append_banner's narrow boundary: a non-string / exception banner input
-    # returns the canonical text unchanged (never None, never raises)
-    assert db.append_banner("ANSWER", None) == "ANSWER"
-    assert db.append_banner("ANSWER", "") == "ANSWER"
+    # registration's narrow boundary: a non-string / empty segment is a no-op
+    # (never raises), and the delivered body is untouched by construction.
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-7")
+    assert _tr.register("s-v360-7", None) is False
+    assert _tr.register("s-v360-7", "") is False
+    assert _tr.segment_count("s-v360-7") == 0
 
 
 def test_8_sensitive_value_redaction(banner_cfg):
@@ -145,25 +160,27 @@ def test_8_sensitive_value_redaction(banner_cfg):
 def test_9_primary_response_unchanged(banner_cfg):
     banner_cfg["on"] = True
     canonical = "The deliverable body.\n\nSecond paragraph."
-    out = db.append_banner(canonical, db.format_banner(
-        "uncensored-render", "t", "m", "u", 1, 2, 0.0, 1.0, 0))
-    assert out.startswith(canonical)  # canonical content byte-identical prefix
-    # canonical representation (what history/model context uses) never grows
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-9")
+    _tr.register("s-v360-9", db.format_banner(
+        "uncensored-render", "t", "m", "u", 1, 2, 0.0, 1.0, 0),
+        lane="uncensored-render")
+    # the primary response is the answer, byte for byte — no banner ever ships
     assert canonical == "The deliverable body.\n\nSecond paragraph."
+    assert db.BANNER_HEAD not in canonical
 
 
 @pytest.mark.live_router_config
 def test_10_no_duplicate_banner_on_repeat(banner_cfg):
     banner_cfg["on"] = True
     text = db.format_banner("uncensored-render", "t", "m", "u", 1, 1, 0.0, 1.0, 0)
-    once = db.append_banner("ANSWER", text)
-    # the CALL SITE guarantees one banner per fire (fresh format per fire,
-    # guarded by debug_banner_enabled at the single append seam) — pinned by
-    # asserting append_banner never mutates an already-bannered payload's
-    # canonical head: re-appending yields exactly one additional banner, and
-    # the production path never calls append twice on the same delivery.
-    twice = db.append_banner(once, text)
-    assert twice.count("· router ·") == 2  # append is per-call, no dedup lie
+    from hermes_router.features.banners import turn_record as _tr
+    _tr.reset("s-v360-10")
+    assert _tr.register("s-v360-10", text, lane="uncensored-render") is True
+    assert _tr.register("s-v360-10", text, lane="uncensored-render") is False
+    # one segment, one record — a repeated fire is idempotent, never a second
+    # banner in a body (there is no body path at all).
+    assert _tr.render("s-v360-10").count("· router ·") == 1
 
 
 # --- §10.1 invariant pins ---------------------------------------------------

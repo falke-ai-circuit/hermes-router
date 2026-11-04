@@ -178,17 +178,14 @@ def test_park_round_trip_benign_edge(r4_reset, monkeypatch):
     out1 = plugin.on_transform_llm_output(response_text="t1 plain answer",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    assert out1 and "t1 plain answer" in out1
-    assert TAG not in out1  # R20
-    assert 'impulse (decision)' in out1
-    # round-trip: the DELIVERED text is captured on the parked path
-    caps = [c for c in _captured(r4_reset) if c.get("stage") == "BENIGN_BANNER"]
-    assert caps and "impulse (decision)" in caps[-1]["render"], caps
-    assert [f for e, f in LOGGED
-            if f.get("event_detail") == "banner_render_captured"
-            and f.get("edge") == "benign"]
+    assert debug_banner.BANNER_HEAD not in str(out1 or "")  # record, not body
+    assert TAG not in str(out1 or "")  # R20
+    from hermes_router.features.banners import turn_record as _tr
+    assert "impulse (decision)" in _tr.render(SID)
+    # the persisted row is the body the user saw — never a banner
     rows = _persisted(r4_reset)
-    assert rows and rows[0][0] == "assistant" and "impulse (decision)" in rows[0][1]
+    for _role, _text in rows:
+        assert debug_banner.BANNER_HEAD not in str(_text)
 
 
 def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
@@ -206,18 +203,13 @@ def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    assert out, "parked verdict must deliver even on an empty body"
-    assert TAG not in out  # R20
-    assert 'impulse (decision)' in out
-    caps = [c for c in _captured(r4_reset)
-            if c.get("stage") == "EMPTY_BODY_BANNER"]
-    assert caps and "impulse (decision)" in caps[-1]["render"]
-    assert [f for e, f in LOGGED
-            if f.get("event_detail") == "anchor_banner_consume"
-            and f.get("edge") == "empty_body"]
-    assert [f for e, f in LOGGED
-            if f.get("event_detail") == "banner_render_captured"
-            and f.get("edge") == "empty_body"]
+    # M35-17: an empty body stays empty; the verdict is RECORDED, not appended.
+    assert not out or debug_banner.BANNER_HEAD not in out
+    assert TAG not in str(out or "")  # R20
+    from hermes_router.features.banners import turn_record as _tr
+    assert "impulse (decision)" in _tr.render(SID)
+    # the empty-body edge still consumes its park exactly once
+    assert not debug_banner._ANCHOR_BANNERS.get(SID)
 
 
 def test_park_round_trip_audit_sync_edge(r4_reset, monkeypatch):
@@ -250,14 +242,9 @@ def test_park_round_trip_audit_sync_edge(r4_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="t3 answer",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    assert out and out.startswith("audited revision of:")
-    assert "parked audit note" in out
-    caps = [c for c in _captured(r4_reset)
-            if c.get("stage") == "AUDIT_SYNC_BANNER"]
-    assert caps and "parked audit note" in caps[-1]["render"]
-    assert [f for e, f in LOGGED
-            if f.get("event_detail") == "banner_render_captured"
-            and f.get("edge") == "audit_sync"]
+    assert debug_banner.BANNER_HEAD not in str(out or "")
+    from hermes_router.features.banners import turn_record as _tr
+    assert "parked audit note" in _tr.render(SID)
 
 
 def test_canonical_round_trip_rewrite(r4_reset):
