@@ -1127,6 +1127,16 @@ def _handle_hit(session_id: str, tool_name: str, text: str,
                 base, meta, str(reason))
             return
         verdict, vreason = _dec.validate_verdict(content, envelope)
+        # M42-02 F1: the base row is built BEFORE the backend answers, so its
+        # board has no distribution yet. Re-stamp it here — same serializer,
+        # same envelope ids — so the row that actually lands carries a
+        # probability per option. Fail-open: a bad stamp leaves the id+label
+        # board the base already wrote.
+        try:
+            base["options_json"] = _dec.ledger_options_json(
+                _midturn_option_board(_row_opts), verdict)
+        except Exception:  # noqa: BLE001 — capture never breaks the lane
+            pass
         # R58: the midturn seam validates HERE, not in decision.py's worker —
         # a fourth call site. Adapt _log's signature (session first) and record
         # what the same fork request returned for the mindset dials.
@@ -1382,10 +1392,31 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
         return []
 
 
+def _midturn_option_board(opts: Optional[Any]) -> List[Dict[str, Any]]:
+    """Normalize offered options into dicts that KEEP the envelope ids.
+
+    `decision.ledger_options_json` keys the verdict's probability
+    distribution by option id, so the id must be on the board before it is
+    serialized: a bare string list would persist `id=''` and no option could
+    ever be joined to its odds. Ids already present are preserved verbatim —
+    `choice` is written against them — and only a missing id gets the
+    positional `opt-N` default.
+    """
+    board: List[Dict[str, Any]] = []
+    for i, o in enumerate(opts or []):
+        item = dict(o) if isinstance(o, dict) else {"label": str(o)}
+        if not str(item.get("id") or ""):
+            item["id"] = "opt-%d" % (i + 1)
+        item["label"] = str(item.get("label") or "")
+        board.append(item)
+    return board
+
+
 def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
                  fork_cls: str = "", tool_name: str = "",
                  seam: str = SEAM_TERMINAL,
-                 opts: Optional[Any] = None) -> Dict[str, Any]:
+                 opts: Optional[Any] = None,
+                 verdict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     row = {
         "session_id": str(session_id or ""),
         "task_id": "midturn",
@@ -1410,13 +1441,16 @@ def _ledger_base(session_id: str, cfg: Dict[str, Any], sig: str, mode: str,
     # we could not measure.
     try:
         from . import decision_signatures as _ds
-        _labels = [o if isinstance(o, str) else str(o.get("label", "") or "")
-                   for o in (opts or [])]
+        # M42-02 F1: the option board goes through the SAME serializer every
+        # other surface uses, so the row carries the verdict's per-option
+        # probabilities. The local comprehension this replaces emitted
+        # id+label only — midturn was the lane's strongest outcome-capture
+        # surface and the only one with no odds to calibrate against.
+        _board = _midturn_option_board(opts)
+        _labels = [b["label"] for b in _board]
         if len(_labels) >= 2:
             _sigs = [_ds.option_signature(l) for l in _labels]
-            row["options_json"] = json.dumps(
-                [{"id": f"opt-{i + 1}", "label": l} for i, l in enumerate(_labels)],
-                default=str)[:8000]
+            row["options_json"] = _dec.ledger_options_json(_board, verdict)
             row["signatures_json"] = json.dumps(_sigs, default=str)[:8000]
             _diag = _ds.diagnosticity(_sigs)
             row["diagnosticity_json"] = json.dumps(_diag, default=str)[:600]
