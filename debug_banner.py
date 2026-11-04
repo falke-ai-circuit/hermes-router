@@ -481,6 +481,63 @@ def claim_banner_ownership(session_id: str, edge: str = "") -> bool:
         return False
 
 
+# --- M33 (operator ruling 2026-11-01): the frontier PRE leg is HELD ---------
+# Retained park/segment-store helpers (§4.3): they read the parked block to
+# decide whether a PRE leg is still waiting for its POST leg. They never
+# produce text for a body.
+_FRONTIER_LINE_MARK = "higher-self (frontier)"
+
+
+def frontier_leg_counts(text: str) -> "tuple":
+    """(pre_legs, post_legs) counted in a banner block — M33.
+
+    A leg is counted by what its trigger cell SAYS it is: `pre-check` is the
+    PRE consult that runs at turn start, `post-check` the confirmation at turn
+    close. Anything else is a one-shot measurement with no second leg coming
+    and is never counted, so it can never be held. Never raises; (0, 0) when
+    nothing parses.
+    """
+    pre = post = 0
+    try:
+        for line in str(text or "").splitlines():
+            if _FRONTIER_LINE_MARK not in line:
+                continue
+            cells = [c.strip().lower() for c in line.split("|")]
+            trig = cells[1] if len(cells) > 1 else ""
+            if trig.startswith("post-check"):
+                post += 1
+            elif trig.startswith("pre-check"):
+                pre += 1
+        return pre, post
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+def frontier_pre_only(text: str) -> bool:
+    """True when a block carries frontier PRE legs and no POST leg yet."""
+    pre, post = frontier_leg_counts(text)
+    return pre > 0 and post == 0
+
+
+def frontier_pre_hold(session_id: str) -> bool:
+    """M33: is this turn's parked frontier leg still waiting for its POST leg?
+
+    Release is by evidence, not guesswork: a turn that closed with no POST leg
+    (`advisory_consumption.turn_closed`) delivers the PRE banner unchanged —
+    pre-only is a normal turn, not an error. Never raises; False means "deliver
+    as usual".
+    """
+    try:
+        block = _ANCHOR_BANNERS.get(str(session_id or ""), "")
+        if not block or not frontier_pre_only(block):
+            return False
+        from . import advisory_consumption as _ac
+
+        return not _ac.turn_closed(session_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 from .features.banners.lifecycle import LIFECYCLE as _LIFECYCLE  # noqa: E402
 
 _CAPTURE_FB_LOCK = _LIFECYCLE._CAPTURE_FB_LOCK          # shared module lock

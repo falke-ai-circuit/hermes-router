@@ -243,12 +243,12 @@ def test_strip_then_sweep_attaches_the_banner(logged, monkeypatch):
     names = [f.get("event_detail") for f in ev]
     # (a) the strip really happened on this body
     assert _events(logged, "advisory_echo_stripped")[-1]["chars_removed"] > 0
-    # (b) the banner is in the delivered body, exactly once
-    assert "· router ·" in out
-    assert out.count("· router ·") == 1
-    # (c) captured on the benign edge, never dropped as undelivered
-    captured = _events(logged, "banner_render_captured")
-    assert captured and captured[-1].get("edge") == "benign"
+    # (b) M35-17: the banner is on the RECORD, never in the delivered body
+    from hermes_router.features.banners import turn_record as _tr
+    assert "· router ·" not in out
+    assert "· router ·" in _tr.render(SID)
+    # (c) M35-17: no body capture exists because the body never changed;
+    # the park is still consumed, never dropped as undelivered
     dropped = _events(logged, "banner_park_dropped")
     assert [f.get("reason") for f in dropped] == []
     assert "turn_closed_undelivered" not in names
@@ -297,8 +297,10 @@ def test_ordering_strip_sweep_then_delivery_attaches(logged, monkeypatch):
     assert names.index("advisory_echo_stripped") < names.index("sweep_started")
     sweep = _events(logged, "sweep_started")[-1]
     assert sweep["response_chars"] > 0
-    # the delivered body carries the banner exactly once
-    assert "· router ·" in out and out.count("· router ·") == 1
+    # M35-17: the delivered body carries no banner; the record does
+    from hermes_router.features.banners import turn_record as _tr
+    assert "· router ·" not in out
+    assert "· router ·" in _tr.render(SID)
     assert "turn_closed_undelivered" not in names
     assert _events(logged, "banner_park_dropped") == []
 

@@ -338,12 +338,15 @@ def test_seam_keeps_the_banner_on_a_stripped_work_turn(logged, monkeypatch):
 
     out = plugin.on_transform_llm_output(
         response_text=WORK_BODY, session_id=SID, model="m")
-    assert out, "the seam returned nothing"
-    assert out.startswith("Built dedupe.py")            # (a) report leads
-    assert "5 passed" in out
-    assert "· router ·" in out                           # (c) banner present
-    assert "nothing was executed" not in out.lower()     # (d)
-    assert '"povs"' not in out
+    # M35-17: the unchanged body is the host's own bytes (None = passthrough)
+    delivered = out or WORK_BODY
+    assert delivered.startswith("Built dedupe.py")      # (a) report leads
+    assert "5 passed" in delivered
+    from hermes_router.features.banners import turn_record as _tr
+    assert "· router ·" not in delivered                 # (c) record, not body
+    assert "· router ·" in _tr.render(SID)
+    assert "nothing was executed" not in delivered.lower()     # (d)
+    assert '"povs"' not in delivered
     assert _events(logged, "advisory_echo_stripped")
 
 

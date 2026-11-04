@@ -2526,7 +2526,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         routed=0, session_id=session_id)
                     _report_original_delivery(session_id, "delivery_withheld",
                                               answer=response_text)
-                    return response_text
+                    return None
             except Exception:  # noqa: BLE001 — fail-open: route stands
                 pass
 
@@ -2579,10 +2579,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                        refusal_chars=len(response_text), session_id=session_id)
             _report_original_delivery(session_id, "delivery_withheld",
                                       answer=response_text)
-            # R15-5: this is still a DELIVERY EDGE — a parked verdict banner
-            # (anchor consult billed this turn) must attach here, not
-            # survive past the turn. No banner -> plain passthrough.
-            return response_text
+            # M35-17: the body passes through unchanged; a parked verdict
+            # banner is a record segment, never an attached suffix.
+            return None
 
         if fallback:
             # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
@@ -2808,10 +2807,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # refusal is the delivered body.
                     _report_original_delivery(session_id, "delivery_withheld",
                                               answer=response_text)
-                    # R15-5: this IS a delivery edge — a parked verdict
-                    # banner (anchor consult billed this turn) must attach
-                    # here, not survive past the turn (live T2e class).
-                    return response_text
+                    # M35-17: pass-through; the banner is a record segment.
+                    return None
                 _hub()._log_route("POST", event_detail="flinch_reason_classified",
                            reason=_reason or "unknown", session_id=session_id)
             except Exception:  # noqa: BLE001 — gate gap must never block routing

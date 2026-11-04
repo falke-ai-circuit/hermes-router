@@ -56,55 +56,41 @@ def _decision_lines(text: str):
     return [ln for ln in text.splitlines() if HEAD in ln]
 
 
-def test_parser_reads_both_token_shapes():
-    """`N/M tok` and `tok N/M` must both yield tokens — B used the prefix form."""
-    a = db._parse_decision_line(LINE_A)
-    b = db._parse_decision_line(LINE_B)
-    assert (a["ti"], a["to"]) == (2585, 94), a
-    assert (b["ti"], b["to"]) == (1668, 83), "prefix shape dropped: %s" % b
-    assert (b["r1"], b["r2"]) == (946, 946), b
+def test_both_live_shapes_survive_as_segments():
+    """M35-17: the parse-based body merge is deleted; the two live shapes are
+    recorded verbatim, and neither reaches a delivered body."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "s-m27-both"
+    tr.reset(sid)
+    assert tr.register(sid, LINE_A, lane="decision", kind="reflex") is True
+    assert tr.register(sid, LINE_B, lane="decision", kind="midturn") is True
+    segs = tr.segments(sid)
+    assert len(segs) == 2, segs
+    assert "2585/94 tok" in segs[0]["text"]
+    assert "tok 1668/83" in segs[1]["text"]
+    assert HEAD not in BODY
 
 
-def test_stacked_park_block_renders_one_banner_with_summed_numbers():
-    """THE live path: the park slot hands the edge ONE block of three banners."""
-    blocked = "\n\n".join([LINE_F, LINE_A, LINE_B])
-    out = db.append_banner(BODY, "\n" + blocked, _knob_checked=True)
+def test_frontier_and_two_decision_shapes_are_three_segments():
+    from hermes_router.features.banners import turn_record as tr
 
-    lines = _decision_lines(out)
-    assert len(lines) == 1, "one banner per turn, got %d:\n%s" % (len(lines), out)
-    line = lines[0]
-    assert re.search(r"x2\b", line), line
-    assert "4253/177 tok" in line, "2585/94 + 1668/83 must SUM: %s" % line
-    assert "$0.00018" in line, "0.00011 + 0.000070 must SUM: %s" % line
-    assert re.search(r"rows 87-946", line), "row span must extend: %s" % line
-    # the unrelated lane keeps its own line, untouched
-    assert out.count("higher-self (frontier)") == 1, out
+    sid = "s-m27-three"
+    tr.reset(sid)
+    tr.register(sid, LINE_F, lane="frontier", kind="pre")
+    tr.register(sid, LINE_A, lane="decision", kind="reflex")
+    tr.register(sid, LINE_B, lane="decision", kind="midturn")
+    block = tr.render(sid)
+    assert block.count("higher-self (frontier)") == 1
+    assert block.count(HEAD) == 2
+    assert BODY == "Two cycles done this turn, both 13/13."
 
 
-def test_verdict_shape_first_does_not_escape_the_merge():
-    """Fire order is not guaranteed: B-then-A must also collapse to one line."""
-    blocked = "\n\n".join([LINE_B, LINE_A])
-    out = db.append_banner(BODY, "\n" + blocked, _knob_checked=True)
-    lines = _decision_lines(out)
-    assert len(lines) == 1, out
-    assert "4253/177 tok" in lines[0], lines[0]
-    assert re.search(r"x2\b", lines[0]), lines[0]
+def test_unparseable_member_is_recorded_never_dropped():
+    from hermes_router.features.banners import turn_record as tr
 
-
-def test_two_separate_appends_still_merge_with_summable_tokens():
-    """The non-stacked seam (two edges, two appends) keeps working."""
-    out = db.append_banner(BODY, "\n" + LINE_A, _knob_checked=True)
-    out = db.append_banner(out, "\n" + LINE_B, _knob_checked=True)
-    lines = _decision_lines(out)
-    assert len(lines) == 1, out
-    assert "4253/177 tok" in lines[0], lines[0]
-    assert "$0.00018" in lines[0], lines[0]
-    assert re.search(r"rows 87-946", lines[0]), lines[0]
-
-
-def test_unparseable_block_member_is_appended_never_dropped():
-    """Fail-open survives the per-line walk: an unreadable decision line stays."""
-    weird = "%s impulse (decision) | nothing the parser knows ·" % db.BANNER_HEAD
-    out = db.append_banner(BODY, "\n" + "\n\n".join([LINE_A, weird]), _knob_checked=True)
-    assert out.count(HEAD) == 2, "the unreadable banner must not be dropped: %s" % out
-    assert "2585/94 tok" in out, out
+    sid = "s-m27-weird"
+    tr.reset(sid)
+    weird = "· router · impulse (decision) | ???? ·"
+    assert tr.register(sid, weird, lane="decision") is True
+    assert weird in tr.render(sid)

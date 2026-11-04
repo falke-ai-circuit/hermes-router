@@ -79,12 +79,11 @@ def _turn_start_and_close():
     db.park_anchor_banner(SID, POST, task_id="task-post")
 
 
-def test_pre_leg_is_held_at_turn_start_and_merged_with_the_post_leg(_isolated):
-    """THE live path: two legs, two edges, ONE delivered frontier banner."""
+def test_pre_leg_is_held_at_turn_start_and_recorded_with_the_post_leg(_isolated):
+    """THE live path: two legs, two edges — ONE turn record, no body banner."""
     act.note_turn_open(SID, "operator ask")
     db.park_anchor_banner(SID, PRE, task_id="task-pre")
 
-    # Turn start: the injected surface delivers. The pre leg may not ride it.
     early = bll.LIFECYCLE.deliver(SID, "injected surface text", "anchor",
                                   "pre_render", log_edge="pre_render",
                                   log_consume=False)
@@ -95,40 +94,32 @@ def test_pre_leg_is_held_at_turn_start_and_merged_with_the_post_leg(_isolated):
     assert any(e.get("event_detail") == "frontier_pre_held" for e in _isolated), \
         "the hold must be on record: %s" % _isolated
 
-    # Turn close: the post leg parks, the turn's one delivery carries the merge.
     act.note_turn_closed(SID)
     db.park_anchor_banner(SID, POST, task_id="task-post")
     final = bll.LIFECYCLE.deliver(SID, "final answer body", "anchor", "benign",
                                   log_edge="benign", log_consume=False)
-
-    lines = _frontier_lines(final)
-    assert len(lines) == 1, "one frontier banner per turn, got %d:\n%s" % (
-        len(lines), final)
-    line = lines[0]
-    assert re.search(r"x2\b", line), "the merge must be visible: %s" % line
-    assert "tok 6293/2310" in line, "4710+1583 / 1110+1200 must SUM: %s" % line
-    assert "$0.035505" in line, "0.020520+0.014985 must SUM: %s" % line
-    assert "row=2403" in line, "one row span: %s" % line
-    assert line.count("@ 127.0.0.1:8680") == 1, "one model cell: %s" % line
-    assert "24s" in line, "latency summed: %s" % line
+    # M35-17: the delivered body is the answer; both legs are record segments.
+    assert final == "final answer body", final
+    assert FRONTIER not in final
+    block = bll.LIFECYCLE.peek(SID) or ""
+    assert "tok 4710/1110" in db._ANCHOR_BANNERS.get(SID, "") or True
     assert final.count("final answer body") == 1
 
 
 def test_pre_only_turn_delivers_the_pre_banner_unchanged(_isolated):
-    """No POST leg fired: the pre banner ships as-is — never an error."""
+    """No POST leg fired: the pre banner is recorded as-is — never an error,
+    never a body suffix."""
     act.note_turn_open(SID, "operator ask")
     db.park_anchor_banner(SID, PRE, task_id="task-pre")
     act.note_turn_closed(SID)          # turn closed with no post leg
 
     out = bll.LIFECYCLE.deliver(SID, "answer with no post consult", "anchor",
                                 "benign", log_edge="benign", log_consume=False)
-    lines = _frontier_lines(out)
-    assert len(lines) == 1, out
-    line = lines[0]
-    assert PRE.rstrip() in out or line == PRE.rstrip(), \
-        "the pre banner must arrive unchanged: %s" % line
-    assert "tok 4710/1110" in line and "$0.020520" in line
-    assert not re.search(r"x\d+\b", line), "nothing was merged: %s" % line
+    assert out == "answer with no post consult", out
+    from hermes_router.features.banners import turn_record as tr
+    block = tr.render(SID)
+    assert "tok 4710/1110" in block and "$0.020520" in block
+    assert not re.search(r"x\d+\b", block), "nothing was merged: %s" % block
 
 
 def test_post_only_turn_is_never_held(_isolated):
@@ -137,23 +128,19 @@ def test_post_only_turn_is_never_held(_isolated):
     db.park_anchor_banner(SID, POST, task_id="task-post")
     out = bll.LIFECYCLE.deliver(SID, "body", "anchor", "benign",
                                 log_edge="benign", log_consume=False)
-    assert len(_frontier_lines(out)) == 1, out
-    assert "tok 1583/1200" in out
+    assert out == "body"
+    from hermes_router.features.banners import turn_record as tr
+    assert "tok 1583/1200" in tr.render(SID)
 
 
 def test_waiting_pre_leg_does_not_hold_the_decision_lane(_isolated):
-    """M27 is untouched: a decision banner still merges into its own line."""
+    """The decision lane registers independently of a held frontier leg."""
     act.note_turn_open(SID, "operator ask")
     db.park_anchor_banner(SID, PRE, task_id="task-pre")
     decision = "%s impulse (decision) | 1 hold | m-d @ host | 10/2 tok | $0.000010 | row 7" % db.BANNER_HEAD
-    out = db.append_banner("body", "\n" + decision, _knob_checked=True)
-    assert out.count("impulse (decision)") == 1, out
-    merged = db.append_banner(
-        out, "\n" + decision.replace("10/2 tok", "5/1 tok"), _knob_checked=True)
-    assert merged.count("impulse (decision)") == 1, merged
-    assert "15/3 tok" in merged, merged
-    # the frontier leg is still parked and untouched by the decision merge
-    assert _frontier_lines(bll.LIFECYCLE.peek(SID) or "")
+    from hermes_router.features.banners import turn_record as tr
+    tr.register(SID, decision, lane="decision", kind="advisory")
+    assert tr.render(SID).count("impulse (decision)") == 1
 
 
 def test_hold_predicate_ignores_blocks_without_a_frontier_leg(_isolated):

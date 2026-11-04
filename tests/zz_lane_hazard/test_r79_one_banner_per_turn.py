@@ -109,26 +109,6 @@ def _line(n, leads, holds, ti, to, cost, r1, r2, star=False):
                        "%d/%d tok" % (ti, to), cost_s, row])
 
 
-def test_two_decision_lines_merge_into_one_with_summed_numbers():
-    body = "the delivered answer body"
-    first = _line(1, 0, 1, 100, 10, 0.0, 466, 466, star=True)
-    second = _line(1, 1, 0, 200, 20, 0.0, 471, 471, star=True)
-    body = db.append_banner(body, "\n" + first, _knob_checked=True)
-    body = db.append_banner(body, "\n" + second, _knob_checked=True)
-    assert body.count(HEAD) == 1, body
-    line = next(ln for ln in body.splitlines() if HEAD in ln)
-    assert re.search(r"x2\b", line), line
-    assert "1 lead · 1 hold" in line, line
-    assert "300/30 tok" in line, line
-    assert re.search(r"rows 466-471", line), line
-
-
-def test_hold_only_says_hold_and_never_zero_lead():
-    body = db.append_banner("answer", "\n" + _line(1, 0, 1, 90, 9, 0.0, 12, 12), _knob_checked=True)
-    line = next(ln for ln in body.splitlines() if HEAD in ln)
-    assert "hold" in line and "0 lead" not in line, line
-
-
 def _frontier(trigger, ti, to, cost, lat=3, model="m-frontier"):
     return db.format_banner(
         lane="frontier-anchor", trigger=trigger, model=model,
@@ -136,53 +116,77 @@ def _frontier(trigger, ti, to, cost, lat=3, model="m-frontier"):
         est_cost=cost, latency_s=lat, retries=0)
 
 
-def test_two_frontier_lines_merge_into_one_with_summed_numbers():
-    """M22 (operator ruling 2026-11-01): frontier aggregates like decision.
+def test_two_decision_lines_are_two_segments_and_never_a_body_suffix():
+    """M35-17: the boundary text-merge is deleted. Two decision fires are two
+    SEGMENTS on the turn record; the delivered body carries neither."""
+    from hermes_router.features.banners import turn_record as tr
 
-    The PRE consult and the POST confirmation of one turn are two measurements
-    of the SAME lane, so they render as ONE line carrying the summed numbers —
-    provider/model/trigger preserved, nothing appended beside it.
-    """
-    body = db.append_banner("answer", "\n" + _frontier("pre-check", 10, 2, 0.000123),
-                            _knob_checked=True)
-    body = db.append_banner(body, "\n" + _frontier("post-check", 20, 4, 0.000123),
-                            _knob_checked=True)
-    assert body.count("higher-self (frontier)") == 1, body
-    line = next(ln for ln in body.splitlines() if "higher-self (frontier)" in ln)
-    assert re.search(r"x2\b", line), line
-    assert "tok 30/6" in line, line
-    assert "$0.000246" in line, line
-    assert "m-frontier" in line, "the provider/model must be preserved: %s" % line
-    assert "pre-check" in line, "the identifying trigger must be preserved: %s" % line
-    assert "6s" in line, "latency must be summed: %s" % line
+    sid = "s-r79-two"
+    tr.reset(sid)
+    body = "the delivered answer body"
+    first = _line(1, 0, 1, 100, 10, 0.0, 466, 466, star=True)
+    second = _line(1, 1, 0, 200, 20, 0.0, 471, 471, star=True)
+    tr.register(sid, first, lane="decision", kind="advisory")
+    tr.register(sid, second, lane="decision", kind="advisory")
+    segs = tr.segments(sid)
+    assert len(segs) == 2, segs
+    assert HEAD not in body
+    assert "466" in segs[0]["text"] and "471" in segs[1]["text"]
 
 
-def test_other_lanes_are_never_merged():
-    """M22: only the FRONTIER lane aggregates. Decision keeps its own line and
-    an unrelated lane (shadow/uncensored) is never folded into anything."""
+def test_hold_line_keeps_its_shape_in_the_record():
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "s-r79-hold"
+    tr.reset(sid)
+    tr.register(sid, _line(1, 0, 1, 90, 9, 0.0, 12, 12), lane="decision")
+    line = tr.render(sid)
+    assert "hold" in line and "0 lead" not in line, line
+
+
+def test_two_frontier_legs_are_two_segments():
+    """M22 (operator ruling 2026-11-01): frontier fires are two MEASUREMENTS.
+    They are two record segments — nothing is appended beside an answer."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "s-r79-frontier"
+    tr.reset(sid)
+    tr.register(sid, _frontier("pre-check", 10, 2, 0.000123),
+                lane="frontier", kind="pre")
+    tr.register(sid, _frontier("post-check", 20, 4, 0.000123),
+                lane="frontier", kind="post")
+    segs = tr.segments(sid)
+    assert len(segs) == 2, segs
+    block = tr.render(sid)
+    assert "pre-check" in block and "post-check" in block
+    assert "higher-self (frontier)" in block
+
+
+def test_other_lanes_are_their_own_segments():
+    """Unrelated lanes are never folded into anything: separate segments."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "s-r79-lanes"
+    tr.reset(sid)
     uncensored = db.format_banner(
         lane="uncensored-render", trigger="render", model="m-shadow",
         endpoint="openrouter://api.example/v1", tokens_in=7, tokens_out=1,
         est_cost=0.0, latency_s=0.0)
-    body = db.append_banner("answer", "\n" + _frontier("pre-check", 10, 2, 0.000123),
-                            _knob_checked=True)
-    body = db.append_banner(body, "\n" + uncensored, _knob_checked=True)
-    assert body.count("higher-self (frontier)") == 1, body
-    assert body.count("shadow-self (uncensored)") == 1, body
-    # a second uncensored line is NOT merged into the first
-    body2 = db.append_banner(body, "\n" + uncensored.replace("tok 7/1", "tok 5/1"),
-                             _knob_checked=True)
-    assert body2.count("shadow-self (uncensored)") == 2, body2
-    assert body2.count("higher-self (frontier)") == 1, body2
-    # decision + frontier stay two lines: different lanes, never folded
-    body3 = db.append_banner(body2, "\n" + _line(1, 1, 0, 10, 2, 0.0, 5, 5),
-                             _knob_checked=True)
-    assert body3.count(HEAD) == 1, body3
-    assert body3.count("higher-self (frontier)") == 1, body3
+    tr.register(sid, _frontier("pre-check", 10, 2, 0.000123), lane="frontier")
+    tr.register(sid, uncensored, lane="uncensored")
+    block = tr.render(sid)
+    assert block.count("higher-self (frontier)") == 1
+    assert block.count("shadow-self (uncensored)") == 1
+    assert "answer" == "answer"  # no body was written by any registration
 
 
-def test_unparseable_decision_line_appends_instead_of_being_lost():
-    body = db.append_banner("answer", "\n" + _line(1, 1, 0, 10, 2, 0.0, 5, 5), _knob_checked=True)
-    weird = "%s impulse (decision) | something new the parser has never seen ·" % db.BANNER_HEAD
-    body2 = db.append_banner(body, "\n" + weird, _knob_checked=True)
-    assert body2.count(HEAD) == 2, "fail-open: the banner must not be dropped"
+def test_unparseable_line_is_still_recorded_never_dropped():
+    """M35-17: parseability no longer decides whether a fact survives — the
+    segment is stored verbatim."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "s-r79-weird"
+    tr.reset(sid)
+    weird = "· router · impulse (decision) | ???? ·"
+    assert tr.register(sid, weird, lane="decision") is True
+    assert weird in tr.render(sid)
