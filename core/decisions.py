@@ -33,6 +33,7 @@ and tests; no gate or user-visible behavior reads these records yet.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import logging
@@ -60,6 +61,30 @@ POLICY_VERSION = "advisory"   # Phase 0: nothing is rejected; advisory only
 _q: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue(maxsize=_QUEUE_MAX)
 _worker_started = False
 _worker_lock = threading.Lock()
+
+# M35-17 §2.3 — the per-turn keying of `banner_record`. The key is
+# (turn_id, session_id): §2.2 names that pair as the join key to the delivered
+# body, and the row is written ONCE per turn however many delivery edges fire.
+# Bounded FIFO so a long-lived process cannot grow it without limit.
+_BANNER_TURN_KEYS: "collections.OrderedDict[str, Dict[str, Any]]" = \
+    collections.OrderedDict()
+_BANNER_TURN_KEYS_MAX = 512
+_BANNER_KEYS_LOCK = threading.Lock()
+
+
+def _banner_turn_key(session_id: str, turn_id: str) -> str:
+    """The §2.3 idempotence key for a banner record, "" when not keyable.
+
+    `turn_id` 0/"" is `turn_no()`'s unknown sentinel — two unknown turns cannot
+    be PROVEN the same turn, so they are never collapsed. Never raises.
+    """
+    try:
+        tid = str(turn_id or "").strip()
+        if not tid or tid == "0":
+            return ""
+        return "%s|%s" % (tid, str(session_id or ""))
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _store_path() -> str:
@@ -313,6 +338,11 @@ def record_banner(*, session_id: str = "", turn_id: str = "", lane: str = "",
     severity=error — the queue policy stays non-blocking, the silence does not.
     Never raises.
     """
+    # §2.3 fix: `suggestions` is bound HERE, at call time — the record body
+    # below sequences its own event AND a duplicate needs no sequence at all.
+    # Module-level import is avoided: `suggestions` imports this package.
+    from .. import suggestions
+
     try:
         rec: Dict[str, Any] = {
             "schema": SCHEMA_NAME,
@@ -335,6 +365,32 @@ def record_banner(*, session_id: str = "", turn_id: str = "", lane: str = "",
             "banner": list(banner or []),
             "dupes": int(dupes or 0),
         }
+        # §2.3 — ONE row per (turn_id, session_id). A retried delivery edge
+        # drops its payload and increments `dupes` on the FIRST record; the
+        # retry is named as an event, never as a second line.
+        _key = _banner_turn_key(session_id, turn_id)
+        _prior: Optional[Dict[str, Any]] = None
+        if _key:
+            with _BANNER_KEYS_LOCK:
+                _prior = _BANNER_TURN_KEYS.get(_key)
+                if _prior is not None:
+                    _prior["dupes"] = int(_prior.get("dupes") or 0) + 1
+                else:
+                    _BANNER_TURN_KEYS[_key] = rec
+                    while len(_BANNER_TURN_KEYS) > _BANNER_TURN_KEYS_MAX:
+                        _BANNER_TURN_KEYS.popitem(last=False)
+        if _prior is not None:
+            try:
+                from . import telemetry as _tlm_dup
+
+                _tlm_dup.log_route("POST", event_detail="banner_record_duplicate",
+                                   turn_id=str(turn_id or ""),
+                                   session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001
+                pass
+            logger.debug("banner_record_duplicate turn_id=%s",
+                         str(turn_id or "")[:48])
+            return False
         _ensure_worker()
         try:
             _q.put_nowait(rec)
@@ -378,7 +434,19 @@ def clear_for_tests() -> None:
     try:
         while True:
             _q.get_nowait()
+            # `get()` alone leaves unfinished_tasks counted, so the next
+            # `flush_for_tests()` join() waits forever — the helper that makes
+            # the store testable must balance the counter it drains.
+            try:
+                _q.task_done()
+            except Exception:  # noqa: BLE001
+                break
     except queue.Empty:
         pass
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        with _BANNER_KEYS_LOCK:
+            _BANNER_TURN_KEYS.clear()
     except Exception:  # noqa: BLE001
         pass

@@ -102,11 +102,26 @@ def _isolated(monkeypatch, tmp_path):
 
 
 def _rows(ledger):
+    """The PROVENANCE rows (decision records) this turn wrote.
+
+    M35-17 moved the banner out of the body and into the same store as its own
+    `banner_record` family (§2.2). One line of that family is now written for
+    every turn, so "how many rows did the decision write" must name the family
+    it means; `_banner_rows` is the other half.
+    """
     decisions.flush_for_tests()
     if not os.path.exists(str(ledger)):
         return []
     return [json.loads(line) for line in open(str(ledger), encoding="utf-8")
-            if line.strip()]
+            if line.strip() and json.loads(line).get("record") != "banner_record"]
+
+
+def _banner_rows(ledger):
+    decisions.flush_for_tests()
+    if not os.path.exists(str(ledger)):
+        return []
+    return [json.loads(line) for line in open(str(ledger), encoding="utf-8")
+            if line.strip() and json.loads(line).get("record") == "banner_record"]
 
 
 def _wire(monkeypatch):
