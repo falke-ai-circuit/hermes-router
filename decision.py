@@ -2454,6 +2454,204 @@ SESSION_CONTEXT_ROWS = 6          # turns considered
 SESSION_CONTEXT_ROW_CHARS = 300   # per-row cap
 
 
+# ---------------------------------------------------------------------------
+# R78 M42-01 — GOAL LEDGER: the objective is RECORDED, not re-derived.
+#
+# Measured ceiling this closes: `rolling_task` was the newest user row with no
+# check that the row states intent, so "ok" replaced the task and a vanished
+# quantifier ("only") was unobservable — nothing ever compared turn N to turn
+# N-1. The baseline is written once per session into `goal_ledger` and re-read
+# at this seam, which both consumers (envelope R2/R3, reflex lane R11/R12)
+# already call: no new wire shape, no prompt change.
+# ---------------------------------------------------------------------------
+
+_GOAL_WORDS = ("all", "every", "each", "any", "none", "only", "entire",
+               "whole", "always", "never", "exclusively", "solely")
+# Tokens that BIND scope. A follow-up may legitimately widen the work ("and do
+# the docs too"), so losses are detected over the whole closed class but only
+# the binding ones are NAMED in `goal_guard_tokens` — the pinned acceptance
+# test for this unit requires exactly ["only"] for the widening case.
+_GOAL_RESTRICTORS = frozenset(("only", "exclusively", "solely", "none",
+                               "never", "entire", "whole", "always"))
+
+_GOAL_BOUND_RE = re.compile(
+    r"\b(at least|at most|no more than|no fewer than|exactly|up to|"
+    r"minimum|maximum)\s+"
+    r"(\d{1,3}|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+    re.IGNORECASE)
+_GOAL_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+# A row that states no intent: an acknowledgement is not a new task, so it
+# must not replace the retained rolling text.
+_GOAL_NON_INTENT = re.compile(
+    r"^(ok(ay)?|k|yes|yep|yeah|no|nope|thanks|thx|ty|sure|right|correct|"
+    r"fine|good|go on|carry on|continue|proceed|keep going|do it|go ahead|"
+    r"please do)[.! ]*$", re.IGNORECASE)
+
+# Closed supersede vocabulary: the user is deliberately replacing the objective,
+# so the baseline may move instead of being reported as drift.
+_GOAL_SUPERSEDE = ("ignore the rest", "scratch that", "never mind", "instead",
+                   "change of plan", "new objective", "replace the objective",
+                   "forget the")
+
+
+def _goal_sha(text: str) -> str:
+    """16-char fingerprint of the stored objective (drift check at next turn)."""
+    try:
+        return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _goal_quantifiers(text: str) -> List[str]:
+    """Q(text) — the closed quantifier token set of a stated objective.
+
+    Two classes only: the listed words, and `<op> <n>` bounds normalised to
+    `<op>:<n>`. No synonymy, no negation outside the list (see the unit's MISS
+    list) — this is a deterministic token comparison, not semantics.
+    """
+    found = set()
+    low = str(text or "").lower()
+    for word in _GOAL_WORDS:
+        if re.search(r"\b%s\b" % word, low):
+            found.add(word)
+    for match in _GOAL_BOUND_RE.finditer(low):
+        num = match.group(2).lower()
+        value = int(num) if num.isdigit() else _GOAL_NUMBERS.get(num, 0)
+        found.add("%s:%d" % (match.group(1).lower(), value))
+    return sorted(found)
+
+
+def _goal_read(session_id: str, db_path: str = "") -> Optional[Dict[str, Any]]:
+    """The stored goal baseline for a session, else None. Never raises."""
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return None
+        row = conn.execute(
+            "SELECT objective, objective_sha, rolling_text, quantifiers_json,"
+            " baseline_ts FROM goal_ledger WHERE session_id = ?",
+            (str(session_id),)).fetchone()
+        if not row:
+            return None
+        try:
+            stored_q = json.loads(row[3] or "[]")
+        except Exception:  # noqa: BLE001
+            stored_q = []
+        return {"objective": str(row[0] or ""),
+                "objective_sha": str(row[1] or ""),
+                "rolling_text": str(row[2] or ""),
+                "quantifiers": [str(t) for t in (stored_q or [])],
+                "baseline_ts": float(row[4] or 0.0)}
+    except Exception:  # noqa: BLE001 — a goal read must never break a consult
+        return None
+
+
+def _goal_write(session_id: str, objective: str, rolling_text: str,
+                quantifiers: List[str], db_path: str = "",
+                baseline_ts: Optional[float] = None) -> bool:
+    """Insert/refresh one session's goal baseline. Never raises."""
+    try:
+        conn = _ledger_connect(db_path)
+        if conn is None:
+            return False
+        now = time.time()
+        conn.execute(
+            "INSERT INTO goal_ledger (session_id, objective, objective_sha,"
+            " rolling_text, quantifiers_json, baseline_ts, updated_ts)"
+            " VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(session_id) DO UPDATE SET"
+            " objective=excluded.objective,"
+            " objective_sha=excluded.objective_sha,"
+            " rolling_text=excluded.rolling_text,"
+            " quantifiers_json=excluded.quantifiers_json,"
+            " updated_ts=excluded.updated_ts",
+            (str(session_id), str(objective or ""), _goal_sha(objective),
+             str(rolling_text or ""), json.dumps(list(quantifiers or [])),
+             float(now if baseline_ts is None else baseline_ts), now))
+        conn.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
+                newest_row: str) -> None:
+    """Apply the stored goal to the derived anchor; label the turn.
+
+    Sets `goal_guard` ∈ {persisted, drift, superseded} and
+    `goal_guard_tokens` ([] unless drift). First call for a session writes the
+    baseline; an acknowledgement retains the stored rolling text instead of
+    replacing the task with itself. Never raises.
+    """
+    try:
+        row = str(newest_row or "")
+        stored = _goal_read(session_id, db_path)
+        if stored is None:
+            _goal_write(session_id, out.get("final_objective", ""),
+                        out.get("rolling_task", ""),
+                        _goal_quantifiers(out.get("final_objective", "")),
+                        db_path)
+            out["goal_guard"] = "persisted"
+            out["goal_guard_tokens"] = []
+            return
+
+        supersede = any(marker in row.lower()
+                        for marker in _GOAL_SUPERSEDE) if row else False
+        if supersede:
+            # the user is replacing the objective: the baseline moves.
+            baseline = row[:SESSION_OBJECTIVE_CHARS]
+            out["final_objective"] = baseline
+            out["rolling_task"] = (row or baseline)[:SESSION_TASK_CHARS]
+            _goal_write(session_id, baseline, out["rolling_task"],
+                        _goal_quantifiers(baseline), db_path,
+                        baseline_ts=stored["baseline_ts"] or None)
+            out["goal_guard"] = "superseded"
+            out["goal_guard_tokens"] = []
+            return
+
+        out["final_objective"] = stored["objective"] or out.get(
+            "final_objective", "")
+
+        if stored["objective_sha"] != _goal_sha(stored["objective"]):
+            # the recorded objective no longer matches its fingerprint.
+            out["goal_guard"] = "drift"
+            out["goal_guard_tokens"] = []
+            out["rolling_task"] = (out.get("rolling_task") or
+                                   stored["rolling_text"])[:SESSION_TASK_CHARS]
+            return
+
+        non_intent = bool(row) and len(row) <= 24 and bool(
+            _GOAL_NON_INTENT.match(row))
+        if non_intent:
+            # "ok" states no new task: retain what the session is FOR.
+            out["rolling_task"] = (stored["rolling_text"]
+                                   or stored["objective"])[:SESSION_TASK_CHARS]
+            out["goal_guard"] = "persisted"
+            out["goal_guard_tokens"] = []
+            return
+
+        out["rolling_task"] = (out.get("rolling_task")
+                               or stored["rolling_text"])[:SESSION_TASK_CHARS]
+        current_q = set(_goal_quantifiers(row))
+        lost = [t for t in stored["quantifiers"] if t not in current_q]
+        if lost:
+            out["goal_guard"] = "drift"
+            out["goal_guard_tokens"] = sorted(
+                t for t in lost if t in _GOAL_RESTRICTORS or ":" in t)
+        else:
+            out["goal_guard"] = "persisted"
+            out["goal_guard_tokens"] = []
+        if out["rolling_task"] != stored["rolling_text"]:
+            # rolling text advances; the quantifier BASELINE stays frozen.
+            _goal_write(session_id, out["final_objective"],
+                        out["rolling_task"], stored["quantifiers"], db_path,
+                        baseline_ts=stored["baseline_ts"] or None)
+    except Exception:  # noqa: BLE001 — the guard must never break a consult
+        pass
+
+
 def session_anchor(session_id: str, db_path: str = "") -> Dict[str, str]:
     """The session's objective, current task and recent turns. Never raises.
 
@@ -2524,10 +2722,15 @@ def session_anchor(session_id: str, db_path: str = "") -> Dict[str, str]:
                     return txt
             return ""
 
+        _newest_user_row = _pick(True)
         out["final_objective"] = _pick(False)[:SESSION_OBJECTIVE_CHARS]
-        out["rolling_task"] = (_pick(True)
+        out["rolling_task"] = (_newest_user_row
                                or out["final_objective"])[:SESSION_TASK_CHARS]
         out["rolling_task"] = out["rolling_task"][:SESSION_TASK_CHARS]
+        # R78 M42-01: recorded baseline + quantifier guard. The store is the
+        # caller's explicit db seam when given (tests), else the plugin ledger
+        # store (hermes_router_state.db) — never the messages db implicitly.
+        _goal_guard(out, sid, db_path or "", _newest_user_row)
 
         rows = conn.execute(
             "SELECT role, content, tool_name, tool_calls FROM messages"
@@ -4071,6 +4274,22 @@ CREATE TABLE IF NOT EXISTS decision_counters (
 );
 """
 
+# R78 M42-01 — the persisted GOAL baseline. Additive `CREATE TABLE IF NOT
+# EXISTS` only: no column is altered and no existing table is migrated.
+# One row per session: the objective frozen at the first anchor read, its
+# 16-char sha, the retained rolling text, the quantifier set Q(objective).
+_GOAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS goal_ledger (
+  session_id TEXT PRIMARY KEY,
+  objective TEXT NOT NULL DEFAULT '',
+  objective_sha TEXT NOT NULL DEFAULT '',
+  rolling_text TEXT NOT NULL DEFAULT '',
+  quantifiers_json TEXT NOT NULL DEFAULT '',
+  baseline_ts REAL NOT NULL DEFAULT 0,
+  updated_ts REAL NOT NULL DEFAULT 0
+);
+"""
+
 
 def _ledger_connect(db_path: str = "") -> Optional[Any]:
     try:
@@ -4088,6 +4307,8 @@ def _ledger_connect(db_path: str = "") -> Optional[Any]:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         conn = sqlite3.connect(path, timeout=5.0)
         conn.executescript(_LEDGER_SCHEMA)
+        # R78 M42-01: additive goal baseline table on the same store.
+        conn.executescript(_GOAL_SCHEMA)
         # schema drift migration: pre-v4.10.1 ledgers lack trigger_kind
         try:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(decision_ledger)")}
