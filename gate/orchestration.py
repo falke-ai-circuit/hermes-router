@@ -924,65 +924,6 @@ def _build_substance_message(rendered: str, original_ask: str = "") -> str:
     return _hub()._dispatcher_post._build_substance_message(rendered, original_ask)
 
 
-def _deliver_parked_at_edge(session_id: str, response_text: str,
-                            edge: str, budget: float = 0.0) -> "Optional[str]":
-    """Rider 15 R15-5: a parked verdict banner must attach to EVERY
-    delivery edge of the turn that billed it. The benign consume block
-    only runs on clean responses; refusal-shaped-but-technical turns
-    (flinch technical passthrough) and honored agent-line turns returned
-    None BEFORE consuming — the banner parked past its own turn and the
-    delivered body never carried it (live: analyst T2e 'consult luna-pro',
-    banner parked 15:26:47, flinch passthrough 15:29:42, consume at
-    15:29:55 on a later edge, parked_capture_failed rewrite_no_match).
-    Helper contract: consume the parked banner, append it to the delivery
-    text, capture the render, and return the merged text (or None for the
-    plain passthrough contract). Never raises; never breaks delivery."""
-    try:
-        from .. import debug_banner as _dbd
-
-        _hub()._decision_wait_before_consume(budget)
-        # R34-17 item 3: read the park record before the consume pops it, and
-        # report `parked=True` only when the banner actually reached the body.
-        try:
-            _rec = _dbd.park_record(session_id) or {}
-        except Exception:  # noqa: BLE001 — record read never breaks delivery
-            _rec = {}
-        # M33: this helper consumes the slot DIRECTLY (bypassing the
-        # lifecycle chokepoint), so the frontier hold has to be honoured here
-        # too — a PRE leg parked at turn start may not ride an edge the POST
-        # leg has not reached yet. The banner stays parked; the body passes.
-        try:
-            if _dbd.frontier_pre_hold(session_id):
-                _pre, _post = _dbd.frontier_leg_counts(
-                    _dbd._ANCHOR_BANNERS.get(str(session_id or ""), ""))
-                _hub()._log_route("POST", event_detail="frontier_pre_held",
-                                  edge=edge, pre_legs=_pre, post_legs=_post,
-                                  reason="awaiting_post_leg",
-                                  session_id=session_id)
-                return None
-        except Exception:  # noqa: BLE001 — a hold never breaks delivery
-            pass
-        _parked = _dbd.consume_parked_banner(session_id)
-        _dbd.note_consumed_decision(session_id, _parked)
-        if not _parked:
-            _hub()._log_route("POST", event_detail="anchor_banner_consume",
-                              parked=bool(_rec), delivered=False, edge=edge,
-                              reason=("consume_missed" if _rec
-                                      else "no_park_this_turn"),
-                              session_id=session_id)
-            return None
-        # M35-14 (§7 item 10): CONSUME ONLY. The parked verdict banner is
-        # recorded and dropped — it is never merged into the delivered body.
-        # The seam may not compose delivered bytes (C2's +99 footer was exactly
-        # that), so provenance moves out of band: the route log, not the answer.
-        _hub()._log_route("POST", event_detail="anchor_banner_consumed_no_append",
-                          parked=True, delivered=False, edge=edge,
-                          session_id=session_id)
-        return None
-    except Exception:  # noqa: BLE001 — banner must never break delivery
-        return None
-
-
 # R78U M3.3: the UNSWAPPED acceptance path. Every delivery edge below that
 # hands the ORIGINAL body back is a delivery of this lane, so it must state its
 # provenance the same way the render site does — otherwise an original-body
@@ -2420,14 +2361,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     except Exception:  # noqa: BLE001 — capture never breaks delivery
                         _hub().logger.debug("audit_sync banner capture error",
                                      exc_info=True)
-                    # R19.11 FIX 1: final-delivery gate — re-emit a held
-                    # decision banner when this text lacks the marker.
-                    try:
-                        from .. import debug_banner as _dbs
-                        _out_audit = _dbs.settle_decision_banner(
-                            session_id, _out_audit)
-                    except Exception:  # noqa: BLE001
-                        pass
                     return _out_audit
             except Exception as _audit_err:  # noqa: BLE001 — audit must never break delivery
                 # Fail-open, but NOT silent: this swallow is why the completion
@@ -2461,7 +2394,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         if _unrouted_banner else None
                 # the landed banner text (for the R10-5 capture-repark
                 # blocks below) — recovered from the merged delivery text
-                # (append_banner joins with blank lines).
+                # (the banner block used to be appended to the body).
                 _parked = ""
                 if isinstance(_merged_b, str) and _merged_b and \
                         _merged_b != str(response_text or ""):
@@ -2472,11 +2405,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # the R10-5 capture blocks below still need its text.
                     _parked = _bll_b.LIFECYCLE.peek(session_id)
                 if _parked:
-                    # R9/R19.21: consume+append+repark-on-vanish are the
-                    # chokepoint's (deliver) semantics now — _merged_b is
-                    # the delivered text.
-                    _final_b = _dbp.settle_decision_banner(session_id,
-                                                           _merged_b)
+                    # M35-17: register-only — the delivered text is the
+                    # body; the parked banner is a segment of this turn.
+                    _final_b = _merged_b
                     # FIX-FIRST rider 4 (item 1, parked-loss): the benign
                     # edge replaces the turn tail — capture the DELIVERED
                     # text (render inbox + persisted-turn rewrite) so the
@@ -2595,9 +2526,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         routed=0, session_id=session_id)
                     _report_original_delivery(session_id, "delivery_withheld",
                                               answer=response_text)
-                    return _hub()._deliver_parked_at_edge(
-                        session_id, response_text, "detection_shape_only",
-                        _hook_remaining())
+                    return response_text
             except Exception:  # noqa: BLE001 — fail-open: route stands
                 pass
 
@@ -2618,10 +2547,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                                               answer=response_text)
                     # R15-5: honored agent-line turns are still delivery
                     # edges — attach any parked verdict banner here.
-                    return _hub()._deliver_parked_at_edge(session_id,
-                                                   response_text,
-                                                   "agent_line",
-                                                   _hook_remaining())
+                    return response_text
                 # dv in (None, "model_flinch") -> fall through to routing
             except Exception:  # noqa: BLE001 — verdict gap must never block routing
                 _hub().logger.debug("doctrine verdict error", exc_info=True)
@@ -2656,9 +2582,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # R15-5: this is still a DELIVERY EDGE — a parked verdict banner
             # (anchor consult billed this turn) must attach here, not
             # survive past the turn. No banner -> plain passthrough.
-            return _hub()._deliver_parked_at_edge(session_id, response_text,
-                                           "no_pending_route",
-                                           _hook_remaining())
+            return response_text
 
         if fallback:
             # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
@@ -2887,10 +2811,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # R15-5: this IS a delivery edge — a parked verdict
                     # banner (anchor consult billed this turn) must attach
                     # here, not survive past the turn (live T2e class).
-                    return _hub()._deliver_parked_at_edge(session_id,
-                                                   response_text,
-                                                   "flinch_passthrough",
-                                                   _hook_remaining())
+                    return response_text
                 _hub()._log_route("POST", event_detail="flinch_reason_classified",
                            reason=_reason or "unknown", session_id=session_id)
             except Exception:  # noqa: BLE001 — gate gap must never block routing
@@ -3211,13 +3132,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 try:
                     from ..features.banners import turn_record as _turn
 
-                    _rendered_dbg = _turn.emit_once(
-                        rendered, session_id, extra_segment=_banner_text,
-                        lane="uncensored-render", kind="render", replace=True)
+                    # M35-17: the segment is REGISTERED, never appended. The
+                    # delivered render is untouched by the knob.
+                    _turn.register(session_id, _banner_text,
+                                   lane="uncensored-render", kind="render",
+                                   edge="post_render")
                 except Exception:  # noqa: BLE001 — banner never breaks delivery
-                    _rendered_dbg = _db.append_banner(rendered, _banner_text,
-                                                      _knob_checked=True)
-                if _rendered_dbg != rendered:
+                    pass
+                if True:
                     # R9 hotfix: same TypeError trap as dispatcher_pre —
                     # build_banner_record already carries event_detail.
                     _rec_dbg = _db.build_banner_record("uncensored-render", _dbg_task_id,
@@ -3289,15 +3211,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         except Exception:  # noqa: BLE001 — capture never breaks delivery
                             _hub().logger.debug("render banner capture error",
                                          exc_info=True)
-        except Exception:  # noqa: BLE001 — banner must never break delivery
-            pass
-        # R19.11 FIX 1: final-delivery gate — a decision banner consumed at
-        # an EARLIER benign/audit edge must survive this render replacing
-        # the turn tail: re-emit the held banner when the delivered text
-        # lacks the decision marker.
-        try:
-            from .. import debug_banner as _dbs2
-            rendered = _dbs2.settle_decision_banner(session_id, rendered)
         except Exception:  # noqa: BLE001 — banner must never break delivery
             pass
         # R26-3 final capture: the delivered text must equal the persisted

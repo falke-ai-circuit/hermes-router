@@ -1620,10 +1620,12 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 try:
                     from .features.banners import turn_record as _turn
 
-                    _out = _turn.emit_once(
-                        _out, session_id, extra_segment="\n".join(_pending),
-                        lane="frontier-anchor", kind="completion_audit",
-                        prefix="\n", knob_checked=True)
+                    # M35-17: segments register; the delivered body is the
+                    # agent's own bytes and is returned unchanged.
+                    _turn.register(session_id, "\n".join(_pending),
+                                   lane="frontier-anchor",
+                                   kind="completion_audit",
+                                   edge="completion_audit")
                 except Exception:  # noqa: BLE001 — banner never breaks delivery
                     pass
             return _out

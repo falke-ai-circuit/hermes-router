@@ -957,7 +957,7 @@ def _acc_update(session_id: str, tokens_in: int, tokens_out: int, cost: float,
             acc_turn = int(acc.get("turn_no") or 0)
             # R74-A2 F1: TURN IDENTITY WINS over the slot probe. A turn whose
             # parked banner was never consumed (a real live class — see
-            # gate/orchestration.py:_deliver_parked_at_edge) leaves its text in
+            # the delivery edge) leaves its text in
             # the anchor slot, so slot-emptiness alone cannot see the boundary
             # and the next turn inherited its counts. Roll only when BOTH sides
             # of the turn identity are known: an unknown turn (0) keeps today's

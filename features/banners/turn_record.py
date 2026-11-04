@@ -1,36 +1,25 @@
-"""features/banners/turn_record.py — ONE banner per (session, turn).
+"""features/banners/turn_record.py — banners are RECORDS, not body content.
 
-Goran, live complaint 2026-10-30: a single turn produced two or three separate
-router banner lines because every lane rendered AND appended its own — the
-decision lane at decision.py (render_decision_banner), completion_audit at
-three sites, the frontier/anchor park, plus the uncensored render paths. Ledger
-rows 611 and 612 were the same lane twice in one turn.
-
-The envelope rule, applied to banners: one builder, segments registered, one
-emission.
+M35-17 (supersedes the M34-19 carry and the §10.4-F two-representation rule):
+a lane's banner is turn PROVENANCE, and provenance is never content of the
+turn. This module therefore has no function that returns text a caller could
+append to a body:
 
   * REGISTER at fire time — every lane hands its rendered segment here
-    (park_anchor_banner is the shared fire-time hook; the direct-render edges
-    register their segment on the way to delivery). Segments keep the facts the
-    old banners carried: lane, kind/trigger, verdict text, model, tokens, cost
-    and the reconcilable `row=` id — the segment IS the existing rendered line,
-    so no fact is re-derived or dropped.
-  * RENDER once — one segment renders as that one line; several segments render
-    as ONE contiguous block (single "\\n" join, never a blank line, never a
-    second append). Same-lane repeats collapse through the existing
-    merge_decision_banner (counts/tokens/cost summed, row span extended), which
-    is what "same lane twice" is supposed to look like.
-  * EMIT once — the first delivery edge of the turn performs the single
-    append and marks the turn emitted; every later delivery edge in the SAME
-    turn returns the body untouched. A new turn starts a new record.
-
-Banner never enters the persisted body: this module only shapes the DELIVERY
-representation at the same edge callers that already existed.
+    (`park_anchor_banner` is the shared fire-time hook; the direct-render
+    edges register their own segment).
+  * RECORD once — `record_turn()` writes ONE `banner_record` line per
+    (session, turn) into the decisions store. It accepts the delivered body
+    only to hash it and returns None, so there is no signature through which
+    a banner could enter a body.
+  * RENDER elsewhere — `features/banners/render.py` is a pure function of a
+    record, used by the operator/audit surface only.
 
 Never raises. Bounded state (32 sessions, 2 turns of retention). Deterministic.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -67,6 +56,14 @@ def turn_key(session_id: str) -> Tuple[int, str]:
         return (0, "")
 
 
+def turn_no(session_id: str) -> int:
+    """The turn number for this session, 0 when unknown. Never raises."""
+    try:
+        return int(turn_key(session_id)[0])
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _lane_of(text: str) -> str:
     s = str(text or "")
     for label, lane in _LANE_LABELS:
@@ -101,20 +98,19 @@ def _record(session_id: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# register / render / emit
+# register
 # ---------------------------------------------------------------------------
 
 def register(session_id: str, segment: str, *, lane: str = "",
-             kind: str = "", edge: str = "") -> bool:
+             kind: str = "", edge: str = "", **kwargs) -> bool:
     """Register one lane's rendered banner segment for this turn.
 
     Idempotent: an identical segment is not stored twice, and a second segment
     from the SAME lane/kind/row replaces the earlier one (latest wins for a
-    retry). The one exception is the FRONTIER lane (M22, operator ruling
-    2026-11-01): two frontier firings in one turn are two measurements, not a
-    retry, so they STACK and `render` sums them into one line — the same
-    treatment the decision lane gets. Returns True when the record changed.
-    Never raises.
+    retry). `frontier`/`decision` repeats stack as separate measurements.
+    Returns True when the record changed. Never raises. The keyword-only
+    leftovers (`replace`, `prefix`, `knob_checked`, ...) are accepted so an
+    older call site cannot break registration.
     """
     try:
         text = str(segment or "").strip()
@@ -124,19 +120,8 @@ def register(session_id: str, segment: str, *, lane: str = "",
         _lane = str(lane or "") or _lane_of(text)
         _kind = str(kind or "")
         _row = _row_of(text)
-        _aggregating = _lane.startswith("frontier")
+        _aggregating = _lane.startswith("frontier") or _lane == "decision"
         segs: List[Dict[str, Any]] = rec["segments"]
-        # M33: a delivery edge can hand back the ALREADY-rendered parked block
-        # ("leg A\n\nleg B") while both legs were registered one by one at
-        # their park sites. Storing the block as a third segment made render()
-        # emit the merged line AND the raw block behind it — the very two
-        # banners the merge exists to remove. A block whose every line is
-        # already stored carries no new fact: drop it.
-        if "\n" in text:
-            _have = {str(s.get("text") or "") for s in segs}
-            _lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-            if _lines and all(ln in _have for ln in _lines):
-                return False
         for i, seg in enumerate(segs):
             if seg["text"] == text:
                 return False
@@ -156,106 +141,92 @@ def register(session_id: str, segment: str, *, lane: str = "",
 
 
 def render(session_id: str) -> str:
-    """The turn's ONE banner text: one line, or one contiguous block."""
+    """The turn's banner BLOCK for extraction (one line per segment).
+
+    Nothing on the delivery path calls this — it exists for the operator
+    surface and for a test that must prove a segment was registered.
+    """
     try:
         rec = _RECORDS.get(str(session_id or ""))
         if not rec or not rec.get("segments"):
             return ""
-        from ... import debug_banner as _db
-
-        segs = [s["text"] for s in rec["segments"] if str(s.get("text") or "").strip()]
-        if not segs:
-            return ""
-        # M22 (operator ruling 2026-11-01): the frontier lane aggregates like
-        # the decision lane — its segments coalesce into ONE line carrying the
-        # summed numbers, so the PRE consult and the POST confirmation of a
-        # turn no longer arrive as two frontier lines. Unrelated lanes keep
-        # their own line.
-        try:
-            _fmark = getattr(_db, "_FRONTIER_LINE_MARK", "higher-self (frontier)")
-            _first = None
-            _coalesced: List[str] = []
-            for text in segs:
-                if _fmark in text and _first is not None:
-                    _merged_f = _db.merge_frontier_banner(_coalesced[_first], text)
-                    if isinstance(_merged_f, str) and _merged_f.strip():
-                        _coalesced[_first] = _merged_f
-                        continue
-                if _fmark in text and _first is None:
-                    _first = len(_coalesced)
-                _coalesced.append(text)
-            segs = _coalesced
-        except Exception:  # noqa: BLE001 — coalescing is a nicety
-            pass
-        out = segs[0]
-        for text in segs[1:]:
-            merged = None
-            try:
-                merged = _db.merge_decision_banner(out, text)
-            except Exception:  # noqa: BLE001 — merge is a nicety
-                merged = None
-            out = merged if isinstance(merged, str) and merged else (
-                out.rstrip() + "\n" + text.strip())
-        return out
+        return "\n".join(str(s.get("text") or "").strip()
+                         for s in rec["segments"]
+                         if str(s.get("text") or "").strip())
     except Exception:  # noqa: BLE001
         return ""
 
 
-def emit_once(delivery_text: str, session_id: str, *,
-              extra_segment: str = "", lane: str = "", kind: str = "",
-              edge: str = "", prefix: str = "",
-              replace: bool = False, knob_checked: bool = False) -> str:
-    """Append this turn's banner block to `delivery_text` AT MOST ONCE.
+def segments(session_id: str) -> List[Dict[str, Any]]:
+    """Copy of this turn's registered segments. Never raises."""
+    try:
+        rec = _RECORDS.get(str(session_id or ""))
+        return [dict(s) for s in (rec.get("segments") or [])] if rec else []
+    except Exception:  # noqa: BLE001
+        return []
 
-    `extra_segment` registers a segment that reached this edge without going
-    through the park path (live render edges). Later edges in the same turn get
-    the body back unchanged — that is the "one banner per turn" contract.
-    Never raises; never returns None; never mutates the persisted body.
+
+# ---------------------------------------------------------------------------
+# record — the ONE emit point
+# ---------------------------------------------------------------------------
+
+def record_turn(session_id: str, turn_id: Any = None, delivered: Any = None,
+                decision: Any = None, segs: Optional[List[Dict[str, Any]]] = None,
+                *, knob_level: int = 0, lane: str = "") -> None:
+    """Write ONE `banner_record` for this (session, turn). Returns NOTHING.
+
+    The delivered body is accepted only to hash and measure it — the record
+    carries `body_sha256`/`body_chars`, never the bytes. A second call for the
+    same turn_id drops the payload and increments `dupes` on the first record,
+    so a retried delivery edge cannot double-count tokens, cost or rows.
+
+    Never raises; a failed record never withholds a turn.
     """
     try:
-        base = delivery_text if isinstance(delivery_text, str) else ""
-        if replace:
-            # This edge OWNS the delivery (a render appends its own banner and
-            # claims the parked slot) — stale segments are dropped, not merged.
-            reset(session_id)
-        if extra_segment:
-            register(session_id, extra_segment, lane=lane, kind=kind, edge=edge)
-        rec = _RECORDS.get(str(session_id or ""))
-        if not rec or rec.get("emitted"):
-            return base
-        banner = render(session_id)
-        if not banner.strip() or not base.strip():
-            return base
-        from ... import debug_banner as _db
+        from ...core import decisions as _dec
 
-        # The banner KNOB still gates emission (the old call sites let
-        # append_banner read it; a disabled knob means no banner at all).
-        # Call sites that already checked the knob pass knob_checked=True,
-        # exactly as they did against append_banner before.
-        out = _db.append_banner(base, prefix + banner,
-                                _knob_checked=bool(knob_checked))
-        out = out if isinstance(out, str) and out else base
-        landed = bool(banner.strip() and banner.strip() in out)
-        if landed:
-            rec["emitted"] = True
-            try:
-                from ...core import telemetry as _tlm
-
-                _tlm.log_route(
-                    "POST", event_detail="banner_turn_emitted",
-                    segments=len(rec.get("segments") or []),
-                    lanes=",".join(sorted({s["lane"] for s in rec["segments"]})),
-                    rows=",".join(s["row"] for s in rec["segments"] if s["row"]),
-                    edge=str(edge or "")[:40], session_id=str(session_id or ""))
-            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
-                pass
-        return out
-    except Exception as exc:  # noqa: BLE001 — banners never break delivery
+        sid = str(session_id or "")
+        _segs = list(segs) if segs is not None else segments(sid)
+        _tid = str(turn_id) if turn_id not in (None, "") else str(turn_key(sid)[0])
+        body = delivered if isinstance(delivered, str) else ""
+        if delivered is None:
+            body_sha = ""
+        else:
+            body_sha = hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()
+        _lane = str(lane or "")
+        if not _lane:
+            _lane = str(getattr(decision, "delivered_source", "") or "") or "main"
+        ok = _dec.record_banner(
+            session_id=sid, turn_id=_tid,
+            lane=_lane,
+            decision=str(getattr(decision, "case_id", "") or ""),
+            delivered_source=str(getattr(decision, "delivered_source", "") or ""),
+            action=str(getattr(decision, "action", "") or ""),
+            outcome=str(getattr(decision, "reason", "") or "")[:20],
+            body_sha256=body_sha, body_chars=len(body),
+            knob_level=int(knob_level or 0),
+            omit_reason=(getattr(decision, "reason", "") or "")
+            if not body else "",
+            banner=[{"lane": s.get("lane", ""), "kind": s.get("kind", ""),
+                     "trigger": s.get("kind", ""),
+                     "model": "", "endpoint_host": "",
+                     "tokens_in": 0, "tokens_out": 0,
+                     "est_cost": 0.0, "cost_basis": "unpriced",
+                     "latency_s": 0.0, "retries": 0,
+                     "row_ref": (s.get("row") or "MISSING"),
+                     "initiator": "agent",
+                     "edge": s.get("edge", ""),
+                     "text": s.get("text", "")} for s in _segs],
+        )
+        if ok:
+            rec = _RECORDS.get(sid)
+            if rec is not None:
+                rec["emitted"] = True
+    except Exception as exc:  # noqa: BLE001 — a record never withholds a turn
         try:
-            logger.error("banner_turn_emit_failed detail=%.200s", str(exc))
+            logger.error("banner_record_failed detail=%.200s", str(exc))
         except Exception:  # noqa: BLE001
             pass
-        return delivery_text if isinstance(delivery_text, str) else ""
 
 
 def segment_count(session_id: str) -> int:
@@ -268,11 +239,7 @@ def segment_count(session_id: str) -> int:
 
 
 def delivered(session_id: str) -> bool:
-    """True when this turn's banner already reached a delivered body.
-
-    A later sweep of the SAME turn must not be reported as "attach not landed"
-    (that reason means the banner was lost) — it was delivered, once.
-    """
+    """True when this turn's banner record has been written."""
     try:
         rec = _RECORDS.get(str(session_id or ""))
         return bool(rec and rec.get("emitted"))

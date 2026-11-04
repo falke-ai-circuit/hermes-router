@@ -304,54 +304,21 @@ class BannerLifecycle:
                                    else "no_park_this_turn"),
                            session_id=str(session_id or ""), **_seq)
             return (text if isinstance(text, str) else "") if mode == "append" else ""
-        try:
-            db.note_consumed_decision(session_id, parked)
-        except Exception:  # noqa: BLE001
-            pass
         if mode == "body":
-            out = parked
-            landed = True
-        else:
-            # ONE banner per turn (Goran 2026-10-30): the park registered this
-            # lane's segment at fire time, so the boundary appends the turn's
-            # WHOLE record once — never this lane's line beside another's.
-            try:
-                from ...features.banners import turn_record as _turn
+            # M35-17: `mode="body"` no longer substitutes the banner for the
+            # body. There is ONE record; the parked text becomes a segment.
+            pass
+        # M35-17: register-only. The parked banner is a SEGMENT of this turn;
+        # the boundary records it and returns the body untouched. Nothing in
+        # this chokepoint may compose text onto the delivered bytes.
+        try:
+            from ...features.banners import turn_record as _turn
 
-                if _turn.segment_count(session_id) > 1:
-                    # MULTI-lane turn: the lanes' segments render as ONE block,
-                    # appended once (Goran 2026-10-30 — the two-line defect).
-                    merged = _turn.emit_once(base, session_id,
-                                             extra_segment=parked, kind="anchor",
-                                             edge=_e, prefix="\n")
-                else:
-                    # Single-lane turn: byte-identical to the historical append.
-                    merged = db.append_banner(base, "\n" + parked)
-            except Exception:  # noqa: BLE001 — fall back to the old append
-                merged = db.append_banner(base, "\n" + parked)
-            out = merged if isinstance(merged, str) and merged else str(base or "")
-            _turn_delivered = False
-            try:
-                from ...features.banners import turn_record as _turn2
-
-                _turn_delivered = _turn2.delivered(session_id)
-            except Exception:  # noqa: BLE001 — evidence only
-                _turn_delivered = False
-            landed = bool(parked.strip() and (parked.strip() in out
-                                              or _turn_delivered))
-            if not landed:
-                # R33f-A (supersedes R19.19 P0 / R19.21 re-park): TTL is ONE
-                # delivery — a consumed banner whose attach did not land is
-                # DROPPED fail-loud, never re-parked into later turns. The
-                # re-park loop was the live stale-leak class (a 19:35 frontier
-                # banner leaking onto 4 later turns + double-appending on
-                # shadow renders, session 20261006_190903_c82cbbcc).
-                try:
-                    _log_route("POST", event_detail=db.BANNER_PARK_DROPPED_EVENT,
-                               edge=_e, reason="attach_not_landed",
-                               session_id=str(session_id or ""))
-                except Exception:  # noqa: BLE001 — telemetry never breaks delivery
-                    pass
+            _turn.register(session_id, parked, kind="anchor", edge=_e)
+        except Exception:  # noqa: BLE001 — registration never breaks delivery
+            pass
+        out = str(base or "")
+        landed = bool(parked.strip())
         if log_consume:
             # R34-17 item 3: `parked` reports the PARK (there is a semaphore
             # record for this turn — the thing a park event emits); `delivered`

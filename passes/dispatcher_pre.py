@@ -789,8 +789,8 @@ def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
     banner rides the DELIVERY representation only (the substance-frame
     carries what the user reads); render_inbox/stash keep the CANONICAL
     render (§10.4-F: canonical never contains a banner). Failure
-    isolated: any error -> deliver without banner (append_banner's own
-    contract), never fails the route. Returns possibly-banneared render."""
+    isolated: any error -> register nothing, never fail the route.
+    M35-17: the segment is REGISTERED; the render is returned untouched."""
     try:
         from .. import debug_banner as _db
 
@@ -811,13 +811,13 @@ def _debug_banner_pass(rendered: str, matches: list, render_retries: int,
             try:
                 from ..features.banners import turn_record as _turn
 
-                _rendered_dbg = _turn.emit_once(
-                    rendered, session_id, extra_segment=_banner_text,
-                    lane="uncensored-render", kind="render", replace=True)
+                # M35-17: register the segment; the render ships untouched.
+                _turn.register(session_id, _banner_text,
+                               lane="uncensored-render", kind="render",
+                               edge="pre_render")
             except Exception:  # noqa: BLE001 — banner never breaks delivery
-                _rendered_dbg = _db.append_banner(rendered, _banner_text,
-                                                  _knob_checked=True)
-            if _rendered_dbg != rendered:
+                pass
+            if True:
                 # R9 hotfix: build_banner_record carries its own event_detail
                 # (via build_banner_record internals) — do NOT also pass
                 # event_detail here or _log_route raises

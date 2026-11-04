@@ -206,22 +206,6 @@ def on_transform_llm_output_guarded(**kwargs):
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
         final = _delivered_bytes(_decision, _original)
-        # M34-19: the decision names WHICH body; it may not drop bytes the seam
-        # already composed onto that body (the §10.4 banner). Before M35-14 the
-        # wrapper returned the seam's own text and the banner shipped.
-        _carried = _carry_seam_banner(_decision, _original, out, final,
-                                      str(kwargs.get("session_id") or ""))
-        if _carried is not final:
-            try:
-                _lg_c = _hub_log_route()
-                if _lg_c is not None:
-                    _lg_c("POST", event_detail="delivery_banner_carried",
-                          chars=len(str(_carried or "")),
-                          decision=_decision.case_id,
-                          session_id=str(kwargs.get("session_id") or ""))
-            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
-                pass
-        final = _carried
         if _decision.delivered_source == _dd.SOURCE_MAIN:
             _guard_reason = (_dd.REASON_MAIN_COMPLIED
                              if _decision.case_id == _dd.D4
@@ -312,6 +296,24 @@ def on_transform_llm_output_guarded(**kwargs):
             except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001 — the boundary never breaks delivery
+        pass
+    # M35-17 — THE ONE EMIT POINT (§2.1). After the boundary strip has produced
+    # the exact bytes leaving this function, and before the provenance row
+    # closes: this is the only place that knows the segments, the decision and
+    # the bytes together. `record_turn` returns nothing, so nothing here can be
+    # appended to a body.
+    try:
+        from ..features.banners import turn_record as _tr_rec
+        from .. import debug_banner as _db_lvl
+
+        _lvl = 1 if _db_lvl.debug_banner_enabled() else 0
+        _tr_rec.record_turn(
+            str(kwargs.get("session_id") or ""),
+            _tr_rec.turn_no(str(kwargs.get("session_id") or "")),
+            final, _decision,
+            _tr_rec.segments(str(kwargs.get("session_id") or "")),
+            knob_level=_lvl)
+    except Exception:  # noqa: BLE001 — a record never withholds a turn
         pass
     # M35-01: the provenance row, written on EVERY pass (routed or not) so a
     # benign turn's non-routing is on record and the lane can be graded.
@@ -497,85 +499,6 @@ def _delivered_bytes(decision, entered: str = "") -> str:
             and body == str(entered or "")):
         return None
     return body
-
-
-def _carry_seam_banner(decision, original: str, seam_out, final,
-                       session_id: str = ""):
-    """M34-19: a banner the seam appended survives the delivery decision.
-
-    BEFORE M35-14 the wrapper shipped the seam's own return (`final = out`), so
-    the §10.4 banner the benign edge appends to its delivery reached the caller.
-    M35-14 replaced that with a recomputation from `_original` alone, and every
-    banner the seam had already composed was dropped: `debug_banner_emitted`
-    fired, the body was merged in the seam, and `OUT` came back None. A parked
-    banner belongs to the TURN, not to the body-choice — so when the decision
-    names the entered body (`action=DELIVER_ENTERED`, `source=main`) and the
-    seam's return is that body plus a trailing block made ENTIRELY of
-    marker/banner bytes, those bytes ship with it.
-
-    M34-21: "entirely marker bytes" was measured against `strip_markers()`
-    alone, and the §10.4 rollup is a TWO-line block (the `· router ·` line plus
-    its `Top verdicts:` continuation). Only the first line is a marker, so the
-    residual made every banner look like seam-composed body text and the carry
-    refused it — the same drop one line lower. The banner layer is the authority
-    on which bytes it wrote, so a residual whose every line is part of THIS
-    turn's registered banner block is carried too.
-
-    Refused on purpose: a suffix carrying any line that is not marker text and
-    not part of the turn's banner block is the seam composing an ANSWER, and
-    only `decide()` names an answer; a lane render (D5) and a hold (D1) keep
-    their own bytes. Never raises.
-    """
-    try:
-        if decision is None or seam_out is None:
-            return final
-        if (decision.action != _dd.DELIVER_ENTERED
-                or decision.delivered_source != _dd.SOURCE_MAIN):
-            return final
-        if not isinstance(seam_out, str):
-            return final
-        base = str(original or "")
-        if not base or not seam_out.startswith(base):
-            return final
-        suffix = seam_out[len(base):]
-        clean, removed = _dd.strip_markers(suffix)
-        if not removed:
-            return final
-        if clean.strip() and not _in_turn_banner_block(clean, session_id):
-            return final
-        target = final if isinstance(final, str) and final else base
-        return str(target) + suffix
-    except Exception:  # noqa: BLE001 — carrying a banner never breaks delivery
-        return final
-
-
-def _in_turn_banner_block(text: str, session_id: str) -> bool:
-    """True when every non-blank line of `text` is part of the banner block
-    this turn registered (features/banners/turn_record.render).
-
-    The block's continuation lines (the rollup's `Top verdicts:` tail, merged
-    lane segments) are banner bytes that `strip_markers` does not classify as
-    markers. Asking the banner layer for the block it wrote keeps the carry
-    gate's refusal property: bytes the banner layer never wrote are still
-    refused. Never raises.
-    """
-    try:
-        from ..features.banners import turn_record as _tr
-
-        block = _tr.render(str(session_id or ""))
-        if not block:
-            return False
-        block_clean, _ = _dd.strip_markers(block)
-        haystack = str(block_clean or "")
-        if not haystack.strip():
-            return False
-        for line in str(text or "").splitlines():
-            probe = line.strip()
-            if probe and probe not in haystack:
-                return False
-        return True
-    except Exception:  # noqa: BLE001 — an unreadable block refuses the carry
-        return False
 
 
 def _force_main_row(turn, decision) -> None:

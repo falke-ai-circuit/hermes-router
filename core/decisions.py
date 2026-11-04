@@ -45,7 +45,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 SCHEMA_NAME = "decision-record"
-SCHEMA_VERSION = 2          # v2 = M35-01 provenance fields (lane/rule/gate/intent/replaced)
+SCHEMA_VERSION = 3          # v3 = M35-17 banner record (banner array + body hash)
 DECISIONS_FILENAME = "hermes-router-decisions.jsonl"
 MAX_FILE_BYTES = 8 * 1024 * 1024
 _ROTATE_KEEP_LINES = 300
@@ -295,6 +295,72 @@ def read_records(max_lines: int = 500) -> list:
         return out
     except Exception:  # noqa: BLE001
         return out
+
+
+def record_banner(*, session_id: str = "", turn_id: str = "", lane: str = "",
+                  decision: str = "", delivered_source: str = "",
+                  action: str = "", outcome: str = "",
+                  body_sha256: str = "", body_chars: int = 0,
+                  knob_level: int = 0, omit_reason: str = "",
+                  banner: Optional[list] = None, dupes: int = 0,
+                  task_id: str = "") -> bool:
+    """M35-17: enqueue ONE `banner_record` for a (session, turn).
+
+    This is the only home of turn provenance once banners stop entering
+    delivered bodies. Shape is the spec's §2.2 table; `banner` is the per-lane
+    segment array. ASYNC like every other decision record, so a queue overflow
+    on a banner-carrying record is raised as `banner_record_dropped` at
+    severity=error — the queue policy stays non-blocking, the silence does not.
+    Never raises.
+    """
+    try:
+        rec: Dict[str, Any] = {
+            "schema": SCHEMA_NAME,
+            "schema_version": SCHEMA_VERSION,
+            "record": "banner_record",
+            "ts": round(time.time(), 3),
+            "event_seq": suggestions.next_event_seq(),
+            "turn_id": str(turn_id or "")[:48],
+            "session_id": str(session_id or "")[:48],
+            "task_id": str(task_id or "")[:40],
+            "lane": str(lane or "")[:40],
+            "decision": str(decision or "")[:8],
+            "delivered_source": str(delivered_source or "")[:16],
+            "action": str(action or "")[:20],
+            "outcome": str(outcome or "")[:20],
+            "body_sha256": str(body_sha256 or ""),
+            "body_chars": int(body_chars or 0),
+            "knob_level": int(knob_level or 0),
+            "omit_reason": str(omit_reason or "")[:40],
+            "banner": list(banner or []),
+            "dupes": int(dupes or 0),
+        }
+        _ensure_worker()
+        try:
+            _q.put_nowait(rec)
+            return True
+        except queue.Full:
+            # A silent drop is a silent audit hole — name it loudly.
+            try:
+                from . import telemetry as _tlm
+
+                _tlm.log_route("POST", event_detail="banner_record_dropped",
+                               severity="error", turn_id=str(turn_id or ""),
+                               session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001
+                pass
+            logger.error("banner_record_dropped turn_id=%s", str(turn_id or "")[:48])
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def read_banner_records(max_lines: int = 500) -> list:
+    """The `banner_record` lines of the decisions store (extraction surface).
+
+    Bounded, corrupt-tolerant, never raises.
+    """
+    return [r for r in read_records(max_lines) if r.get("record") == "banner_record"]
 
 
 def flush_for_tests(timeout: float = 3.0) -> None:

@@ -18,7 +18,7 @@ along. The map below gives each facility exactly one owner and makes every other
 | 1 | Persona / role card | `persona_card.build_persona_context` (persona_card.py:199 → enriched :156, compact :216, RENDER MANDATE text :284-293) · `reflex_lane._agent_card` :127-222 (its own IDENTITY.md read at :166-204) · `instinct_frame.who_block` :117-132 · `decision.py:1882` · `completion_audit._persona_tailoring` :2018 · `anchor_exec.py:1620` · `passes/dispatcher_knobs.py:45` | 1 builder + 1 private IDENTITY reader + 4 ad-hoc call shapes |
 | 1b | RENDER-MANDATE stripping | `completion_audit._strip_render_mandate` :2026-2050 (prefix-cut, misses mandate-first cards) · `decision.py:1889` (`split("=== RENDER MANDATE",1)[0]`) · `instinct_frame._strip_mandate` :94-114 (section-aware, correct) · `reflex_lane:154` (imports the audit's) · `render_payload.py:405-409` (line filter) | 5 |
 | 2 | Envelope builder + parser | `decision_extract.payload` :168 / `parse` :188 (LIVE — used by `reflex_lane:424,992-996`) · `reflex_lane.payload` :241-293 / `_num` :296 / `parse_answers` :305-349 (**dead**: zero callers repo-wide) | 2 (one of them dead) |
-| 3 | Banner / receipt | `debug_banner.format_banner` :112 · `append_banner` :233 · `build_banner_record` :206 · `park_anchor_banner` :364 · `consume_parked_banner` :389 · `claim_banner_ownership` :407 · `note_consumed_decision` :475 · `settle_decision_banner` :492 (state + policy in `features/banners/lifecycle.py`, kinds in `features/banners/kinds.py`) | 1 mechanism, **10 park call sites**, 5 append sites |
+| 3 | Banner / receipt | `debug_banner.format_banner` :112 · `build_banner_record` :206 · `park_anchor_banner` :364 · `consume_parked_banner` :389 · `claim_banner_ownership` :407 · `features/banners/turn_record.record_turn` (M35-17: banners are records, not body content) (state + policy in `features/banners/lifecycle.py`, kinds in `features/banners/kinds.py`) | 1 mechanism, **10 park call sites**, 5 append sites |
 | 3b | Park call sites | decision.py:940 (`_deliver`), :4099 · decision_midturn.py:1318 · completion_audit.py:2137, :2807, :2879 · gate/orchestration.py:517, :848, :1118, :1223, :2183, :2354 · core/routing_caps.py:417 · decision_miner.py:671 · reflex_lane.py:921 | receipt shape differs per site |
 | 4 | Delivery contract | `reflex_lane.run_on_request` :1049-1059 (`shape` = user/evidence/system, honoured **only** here) · enum whitelist `reflex_weights.py:103-105` · fence `reflex_lane.fence` :859-879 + `_FENCE_HEAD/_TAIL` :854-856 · statement-form contract text `decision_extract.USE_CONTRACT` :244 / `SOFT_CONTRACT` :250 · standing rule `frames.DECISION_RULE` :305 + `reflex_lane._ensure_rule` :642-658 · `frames.append_platform_rule` :737-751 | 3 injection points, 1 of them configurable |
 
@@ -93,7 +93,7 @@ debug_banner.receipt(lane, session_id, *, seam, usage=None, cell=None, model="",
   under `task_id = "<lane>|<row>"`.
 - One consume side: `debug_banner.attach_parked(session_id, text, edge)` = the logic currently
   duplicated at `gate/orchestration.py:709-746` and `features/banners/lifecycle.py:269-294`
-  (consume → `note_consumed_decision` → `append_banner` → landed check → `settle_decision_banner`).
+  (consume → register a segment → one `banner_record`; nothing is appended to the body).
 - Invariant made structural: **park happens before the delivery edge can consume, and a receipt
   is parked only when a block was actually injected** (`if ok:` at `reflex_lane:1060` stays the
   only condition). `decision.wait_for_workers:961` stays the bounded pre-consume wait.
@@ -131,7 +131,7 @@ Where each lane lands today, so the move is explicit:
 | reading (reflex) | shape-configurable, fence, contract | `reading_delivery.deliver` |
 | decision advisory | park only (`decision.py:940`, `:4099`) | `Shape.BANNER` via `receipt` |
 | frontier anchor / higher-self rule | `append_platform_rule` at orchestration.py:2279, banner merged at :718 | `Shape.SYSTEM` + `Shape.BANNER` |
-| uncensored render | `append_banner` onto the render text (dispatcher_pre.py:609) | `Shape.BANNER` (text carrier, not a message) |
+| uncensored render | segment registered, render text untouched (dispatcher_pre.py:609) | `Shape.BANNER` (text carrier, not a message) |
 
 ---
 
@@ -203,7 +203,7 @@ Deleted: the duplicated merge/landed/settle ladder in both files.
 Acceptance: `tests/banners/test_r9_banner_delivery_seam.py`, `test_r19_16_banner_stack.py`,
 `test_r33f_banner_semaphore.py`, `test_r34_item2_deferred_banner_delivery.py` pass unchanged
 (they pin the one-delivery semaphore and the drop-not-repark rule); new
-`test_r73_p2_consume.py::test_attach_is_the_only_merge` asserts `append_banner` is referenced from
+`test_r73_p2_consume.py::test_attach_is_the_only_merge` asserts the body-compose helper is referenced from
 exactly one non-test module.
 
 ### S7 — delete the delegates, close P2
