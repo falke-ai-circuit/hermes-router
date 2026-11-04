@@ -72,12 +72,19 @@ optional tests/routing/test_rider18_fixes.py::test_declared_frontier_form_also_e
 # /opt/data/tmp/r78u/gate_m8b.log. Pin shrinks only when a defect is fixed; never to hide a red.
 optional tests/routing/test_hermes_aux_source.py::test_aux_raw_call_retry_then_breaker  reason=order  expect="assert 3 == 2"  # M35-15: red ONLY in a full tests/routing run (green alone and green as the only file); red identically at the pre-migration base 12af8ed (12 failed / 1171 passed there) — a leaked aux-breaker counter from an earlier file, not this slice
 
-# --- named by M34-08 (2026-11-03) — PRE-EXISTING, measured at HEAD 968d629 ---
-# tests/shadow/ was never in an earlier pin, so this red had no row and would
-# have been read as a regression. Measured, not asserted: at a clean worktree
-# of 968d629 this row is red BOTH alone (1 failed, 5 passed) and inside
-# tests/shadow/ (1 failed, 49 passed); with the M34-08 tree it is red the same
-# way (1 failed, 58 passed). POST falls back to the classifier for the
-# declaration contract, so no '· router ·' tag reaches the delivery edge.
-# Deterministic, so 'required' (red in every run), not 'optional'.
-tests/shadow/test_shadow_banner.py::test_banner_consumed_at_delivery_edge  # pre-existing at 968d629: declaration contract delivered, no tag emitted -> POST classifier fallback emits no banner
+# --- REMOVED 2026-11-04 (M34-19) — the row that stood here was a false pin ---
+# It named `tests/shadow/test_shadow_banner.py::test_banner_consumed_at_delivery_edge`
+# (added by M34-08) as "pre-existing at 968d629". That cause was FALSE. Bisect on
+# the same node, same command, three clean worktrees:
+#     12af8ed  pass      (parent of M35-14)
+#     7c20cbb  FAIL      (M35-14, the one-decision-point restructure)
+#     968d629  FAIL      (where M34-08 measured it, two commits late)
+# Mechanism, instrumented: the seam parks and appends the §10.4 banner
+# (`debug_banner_emitted` fires; the orchestrator returns body+banner), then the
+# NEW delivery edge recomputed `final` from `_original` alone and returned None —
+# the banner was composed and discarded, not mis-tagged. Fixed at the assembly
+# point (gate/registration.py::_carry_seam_banner carries a marker-only suffix
+# onto a main-body decision). The node is GREEN; the row is REMOVED, not
+# re-worded. Pin shrinks only when a defect is fixed.
+# tests/shadow/ still has no other rows, so tests/shadow/ is now clean here.
+

@@ -153,10 +153,13 @@ def test_park_consume_delivers_banner_in_returned_body(r9_like_reset):
     out = plugin.on_transform_llm_output(
         response_text="Delivered verdict body.", session_id=SID,
         model="z-ai/glm-5.3-flash")
-    # M35-15 (old case: the parked banner was merged into the RETURNED body;
-    # new case: spec §7 item 10 deleted that merge). The one-shot guarantee is
-    # still asserted — on the park store instead of on the delivery string:
-    # the banner is consumed exactly once here, so it cannot ride a later turn.
-    out_text = out or ""
-    assert "· router ·" not in out_text and "$0.013318" not in out_text
+    # M35-15 flipped this assert to "banner must NOT be in the delivered body"
+    # (spec §7 item 10). That flip encoded the M35-14 regression as intent: the
+    # seam composed the banner and the delivery edge threw it away. M34-19
+    # restores the pre-regression contract (12af8ed), asserted on DELIVERY
+    # bytes: the parked banner rides the RETURNED body.
+    assert "· router ·" in out and "row=" in out
+    # leg 1/4 marker: the billed cost line rode the banner
+    assert "$0.013318" in out
+    # one-shot guarantee is unchanged: consuming here means it cannot replay.
     assert DB._ANCHOR_BANNERS.get(SID) in (None, ""), "banner must be consumed"

@@ -206,6 +206,21 @@ def on_transform_llm_output_guarded(**kwargs):
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
         final = _delivered_bytes(_decision, _original)
+        # M34-19: the decision names WHICH body; it may not drop bytes the seam
+        # already composed onto that body (the §10.4 banner). Before M35-14 the
+        # wrapper returned the seam's own text and the banner shipped.
+        _carried = _carry_seam_banner(_decision, _original, out, final)
+        if _carried is not final:
+            try:
+                _lg_c = _hub_log_route()
+                if _lg_c is not None:
+                    _lg_c("POST", event_detail="delivery_banner_carried",
+                          chars=len(str(_carried or "")),
+                          decision=_decision.case_id,
+                          session_id=str(kwargs.get("session_id") or ""))
+            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                pass
+        final = _carried
         if _decision.delivered_source == _dd.SOURCE_MAIN:
             _guard_reason = (_dd.REASON_MAIN_COMPLIED
                              if _decision.case_id == _dd.D4
@@ -481,6 +496,44 @@ def _delivered_bytes(decision, entered: str = "") -> str:
             and body == str(entered or "")):
         return None
     return body
+
+
+def _carry_seam_banner(decision, original: str, seam_out, final):
+    """M34-19: a banner the seam appended survives the delivery decision.
+
+    BEFORE M35-14 the wrapper shipped the seam's own return (`final = out`), so
+    the §10.4 banner the benign edge appends to its delivery reached the caller.
+    M35-14 replaced that with a recomputation from `_original` alone, and every
+    banner the seam had already composed was dropped: `debug_banner_emitted`
+    fired, the body was merged in the seam, and `OUT` came back None. A parked
+    banner belongs to the TURN, not to the body-choice — so when the decision
+    names the entered body (`action=DELIVER_ENTERED`, `source=main`) and the
+    seam's return is that body plus a trailing block made ENTIRELY of
+    marker/banner bytes, those bytes ship with it.
+
+    Refused on purpose: a suffix carrying any non-marker text is the seam
+    composing an ANSWER, and only `decide()` names an answer; a lane render
+    (D5) and a hold (D1) keep their own bytes. Never raises.
+    """
+    try:
+        if decision is None or seam_out is None:
+            return final
+        if (decision.action != _dd.DELIVER_ENTERED
+                or decision.delivered_source != _dd.SOURCE_MAIN):
+            return final
+        if not isinstance(seam_out, str):
+            return final
+        base = str(original or "")
+        if not base or not seam_out.startswith(base):
+            return final
+        suffix = seam_out[len(base):]
+        clean, removed = _dd.strip_markers(suffix)
+        if not removed or clean.strip():
+            return final
+        target = final if isinstance(final, str) and final else base
+        return str(target) + suffix
+    except Exception:  # noqa: BLE001 — carrying a banner never breaks delivery
+        return final
 
 
 def _force_main_row(turn, decision) -> None:

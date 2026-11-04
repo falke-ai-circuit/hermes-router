@@ -134,9 +134,9 @@ def test_declared_path_delivery_edge_still_banners(_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text=text, session_id=SID, model="test-model",
         user_message="benign ask")
-    # M35-15: the declared path's consume no longer appends the banner to the
-    # delivered body (spec §7 item 10); the benign body is untouched, and the
-    # parked banner is consumed so it cannot replay onto the next turn.
-    assert debug_banner.BANNER_HEAD not in (out or "")
-    assert out is None, out
+    # M35-15 flipped this to `assert out is None` + "no banner in the body"
+    # (spec §7 item 10). That flip encoded the M35-14 regression: the banner was
+    # parked and consumed, then the delivery edge dropped it. M34-19 restores
+    # the pre-regression contract — the delivered text carries the banner.
+    assert out and debug_banner.BANNER_HEAD in out
     assert debug_banner._ANCHOR_BANNERS.get(SID) in (None, "")
