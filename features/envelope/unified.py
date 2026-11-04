@@ -55,7 +55,8 @@ TRIGGERS = ("pre", "midturn", "post", "manual", "declared_user")
 DEFAULT_CHARS_CAP = 8000
 DEFAULT_DROP_ORDER = ("slice", "agent_card.history", "context.session_context")
 
-OPTION_KEYS = frozenset({"id", "label", "causal_frame", "cost", "priors", "risk"})
+OPTION_KEYS = frozenset({"id", "label", "causal_frame", "cost", "priors", "risk",
+                         "probability"})
 
 # Drop-order names that address a lane-specific slot rather than a core slot.
 _LANE_SLOTS = ("slice",)

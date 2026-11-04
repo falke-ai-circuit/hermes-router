@@ -111,8 +111,12 @@ def test_decision_adapter_keeps_its_fields_and_delegates(monkeypatch):
         assert key in env, "decision envelope lost %r" % key
     assert env["schema"] == decision.ENVELOPE_SCHEMA
     assert [o["id"] for o in env["options"]] == ["opt-1", "opt-2"]
+    # M42-02: the mechanical per-option weight rides the option itself, not
+    # only the separate `weighting` block.
     assert set(env["options"][0]) == {"id", "label", "cause_effect", "cost",
-                                      "priors", "risk"}
+                                      "priors", "risk", "probability"}
+    assert env["options"][0]["probability"] == \
+        env["weighting"]["weights"][env["options"][0]["id"]]
     assert env["question"]["type"] == "choose_one_with_confidence"
     assert decision.build_envelope("s-unified-dec", "hello there friend",
                                    [], "pre") == {}

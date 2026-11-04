@@ -193,8 +193,13 @@ def test_the_fire_writes_the_framed_board_it_was_given(env, monkeypatch):
                 assert got[k] == src[k]
             else:
                 assert k not in got
-        # the verdict carries no distribution -> nothing fabricated
-        assert "probability" not in got and "margin" not in got
+        # The verdict carries no distribution, so nothing may be taken FROM it:
+        # no `margin` (never stated) and no probability derived from
+        # `confidence` (one pick's confidence is not a distribution). What the
+        # row does carry is the board's own mechanical weighting — the same
+        # value the envelope published — never a sentinel.
+        assert "margin" not in got
+        assert got["probability"] == src["probability"]
     assert rows[0]["choice"] == "opt-1"
 
 

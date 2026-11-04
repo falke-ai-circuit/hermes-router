@@ -35,7 +35,8 @@ DIRECTIONS = ("request", "assimilation")
 LANES: Dict[str, Dict[str, frozenset]] = {
     "decision": {
         "request": frozenset({
-            "options",            # [{id, label, causal_frame, cost, priors, risk}]
+            "options",            # [{id, label, causal_frame, cost, priors, risk,
+                                  #   probability}]
             "causal_context",     # ledger-derived causal frame (R19.18)
             "question",           # typed ask to the lane
             "guidance",           # {max_options, decision_kind}

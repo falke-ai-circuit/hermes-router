@@ -2861,6 +2861,9 @@ def build_envelope(session_id: str, ask: str, options: List[str],
                      '{"choice": "<option id>" | "stand_down", '
                      '"confidence": <0..1>, '
                      '"alternatives": [<runner-up option ids>], '
+                     '"probabilities": {"<option id>": <0..1>, ...} '
+                     'covering EVERY option id, summing to 1 (+-0.02). '
+                     'Omit it when you cannot estimate per-option odds. '
                      '"mindset": {"scope": <-1..1>, "rigour": <-1..1>}}. '
                      'If no decision is actually requested by this fork, '
                      'respond {"choice": "stand_down", "confidence": 0, '
@@ -2917,7 +2920,8 @@ def build_envelope(session_id: str, ask: str, options: List[str],
                     "scope": {"risk_class": rc,
                               "advice_only": rc == "high"}},
             extras={"decision": {
-                "options": _unified_options(framed),
+                "options": _unified_options(framed,
+                                            _weighting.get("weights")),
                 "causal_context": causal,
                 "question": _question,
                 "guidance": {"max_options": max(2, min(6, len(framed))),
@@ -2949,21 +2953,37 @@ def _decision_kind(risk: str, fork_cls: str) -> str:
     return "fork"
 
 
-def _unified_options(framed: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _unified_options(framed: List[Dict[str, Any]],
+                     weights: Optional[Dict[str, float]] = None
+                     ) -> List[Dict[str, Any]]:
     """Legacy option dicts -> the unified option shape (cause_effect is
-    published as `causal_frame`; the other typed fields keep their names)."""
+    published as `causal_frame`; the other typed fields keep their names).
+
+    `weights` is the mechanical per-id distribution already computed by
+    `_impulse_weighting` (sums to 1.0). When supplied, each option carries
+    `probability`; the odds then ride the BOARD the model sees and the board
+    persisted for ask-time rows, instead of living only in the separate
+    `weighting` envelope block. No weight for an id => the key is OMITTED,
+    never 0.0 — an unmeasured option must not read as an impossible one.
+    """
     out: List[Dict[str, Any]] = []
+    wmap = weights if isinstance(weights, dict) else {}
     for opt in framed or []:
         if not isinstance(opt, dict):
             continue
-        out.append({
-            "id": str(opt.get("id") or ""),
+        oid = str(opt.get("id") or "")
+        item: Dict[str, Any] = {
+            "id": oid,
             "label": opt.get("label"),
             "causal_frame": opt.get("cause_effect"),
             "cost": opt.get("cost"),
             "priors": opt.get("priors"),
             "risk": opt.get("risk"),
-        })
+        }
+        w = wmap.get(oid)
+        if isinstance(w, (int, float)) and not isinstance(w, bool):
+            item["probability"] = float(w)
+        out.append(item)
     return out
 
 
@@ -3084,6 +3104,24 @@ def _emit_decision_assimilation(envelope: Dict[str, Any],
         return {}
 
 
+def _envelope_option(o: Dict[str, Any]) -> Dict[str, Any]:
+    """One option in the legacy flat shape the lane's consumers read.
+
+    `probability` rides along only when the board actually carries a measured
+    or mechanical one — absent means OMITTED, never null and never 0.0, which
+    is indistinguishable from a real zero-probability pick.
+    """
+    item: Dict[str, Any] = {
+        "id": str(o.get("id") or ""), "label": o.get("label"),
+        "cause_effect": o.get("causal_frame"), "cost": o.get("cost"),
+        "priors": o.get("priors"), "risk": o.get("risk"),
+    }
+    p = o.get("probability")
+    if isinstance(p, (int, float)) and not isinstance(p, bool):
+        item["probability"] = float(p)
+    return item
+
+
 def _envelope_from_request(request: Dict[str, Any]) -> Dict[str, Any]:
     """Unified request -> the decision lane's legacy envelope (same fields,
     same names, same omission rules: absent component omitted, never "")."""
@@ -3102,9 +3140,7 @@ def _envelope_from_request(request: Dict[str, Any]) -> Dict[str, Any]:
         "scope": dict(stance.get("scope") or {}),
         "causal_context": ext.get("causal_context", ""),
         "options": [
-            {"id": str(o.get("id") or ""), "label": o.get("label"),
-             "cause_effect": o.get("causal_frame"), "cost": o.get("cost"),
-             "priors": o.get("priors"), "risk": o.get("risk")}
+            _envelope_option(o)
             for o in (ext.get("options") or []) if isinstance(o, dict)
         ],
         "weighting": ext.get("weighting") or {},
@@ -4463,11 +4499,14 @@ def _option_probability_map(verdict: Optional[Dict[str, Any]]
     """Per-option probability, keyed by option id, ONLY when the verdict
     actually carries such a distribution.
 
-    Today's `validate_verdict` verdict is {choice, confidence, alternatives,
-    mindset} — no per-option distribution — so this returns {} for every row
-    the lane writes, and the key is omitted rather than invented. It is read
-    defensively because the ranking belongs in the record wherever a verdict
-    does provide it. `confidence` is NOT promoted to a probability here: it is
+    Mechanism: the envelope question now REQUESTS `probabilities` (keyed by
+    option id, covering every id, summing to 1), `validate_verdict` parses it
+    through `_measured_probability_map` (filtered to offered ids and finite
+    [0,1]) and attaches it to the verdict, and this reads it back. So a
+    compliant backend yields a distribution and an ignored clause yields {};
+
+    It is read defensively because the ranking belongs in the record wherever
+    a verdict does provide it. `confidence` is NOT promoted to a probability here: it is
     the model's confidence in ONE pick, not a distribution, and writing it as
     a per-option number would corrupt exactly the calibration audit this
     column exists to serve. Never raises.
@@ -4534,6 +4573,12 @@ def _option_objects(opts: Any, verdict: Optional[Dict[str, Any]] = None
         oid = item["id"]
         if oid in probs:
             item["probability"] = probs[oid]
+        else:
+            # Verdict precedence above; a board that already carries its own
+            # measured key keeps it rather than losing the distribution.
+            own = o.get("p", o.get("probability"))
+            if oid and not isinstance(own, bool) and isinstance(own, (int, float)):
+                item["probability"] = float(own)
         if margin is not None:
             item["margin"] = margin
         out.append(item)
