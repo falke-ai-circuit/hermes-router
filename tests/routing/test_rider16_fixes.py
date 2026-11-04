@@ -53,7 +53,6 @@ def r16_reset(monkeypatch, tmp_path):
     DB._ANCHOR_BANNERS.clear()
     DB._ANCHOR_TASKS.clear()
     DB._ANCHOR_SEGS.clear()
-    DB._HELD_DECISIONS.clear()
     route_gate.clear_turn_claims()
     monkeypatch.setattr(usage_ledger, "_store_path",
                         lambda: str(tmp_path / "tokens.jsonl"))

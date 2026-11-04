@@ -46,7 +46,6 @@ def _env(monkeypatch, tmp_path):
     decision.reset_limits()
     decision.reset_v3_limits()
     debug_banner._ANCHOR_BANNERS.clear()
-    debug_banner._HELD_DECISIONS.clear()
 
 
 # ------------------------------------------------------------------
