@@ -31,6 +31,7 @@ already treats an empty envelope as "no envelope".
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -56,7 +57,12 @@ DEFAULT_CHARS_CAP = 8000
 DEFAULT_DROP_ORDER = ("slice", "agent_card.history", "context.session_context")
 
 OPTION_KEYS = frozenset({"id", "label", "causal_frame", "cost", "priors", "risk",
-                         "probability"})
+                         "probability", "probability_source"})
+
+# M42-02 F2: `probability_source` is an ENUM, not free text. A persisted
+# number is either the backend's measurement or the mechanical prior, and any
+# other value would be a provenance nobody can audit against.
+PROBABILITY_SOURCES = frozenset({"verdict", "mechanical"})
 
 # Drop-order names that address a lane-specific slot rather than a core slot.
 _LANE_SLOTS = ("slice",)
@@ -167,6 +173,31 @@ def validate_extras(lane: Any, extras: Any, direction: str = "request") -> List[
     return errors
 
 
+def _probability_error(value: Any, index: int) -> Optional[str]:
+    """None when `value` is a legal probability, else the refusal reason.
+
+    M42-02 F3: `probability` used to be allow-listed by NAME only, so 7 and -3
+    persisted verbatim, "0.5" and true vanished silently (nothing downstream
+    could tell a drop from an omission) and NaN/Infinity reached
+    `options_json` as non-standard JSON tokens. The contract is the one the
+    verdict path already enforces (`decision._measured_probability_map`): a
+    real, finite number in [0,1]. Booleans are not numbers here — in Python
+    `isinstance(True, int)` is True, so the bool test has to come first.
+    """
+    if isinstance(value, bool):
+        return ("option %d probability must be a number in [0,1], not a bool"
+                % index)
+    if not isinstance(value, (int, float)):
+        return ("option %d probability must be a number in [0,1], not %s"
+                % (index, type(value).__name__))
+    f = float(value)
+    if not math.isfinite(f):
+        return ("option %d probability must be finite, got %r" % (index, value))
+    if f < 0.0 or f > 1.0:
+        return ("option %d probability must be in [0,1], got %r" % (index, value))
+    return None
+
+
 def _option_errors(options: Any) -> List[str]:
     errors: List[str] = []
     if options is None:
@@ -182,6 +213,16 @@ def _option_errors(options: Any) -> List[str]:
                 errors.append("unknown option key %r at index %d" % (key, i))
         if not str(opt.get("id") or ""):
             errors.append("option %d has no id" % i)
+        if "probability" in opt:
+            err = _probability_error(opt.get("probability"), i)
+            if err:
+                errors.append(err)
+        if "probability_source" in opt:
+            src = opt.get("probability_source")
+            if src not in PROBABILITY_SOURCES:
+                errors.append(
+                    "option %d probability_source must be one of %s, got %r"
+                    % (i, sorted(PROBABILITY_SOURCES), src))
     return errors
 
 

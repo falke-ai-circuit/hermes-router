@@ -112,9 +112,13 @@ def test_decision_adapter_keeps_its_fields_and_delegates(monkeypatch):
     assert env["schema"] == decision.ENVELOPE_SCHEMA
     assert [o["id"] for o in env["options"]] == ["opt-1", "opt-2"]
     # M42-02: the mechanical per-option weight rides the option itself, not
-    # only the separate `weighting` block.
+    # only the separate `weighting` block — and (F2) it states its PROVENANCE,
+    # because this 0.5/0.5 prior is indistinguishable from a measured verdict
+    # once the number is the only thing on the row.
     assert set(env["options"][0]) == {"id", "label", "cause_effect", "cost",
-                                      "priors", "risk", "probability"}
+                                      "priors", "risk", "probability",
+                                      "probability_source"}
+    assert env["options"][0]["probability_source"] == "mechanical"
     assert env["options"][0]["probability"] == \
         env["weighting"]["weights"][env["options"][0]["id"]]
     assert env["question"]["type"] == "choose_one_with_confidence"

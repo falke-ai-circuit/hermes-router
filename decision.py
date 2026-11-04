@@ -2980,9 +2980,12 @@ def _unified_options(framed: List[Dict[str, Any]],
             "priors": opt.get("priors"),
             "risk": opt.get("risk"),
         }
-        w = wmap.get(oid)
-        if isinstance(w, (int, float)) and not isinstance(w, bool):
-            item["probability"] = float(w)
+        w = _finite_probability(wmap.get(oid))
+        if w is not None:
+            item["probability"] = w
+            # F2: this number is a PRIOR, never a measurement — say so where
+            # it is created so no later stage has to guess.
+            item["probability_source"] = "mechanical"
         out.append(item)
     return out
 
@@ -3116,9 +3119,13 @@ def _envelope_option(o: Dict[str, Any]) -> Dict[str, Any]:
         "cause_effect": o.get("causal_frame"), "cost": o.get("cost"),
         "priors": o.get("priors"), "risk": o.get("risk"),
     }
-    p = o.get("probability")
-    if isinstance(p, (int, float)) and not isinstance(p, bool):
-        item["probability"] = float(p)
+    p = _finite_probability(o.get("probability"))
+    if p is not None:
+        item["probability"] = p
+        # F2: carry the provenance through the flat projection too — this
+        # shape is what the midturn board persists, and without the tag the
+        # mechanical 0.5/0.5 default arrives at the ledger unmarked.
+        item["probability_source"] = _probability_source(o)
     return item
 
 
@@ -4486,12 +4493,51 @@ def get_counter(name: str, db_path: str = "") -> int:
 # names. A row that carried {"id","label"} alone could never be re-audited for
 # ranking quality or calibration — the fork's own causal frame was in the
 # envelope at write time and thrown away one line later.
-_OPTION_PERSIST_KEYS = ("cause_effect", "cost", "priors", "risk")
+# M42-02 F2: `probability_source` rides the persisted shape, because a
+# measured 0.7/0.3 row and the mechanical 0.5/0.5 default are byte-identical
+# without it — the calibration audit this column exists for cannot separate a
+# measurement from a prior, and the default is a CONSTANT that reads as data.
+_OPTION_PERSIST_KEYS = ("cause_effect", "cost", "priors", "risk",
+                        "probability_source")
+_PROBABILITY_SOURCES = ("verdict", "mechanical")
 _OPTION_JSON_CAP = 8000
 _ENVELOPE_JSON_CAP = 8000
 _ENVELOPE_JSON_MARK = "...[truncated]"
 _ENVELOPE_JSON_KEYS = ("agent_frame", "final_objective", "rolling_task",
                        "session_context", "mindset", "options")
+
+
+def _finite_probability(v: Any) -> Optional[float]:
+    """A real, finite probability in [0,1] — or None.
+
+    Mirrors the verdict-path filter (`_measured_probability_map`) so the two
+    doors into the ledger agree on what a probability IS. Booleans are not
+    numbers (`isinstance(True, int)` is True in Python), a numeric STRING is
+    not a number, and NaN/Infinity are not JSON — each of those persisted as
+    `7.0`/`NaN`/`Infinity` before this check existed. Omission and refusal are
+    the only two outcomes; nothing is clamped or coerced. Never raises.
+    """
+    try:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        f = float(v)
+        if not math.isfinite(f) or f < 0.0 or f > 1.0:
+            return None
+        return f
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _probability_source(o: Any, default: str = "mechanical") -> str:
+    """Which side of the seam produced this number: the backend's verdict or
+    the mechanical prior. An unrecognized/absent declaration falls back to the
+    DEFAULT rather than being passed through — a provenance value nobody
+    defined is worse than the known-mechanical one on the request path."""
+    try:
+        src = str((o or {}).get("probability_source") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        src = ""
+    return src if src in _PROBABILITY_SOURCES else default
 
 
 def _option_probability_map(verdict: Optional[Dict[str, Any]]
@@ -4517,18 +4563,18 @@ def _option_probability_map(verdict: Optional[Dict[str, Any]]
         probs = v.get("probabilities")
         if isinstance(probs, dict):
             for k, val in probs.items():
-                if isinstance(val, bool) or not isinstance(val, (int, float)):
-                    continue
-                out[str(k)] = float(val)
+                f = _finite_probability(val)
+                if f is not None:
+                    out[str(k)] = f
         opts = v.get("options")
         if isinstance(opts, list):
             for o in opts:
                 if not isinstance(o, dict):
                     continue
                 oid = str(o.get("id") or "")
-                p = o.get("p", o.get("probability"))
-                if oid and not isinstance(p, bool) and isinstance(p, (int, float)):
-                    out.setdefault(oid, float(p))
+                f = _finite_probability(o.get("p", o.get("probability")))
+                if oid and f is not None:
+                    out.setdefault(oid, f)
     except Exception:  # noqa: BLE001 — persistence never breaks a turn
         return {}
     return out
@@ -4573,12 +4619,18 @@ def _option_objects(opts: Any, verdict: Optional[Dict[str, Any]] = None
         oid = item["id"]
         if oid in probs:
             item["probability"] = probs[oid]
+            # F2: the backend MEASURED this number.
+            item["probability_source"] = "verdict"
         else:
             # Verdict precedence above; a board that already carries its own
             # measured key keeps it rather than losing the distribution.
-            own = o.get("p", o.get("probability"))
-            if oid and not isinstance(own, bool) and isinstance(own, (int, float)):
-                item["probability"] = float(own)
+            own = _finite_probability(o.get("p", o.get("probability")))
+            if oid and own is not None:
+                item["probability"] = own
+                # Not from the verdict (that branch returned above), so this
+                # is the mechanical prior — unless the board declares
+                # otherwise, which a hand-back board legitimately does.
+                item["probability_source"] = _probability_source(o)
         if margin is not None:
             item["margin"] = margin
         out.append(item)
