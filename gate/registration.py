@@ -209,7 +209,8 @@ def on_transform_llm_output_guarded(**kwargs):
         # M34-19: the decision names WHICH body; it may not drop bytes the seam
         # already composed onto that body (the §10.4 banner). Before M35-14 the
         # wrapper returned the seam's own text and the banner shipped.
-        _carried = _carry_seam_banner(_decision, _original, out, final)
+        _carried = _carry_seam_banner(_decision, _original, out, final,
+                                      str(kwargs.get("session_id") or ""))
         if _carried is not final:
             try:
                 _lg_c = _hub_log_route()
@@ -498,7 +499,8 @@ def _delivered_bytes(decision, entered: str = "") -> str:
     return body
 
 
-def _carry_seam_banner(decision, original: str, seam_out, final):
+def _carry_seam_banner(decision, original: str, seam_out, final,
+                       session_id: str = ""):
     """M34-19: a banner the seam appended survives the delivery decision.
 
     BEFORE M35-14 the wrapper shipped the seam's own return (`final = out`), so
@@ -511,9 +513,18 @@ def _carry_seam_banner(decision, original: str, seam_out, final):
     seam's return is that body plus a trailing block made ENTIRELY of
     marker/banner bytes, those bytes ship with it.
 
-    Refused on purpose: a suffix carrying any non-marker text is the seam
-    composing an ANSWER, and only `decide()` names an answer; a lane render
-    (D5) and a hold (D1) keep their own bytes. Never raises.
+    M34-21: "entirely marker bytes" was measured against `strip_markers()`
+    alone, and the §10.4 rollup is a TWO-line block (the `· router ·` line plus
+    its `Top verdicts:` continuation). Only the first line is a marker, so the
+    residual made every banner look like seam-composed body text and the carry
+    refused it — the same drop one line lower. The banner layer is the authority
+    on which bytes it wrote, so a residual whose every line is part of THIS
+    turn's registered banner block is carried too.
+
+    Refused on purpose: a suffix carrying any line that is not marker text and
+    not part of the turn's banner block is the seam composing an ANSWER, and
+    only `decide()` names an answer; a lane render (D5) and a hold (D1) keep
+    their own bytes. Never raises.
     """
     try:
         if decision is None or seam_out is None:
@@ -528,12 +539,43 @@ def _carry_seam_banner(decision, original: str, seam_out, final):
             return final
         suffix = seam_out[len(base):]
         clean, removed = _dd.strip_markers(suffix)
-        if not removed or clean.strip():
+        if not removed:
+            return final
+        if clean.strip() and not _in_turn_banner_block(clean, session_id):
             return final
         target = final if isinstance(final, str) and final else base
         return str(target) + suffix
     except Exception:  # noqa: BLE001 — carrying a banner never breaks delivery
         return final
+
+
+def _in_turn_banner_block(text: str, session_id: str) -> bool:
+    """True when every non-blank line of `text` is part of the banner block
+    this turn registered (features/banners/turn_record.render).
+
+    The block's continuation lines (the rollup's `Top verdicts:` tail, merged
+    lane segments) are banner bytes that `strip_markers` does not classify as
+    markers. Asking the banner layer for the block it wrote keeps the carry
+    gate's refusal property: bytes the banner layer never wrote are still
+    refused. Never raises.
+    """
+    try:
+        from ..features.banners import turn_record as _tr
+
+        block = _tr.render(str(session_id or ""))
+        if not block:
+            return False
+        block_clean, _ = _dd.strip_markers(block)
+        haystack = str(block_clean or "")
+        if not haystack.strip():
+            return False
+        for line in str(text or "").splitlines():
+            probe = line.strip()
+            if probe and probe not in haystack:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — an unreadable block refuses the carry
+        return False
 
 
 def _force_main_row(turn, decision) -> None:

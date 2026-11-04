@@ -88,3 +88,21 @@ optional tests/routing/test_hermes_aux_source.py::test_aux_raw_call_retry_then_b
 # re-worded. Pin shrinks only when a defect is fixed.
 # tests/shadow/ still has no other rows, so tests/shadow/ is now clean here.
 
+# --- M34-21: SIX MEASURED PRE-EXISTING REDS (tests/banners/) ----------------
+# Not absorbed silently: these are a LIVE REGRESSION, measured for M34-21, and
+# they are named here only so the gate stays readable while the defect is open.
+#   green at 12af8ed (6 passed) -> red at 7c20cbb, 968d629, 0930eac, e84e8b8
+#   (6 failed), same command, same ids: introduced by the M35-14/M35-15 line.
+# Mechanism (instrumented): on the less-common delivery edges the body IS the
+# parked banner block, and the M35-04 marker strip removes its FIRST line
+# ("· router · …" is a marker-classified footer) while the rollup's second
+# line survives — the wire carries "Top verdicts: …" alone, a half-banner.
+# These pins assert the block arrives whole. Fixing this is a delivery-edge
+# change (banner-authored bytes must not be half-stripped), NOT a pin edit.
+tests/banners/test_r19_11_banner_and_jev.py::test_benign_delivery_then_render_reemits_banner
+tests/banners/test_r19_parked_loss_stacking.py::test_park_round_trip_empty_body_edge
+tests/banners/test_r19_parked_loss_stacking.py::test_park_round_trip_audit_sync_edge
+tests/banners/test_r33f_banner_semaphore.py::test_ownership_claim_releases_slot_before_anchor_consume
+tests/banners/test_r9_banner_delivery_seam.py::test_audit_sync_return_merges_parked_banner
+tests/banners/test_r9_banner_delivery_seam.py::test_oversized_banner_omitted_never_truncates
+

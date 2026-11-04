@@ -174,3 +174,31 @@ def test_decision_assimilation_refuses_a_foreign_or_unknown_key():
     env = D.build_decision_assimilation(request, {"choice": "opt-1"})
     assert set(env["extras"]["decision"]) <= set(
         R.ASSIM_EXTRAS_KEYS["decision"])
+
+
+# --- M34-21: the midturn adapter names the lane ONCE ------------------------
+
+def test_midturn_adapter_passes_an_emitter_lane_and_trigger_once(monkeypatch):
+    """decision.py's _emit_decision_assimilation passes lane="decision" through
+    the midturn adapter's **kw; the adapter's own lane=/trigger= defaults then
+    collided ("got multiple values for keyword argument 'lane'") and the
+    assimilation record was swallowed. The emitter's value must win, once."""
+    from hermes_router import decision_midturn as dmt
+    from hermes_router.core import telemetry
+
+    seen = []
+    monkeypatch.setattr(telemetry, "log_route",
+                        lambda event, **kw: seen.append((event, dict(kw))))
+
+    dmt._log("sess-m3421", "decision_assimilation", lane="decision",
+             chosen="opt-1")
+    dmt._log("sess-m3421", "midturn_verdict", choice="opt-1")
+
+    assert [e for e, _ in seen] == ["decision_assimilation", "midturn_verdict"]
+    emitter, defaulted = seen[0][1], seen[1][1]
+    assert emitter["lane"] == "decision"
+    assert emitter["trigger"] == dmt.TRIGGER
+    assert emitter["chosen"] == "opt-1"
+    # an emitter that names none still gets the lane's defaults
+    assert defaulted["lane"] == "decision"
+    assert defaulted["trigger"] == dmt.TRIGGER

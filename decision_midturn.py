@@ -1467,7 +1467,17 @@ def _log(session_id: str, event: str, **fields: Any) -> None:
                     fields.setdefault("frame_default", _reg)
             except Exception:  # noqa: BLE001 — observability only
                 pass
-        _lr(event, lane="decision", trigger=TRIGGER,
+        # M34-21: an emitter may state its OWN lane and trigger. decision.py's
+        # _emit_decision_assimilation passes lane="decision" through this
+        # adapter's **kw, so the hard-coded lane= below collided with it:
+        # "got multiple values for keyword argument 'lane'" — swallowed here,
+        # which silently dropped the decision_assimilation record. Same defect
+        # already fixed one module over in decision_log.log_event (R78U M3.3 /
+        # M18): pop the emitter's value, keep the lane default for emitters
+        # that name none.
+        _lane = fields.pop("lane", "") or "decision"
+        _trigger = fields.pop("trigger", "") or TRIGGER
+        _lr(event, lane=_lane, trigger=_trigger,
             session_id=str(session_id or ""), **fields)
     except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never breaks the lane (rider 19 item 1)
         try:

@@ -144,14 +144,15 @@ def test_midrun_sweep_wipe_still_delivers_next_turn(rr_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="follow-up body",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    # M35-15 (old case: the parked verdict banner was merged into the
-    # delivered body; new case: spec §7 item 10 deleted the body-side merge).
-    # A benign compliant body is D4 with strip_bytes=0 -> the passthrough, so
-    # what the wire carries is exactly the entry text; the banner is consumed
-    # and must neither ride the body nor replay onto the next turn.
-    assert out is None or "follow-up body" in (out or ""), out
-    assert TAG not in (out or ""), out  # R20
-    assert "impulse (decision)" not in (out or "")
+    # M34-21 restored (12af8ed's contract): the parked verdict banner IS
+    # delivered on the benign edge — the rollup's two-line block ships on the
+    # body it was parked for. 968d629 flipped this assertion to "not in" to
+    # match M35-14's drop; e84e8b8 restored the same contract in shadow/ and
+    # routing/ but missed this file. The banner is still consumed (asserted
+    # below) and never replays onto a later turn.
+    assert out and "follow-up body" in out, out
+    assert TAG not in out, out  # R20
+    assert "impulse (decision)" in out, out
     from hermes_router import debug_banner as _DBd
     assert _DBd._ANCHOR_BANNERS.get(SID) in (None, ""), "banner must be consumed"
     crec = [f for e, f in LOGGED

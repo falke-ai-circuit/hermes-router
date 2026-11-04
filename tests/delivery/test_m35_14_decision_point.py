@@ -167,3 +167,52 @@ def test_an_attributed_strip_is_recorded_not_mysterious():
     assert decision.delivered_source == dd.SOURCE_MAIN
     assert decision.strip_bytes > 0
     assert decision.body.strip() == "answer body"
+
+
+# --- M34-21: the carry gate must know a banner block from an answer ---------
+
+_M3421_BANNER = ("· router · impulse (decision) | 1 verdict | tok 11/3 | "
+                 "$0.0000* | row=7 ·\nTop verdicts: ship the fix now (~0.78)")
+
+
+def _carry(decision, original, seam_out, session_id):
+    from hermes_router.gate import registration as reg
+    return reg._carry_seam_banner(decision, original, seam_out, None,
+                                  session_id)
+
+
+def test_a_two_line_banner_block_is_carried_past_the_decision():
+    """The §10.4 rollup is TWO lines: only the first is a marker line, so a
+    strip_markers-only test read the `Top verdicts:` continuation as body text
+    and dropped the whole banner at the delivery edge (regressed at 7c20cbb)."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "sess-m3421-carry"
+    tr.reset(sid)
+    try:
+        assert tr.register(sid, _M3421_BANNER, lane="decision",
+                           kind="anchor", edge="benign") is True
+        decision = decide(_facts(BATTERY_ROWS[-1]))
+        assert decision.action == dd.DELIVER_ENTERED
+        assert decision.delivered_source == dd.SOURCE_MAIN
+        seam_out = "base answer\n\n" + _M3421_BANNER
+        assert _carry(decision, "base answer", seam_out, sid) == seam_out
+    finally:
+        tr.reset(sid)
+
+
+def test_body_text_in_the_suffix_is_still_refused():
+    """The refusal property survives: bytes the banner layer never wrote are
+    the seam composing an answer, not a banner."""
+    from hermes_router.features.banners import turn_record as tr
+
+    sid = "sess-m3421-refuse"
+    tr.reset(sid)
+    try:
+        tr.register(sid, _M3421_BANNER, lane="decision", kind="anchor",
+                    edge="benign")
+        decision = decide(_facts(BATTERY_ROWS[-1]))
+        seam_out = "base answer\n\n" + _M3421_BANNER + "\nan invented answer"
+        assert _carry(decision, "base answer", seam_out, sid) is None
+    finally:
+        tr.reset(sid)
