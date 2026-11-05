@@ -4784,6 +4784,8 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
         vals = []
         for c in cols:
             v = row.get(c)
+            if c == "fork_class" and not v:
+                v = "" if is_decision_fork(str(row.get("trigger") or "")) else "not_a_fork"
             if c == "ts" and v is None:
                 v = time.time()
             if c == "outcome" and not v:
