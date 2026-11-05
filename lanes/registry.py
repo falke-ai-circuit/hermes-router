@@ -19,7 +19,7 @@ engine). register_lane is import-time fail-loud: duplicate id = ValueError.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, FrozenSet, Mapping, Optional, Sequence
 
 _IDS: Dict[str, "LaneSpec"] = {}
@@ -67,17 +67,60 @@ class LaneSpec:
     # M41-02 (§B): one optional field, default None — every pre-existing
     # entry keeps its meaning unchanged.
     contract: Optional[LaneContract] = None
+    # M37-02: ordered seam ids this lane PARTICIPATES in — "PRE", "MID",
+    # "POST". Timing, not a slot: three of four lanes span two seams, so the
+    # registry keys on (lane, seam) and never on lane alone. Empty tuple is
+    # legal and means "this lane declares no seam" (MID may legitimately run
+    # no lane). Cross-lane ordering is registration order — no order field.
+    seams: tuple = ()
 
+
+# The closed seam vocabulary. `register_lane` rejects anything else: a typo in
+# a seam id must fail at import, never silently drop a lane out of a seam.
+SEAM_IDS: tuple = ("PRE", "MID", "POST")
+
+
+def _normalise_seams(spec: LaneSpec) -> tuple:
+    """Canonical (uppercase, stripped) seam tuple, or ValueError.
+
+    Unknown ids are fatal, and the message names the lane id AND the bad value
+    so an import traceback identifies the offending spec literal directly.
+    """
+    out = []
+    for raw in spec.seams or ():
+        seam = str(raw).strip().upper()
+        if seam not in SEAM_IDS:
+            raise ValueError(
+                f"lane {spec.id!r}: unknown seam id {raw!r} "
+                f"(allowed: {', '.join(SEAM_IDS)})")
+        out.append(seam)
+    return tuple(out)
 
 
 def register_lane(spec: LaneSpec) -> None:
-    """Idempotent; duplicate id raises at import time (fail-loud)."""
+    """Idempotent; duplicate id or unknown seam raises (fail-loud)."""
+    seams = _normalise_seams(spec)
+    if seams != tuple(spec.seams or ()):
+        spec = replace(spec, seams=seams)
     existing = _IDS.get(spec.id)
     if existing is not None:
         if existing is spec or existing == spec:
             return
         raise ValueError(f"lane id already registered: {spec.id}")
     _IDS[spec.id] = spec
+
+
+def enumerate_by_seam(seam: str) -> tuple:
+    """Lane ids declaring `seam`, in registration order (M37-02 §3).
+
+    Registration order is the cross-lane order (lanes/builtins.py) — this
+    accessor adds no ordering of its own. Unknown seam id raises rather than
+    returning an empty tuple, so a caller that typos a seam learns it.
+    """
+    key = str(seam or "").strip().upper()
+    if key not in SEAM_IDS:
+        raise ValueError(f"unknown seam id {seam!r} (allowed: {', '.join(SEAM_IDS)})")
+    return tuple(s.id for s in _IDS.values() if key in s.seams)
 
 
 def lane(id: str) -> LaneSpec:

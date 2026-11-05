@@ -82,6 +82,8 @@ _SHADOW = LaneSpec(
     pre_patterns=PRE_PATTERNS_DEFAULT,
     marker_strings=MARKER_SHADOW,
     commands_switch=_SWITCH_SHADOW,
+    # M37-02: shadow spans two seams — PRE render ladder, POST flinch chain.
+    seams=("PRE", "POST"),
     # M41-02 (§B): the lane as data. Namespace note, because it reads wrong
     # otherwise: the routing lane id is "shadow", the envelope lane key is
     # "uncensored", the log field is lane=shadow — the contract goes HERE.
@@ -110,13 +112,21 @@ _HIGHER_PRE = LaneSpec(
     phrases=DECLARED_USER_PHRASES,
     marker_strings=MARKER_HIGHER_PRE,
     commands_switch=_SWITCH_FRONTIER,
+    # M37-02: PRE classifies + stages the swap, MID executes it.
+    seams=("PRE", "MID"),
 )
 _HIGHER_POST = LaneSpec(
     id=LANE_HIGHER_POST,
     marker_strings=MARKER_HIGHER_POST,
     commands_switch=_SWITCH_FRONTIER,
+    # M37-02: POST fires the audit, PRE delivers the verdict next turn.
+    seams=("POST", "PRE"),
 )
-_DECISION = LaneSpec(id=LANE_DECISION)
+_DECISION = LaneSpec(
+    id=LANE_DECISION,
+    # M37-02: PRE routes it, MID runs the advisory sweep.
+    seams=("PRE", "MID"),
+)
 
 # Registration order = the original VALID_ROUTE_LANES order (byte-identical
 # behavior for any consumer that iterates lane order).
