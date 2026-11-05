@@ -459,8 +459,15 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
     try:
         from ..core import delivery_integrity as _dintf
 
-        if isinstance(lane_render, str) and lane_render.startswith(
-                _dintf.FAILURE_PREFIX):
+        _recovered = _dintf.take_recovered(str(kwargs.get("session_id") or ""))
+        if isinstance(lane_render, str) and (
+                lane_render.startswith(_dintf.FAILURE_PREFIX)
+                or (lane_render.strip() and lane_render == _recovered)):
+            # M45-19: recovery is still a SEAM-DECLARED failure (the audit
+            # stands) — but the bytes it names are the transcript text that
+            # already existed, never the notice. Recognising the recovered
+            # body here is what stops D4 from replacing it with the model's
+            # fresh text one layer down.
             seam_failure = "transcript_divergence"
     except Exception:  # noqa: BLE001 — recognition never blocks a turn
         seam_failure = ""

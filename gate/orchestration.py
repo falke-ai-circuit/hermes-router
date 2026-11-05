@@ -1393,8 +1393,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     "transcript=%d session=%s",
                     _div.row_id, _div.obligation_id, _div.delivered_chars,
                     _div.transcript_chars, session_id)
-                # The failed turn is visible and withheld; it is never
-                # delivered as if it were the answer.
+                # M45-19: the audit is TELEMETRY, never a gag. The divergence
+                # is already recorded above and by audit_last_delivery(); the
+                # turn is not withheld while text exists. Withholding is
+                # legal ONLY when the transcript row holds nothing at all.
+                _text = str(getattr(_div, "transcript_body", "") or "")
+                if _text.strip():
+                    _dint.mark_recovered(session_id, _text)
+                    return _text
                 return _dint.failure_body(_div)
         except Exception:  # noqa: BLE001 — the backstop never breaks a turn
             _hub().logger.debug("delivery integrity audit error", exc_info=True)

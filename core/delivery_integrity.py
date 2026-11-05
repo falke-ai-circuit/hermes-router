@@ -61,6 +61,12 @@ _BANNER_CONT_PREFIXES = ("task ", "full: lane=")
 #: that follows while the same bad row sits in the store.
 _AUDITED: Dict[str, Set[str]] = {}
 
+#: The transcript text recovered for a diverged turn, per session. M45-19: the
+#: seam hands this text back as the delivered body, so the delivery decision
+#: must recognise it as the audit's substitution (and not as a routine render
+#: it may overwrite). Set by `mark_recovered`, read once by `take_recovered`.
+_RECOVERED: Dict[str, str] = {}
+
 
 @dataclass(frozen=True)
 class Divergence:
@@ -74,6 +80,10 @@ class Divergence:
     row_id: Optional[int] = None
     delivered_chars: int = 0
     transcript_chars: int = 0
+    #: The transcript row's text after decoration is stripped. M45-19: this is
+    #: what gets DELIVERED when a divergence is found — the audit reports, it
+    #: does not gag. Empty only when the row held no text at all.
+    transcript_body: str = ""
 
     def as_event_fields(self) -> Dict[str, Any]:
         return {
@@ -131,6 +141,36 @@ def strip_banner(text: Any) -> str:
         return t
     except Exception:  # noqa: BLE001 — comparison input shaping never raises
         return str(text or "")
+
+
+def strip_decoration(text: Any) -> str:
+    """Banner AND provenance-footer removed — what the reader actually sees.
+
+    M45-19: the comparison must ignore decoration on BOTH sides. A banner is
+    added at delivery; a footer rides every rendered delivery. Neither is
+    transcript divergence, and a decoration-only difference must never become
+    the baseline that fails the next turn.
+    """
+    body = strip_banner(text)
+    try:
+        from ..provenance_footer import strip_footer
+
+        return strip_banner(strip_footer(body))
+    except Exception:  # noqa: BLE001 — footer shaping is best-effort
+        return body
+
+
+def is_failure_body(text: Any) -> bool:
+    """True when this body is the seam's own failure notice, not an answer.
+
+    M45-19: such a body is telemetry, never a baseline. Comparing the notice
+    against the next turn's transcript guarantees a second divergence and a
+    second withheld answer — the cascade this predicate exists to break.
+    """
+    try:
+        return strip_decoration(text).lstrip().startswith(FAILURE_PREFIX)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -287,14 +327,24 @@ def check_transcript_delivery(session_id: str, *, db_path: Optional[str] = None,
         logger.debug("delivery integrity read failed: %s", exc)
         return Divergence(checked=False, ok=True, reason="read_error")
 
-    delivered = strip_banner(ocontent)
-    transcript = strip_banner(rcontent)
+    delivered = strip_decoration(ocontent)
+    transcript = strip_decoration(rcontent)
+    if is_failure_body(ocontent):
+        # M45-19: the failure notice is NOT a baseline. There is nothing to
+        # compare against, so this is "not checked" — not a second divergence.
+        return Divergence(
+            checked=False, ok=True, reason="failure_body_not_a_baseline",
+            session_key=key, obligation_id=str(oid), row_id=int(rid),
+            delivered_chars=len(delivered), transcript_chars=len(transcript),
+            transcript_body=transcript,
+        )
     ok = delivered == transcript
     return Divergence(
         checked=True, ok=ok,
         reason="delivery_transcript_match" if ok else "transcript_divergence",
         session_key=key, obligation_id=str(oid), row_id=int(rid),
         delivered_chars=len(delivered), transcript_chars=len(transcript),
+        transcript_body=transcript,
     )
 
 
@@ -347,6 +397,33 @@ answer over it. One spelling, one place.
 FAILURE_PREFIX = "Router failure: transcript divergence"
 
 
+def mark_recovered(session_id: str, text: Any) -> None:
+    """Remember the transcript text handed back for a diverged turn (M45-19).
+
+    The delivery decision must see this body as the audit's substitution, not
+    as a routine render it may replace with the model's own text — otherwise
+    the recovered answer is silently dropped one layer down. One-shot; never
+    raises.
+    """
+    try:
+        sid = str(session_id or "")
+        body = text if isinstance(text, str) else ""
+        if sid and body.strip():
+            _RECOVERED[sid] = body
+            if len(_RECOVERED) > 512:
+                _RECOVERED.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def take_recovered(session_id: str) -> str:
+    """Read AND clear the recovered body for a session. Never raises."""
+    try:
+        return _RECOVERED.pop(str(session_id or ""), "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def failure_body(result: Divergence) -> str:
     """Operator-facing hard-failure text for a diverged turn.
 
@@ -365,3 +442,4 @@ def failure_body(result: Divergence) -> str:
 def reset_for_tests() -> None:
     """Clear the audited-obligation memory (tests only). Never raises."""
     _AUDITED.clear()
+    _RECOVERED.clear()

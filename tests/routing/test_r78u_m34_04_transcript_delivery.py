@@ -119,14 +119,17 @@ def test_shadow_triple_emits_error_event(shadow_pair, logged):
 
 
 def test_shadow_triple_fails_the_turn(shadow_pair, logged):
-    """The wired POST pass returns a failure body, not a passthrough."""
+    """M45-19: the turn is REPORTED as diverged and the text that exists is
+    what gets delivered — the notice never replaces a real answer."""
     out = plugin.on_transform_llm_output(
         response_text="a later body that must not be delivered as an answer",
         session_id=SID, model="glm-5.3-flash", platform="api")
 
-    assert isinstance(out, str) and out.startswith(
-        "Router failure: transcript divergence"), (
-        "a diverged turn must fail visibly, never pass through")
+    assert isinstance(out, str) and out.strip(), (
+        "a diverged turn must not be withheld while its row holds text")
+    assert not out.startswith(di.FAILURE_PREFIX), (
+        "a real answer was replaced by the router-failure notice")
+    assert out.strip() == di.strip_banner(TRANSCRIPT_1066).strip()
     assert [e for _, e, _ in LOGGED if e == "transcript_divergence"]
 
 
