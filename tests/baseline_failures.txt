@@ -106,3 +106,60 @@ tests/banners/test_r33f_banner_semaphore.py::test_ownership_claim_releases_slot_
 tests/banners/test_r9_banner_delivery_seam.py::test_audit_sync_return_merges_parked_banner
 tests/banners/test_r9_banner_delivery_seam.py::test_oversized_banner_omitted_never_truncates
 
+
+# --- M36-03 RE-PIN 2026-11-05: M36-06 RE-PIN proposal applied (39 rows proposed) ----------------
+# Source of measurement: M36-06 classification at HEAD ef7f5fb (pre-fix run AND after run);
+# required rows are red in BOTH runs, so they satisfy "red in every run".
+# One proposal row was ALREADY pinned identically above and is NOT duplicated here:
+#   tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance
+#   (reason=state-dependent, expect="assert None is not None"). A duplicate optional entry makes
+#   the pin file invalid, so 38 of the 39 rows are added: 36 required + 2 optional.
+# Deliberately NOT added:
+#   * tests/routing/test_r26_post_render_banner.py::test_post_render_banner_captured_to_persisted_row
+#     — left UNKNOWN on purpose. An unexplained red is not an exemption; pinning it would freeze a
+#     state nobody has explained.
+#   * the 16 REPAIR rows — separate units, not pins.
+# The three higher_self r34_19{f,g} RE-PINs are contested by M36-06 §Two calls; they are pinned as
+# proposed but flagged in M36-03_REPIN.md as possibly masking a product regression.
+
+# --- optional (2 added here; 1 already present above) ---
+optional tests/decision_lane/test_r72k_soft_readings.py::test_agent_card_is_the_shared_lane_card_without_the_render_mandate  reason=order  expect="assert 'RENDER MANDATE' in ''"
+optional tests/higher_self/test_persona_card.py::test_card_cached_by_ttl  reason=order  expect="assert 3 == 2"
+
+# --- required (36 added here, red in every measured run) ---
+tests/commands/test_v360_tap_wiring.py::test_zero_delivered_change_banner_off  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/commands/test_v360_trigger_cascade.py::test_decision_record_versioned_schema  # M36-06 debt: superseded contract, measured expect="decision-record and 3 == 2"
+tests/decision_lane/test_r19_decision_lane_v3.py::test_envelope_options_carry_causal_frames  # M36-06 debt: superseded contract, measured expect="Extra items in the left set: 'probability'"
+tests/decision_lane/test_r36m_handback_persist.py::test_handback_reconciles_the_persisted_row_before_returning  # M36-06 debt: superseded contract, measured expect="assert '_deliver_body = _echo.body' in"
+tests/decision_lane/test_r73_p2_card.py::test_pinned_card_suites_still_pass_unchanged  # M36-06 debt: superseded contract, measured expect="pinned card suites are no longer green"
+tests/decision_lane/test_r74_banner_aggregation.py::test_a_three_fires_one_turn_one_banner_with_sums_and_row_range  # M36-06 debt: superseded contract, measured expect="where 0 = len([])"
+tests/features/test_m35_01_provenance.py::test_a_routing_turn_produces_a_fully_populated_row  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
+tests/features/test_m35_01_provenance.py::test_b_benign_turn_row_shows_it_did_not_route  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
+tests/features/test_m35_01_provenance.py::test_c_rule1_and_rule3_are_distinguishable_in_the_row  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
+tests/features/test_m35_01_provenance.py::test_d_row_joins_to_its_body_via_turn_id  # M36-06 debt: superseded contract, measured expect="assert '0' == '1'"
+tests/features/test_m35_01_provenance.py::test_f_no_bare_ts_action_row  # M36-06 debt: superseded contract, measured expect="assert ('main' and None)"
+tests/features/test_m35_03_standdown.py::test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
+tests/features/test_m35_03_standdown.py::test_a3_abstain_with_no_gate_record_also_defers  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
+tests/features/test_m35_03_standdown.py::test_a3_aux_none_reaches_a_named_lane_decision  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
+tests/features/test_m35_03_standdown.py::test_c4_benign_turn_still_delivers_the_main_body  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
+tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row[pass_through-deliver]  # M36-06 debt: superseded contract, measured expect="path pass_through wrote 2 rows, expected 1"
+tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row[replacement-deliver]  # M36-06 debt: superseded contract, measured expect="path replacement wrote 2 rows, expected 1"
+tests/features/test_m35_04_seam_totality.py::test_d_ten_turns_produce_ten_rows  # M36-06 debt: superseded contract, measured expect="assert 17 == 10"
+tests/features/test_m35_04_seam_totality.py::test_c3_the_boundary_preserves_pass_through_none  # M36-06 debt: superseded contract, measured expect="KeyError: 'delivered'"
+tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_holds_branch_says_holds  # M36-06 debt: superseded contract, measured expect="assert 'nothing to correct' in"
+tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_flagged_branch_says_flagged_not_silent  # M36-06 debt: superseded contract, measured expect="assert 'flagged' in"
+tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_a_bare_confirmed_answer_is_a_hold_not_a_flag  # M36-06 debt: superseded contract, measured expect="assert 'nothing to correct' in"
+tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_adjusted_branch_says_adjusted  # M36-06 debt: superseded contract, measured expect="assert 'adjusted before delivery' in"
+tests/higher_self/test_r34_19g_higher_self_acts.py::test_flagged_confirmation_names_the_finding  # M36-06 debt: superseded contract, measured expect="assert 'flagged:' in"
+tests/higher_self/test_r34_19g_higher_self_acts.py::test_null_revision_delivers_the_original_and_stashes_the_verdict  # M36-06 debt: superseded contract, measured expect="assert 'flagged:' in"
+tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_folded_response_is_delivered  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_null_revision_delivers_original_and_stashes  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_malformed_json_delivers_original_without_raising  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_banner_appended_once_and_absent_from_reconciled_body  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_generation_time_cap_and_no_posthoc_truncation  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/routing/test_d3_residuals_fixfirst.py::test_midrun_sweep_wipe_still_delivers_next_turn  # M36-06 debt: superseded contract, measured expect="AssertionError: None"
+tests/routing/test_r13_4_delivered_body_legs.py::test_park_consume_delivers_banner_in_returned_body  # M36-06 debt: superseded contract, measured expect="argument of type 'NoneType' is not iterable"
+tests/routing/test_r26_post_render_banner.py::test_declared_path_delivery_edge_still_banners  # M36-06 debt: superseded contract, measured expect="assert (None)"
+tests/routing/test_resilience.py::TestFailOpenUnderFault::test_banner_failure_does_not_kill_delivery  # M36-06 debt: superseded contract, measured expect="append_banner raised under fault"
+tests/routing/test_rider10_fixes.py::test_r10_5_benign_capture_miss_is_loud_and_reparked  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
+tests/shadow/test_shadow_banner.py::test_banner_consumed_at_delivery_edge  # M36-06 debt: superseded contract, measured expect="assert '· router ·' in ((None or ''))"
