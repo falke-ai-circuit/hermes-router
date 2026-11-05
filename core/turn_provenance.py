@@ -151,7 +151,8 @@ class TurnProvenance:
                  "intent_source", "declaration", "lane", "replaced",
                  "replacement_path", "outcome", "body_chars", "_emitted",
                  "_predicate", "_action", "delivered", "delivery_failure",
-                 "deferred", "deferred_reason", "skip_reason", "reason")
+                 "deferred", "deferred_reason", "skip_reason", "reason",
+                 "_empty_settled")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -180,6 +181,9 @@ class TurnProvenance:
         # A replaced turn with delivered=None is NOT a delivered turn.
         self.delivered: Optional[bool] = None
         self.delivery_failure = ""
+        # M45-12: this turn's delivery was settled over an EMPTY body, so the
+        # verdict is final — a re-settle may re-state it, never overturn it.
+        self._empty_settled = False
         # M35-03 (A3/B1/B2): True when the lane could NOT decide this turn
         # (gate abstained — aux returned nothing). The body may still ship,
         # but the row must say the judgement was deferred, never that the
@@ -334,9 +338,20 @@ def note_delivery(**kwargs: Any) -> None:
         pass
 
 
+#: M45-12: the two names an EMPTY delivered body can carry. `""` on the wire
+#: is legal (the host keeps the body it already has) but it is NEVER a
+#: delivery: the row must say which of these happened.
+#:   * a HOLD_CLOSED decision named no bytes — a legal suppression, no failure;
+#:   * any other decision over non-empty text — the seam lost bytes: a failure.
+HOLD_CLOSED_EMPTY_REASON = "hold_closed_empty_body"
+EMPTY_BODY_FAILURE_REASON = "empty_body_with_text_available"
+EMPTY_BODY_NO_TEXT_REASON = "empty_body_no_text_available"
+
+
 def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
                     log=None, session_id: str = "",
-                    suppress_reason: str = "") -> str:
+                    suppress_reason: str = "",
+                    hold_closed: bool = False) -> str:
     """Reconcile the turn's row with the body that will ACTUALLY be returned.
 
     The seam decides a replacement (``replaced=True``) and the delivery edge
@@ -355,10 +370,63 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
     drop the row is rewritten to the truth it can defend: lane=main,
     replaced=False, the reason token, and a delivered flag that says whether
     the render reached the wire. Never raises.
+
+    M45-12 — AN EMPTY BODY IS NOT A DELIVERY. `final == ""` used to fall
+    through to the unconditional tail below, which stamped
+    ``delivered=True`` over zero bytes: the ledger's last row claimed a
+    delivery for a turn that shipped nothing. `hold_closed` is the caller's
+    statement that the DECISION named no bytes on purpose (D1); without it an
+    empty body over text that existed is a NAMED FAILURE, not a suppression.
+    Both verdicts are sticky — a re-settle re-states, never overturns, them.
     """
     if turn is None:
         return ""
     try:
+        # M45-12 idempotence: the empty-body verdict is FINAL for this turn.
+        if turn._empty_settled:  # noqa: SLF001 — internal once-per-turn latch
+            return turn.delivery_failure or ""
+        # M45-12: an empty delivered body is never recorded as delivered.
+        # Placed before every other branch (including the bar-2 MAIN_COMPLIED
+        # keep) because "nothing shipped" outranks any reason for it.
+        if isinstance(final, str) and final == "":
+            turn._empty_settled = True  # noqa: SLF001
+            turn.delivered = False
+            turn.replaced = False
+            turn.lane = LANE_MAIN
+            turn.replacement_path = ""
+            if hold_closed:
+                # The state is legal — the decision suppressed the text. What
+                # would be illegal is calling it a delivery.
+                turn.reason = HOLD_CLOSED_EMPTY_REASON
+                turn.outcome = HOLD_CLOSED_EMPTY_REASON
+                turn.delivery_failure = ""
+                if log is not None:
+                    try:
+                        log("POST", event_detail="empty_body_hold_closed",
+                            reason=HOLD_CLOSED_EMPTY_REASON,
+                            body_chars=int(turn.body_chars or 0),
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return ""
+            # Not a suppression: bytes existed (or the turn says none did) and
+            # the wire carries nothing. Name the failure.
+            if int(turn.body_chars or 0) > 0:
+                turn.delivery_failure = EMPTY_BODY_FAILURE_REASON
+            else:
+                turn.delivery_failure = EMPTY_BODY_NO_TEXT_REASON
+            turn.reason = turn.delivery_failure
+            turn.outcome = turn.delivery_failure
+            if log is not None:
+                try:
+                    log("POST", event_detail="empty_body_not_delivered",
+                        reason=turn.delivery_failure,
+                        severity="error",
+                        body_chars=int(turn.body_chars or 0),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            return turn.delivery_failure
         # A wire failure already recorded at the render edge (the host killed
         # the hook before the render settled) outranks anything this edge can
         # infer: the turn is settled, and a later None must not relabel it.

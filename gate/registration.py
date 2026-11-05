@@ -284,10 +284,14 @@ def on_transform_llm_output_guarded(**kwargs):
             pass
     if _prov is not None and _decision is not None:
         try:
+            # M45-12: the settle cannot tell a legal suppression from a lost
+            # body by looking at "" — the DECISION knows. D1 HOLD_CLOSED named
+            # no bytes on purpose; every other empty body is a failure.
             _failure = _prov.settle_delivery(
                 _turn, final, log=_hub_log_route(),
                 session_id=str(kwargs.get("session_id") or ""),
-                suppress_reason=_guard_reason) or _failure
+                suppress_reason=_guard_reason,
+                hold_closed=bool(_decision.action == _dd.HOLD_CLOSED)) or _failure
         except Exception:  # noqa: BLE001
             _failure = _failure or ""
     # A main-body delivery whose render already rewrote the store must put the
@@ -514,6 +518,9 @@ def _delivered_bytes(decision, entered: str = "") -> str:
     """
     if decision is None:
         return ""
+    # M45-12: `""` below is the honest WIRE bytes of a decision that named
+    # none (a D1 hold whose stripped body is empty) — the host keeps its own
+    # body. It is not a delivery, and the settle that records it must say so.
     if decision.action == _dd.FAIL_TERMINAL:
         # A decision that NAMED bytes (the seam's own failure body) ships
         # them: that body is the visible failure, not a substitute answer.
