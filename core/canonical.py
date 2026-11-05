@@ -342,7 +342,8 @@ def persisted_turn_row_exists(session_id: str, content: str) -> bool:
 
 def rewrite_persisted_turn(session_id: str, refusal_text: str,
                            delivered_text: str,
-                           allow_empty_match: bool = False) -> bool:
+                           allow_empty_match: bool = False,
+                           allow_newest: bool = True) -> bool:
     """Rewrite the persisted assistant turn to the DELIVERED text.
 
     Guard (router-substitution-only): the row is matched by EXACT content
@@ -400,7 +401,8 @@ def rewrite_persisted_turn(session_id: str, refusal_text: str,
         for _attempt in range(3):
             try:
                 return _rewrite_once(db_path, session_id, refusal_text,
-                                     delivered_text, allow_empty_match)
+                                     delivered_text, allow_empty_match,
+                                     allow_newest)
             except sqlite3.OperationalError as exc:
                 _last_err = exc
                 if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
@@ -474,8 +476,32 @@ def _tier_match(row_content, refusal_text) -> str:
     return ""
 
 
+def _newest_row_is_fresh(conn, session_id, window_s: float = 300.0) -> bool:
+    """M45-20: was the newest assistant row written BY THIS TURN?
+
+    The delivered body may be written onto the newest assistant row only when
+    that row is this turn's reply. Freshness is the discriminator: the turn
+    finalizer persists the reply immediately before the POST hook fires, so a
+    row older than the window belongs to an earlier turn and must never be
+    rewritten (the exact-content guard's original intent). Unreadable or
+    missing timestamps are NOT fresh — refuse rather than guess.
+    """
+    import time as _time
+
+    try:
+        row = conn.execute(
+            "SELECT timestamp FROM messages"
+            " WHERE session_id = ? AND role = 'assistant'"
+            " ORDER BY id DESC LIMIT 1", (str(session_id),)).fetchone()
+        if not row or row[0] is None:
+            return False
+        return (_time.time() - float(row[0])) <= float(window_s)
+    except Exception:  # noqa: BLE001 — refuse on any doubt
+        return False
+
+
 def _match_and_write(conn, session_id: str, refusal_text: str,
-                     delivered_text: str):
+                     delivered_text: str, allow_newest: bool = True):
     """Rewrite the persisted row this router is substituting, named by strategy.
 
     R59g: exact equality missed on live traffic while the delivered body was
@@ -508,6 +534,19 @@ def _match_and_write(conn, session_id: str, refusal_text: str,
         _last = _LAST_REWRITE.get(str(session_id) or "")
         if _last and str(_content or "") == str(_last):
             _how = "cascade"
+    if not _how and allow_newest and _newest_row_is_fresh(conn, session_id):
+        # M45-20: the delivered body IS this turn's row, even when the text the
+        # POST hook was handed is not the text the turn finalizer persisted.
+        # Live (session 20261006_192644_08377425, obligation
+        # f595fc26ab3e463081f2d630): the hook carried a 1204-char body, the
+        # row held 3111 chars of different text, every tier missed, the
+        # capture logged `parked_capture_failed` and the user read bytes that
+        # exist nowhere in messages. The row is still the ONE newest assistant
+        # row AND it was written for this turn (freshness is what forbids
+        # touching an earlier turn's reply), so writing the delivered bytes
+        # there is the same substitution the exact tier performs, only without
+        # requiring the two texts to match.
+        _how = "newest_row"
     if not _how:
         return _CountedCur(0)
     conn.execute("UPDATE messages SET content = ?, api_content = NULL"
@@ -517,7 +556,8 @@ def _match_and_write(conn, session_id: str, refusal_text: str,
 
 
 def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
-                  delivered_text: str, allow_empty_match: bool) -> bool:
+                  delivered_text: str, allow_empty_match: bool,
+                  allow_newest: bool = True) -> bool:
     """One rewrite attempt (lock-retry body of rewrite_persisted_turn).
 
     R34-14 item 3: the persisted assistant row may NEVER be blanked on behalf
@@ -539,7 +579,7 @@ def _rewrite_once(db_path: str, session_id: str, refusal_text: str,
     try:
         if refusal_text:
             cur = _match_and_write(conn, session_id, refusal_text,
-                                   delivered_text)
+                                   delivered_text, allow_newest)
         else:
             cur = conn.execute(
                 "UPDATE messages SET content = ?, api_content = NULL"
