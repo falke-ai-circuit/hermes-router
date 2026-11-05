@@ -202,6 +202,16 @@ def on_transform_llm_output_guarded(**kwargs):
             _prov.seam_enter()
         # A HOLD_CLOSED ask never enters the seam: no render, no split, no
         # replacement. The decision below names the entered body unchanged.
+        if _closed_hit:
+            # M45-17: the object the host invokes IS this wrapper. A HOLD_CLOSED
+            # ask returns before the orchestrator, so the seam counter must be
+            # taken here — otherwise a closed-line turn reads as a dead seam.
+            try:
+                from ..core.telemetry import seam_probe_fire as _spf
+
+                _spf("transform_llm_output")
+            except Exception:  # noqa: BLE001 — probe never breaks the seam
+                pass
         out = (None if _closed_hit
                else orchestration.on_transform_llm_output(**kwargs))
     except Exception:

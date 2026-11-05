@@ -230,6 +230,9 @@ _SEAM_REGISTERED = False
 # reported dead on arrival in every process, forever (M45-16).
 _TURN_SEAMS = ("llm_request", "llm_execution", "transform_llm_output",
                "transform_terminal_output")
+# M45-17 (F1): the seams that can only fire once the turn has run a tool. They are judged
+# only on a turn that used one.
+_TOOL_SEAMS = ("llm_execution", "transform_terminal_output")
 
 
 def seam_probe_register(ctx: Any) -> None:
@@ -283,7 +286,13 @@ def seam_dead_on_arrival_check() -> Dict[str, int]:
     with _SEAM_LOCK:
         if _SEAM_FIRES.get("llm_request", 0) == 0:
             return dict(_SEAM_FIRES)
-        zero = [s for s, n in _SEAM_FIRES.items() if n == 0]
+        # M45-17 (F1): the tool seams cannot fire before a tool has run. Judging them on a
+        # text-only turn indicts a healthy seam for a call the turn never made. They are
+        # judged only once the turn has used a tool; the request/output seams are always
+        # judged (they fire on every turn that reaches them).
+        used_tool = any(_SEAM_FIRES.get(s, 0) > 0 for s in _TOOL_SEAMS)
+        zero = [s for s, n in _SEAM_FIRES.items()
+                if n == 0 and not (s in _TOOL_SEAMS and not used_tool)]
     for s in zero:
         try:
             logger.warning("seam_dead_on_arrival seam=%s", s)
