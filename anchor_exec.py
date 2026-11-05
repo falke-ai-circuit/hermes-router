@@ -855,6 +855,226 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
 
 ADVISORY_CHAR_BUDGET_DEFAULT = 3800
 
+# M45-14: reasoning-aware headroom.
+#
+# The 1.74 chars/token ratio was measured on MEDIAN consults and sizes VISIBLE
+# text. It says nothing about reasoning: with reasoning_effort above a
+# threshold the reasoning tokens are billed INSIDE the same max_tokens budget
+# and can consume it whole, which is exactly how a consult returns HTTP 200,
+# finish=length, reasoning_chars=0 and an EMPTY body — the visible answer never
+# started. Live: model anthropic/claude-sonnet-5.5, effort max, 3800-char
+# advisory sized at max_tokens=2303 -> empty body on every consult (analyst
+# 41/53, conductor 57/68, reviewer 40/45, operative 36/63, architect 26/31,
+# shadow 11/12). Raising the char budget to its 8000 clamp only moved the wall.
+#
+# So: pay for the thinking explicitly, as a fraction of the visible need with a
+# per-level floor, and clamp the total to what the model can actually accept.
+EFFORT_HEADROOM_RATIO: Dict[str, float] = {
+    "minimal": 0.5,
+    "low": 0.5,
+    "medium": 1.0,
+    "high": 2.0,
+    "xhigh": 3.0,
+    "max": 4.0,
+}
+EFFORT_HEADROOM_FLOOR: Dict[str, int] = {
+    "minimal": 800,
+    "low": 800,
+    "medium": 1500,
+    "high": 4000,
+    "xhigh": 6000,
+    "max": 8000,
+}
+# Conservative advertised output ceilings per model family. Conservative on
+# purpose: sending a number the endpoint rejects is worse than under-buying,
+# and every anchor in this fleet is well above the 32768 default. Override the
+# real ceiling per deployment with `advisory_max_tokens_ceiling` (router
+# section) rather than editing this table.
+MODEL_OUTPUT_LIMIT: Dict[str, int] = {
+    "claude": 64000,
+    "gpt-5": 64000,
+    "gpt-6": 64000,
+    "gemini": 65536,
+    "glm": 32768,
+    "kimi": 32768,
+    "deepseek": 32768,
+    "qwen": 32768,
+}
+DEFAULT_MODEL_OUTPUT_LIMIT = 32768
+
+
+def _effort_key(effort: Any) -> Optional[str]:
+    """Normalise a reasoning setting to a ladder key; None means "no reasoning".
+
+    Accepts "max"/"xhigh"/..., {"effort": "max"}, {"reasoning_effort": "max"}
+    and numeric hints. Any OTHER non-empty setting still means reasoning is ON
+    (unknown providers spell it differently) and gets the medium headroom —
+    the failure mode to avoid is paying nothing for thinking, not over-buying.
+    Never raises.
+    """
+    try:
+        raw = effort
+        if isinstance(raw, dict):
+            raw = raw.get("effort", raw.get("reasoning_effort"))
+        if raw is None or isinstance(raw, bool) and raw is False:
+            return None
+        if isinstance(raw, bool):  # True = reasoning on, level unknown
+            return "medium"
+        if isinstance(raw, (int, float)):
+            return "medium" if float(raw) > 0 else None
+        if isinstance(raw, str):
+            s = raw.strip().lower()
+            if not s or s in ("off", "none", "false", "0", "disabled", "no"):
+                return None
+            return s if s in EFFORT_HEADROOM_RATIO else "medium"
+    except Exception:  # noqa: BLE001 — a junk setting must never break sizing
+        return None
+    return None
+
+
+def reasoning_headroom(base: int, effort: Any) -> int:
+    """Tokens to reserve for reasoning INSIDE the same max_tokens budget.
+    0 when the call carries no reasoning setting (byte-identical legacy)."""
+    key = _effort_key(effort)
+    if key is None:
+        return 0
+    ratio = EFFORT_HEADROOM_RATIO.get(key, 1.0)
+    floor = EFFORT_HEADROOM_FLOOR.get(key, 1500)
+    return max(int(max(0, base) * ratio), floor)
+
+
+def model_output_limit(model: Any = None) -> int:
+    """Largest max_tokens this model can accept. Config override wins
+    (`advisory_max_tokens_ceiling`), then the family table, then the
+    conservative default. Never raises, never returns <= 0."""
+    try:
+        from . import config_access
+        raw = (config_access.router_section() or {}).get("advisory_max_tokens_ceiling")
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
+            return raw
+    except Exception:  # noqa: BLE001
+        pass
+    name = str(model or "").strip().lower()
+    if name:
+        for family, limit in MODEL_OUTPUT_LIMIT.items():
+            if family in name:
+                return limit
+    return DEFAULT_MODEL_OUTPUT_LIMIT
+
+
+def _payload_model(payload: Dict[str, Any]) -> str:
+    """Model this consult will be sent to: payload first, then config
+    (anchor_chain.primary), because the payload has no `model` yet when the
+    budget is applied. Never raises."""
+    try:
+        m = (payload or {}).get("model")
+        if isinstance(m, str) and m.strip():
+            return m.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from . import config_access
+        sec = config_access.router_section() or {}
+        m = sec.get("model")
+        if isinstance(m, str) and m.strip():
+            return m.strip()
+        primary = (config_access.sub_block("anchor_chain") or {}).get("primary")
+        if isinstance(primary, str) and primary.strip():
+            # "nous://anthropic/claude-sonnet-5.5" -> "anthropic/..."
+            return primary.split("://", 1)[1] if "://" in primary else primary.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _payload_effort(payload: Dict[str, Any]) -> Optional[str]:
+    """Effective reasoning setting for this call: payload first, then
+    anchor_chain.reasoning_effort — which anchor_exec injects AFTER the budget
+    is applied, so reading only the payload would leave the live bug unfixed.
+    Never raises."""
+    try:
+        for key in ("reasoning_effort", "reasoning"):
+            k = _effort_key((payload or {}).get(key))
+            if k is not None:
+                return k
+    except Exception:  # noqa: BLE001
+        pass
+    return _config_effort()
+
+
+def _config_effort() -> Optional[str]:
+    """anchor_chain.reasoning_effort as the effective setting. Never raises."""
+    try:
+        from . import config_access
+        return _effort_key((config_access.sub_block("anchor_chain") or {}).get("reasoning_effort"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# "not supplied" — distinct from an explicit effort=None (caller wants the
+# plain visible-text formula). Without the sentinel the lane would apply
+# headroom while a second caller sizing from the same budget did not.
+_EFFORT_UNSET = object()
+
+
+def advisory_max_tokens(char_budget: Optional[int] = None,
+                        effort: Any = _EFFORT_UNSET,
+                        model: Any = None) -> int:
+    """max_tokens that can produce `advisory_char_budget()` characters and still
+    finish its sentence. ~3.2 chars/token for prose, plus slack so the model is
+    not cut mid-thought (a truncated consult reads as a broken consult).
+
+    With a reasoning setting the same budget must ALSO pay for the thinking
+    tokens, which are billed inside max_tokens — so the reasoning headroom is
+    added explicitly instead of leaning on the flat blended ratio. The total is
+    clamped to what the model accepts: an impossible value is a 400, not a
+    budget."""
+    try:
+        n = int(char_budget if char_budget is not None else advisory_char_budget())
+    except Exception:  # noqa: BLE001
+        n = ADVISORY_CHAR_BUDGET_DEFAULT
+    # Measured over 1,850 anchor consults: natural advisory text median 3,208
+    # chars at median 1,846 billed output tokens -> 1.74 chars per output token
+    # (the billed count carries reasoning overhead, not just visible text).
+    # Sizing on 3.2 chars/token would have truncated half the answers.
+    base = max(300, int(n / 1.74) + 120)
+    if effort is _EFFORT_UNSET:
+        effort = _config_effort()
+    head = reasoning_headroom(base, effort)
+    if head <= 0:
+        return base
+    return max(1, min(base + head, model_output_limit(model)))
+
+
+def apply_advisory_budget(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Bound an advisory CONSULT so the provider cannot generate more than we
+    intend to inject. Never raises, never touches tiny probes (their max_tokens
+    is the point of the probe).
+
+    M45-14: on a reasoning lane a caller budget below base+headroom IS the
+    empty-body bug (thinking eats it, content never starts), so it is raised to
+    the reasoning-safe floor instead of being honoured. Without a reasoning
+    setting a smaller caller budget is still honoured exactly as before."""
+    try:
+        from .core import budgets as _b
+        out = dict(payload or {})
+        cur = out.get("max_tokens")
+        if _b.is_probe(cur):
+            return out
+        eff = _payload_effort(out)
+        want = advisory_max_tokens(None, effort=eff, model=_payload_model(out))
+        if isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur <= want:
+            if eff is not None and cur < want:
+                logger.info("anchor_advisory_reasoning_floor max_tokens %s->%s effort=%s",
+                            cur, want, eff)
+                out["max_tokens"] = want
+                return out
+            return out  # caller already asked for less — honour it
+        out["max_tokens"] = want
+        return out
+    except Exception:  # noqa: BLE001 — budgeting must never break the lane
+        return dict(payload or {})
+
 
 def advisory_char_budget() -> int:
     """Char budget for one injected advisory. Config: `advisory_char_budget`
@@ -867,40 +1087,6 @@ def advisory_char_budget() -> int:
         return max(400, min(8000, v))
     except Exception:  # noqa: BLE001
         return ADVISORY_CHAR_BUDGET_DEFAULT
-
-
-def advisory_max_tokens(char_budget: Optional[int] = None) -> int:
-    """max_tokens that can produce `advisory_char_budget()` characters and still
-    finish its sentence. ~3.2 chars/token for prose, plus slack so the model is
-    not cut mid-thought (a truncated consult reads as a broken consult)."""
-    try:
-        n = int(char_budget if char_budget is not None else advisory_char_budget())
-    except Exception:  # noqa: BLE001
-        n = ADVISORY_CHAR_BUDGET_DEFAULT
-    # Measured over 1,850 anchor consults: natural advisory text median 3,208
-    # chars at median 1,846 billed output tokens -> 1.74 chars per output token
-    # (the billed count carries reasoning overhead, not just visible text).
-    # Sizing on 3.2 chars/token would have truncated half the answers.
-    return max(300, int(n / 1.74) + 120)
-
-
-def apply_advisory_budget(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Bound an advisory CONSULT so the provider cannot generate more than we
-    intend to inject. Never raises, never raises a caller's smaller budget,
-    never touches tiny probes (their max_tokens is the point of the probe)."""
-    try:
-        from .core import budgets as _b
-        out = dict(payload or {})
-        cur = out.get("max_tokens")
-        if _b.is_probe(cur):
-            return out
-        want = advisory_max_tokens()
-        if isinstance(cur, int) and not isinstance(cur, bool) and 0 < cur <= want:
-            return out  # caller already asked for less — honour it
-        out["max_tokens"] = want
-        return out
-    except Exception:  # noqa: BLE001 — budgeting must never break the lane
-        return dict(payload or {})
 
 
 def orientation_ask_cap() -> int:

@@ -116,6 +116,10 @@ def test_orientation_payload_carries_the_plan_frame(monkeypatch):
 
 
 def test_request_is_bounded_at_generation_not_truncated_after(monkeypatch):
+    from hermes_router import config_access as ca
+    # pin the VISIBLE-TEXT sizing contract (M45-14 adds reasoning headroom on
+    # top of it; that case is covered in test_m45_14_reasoning_aware_budget)
+    monkeypatch.setattr(ca, "sub_block", lambda name: {})
     monkeypatch.setattr(ax, "advisory_char_budget", lambda: 3800)
     _rec, sent = _stage(monkeypatch, reply="PLAN " * 400)  # 2000 chars, inside budget
     outcome = ax.maybe_execute_anchored("api_r37_2b", _request())
