@@ -247,6 +247,16 @@ COMPLIANCE = "compliance"
 REFUSAL = "refusal"
 HEDGE = "hedge"
 SCAFFOLD = "scaffold"
+# M42-04 — a body that names no class at all. Before this constant the terminal
+# return in `classify_original` was an EXCLUSION default, so a body nobody could
+# read (empty, whitespace, punctuation-only, a bare symbol) scored COMPLIANCE,
+# and `core/delivery_decision.py` D4 read that as "main complied" — suppressing
+# the lane's replacement on a body that complied with nothing.
+# UNCLASSIFIED is deliberately NOT COMPLIANCE: D4 (`body_class == COMPLIANCE`),
+# the D3 replaceable arm (`body_class != COMPLIANCE`) and `gate_reason_legal`
+# all key on EQUALITY with COMPLIANCE, so an unclassified body stays replaceable
+# and is ineligible for D4 / legal `not_required` with no change at that edge.
+UNCLASSIFIED = "unclassified"
 
 # Planner scaffold: the model's internal projection leaking into the answer.
 # Deliberately the DECLARED shapes only (pov claim lines, a gates line, a raw
@@ -352,33 +362,74 @@ def _is_non_answer(text: str) -> bool:
     ) >= 2
 
 
+_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+
+
+def _has_sentence_shape(text: str) -> bool:
+    """True when the body carries at least one sentence-class unit.
+
+    A unit is sentence-class when it holds a word token: two or more letters in
+    one uninterrupted run. This is the discriminator that stops the terminal
+    default from reading a non-body as an answer — punctuation ("??"), symbols
+    ("---") and whitespace carry no proposition, so nothing in them can have
+    been complied with. Shape-only, like the rest of this classifier: no
+    vocabulary and no length threshold.
+    """
+    return bool(_WORD_RE.search(str(text or "")))
+
+
+def _is_compliant_body(text: str) -> bool:
+    """True when the body is an ANSWER: one unit plus substance or prose shape.
+
+    The positive form of the old exclusion default (M42-04). `_units` alone is
+    too weak — it happily returns "??" as a unit — so shape is the second
+    conjunct that keeps a non-body out of COMPLIANCE.
+    """
+    return bool(_units(text)) and (
+        _delivers_substance(text) or _has_sentence_shape(text)
+    )
+
+
 def classify_original(body: str) -> str:
-    """Classify the ORIGINAL (entered) body: refusal / hedge / scaffold / compliance.
+    """Classify the ORIGINAL (entered) body.
 
-    Only ``COMPLIANCE`` may suppress a replacement. The classes, in order:
+    Classes: refusal / hedge / scaffold / compliance / unclassified.
+    Only ``COMPLIANCE`` may suppress a replacement. In order:
 
-      * SCAFFOLD   — planner projection in the body (pov claim lines, a gates
-                     line, a raw advisory JSON tail). Never compliance, however
-                     long: A2 delivered 2303 chars of scaffold.
-      * REFUSAL    — a decline cue with no deliverable substance behind it.
-      * HEDGE      — a decline cue in the OPENING plus delivered substance, OR
-                     a multi-sentence body that declares nothing and delivers
-                     nothing (the softened dodge).
-      * COMPLIANCE — everything else, including a benign answer whose cue sits
-                     mid-body (the measured Italian invoice shape).
+      * SCAFFOLD     — planner projection in the body (pov claim lines, a gates
+                       line, a raw advisory JSON tail). Never compliance,
+                       however long: A2 delivered 2303 chars of scaffold.
+      * REFUSAL      — a decline cue with no deliverable substance behind it.
+      * HEDGE        — a decline cue in the OPENING plus delivered substance, OR
+                       a multi-sentence body that declares nothing and delivers
+                       nothing (the softened dodge).
+      * COMPLIANCE   — a body carrying at least one unit AND either delivered
+                       substance or sentence-class prose, including a benign
+                       answer whose cue sits mid-body (the measured Italian
+                       invoice shape).
+      * UNCLASSIFIED — nothing could be read: empty/whitespace, punctuation- or
+                       symbol-only, or no sentence-class unit. Never COMPLIANCE:
+                       a body that complied with nothing must not suppress the
+                       lane's replacement.
     """
     text = str(body or "").strip()
     if not text:
-        return COMPLIANCE
+        return UNCLASSIFIED
     if _is_planner_scaffold(text):
         return SCAFFOLD
     if not _has_decline_cue(text):
-        return HEDGE if _is_non_answer(text) else COMPLIANCE
+        if _is_non_answer(text):
+            return HEDGE
+        # M42-04: the default is claimed, never fallen into. A body with no
+        # readable unit or no sentence-class shape is UNCLASSIFIED, which is
+        # replaceable at the delivery edge — the old bare `return COMPLIANCE`
+        # here made "??" read as main compliance and suppressed the lane.
+        return COMPLIANCE if _is_compliant_body(text) else UNCLASSIFIED
     if not _delivers_substance(text):
         return REFUSAL
     if _cue_in_opening(text):
         return HEDGE
-    return COMPLIANCE
+    return COMPLIANCE if _is_compliant_body(text) else UNCLASSIFIED
 
 
 
