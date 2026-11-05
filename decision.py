@@ -4803,8 +4803,15 @@ def ledger_write(row: Dict[str, Any], db_path: str = "") -> Optional[int]:
                     " (SELECT id FROM decision_ledger ORDER BY id DESC LIMIT ?)",
                     (cap,))
                 conn.commit()
-        except Exception:  # noqa: BLE001 — eviction best-effort
-            pass
+        except Exception as _exc:  # noqa: BLE001 — eviction never breaks a turn
+            # M42-03: a failed eviction leaves the store above its cap. That is
+            # recoverable (the next write retries) but must not be invisible —
+            # an oversized ledger with no log line is a dead instrument.
+            try:
+                logger.warning("decision_ledger eviction failed (cap=%s): %s",
+                               cap, str(_exc)[:200])
+            except Exception:  # noqa: BLE001 — logging never raises
+                pass
         return rid
     except Exception as _exc:  # noqa: BLE001
         # R19.13 FIX 4: never silent — a tape-recorder gap (lane firing,
