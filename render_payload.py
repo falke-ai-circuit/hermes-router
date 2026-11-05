@@ -537,6 +537,52 @@ def render_impulse_frame(verdict: Dict[str, Any],
         return ""
 
 
+# ---------------------------------------------------------------------------
+# M42-05 — frame distinctness. A lane must not pass certification by emitting
+# another lane's frame, so two frames are compared as SETS OF 3-WORD SHINGLES
+# with every number masked first (a weight/row-id difference is not evidence
+# of a distinct lane). 1 − Jaccard: 0.0 = byte-identical, 1.0 = no shingle in
+# common. No dependency beyond `re`; never raises (a measurement failure reads
+# as "identical", which fails certification closed).
+# ---------------------------------------------------------------------------
+
+_FRAME_NUMBER_RE = re.compile(r"-?\d+(\.\d+)?")
+
+
+def _frame_shingles(text: str) -> set:
+    """3-word shingles of one frame, numbers masked to '#' (M42-05).
+
+    A frame shorter than three words yields its whole word tuple, so a short
+    string still compares as one shingle instead of vanishing.
+    """
+    masked = _FRAME_NUMBER_RE.sub("#", str(text or ""))
+    words = masked.split()
+    if not words:
+        return set()
+    if len(words) < 3:
+        return {tuple(words)}
+    return {tuple(words[i:i + 3]) for i in range(len(words) - 2)}
+
+
+def frame_distinctness(a: str, b: str) -> float:
+    """How far apart two rendered frames are: 1 − Jaccard over 3-word shingles.
+
+    Numbers are masked (`-?\\d+(\\.\\d+)?` -> ``#``) so two frames that differ
+    only in a weight or an id score as identical. Empty/empty returns 0.0
+    (identical, i.e. undifferentiated) and any failure returns 0.0, so the
+    measure never reads as distinctness it did not observe.
+    """
+    try:
+        sa = _frame_shingles(a)
+        sb = _frame_shingles(b)
+        union = sa | sb
+        if not union:
+            return 0.0
+        return 1.0 - (len(sa & sb) / float(len(union)))
+    except Exception:  # noqa: BLE001 — a measure must never raise
+        return 0.0
+
+
 # Decision-owned helpers/consts resolve at IMPORT TIME via this end-of-module
 # import: the defs above precede it, so both import orders are safe —
 # decision.py imports this module at its re-export site (all defs exist by

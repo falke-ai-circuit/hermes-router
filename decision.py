@@ -2591,8 +2591,12 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
                 objective_full: str = "") -> None:
     """Apply the stored goal to the derived anchor; label the turn.
 
-    Sets `goal_guard` ∈ {persisted, drift, superseded} and
-    `goal_guard_tokens` ([] unless drift). First call for a session writes the
+    Sets `goal_guard` ∈ {persisted, drift, superseded, unverified} and
+    `goal_guard_tokens` ([] unless drift). "persisted"/"superseded" are
+    claims about the STORE: they are used only when the corresponding
+    `_goal_write` returned True (M42-05 — a discarded return labelled the
+    turn "persisted" on a store that refused the row); "unverified" is the
+    fail-closed label when it did not. First call for a session writes the
     baseline; an acknowledgement retains the stored rolling text instead of
     replacing the task with itself. Never raises.
 
@@ -2618,11 +2622,16 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
         out["rolling_task"] = derived_task[:SESSION_TASK_CHARS]   # ONE writer
         stored = _goal_read(session_id, db_path)
         if stored is None:
-            _goal_write(session_id, out.get("final_objective", ""),
-                        out["rolling_task"],
-                        _goal_quantifiers(full_text),
-                        db_path)
-            out["goal_guard"] = "persisted"
+            # M42-05 (fail closed): the label reports what the STORE did. The
+            # write's return used to be discarded and the turn was labelled
+            # "persisted" even when the ledger refused the row (no db path,
+            # locked/corrupt store), so the caller could not tell a stored
+            # baseline from a lost one. "persisted" iff the write returned True.
+            wrote = _goal_write(session_id, out.get("final_objective", ""),
+                                out["rolling_task"],
+                                _goal_quantifiers(full_text),
+                                db_path)
+            out["goal_guard"] = "persisted" if wrote is True else "unverified"
             out["goal_guard_tokens"] = []
             return
 
@@ -2633,10 +2642,13 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             baseline = row[:SESSION_OBJECTIVE_CHARS]
             out["final_objective"] = baseline
             out["rolling_task"] = baseline[:SESSION_TASK_CHARS]
-            _goal_write(session_id, baseline, out["rolling_task"],
-                        _goal_quantifiers(row or baseline), db_path,
-                        baseline_ts=stored["baseline_ts"] or None)
-            out["goal_guard"] = "superseded"
+            # M42-05: same rule — a supersede is only a supersede once the
+            # moved baseline is actually in the ledger.
+            wrote = _goal_write(session_id, baseline, out["rolling_task"],
+                                _goal_quantifiers(row or baseline), db_path,
+                                baseline_ts=stored["baseline_ts"] or None)
+            out["goal_guard"] = ("superseded" if wrote is True
+                                 else "unverified")
             out["goal_guard_tokens"] = []
             return
 
@@ -2661,23 +2673,35 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             # "ok" states no new task: retain what the session is FOR.
             out["rolling_task"] = (stored["rolling_text"]
                                    or stored["objective"])[:SESSION_TASK_CHARS]
+            # M42-05: this branch performs NO write — the baseline is already
+            # in the ledger (the read above returned it), and the label says
+            # exactly that. It makes no claim about a write's return, so there
+            # is no discarded return here to fix; "persisted" is proof-of-read.
             out["goal_guard"] = "persisted"
             out["goal_guard_tokens"] = []
             return
 
         current_q = set(_goal_quantifiers(row))
         lost = [t for t in stored["quantifiers"] if t not in current_q]
+        # M42-05: "persisted" must mean the row is WHERE THE TURN SAYS IT IS.
+        # The rolling-advance write used to run AFTER the label was set, so a
+        # refused write still reported "persisted". Attempt the write first and
+        # let its return decide the label; no write needed (rolling text
+        # unchanged) means the row already holds this state — a read-proven
+        # persisted, not an assumed one.
+        wrote = True
+        if out["rolling_task"] != stored["rolling_text"]:
+            # rolling text advances; the quantifier BASELINE stays frozen.
+            wrote = _goal_write(session_id, out["final_objective"],
+                                out["rolling_task"], stored["quantifiers"],
+                                db_path,
+                                baseline_ts=stored["baseline_ts"] or None)
         if lost:
             out["goal_guard"] = "drift"
             out["goal_guard_tokens"] = _goal_named(lost)
         else:
-            out["goal_guard"] = "persisted"
+            out["goal_guard"] = "persisted" if wrote is True else "unverified"
             out["goal_guard_tokens"] = []
-        if out["rolling_task"] != stored["rolling_text"]:
-            # rolling text advances; the quantifier BASELINE stays frozen.
-            _goal_write(session_id, out["final_objective"],
-                        out["rolling_task"], stored["quantifiers"], db_path,
-                        baseline_ts=stored["baseline_ts"] or None)
     except Exception:  # noqa: BLE001 — the guard must never break a consult
         pass
 
