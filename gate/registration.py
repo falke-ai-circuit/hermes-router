@@ -106,6 +106,40 @@ def _sanitize_delivery(text, *, session_id: str = "") -> tuple:
         return text, "", ""
 
 
+#: M45-10 — the distinguishable state for a turn that has NO text in scope
+#: after a delivery-decision failure. Never "": an empty string is
+#: indistinguishable from a legitimate empty answer AND from the swallow this
+#: marker exists to expose, so the no-text case gets its own named bytes.
+NO_TEXT_AFTER_DECISION_FAILURE = (
+    "[hermes-router] Delivery decision failed and this turn produced no text "
+    "to fall back to. The failure is recorded in the router ledger."
+)
+
+
+def _decision_failure_marker(err) -> str:
+    """Name a swallowed decision-block exception: type + repr head (M45-10)."""
+    try:
+        return "delivery_decision_error:%s:%s" % (
+            type(err).__name__, repr(err)[:120])
+    except Exception:  # noqa: BLE001 — naming a failure never raises
+        return "delivery_decision_error:unprintable"
+
+
+def _fallback_after_decision_error(out, original):
+    """The body that ships when the decision block raised (M45-10).
+
+    Prefers text that ALREADY EXISTS at that point — the seam's own output
+    first, then the host's entered body — and falls back to an explicit
+    no-text state. Never returns "": a turn that produced text must not ship an
+    empty message, and a turn that produced none must be distinguishable from
+    a normal empty answer.
+    """
+    for _cand in (out, original):
+        if isinstance(_cand, str) and _cand.strip():
+            return _cand
+    return NO_TEXT_AFTER_DECISION_FAILURE
+
+
 @functools.wraps(orchestration.on_transform_llm_output)
 def on_transform_llm_output_guarded(**kwargs):
     """R78U M8 delivery-edge guards IN FRONT OF the POST orchestrator.
@@ -220,15 +254,31 @@ def on_transform_llm_output_guarded(**kwargs):
                 pass
         _log_decision(_decision, kwargs)
     except Exception as _dd_err:  # noqa: BLE001 — a seam bug is loud, not silent
+        # M45-10: a seam bug must never become an empty body. Text already
+        # exists in scope here (the seam's `out`, or the host's `_original`),
+        # so ship THAT over a finished turn instead of "". Genuinely no text is
+        # its own named state, not an empty string that reads like a normal
+        # empty answer.
         _decision = None
-        final = ""
-        _failure = "delivery_decision_error"
+        final = _fallback_after_decision_error(out, _original)
+        _failure = _decision_failure_marker(_dd_err)
+        try:
+            if _turn is not None:
+                # withhold() keeps lane/delivered honest; stamping the marker
+                # into `outcome` is what makes the swallow NAME itself in the
+                # provenance row instead of hiding behind a generic token.
+                _turn.withhold(_failure)
+                _turn.outcome = _failure
+        except Exception:  # noqa: BLE001
+            pass
         try:
             _lg_err = _hub_log_route()
             if _lg_err is not None:
                 _lg_err("POST", event_detail="delivery_decision_error",
                         severity="error", error=type(_dd_err).__name__,
                         detail=str(_dd_err)[:160],
+                        marker=_failure,
+                        fallback_chars=len(final or ""),
                         session_id=str(kwargs.get("session_id") or ""))
         except Exception:  # noqa: BLE001
             pass
