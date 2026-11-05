@@ -168,11 +168,11 @@ def record_last_seen(session_id: str, content: str) -> None:
             while len(_LAST_SEEN) > _LAST_SEEN_MAX:
                 _LAST_SEEN.pop(next(iter(_LAST_SEEN)))
     try:
-        # §2.7 seam liveness probe: the first turn-identity advance runs
-        # the dead-on-arrival check (zero-fire seams emit fail-loud rows).
-        from ..core import telemetry as _t
-
-        _t.seam_probe_maybe_advance()
+        # §2.7 seam liveness probe is judged at the first TURN END
+        # (orchestration.on_transform_llm_output), not here: this call site runs inside the
+        # first turn's request path, so judging there indicted every end-of-turn seam before
+        # it could fire (M45-16).
+        pass
     except Exception:  # noqa: BLE001 — the probe never breaks state
         pass
 

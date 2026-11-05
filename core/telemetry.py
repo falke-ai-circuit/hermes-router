@@ -224,8 +224,12 @@ def record_swallow(gate: str, exc: BaseException, **fields: Any) -> None:
 _SEAM_LOCK = threading.Lock()
 _SEAM_FIRES: Dict[str, int] = {}
 _SEAM_REGISTERED = False
+# The names here MUST be the seams the plugin actually fires. `transform_tool_result` was
+# watched but never fired: orchestration.on_transform_terminal_output() is the tool seam the
+# host calls (register_hook("transform_terminal_output", …)), so a watched-but-unfired name
+# reported dead on arrival in every process, forever (M45-16).
 _TURN_SEAMS = ("llm_request", "llm_execution", "transform_llm_output",
-               "transform_tool_result")
+               "transform_terminal_output")
 
 
 def seam_probe_register(ctx: Any) -> None:
@@ -254,8 +258,16 @@ def seam_fires() -> Dict[str, int]:
 
 
 def seam_probe_maybe_advance() -> None:
-    """Turn-identity advanced (state.record_last_seen): run the §2.7
-    dead-seam check ONCE per process (first advance only)."""
+    """The FIRST turn-end edge (on_transform_llm_output) runs the §2.7 dead-seam check,
+    ONCE per process.
+
+    It used to run on the first turn-identity advance (state.record_last_seen), which happens
+    inside the request path of the first turn — before that same turn can reach its end-of-turn
+    hooks. Every seam that fires later in the turn (llm_execution, transform_llm_output,
+    transform_terminal_output) was therefore guaranteed to read 0 and was declared dead by
+    construction, on every process (M45-16). Judging a seam for not having fired before it had
+    a chance to fire is the probe lying, not the seam dying.
+    """
     global _SEAM_REGISTERED
     if _SEAM_REGISTERED:
         return
@@ -264,10 +276,13 @@ def seam_probe_maybe_advance() -> None:
 
 
 def seam_dead_on_arrival_check() -> Dict[str, int]:
-    """Called after the first turn-identity advance: any registered seam
-    with ZERO fires emits `seam_dead_on_arrival` and is returned (surfaced
-    via /router diag + router_status). Once-per-process."""
+    """Called at the first turn end: any registered seam with ZERO fires emits
+    `seam_dead_on_arrival` and is returned (surfaced via /router diag + router_status).
+    Once-per-process. No request was made this process -> nothing to judge: a turn that never
+    reached the provider cannot indict the seams downstream of it."""
     with _SEAM_LOCK:
+        if _SEAM_FIRES.get("llm_request", 0) == 0:
+            return dict(_SEAM_FIRES)
         zero = [s for s, n in _SEAM_FIRES.items() if n == 0]
     for s in zero:
         try:

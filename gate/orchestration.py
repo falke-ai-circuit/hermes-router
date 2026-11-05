@@ -1132,9 +1132,12 @@ def _reset_declaration_state() -> None:
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
     try:
-        from ..core.telemetry import seam_probe_fire
+        from ..core.telemetry import seam_probe_fire, seam_probe_maybe_advance
 
         seam_probe_fire("transform_llm_output")
+        # Turn end is the first moment the whole turn's seams have had their chance; the §2.7
+        # dead-seam judgement belongs here, once per process (M45-16).
+        seam_probe_maybe_advance()
     except Exception:  # noqa: BLE001 — probe never breaks the seam
         pass
     # R34-10a: this seam is the turn-end edge (final body, including an empty
