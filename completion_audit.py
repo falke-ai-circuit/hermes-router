@@ -1617,17 +1617,27 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
             # produced (audit banner + higher-self confirmation) goes into the
             # turn record, and the boundary appends the whole block once.
             if _pending:
+                _block = "\n".join(_pending).strip()
                 try:
                     from .features.banners import turn_record as _turn
 
-                    # M35-17: segments register; the delivered body is the
-                    # agent's own bytes and is returned unchanged.
-                    _turn.register(session_id, "\n".join(_pending),
+                    # M45-11: registration is the RECORD of this turn, not its
+                    # delivery path — turn_record.render() has no caller on the
+                    # delivery edge. M35-17's "returned unchanged" is what left
+                    # every confirmation built here and shipped nowhere.
+                    _turn.register(session_id, _block,
                                    lane="frontier-anchor",
                                    kind="completion_audit",
                                    edge="completion_audit")
                 except Exception:  # noqa: BLE001 — banner never breaks delivery
                     pass
+                # M45-11: the confirmation is part of the ANSWER, not a row only
+                # an operator can read. Append it to the body the host returns,
+                # blank-line banner convention, after the agent's own bytes.
+                if _block:
+                    _base = (_out.rstrip() if isinstance(_out, str)
+                             else str(_out or "")).rstrip()
+                    _out = ("%s\n\n%s" % (_base, _block)) if _base else _block
             return _out
         # async topology (or sync budget 0): legacy next-turn verdict.
         _set_gate_cause("async_topology")
