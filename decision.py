@@ -2587,7 +2587,8 @@ def _goal_write(session_id: str, objective: str, rolling_text: str,
 
 
 def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
-                newest_row: str, derived_task: str = "") -> None:
+                newest_row: str, derived_task: str = "",
+                objective_full: str = "") -> None:
     """Apply the stored goal to the derived anchor; label the turn.
 
     Sets `goal_guard` ∈ {persisted, drift, superseded} and
@@ -2604,16 +2605,22 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
 
     `db_path` here means the LEDGER store; the same argument is the MESSAGES
     store in `session_anchor` (F4 — no non-test caller passes it today).
+
+    `objective_full` is the UNCAPPED original ask. The stored/served objective
+    stays at SESSION_OBJECTIVE_CHARS for prompt budget, but Q() must read the
+    whole text: a quantifier that sits past the cap is otherwise invisible and
+    the ledger records `[]` for a stated "only" (M42-07).
     """
     try:
         row = str(newest_row or "")
+        full_text = str(objective_full or out.get("final_objective", "") or "")
         derived_task = str(derived_task or row or out.get("final_objective", ""))
         out["rolling_task"] = derived_task[:SESSION_TASK_CHARS]   # ONE writer
         stored = _goal_read(session_id, db_path)
         if stored is None:
             _goal_write(session_id, out.get("final_objective", ""),
                         out["rolling_task"],
-                        _goal_quantifiers(out.get("final_objective", "")),
+                        _goal_quantifiers(full_text),
                         db_path)
             out["goal_guard"] = "persisted"
             out["goal_guard_tokens"] = []
@@ -2627,7 +2634,7 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             out["final_objective"] = baseline
             out["rolling_task"] = baseline[:SESSION_TASK_CHARS]
             _goal_write(session_id, baseline, out["rolling_task"],
-                        _goal_quantifiers(baseline), db_path,
+                        _goal_quantifiers(row or baseline), db_path,
                         baseline_ts=stored["baseline_ts"] or None)
             out["goal_guard"] = "superseded"
             out["goal_guard_tokens"] = []
@@ -2642,7 +2649,7 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
         # drift on the OBJECTIVE itself (M2/M3: the baseline text moved), and the
         # lost tokens are named rather than reported as an empty finding.
         if stored["objective_sha"] != _goal_sha(derived_objective):
-            current_q = set(_goal_quantifiers(derived_objective))
+            current_q = set(_goal_quantifiers(full_text or derived_objective))
             out["goal_guard"] = "drift"
             out["goal_guard_tokens"] = _goal_named(
                 [t for t in stored["quantifiers"] if t not in current_q])
@@ -2746,7 +2753,9 @@ def session_anchor(session_id: str, db_path: str = "") -> Dict[str, str]:
             return ""
 
         _newest_user_row = _pick(True)
-        out["final_objective"] = _pick(False)[:SESSION_OBJECTIVE_CHARS]
+        # M42-07: Q() reads the UNCAPPED text — the served objective keeps the cap.
+        _objective_full = _pick(False)
+        out["final_objective"] = _objective_full[:SESSION_OBJECTIVE_CHARS]
         # R78 M42-01: `_goal_guard` is the ONE writer of out["rolling_task"] — it
         # receives the derivation instead of session_anchor assigning the key, so
         # no second writer can overwrite the guard's decision (F2).
@@ -2755,7 +2764,8 @@ def session_anchor(session_id: str, db_path: str = "") -> Dict[str, str]:
         # non-test caller passes it today).
         _goal_guard(out, sid, db_path or "", _newest_user_row,
                     derived_task=(_newest_user_row
-                                  or out["final_objective"]))
+                                  or out["final_objective"]),
+                    objective_full=_objective_full)
 
         rows = conn.execute(
             "SELECT role, content, tool_name, tool_calls FROM messages"
