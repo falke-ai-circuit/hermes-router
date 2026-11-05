@@ -3245,10 +3245,23 @@ def _option_frame(label: str, ask: str, option_index: int, fork_cls: str,
     try:
         low_label = str(label).strip().lower()
         line = ""
+        # M42-06: every extraction site truncates labels at 120 chars
+        # (clean_snippet), so a truncated label is NOT a substring of its own
+        # raw line — the match failed and every frame field stayed None. The
+        # cut is at the TAIL only, so a bounded prefix is always present when
+        # the label came from that line; three leading tokens are the
+        # fallback for labels whose 40-char prefix was perturbed upstream.
+        needle = low_label[:40]
+        fallback = " ".join(low_label.split()[:3])
         for raw in str(ask or "").splitlines():
-            if low_label and low_label in raw.lower():
+            if needle and needle in raw.lower():
                 line = raw
                 break
+        if not line and fallback and fallback != needle:
+            for raw in str(ask or "").splitlines():
+                if fallback in raw.lower():
+                    line = raw
+                    break
         if line:
             m = _CAUSE_SEP_RE.search(line)
             if m and str(line[m.end():] or "").strip():
@@ -3265,6 +3278,12 @@ def _option_frame(label: str, ask: str, option_index: int, fork_cls: str,
         priors = _ledger_priors(fork_cls, option_index, cfg)
         if priors:
             frame["priors"] = priors
+        if not line and not priors:
+            # M42-06: a frame with neither a source line nor priors is a MISS,
+            # not an empty frame. Returning all-None silently is how "every
+            # option carries a causal frame" stayed unmeasured. Fields stay
+            # None; this is observation only — no prompt/schema/wire change.
+            bump_counter("option_frame_miss")
         return frame
     except Exception:  # noqa: BLE001
         return frame
