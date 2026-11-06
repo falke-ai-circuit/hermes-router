@@ -96,7 +96,7 @@ bespoke code per file. Now the behavioral surface is **data**:
   `phrases` (route_gate phrase dicts), `pre_patterns` (dispatcher_knobs),
   `marker_strings` (sentinel firewall registry), `banner_kind`
   (debug_banner park semantics), `budget_profile` (audit budgets),
-  `config_section`, `commands_switch` (/router map), `provenance_tag`,
+  `commands_switch` (/router map), `provenance_tag`,
   `delivery_edges`, `consult_role`, `valid`. Registration is import-time
   fail-loud (duplicate id = ValueError). The four builtins live in
   `lanes/builtins.py`, transplanted byte-identically from the original

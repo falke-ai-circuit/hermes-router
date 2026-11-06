@@ -16,7 +16,6 @@ Each field maps 1:1 to the pre-restructure touch list:
 | `marker_strings` | dispatcher_pre sentinel markers | Sequence[str] |
 | `banner_kind` | debug_banner park semantics | Optional[str] |
 | `budget_profile` | decision/completion_audit budgets | Optional[str] |
-| `config_section` | config_writer/config_access | Optional[str] |
 | `commands_switch` | commands.py _LANE_MAP | Optional[Dict[str, str]] |
 | `provenance_tag` | frames/canonical provenance | Optional[str] |
 | `delivery_edges` | canonical delivery edges | Optional |

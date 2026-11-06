@@ -7,7 +7,6 @@ maps 1:1 to a file in the analyst's 15-file touch list:
     dispatcher_pre marker registry -> marker_strings
     debug_banner park semantics  -> banner_kind
     decision/completion_audit budgets -> budget_profile
-    config_writer/config_access  -> config_section
     commands.py _LANE_MAP        -> commands_switch (label, config_key)
     frames/canonical provenance  -> provenance_tag
     canonical/delivery edges     -> delivery_edges
@@ -50,7 +49,30 @@ class LaneContract:
 
 @dataclass(frozen=True)
 class LaneSpec:
-    """One lane's behavioral surface as data (§1.5)."""
+    """One lane's behavioral surface as data (§1.5).
+
+    ENABLE/DISABLE DEFAULTS ARE NOT UNIFORM, and no field here carries them
+    (M37-06 D3). Resolution runs through `router_core._lane_enabled` ->
+    `_complexity_cfg` / `_decision_cfg`, which fall back to `{}` on a missing
+    config section, and the resulting default is per lane:
+      shadow    — always enabled (no config gate on the render lane)
+      higher-pre  (frontier/complexity) — FAIL-OPEN: missing section => enabled
+      decision  — FAIL-CLOSED: missing section => disabled
+      higher-post — enabled whenever its POST audit path is reached
+    A maintainer must not assume a single default: an unwired lane that expects
+    "disabled unless configured" is wrong for complexity and wrong for shadow.
+
+    `config_section` was removed in M37-06: it was `None` on every lane with
+    zero readers anywhere in the tree (grep evidence in M37-06_FIX.md), so the
+    only config surface is the one named above.
+
+    RECURRING TRAP, named once here because it is cheap to get wrong: registry
+    ids and `router_core` lane values are DIFFERENT vocabularies. `'decision'`
+    is the single coincidental shared spelling and MUST NOT be used as a join
+    key between them — a join on string equality matches that one row and
+    silently misses `complexity` (registry: `higher-pre`) and `uncensored`
+    (registry: `shadow`). M37-06 D5.
+    """
 
     id: str
     phrases: Mapping[str, str] = field(default_factory=dict)
@@ -58,7 +80,6 @@ class LaneSpec:
     marker_strings: Sequence[str] = ()
     banner_kind: Optional[str] = None
     budget_profile: Optional[str] = None
-    config_section: Optional[str] = None
     commands_switch: Optional[Dict[str, str]] = None
     provenance_tag: Optional[str] = None
     delivery_edges: FrozenSet[str] = frozenset()
@@ -116,6 +137,15 @@ def enumerate_by_seam(seam: str) -> tuple:
     Registration order is the cross-lane order (lanes/builtins.py) — this
     accessor adds no ordering of its own. Unknown seam id raises rather than
     returning an empty tuple, so a caller that typos a seam learns it.
+
+    TRUTH ABOUT THIS FUNCTION (M37-06 D2): it has NO production consumer. In
+    the tree at 3fc7a86 the only references are this definition and two test
+    files (`tests/routing/test_m37_02_lanespec_seams.py`,
+    `tests/routing/test_m37_04_pre_lane_table.py`). Nothing in `passes/`,
+    `gate/` or `core/` asks which lanes declare a seam: the PRE, MID and POST
+    hooks are still hand-wired, so a lane that declares a seam is NOT thereby
+    plugged into it. The seam declaration is a claim the registry can answer
+    and that the tests read; the render-time consumer does not exist yet.
     """
     key = str(seam or "").strip().upper()
     if key not in SEAM_IDS:

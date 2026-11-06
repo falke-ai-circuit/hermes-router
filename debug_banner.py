@@ -110,28 +110,72 @@ def debug_banner_enabled() -> bool:
     return lvl >= 1
 
 
+# M37-06 D4: labels are keyed on REGISTERED lane ids and the lookup goes
+# through lanes.registry, so a banner that names a lane the registry dropped
+# fails here instead of silently rendering a truncated string. Values are
+# byte-identical to the pre-registry behaviour: the two frontier lanes used to
+# fall through split("-", 1)[0] and rendered "higher"; that string is preserved
+# on purpose, because decision.DELIVERED_MARK derives its echo filter from it.
+#
+# Tuple rows, not dicts: turn_record's test-isolation guard sweeps every dict in
+# this module's namespace as per-session state, so a dict label table would be
+# cleared mid-suite and `lane_label` would silently fall through to the split.
+_LANE_LABEL_ROWS = (
+    ("shadow", "shadow-self (uncensored)"),
+    ("higher-pre", "higher"),
+    ("higher-post", "higher"),
+    ("decision", "impulse (decision)"),
+)
+
+# Display spellings that are NOT registry ids: (spelling, registered id, label).
+# Each names the registered lane it stands for (checked at call time) — kept
+# verbatim from the pre-M37-06 branches so no consumer's output moves.
+_LANE_LABEL_ALIAS_ROWS = (
+    ("frontier", "higher-pre", "higher-self (frontier)"),
+    ("frontier-anchor", "higher-pre", "higher-self (frontier)"),
+    ("uncensored", "shadow", "shadow-self (uncensored)"),
+    ("uncensored-render", "shadow", "shadow-self (uncensored)"),
+    ("reflex", "decision", "impulse (decision)"),
+)
+
+
+def _registered_lane_id(lane_id: str) -> str:
+    """The id, if the registry still knows it; KeyError otherwise (fail-loud)."""
+    from .lanes.registry import lane as _lane_spec
+
+    return _lane_spec(lane_id).id
+
+
 def lane_label(lane: str) -> str:
     """The display label for a lane KEY — the single source for banner identity.
 
     format_banner renders it, and decision.DELIVERED_MARK derives its echo-filter mark from
     it, so renaming a lane's user-facing label cannot leave a stale copy behind that silently
     stops matching. Pure string shaping, never raises.
+
+    M37-06 D4: the label table is keyed on registered lane ids and every hit is
+    proved against lanes.registry. A banner or log literal naming a lane the
+    registry cannot resolve therefore does not silently degrade to
+    `split("-", 1)[0]`; only genuinely non-lane display keys take that path.
     """
     try:
         lane = str(lane or "")
-        # Goran 09-14 framing: the uncensored/shadow lane is the agent's own
-        # SHADOW SELF (part of her model, not an external route); the
-        # frontier lane is her HIGHER SELF. Banner labels reflect identity,
-        # not plumbing.
-        # v1.1 addendum (SPEC-impulse-lane-v1.md): display label is
-        # 'impulse (decision)' — the lane KEY stays 'decision', the
-        # module name and PROVENANCE_TAG are unchanged.
+        for _spelling, _target, _alias_label in _LANE_LABEL_ALIAS_ROWS:
+            if lane == _spelling:
+                _registered_lane_id(_target)
+                return _alias_label
+        try:
+            _resolved = _registered_lane_id(lane)
+        except KeyError:
+            _resolved = None
+        if _resolved is not None:
+            for _lane_id, _label in _LANE_LABEL_ROWS:
+                if _lane_id == _resolved:
+                    return _label
+        # Not a registered id: a non-lane display key keeps the historical
+        # shaping, byte-identical for everything the codebase emits today.
         if lane.startswith("frontier"):
             return "higher-self (frontier)"
-        if lane in ("shadow", "uncensored", "uncensored-render"):
-            return "shadow-self (uncensored)"
-        if lane in ("decision", "reflex"):
-            return "impulse (decision)"
         return lane.split("-", 1)[0]
     except Exception:  # noqa: BLE001
         return ""

@@ -44,6 +44,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import anchor_chain, anchor_exec, router_core, state
 from .frames import HS_COMPLETION_AUDIT_MARKER as _HS_AUDIT_MARKER  # R8h single source
 
+# M37-06 D4: the lane id logged on the spend row is resolved through the lane
+# registry rather than pasted as a literal, so a registry that no longer carries
+# the higher-post lane fails at import instead of logging a name nothing can
+# resolve. Importing builtins registers the four lanes.
+from .lanes import builtins as _lane_builtins
+from .lanes.registry import lane as _lane_from_registry
+
+_POST_AUDIT_LANE_ID = _lane_from_registry(_lane_builtins.LANE_HIGHER_POST).id
+
 # R20-D3 (rider 20): hard cap for the sync audit consult (and the pre-consume
 # decision/anchor waits) inside on_transform_llm_output. The host plugin
 # runner kills the hook callback at 30s ("timed out after 30s — skipping")
@@ -2810,7 +2819,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 routing_caps.record_agent_spend(
                     routing_caps.agent_identity(), cost,
                     initiator=_initiator,
-                    lane="higher-post")
+                    lane=_POST_AUDIT_LANE_ID)
                 routing_caps.record_cooldown(session_id)
             except Exception:  # noqa: BLE001
                 pass

@@ -497,9 +497,40 @@ def _handle_complexity_lane(content: str, session_id: str, model: str,
     return True
 
 
+# Two vocabularies meet at this table and they name DIFFERENT objects:
+# registry LaneSpec.id ("shadow", "higher-pre", "higher-post", "decision") is a
+# render/timing identity; RouteDecision.lane (router_core.LANE_*) is a dispatch
+# outcome classification. 'decision' is the SINGLE coincidental shared spelling
+# — both sides literally define "decision" — and it MUST NOT be used as a join
+# key between registry ids and router_core values: a string-equality join looks
+# correct on that one row and silently never matches 'complexity' (registry:
+# higher-pre) or 'uncensored' (registry: shadow). M37-06 D5.
+_PRE_LANE_HANDLER_KEYS = frozenset({router_core.LANE_COMPLEXITY})
+
 _PRE_LANE_HANDLERS = {
     router_core.LANE_COMPLEXITY: _handle_complexity_lane,
 }
+
+
+def _validate_pre_lane_handlers(table: Dict[str, Any]) -> None:
+    """Fail-loud (import-time) if the table keys a lane PRE does not own.
+
+    `_pre_lane_dispatch` runs BEFORE the frozen decision branch in
+    `_dispatch_pass`; a `LANE_DECISION` row here would therefore fire first and
+    make the decision lane unreachable with no error anywhere. Fail-open covers
+    unknown lanes; this guard covers the known-but-not-yours case. The message
+    names every offending key and the permitted set.
+    """
+    bad = sorted(str(_k) for _k in table if _k not in _PRE_LANE_HANDLER_KEYS)
+    if bad:
+        raise ValueError(
+            "dispatcher_pre._PRE_LANE_HANDLERS: key(s) %s are not PRE handler "
+            "lanes (permitted: %s)" % (
+                ", ".join(repr(_b) for _b in bad),
+                ", ".join(repr(_k) for _k in sorted(_PRE_LANE_HANDLER_KEYS))))
+
+
+_validate_pre_lane_handlers(_PRE_LANE_HANDLERS)
 
 
 def _pre_lane_dispatch(content: str, session_id: str, model: str,
@@ -622,6 +653,40 @@ def _frame_sentinel_check(content: str) -> bool:
     return any(marker in content
                for spec in _all_lanes()
                for marker in spec.marker_strings)  # frame sentinels: skip PRE re-routing
+
+
+def _frame_sentinel_markers() -> tuple:
+    """The firewall's marker union, read from the lane registry."""
+    from ..lanes.registry import all_lanes as _all_lanes
+
+    return tuple(marker for spec in _all_lanes() for marker in spec.marker_strings)
+
+
+def _validate_sentinel_coverage() -> None:
+    """Fail-loud when a lane leaves the registry but keeps its markers declared.
+
+    The firewall is a UNION over registered lanes, so dropping a lane silently
+    shortens it: that lane's own output stops being recognised as router output
+    and re-triggers PRE routing. Every MARKER_* constant in lanes/builtins.py is
+    a firewall entry, so the union must still contain all of them.
+    """
+    from ..lanes import builtins as _builtins
+
+    present = set(_frame_sentinel_markers())
+    missing = []
+    for _name in dir(_builtins):
+        if not _name.startswith("MARKER_"):
+            continue
+        for _marker in getattr(_builtins, _name):
+            if _marker not in present:
+                missing.append((_name, _marker))
+    if missing:
+        raise ValueError(
+            "dispatcher_pre: marker(s) missing from the re-routing firewall: %s"
+            % ", ".join("%s:%r" % (_n, _m) for _n, _m in missing))
+
+
+_validate_sentinel_coverage()
 
 
 def _clarify_intent_scan(request: Any, matches: list, content: str,

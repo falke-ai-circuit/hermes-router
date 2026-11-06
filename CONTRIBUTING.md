@@ -31,7 +31,7 @@
    entry in `features/patterns/packs/lane-phrases.json`), `pre_patterns`
    if the lane fires mechanically, `marker_strings` (REQUIRED — sentinel
    firewall; routed turns never re-trigger routing), plus any of
-   `banner_kind` / `budget_profile` / `config_section` /
+   `banner_kind` / `budget_profile` /
    `commands_switch` / `provenance_tag` / `delivery_edges` /
    `consult_role` the lane needs.
 2. Register it (import-time fail-loud; keep VALID_ROUTE_LANES order).
