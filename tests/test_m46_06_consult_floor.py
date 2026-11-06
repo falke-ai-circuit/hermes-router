@@ -38,11 +38,16 @@ def _set_turn(budget, session_id: str, n: int) -> None:
     ac._TURN_NO[session_id] = n
 
 
-def _knobs(monkeypatch, floor: int, cap: int = 1) -> None:
+def _knobs(monkeypatch, floor: int, cap: int = 1, post_floor: int = None) -> None:
+    """Pin both consult dials. `post_floor` defaults to `floor` so a test that
+    moves the age boundary moves the POST's own dial too (M46-07 split the
+    PRE->POST gap onto `consult_post_min_turns`)."""
     from hermes_router import config_access
 
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"consult_min_turns": floor,
+                                 "consult_post_min_turns": (floor if post_floor is None
+                                                            else post_floor),
                                  "consult_max_per_task": cap})
 
 
@@ -92,7 +97,12 @@ def test_second_consult_before_the_floor_is_refused_and_recorded(
 
 def test_task_past_the_floor_gets_one_pre_one_post_and_no_more(
         budget, monkeypatch):
-    """CONTRACTS 2+3: aged task spends 1 PRE + 1 POST; everything else capped."""
+    """CONTRACTS 2+3: aged task spends 1 PRE + 1 POST; everything else capped.
+
+    M46-07: the PRE->POST age boundary is `consult_post_min_turns`; `_knobs`
+    pins it alongside `consult_min_turns` so this test still moves the boundary
+    it is named for (the cap assertions are untouched).
+    """
     _knobs(monkeypatch, floor=2)
     session, task = "s-m4606-aged", "t-m4606-aged"
 

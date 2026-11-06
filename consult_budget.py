@@ -11,22 +11,29 @@ Contract implemented here:
   RULE 1  one PRE and one POST consult per task, maximum. The third attempt on
           the same task is REFUSED and RECORDED (trigger='consult_capped') —
           auditable, never silent, and never sent to the frontier model.
-  RULE 2  (M46-06 owner ruling, supersedes the M45-25b deferral) EVERY ask
-          keeps the POSSIBILITY of a consult; the triggers — not a blanket
-          floor — decide whether it fires. Mechanically:
-            * the floor is a REPEAT-consult floor, counted in TASK turns;
-            * the FIRST consult of a task is NEVER floored — it may fire on
-              task turn 1 whenever the complexity/impact gate routed here;
-            * consults after the first must wait until the task has aged to
-              `consult_min_turns` TASK turns (task turn 1 = the session turn
-              on which the task's first consult was attempted).
+  RULE 2  (M46-06 owner ruling + M46-07 ruling) EVERY ask keeps the
+          POSSIBILITY of a consult; the triggers — not a blanket floor — decide
+          whether it fires. Mechanically:
+            * the PRE floor is a REPEAT-consult floor counted PER LEG in TASK
+              turns: `prior` is the PRE leg's own count, so a task whose PRE
+              already spent its slot can never be floored out of its POST;
+            * the FIRST consult of a task is NEVER floored — `prior == 0` on
+              that leg allows it on task turn 1, on any ask, whenever the
+              complexity/impact gate routed here;
+            * the POST leg has its OWN age floor: `consult_post_min_turns`
+              (default 3), counted from the ORIGINAL ask's first task turn.
+              A POST below it is refused `below_min_turns` (recorded);
+            * a POST whose delivery seam can no longer put the result in this
+              turn's body (the legacy async topology, which consults AFTER the
+              response has shipped) is refused `after_delivery` (recorded):
+              the ruling requires the POST to land in the delivered body of the
+              task's response, not after it.
           Task turn = session_turn - first_seen_session_turn + 1, so the basis
           is the task's own age, not the session's turn index. A task with no
           known session turn (0) fails OPEN, never floored.
-          Knob: `consult_min_turns`, default 1 (documented in plugin.yaml).
-          At 1 the repeat floor is inert (task turn is 1-based, so `task_turn
-          < 1` never holds) and only `consult_max_per_task` binds; set 2+ to
-          make a task age before its second consult. Read live, never cached.
+          Knobs: `consult_min_turns` (default 1, PRE repeat floor; at 1 inert)
+          and `consult_post_min_turns` (default 3, POST age floor). Read live,
+          never cached.
   RULE 3  the complexity/impact gate stays in FRONT of this module — this is a
           budget check placed immediately before the spend, not a routing gate.
 
@@ -46,9 +53,14 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_PER_TASK = 1     # per leg (one PRE + one POST)
-DEFAULT_MIN_TURNS = 1        # RULE 2 knob — REPEAT-consult floor in TASK
+DEFAULT_MIN_TURNS = 1        # RULE 2 knob — PRE REPEAT-consult floor in TASK
                              # turns (1 = inert: the first consult is never
                              # floored and a 1-based task turn is never < 1).
+DEFAULT_POST_MIN_TURNS = 3   # RULE 2 knob — POST age floor in TASK turns,
+                             # counted from the ORIGINAL ask. Default 3 = the
+                             # analyst M46-08 leg's number is not on disk
+                             # (M46-08_DEFAULT.md absent at build time); the
+                             # dial is what M46-08 will measure against.
 
 CAPPED_TRIGGER = "consult_capped"
 
@@ -65,13 +77,38 @@ _TASK_BORN: Dict[str, int] = {}
 
 
 def _knob_int(name: str, default: int) -> int:
-    """Live-read a top-level router-section int knob (canonical reader)."""
-    try:
-        from . import config_access
+    """Live-read an int knob: top-level router section, then its `complexity`
+    sub-block (where the fleet configs actually carry the `consult_*` knobs).
 
-        return int((config_access.router_section() or {}).get(name, default))
+    Measured cause of the dead knob (deployed build md5 5f40e1e8 == the build
+    before this fix): the reader looked ONLY at the top-level router section,
+    while all 11 fleet configs declare `consult_min_turns: 2` under
+    `complexity:`. Every lookup missed, the bare `except` swallowed the miss,
+    and the documented-inert default 1 was returned — a configured dial of 2
+    behaved as 1 on every agent. The import below is explicit (`core.`) so the
+    reader cannot depend on package-init import order to find it.
+    """
+    try:
+        try:
+            from .core import config_access
+        except Exception:  # noqa: BLE001 — older layout fallback
+            from . import config_access  # type: ignore[no-redef]
+
+        sec = config_access.router_section() or {}
+        if name in sec:
+            try:
+                return int(sec.get(name))
+            except (TypeError, ValueError):
+                return default
+        comp = sec.get("complexity")
+        if isinstance(comp, dict) and name in comp:
+            try:
+                return int(comp.get(name))
+            except (TypeError, ValueError):
+                return default
     except Exception:  # noqa: BLE001 — config read never breaks a turn
-        return default
+        pass
+    return default
 
 
 def max_per_task() -> int:
@@ -83,11 +120,24 @@ def max_per_task() -> int:
 
 
 def min_turns() -> int:
-    """consult_min_turns (int, default 1) — REPEAT-consult floor in TASK turns."""
+    """consult_min_turns (int, default 1) — PRE REPEAT-consult floor in TASK turns."""
     try:
         return max(0, _knob_int("consult_min_turns", DEFAULT_MIN_TURNS))
     except Exception:  # noqa: BLE001
         return DEFAULT_MIN_TURNS
+
+
+def post_min_turns() -> int:
+    """consult_post_min_turns (int, default 3) — POST age floor in TASK turns.
+
+    Counted from the ORIGINAL ask (task turn 1 = the turn the ask was first
+    seen), so a POST may not fire on the same turn as the PRE that already
+    spent its slot; it fires from the ask's Nth task turn onward.
+    """
+    try:
+        return max(0, _knob_int("consult_post_min_turns", DEFAULT_POST_MIN_TURNS))
+    except Exception:  # noqa: BLE001
+        return DEFAULT_POST_MIN_TURNS
 
 
 def turn_no(session_id: str) -> int:
@@ -189,36 +239,57 @@ def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
 
 
 def check(session_id: str, task_id: str = "", leg: str = "pre",
-          ask: str = "", model: str = "", trace: str = "") -> Dict[str, Any]:
+          ask: str = "", model: str = "", trace: str = "",
+          deliverable: bool = True) -> Dict[str, Any]:
     """Gate ONE consult leg. Call this IMMEDIATELY BEFORE the spend.
 
-    Returns {"allow": bool, "leg", "key", "count", "cap", "turn", "reason"}.
-    A refused attempt is RECORDED (ledger row, trigger='consult_capped') and
-    does not consume budget. An allowed attempt consumes it.
+    Returns {"allow": bool, "leg", "key", "count", "cap", "turn", "task_turn",
+    "reason"}. A refused attempt is RECORDED (ledger row,
+    trigger='consult_capped') and does not consume budget. An allowed attempt
+    consumes it.
 
-    Order: complexity gate (caller) -> min-turn threshold -> per-task cap.
+    `deliverable` says whether a POST's result can still reach THIS turn's
+    delivered body. Callers on the response-producing path pass True (default);
+    the legacy async topology, which consults after the response has shipped,
+    passes False and its POST is refused `after_delivery` rather than parked for
+    a turn whose body cannot carry it.
+
+    Order: complexity gate (caller) -> per-leg floor -> per-leg cap.
     Never raises; on internal error it ALLOWS (fail-open to the existing gates).
     """
     out: Dict[str, Any] = {"allow": True, "leg": str(leg), "key": "",
-                           "count": 0, "cap": 0, "turn": 0, "reason": ""}
+                           "count": 0, "cap": 0, "turn": 0, "reason": "",
+                           "task_turn": 0}
     try:
         key = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
         cap = max_per_task()
-        floor = min_turns()
+        floor = post_min_turns() if str(leg) == "post" else min_turns()
         turn = turn_no(session_id)
         out.update({"key": key, "cap": cap, "turn": turn})
         with _LOCK:
             slot = _COUNTS.get(key) or {}
             count = int(slot.get(str(leg), 0))
-            prior = sum(int(v or 0) for v in slot.values())
+            # M46-07 owner ruling: the floor counts prior consults PER LEG,
+            # never as a task total. A task whose PRE already spent its slot
+            # must still be able to reach its POST — that is the PRE->POST gap
+            # this unit exists to close. `prior` is therefore THIS leg's count.
+            prior = count
             tturn = _task_turn_locked(key, turn)
             out["task_turn"] = tturn
-            # RULE 2 (M46-06): the floor is a REPEAT-consult floor in TASK
-            # turns. `prior == 0` is a task's FIRST consult — always allowed
-            # through here (the triggers already decided), never floored. A
-            # task turn of 0 means the session counter was never opened (unit
-            # harness / API dispatch) and must fail open, never kill the lane.
-            if floor > 0 and prior > 0 and 0 < tturn < floor:
+            # RULE 2: `prior == 0` is that leg's FIRST consult — always allowed
+            # through here (the triggers already decided), never floored. The
+            # POST additionally waits until the ASK has aged to
+            # `consult_post_min_turns` task turns, counted from the original
+            # ask. A task turn of 0 means the session counter was never opened
+            # (unit harness / API dispatch) and must fail open, never kill the
+            # lane.
+            if not deliverable and str(leg) == "post":
+                out.update({"allow": False, "count": count,
+                            "reason": "after_delivery"})
+                _record_refusal(session_id, task_id, leg, key, count, cap,
+                                "after_delivery", model)
+                return out
+            if floor > 0 and 0 < tturn < floor and (prior > 0 or str(leg) == "post"):
                 out.update({"allow": False, "count": count,
                             "reason": "below_min_turns"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,

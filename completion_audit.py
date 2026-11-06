@@ -2723,10 +2723,17 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     REFUNDS it. Only a real response keeps the task's one POST spent.
     """
     _cap_key = ""
+    # M46-07: the async topology (socket_timeout >= 120) consults in a daemon
+    # thread AFTER the response has shipped, so its banner can only land on a
+    # LATER turn — never in this task's delivered body. The ruling forbids that:
+    # pass the seam's deliverability to the gate, which refuses such a POST
+    # (`after_delivery`) instead of parking a banner the body cannot carry.
+    _banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
     try:
         from . import consult_budget as _cb
 
-        _cap = _cb.check(session_id, task_id, leg="post", ask=ask, model=model)
+        _cap = _cb.check(session_id, task_id, leg="post", ask=ask, model=model,
+                         deliverable=not _banner_park)
         if not _cap.get("allow"):
             _reason = str(_cap.get("reason") or "consult_capped")
             logger.info("completion_audit_skipped reason=%s", _reason)

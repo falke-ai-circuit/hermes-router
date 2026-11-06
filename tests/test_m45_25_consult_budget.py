@@ -3,7 +3,11 @@
 Contract under test:
   RULE 1  one PRE + one POST per task; the third attempt is REFUSED and
           RECORDED (trigger='consult_capped'), never sent to the frontier.
-  RULE 2  below `consult_min_turns` neither leg fires.
+  RULE 2  the FIRST consult of an ask is never floored; consults after it wait
+          until the task has aged to `consult_min_turns` TASK turns. A repeat
+          refused by that floor returns reason='below_min_turns' (a correct
+          refusal, recorded as consult_capped in the ledger); a repeat refused
+          because the leg's cap is spent returns reason='consult_capped'.
   RULE 3  the budget sits BEHIND the complexity gate (stage_model_swap is the
           PRE choke point; completion_audit._consult_meta is the POST one).
   Banners ONE aggregated banner per task carrying both legs.
@@ -35,29 +39,50 @@ def _set_turn(budget, session_id: str, n: int) -> None:
 
 
 def test_task_driven_20_turns_spends_exactly_one_pre_and_one_post(budget, monkeypatch):
-    """RULE 1 + the earned refusal: 20 turns -> 2 frontier calls, 38 capped."""
+    """RULE 1 + RULE 2: 20 task turns -> 2 frontier calls, 38 recorded refusals.
+
+    M46-07 owner ruling: `consult_min_turns` is the MINIMUM-TURN GAP between an
+    ask's PRE and its POST, counted in TASK turns (dial stays at 2). A POST
+    attempted on the same task turn as an already-spent PRE is therefore
+    refused with reason='below_min_turns' — that is a CORRECT refusal, not a
+    cap, and it is still recorded as a consult_capped ledger row. Every refusal
+    once the task has aged past the dial is a CAP ('consult_capped'), and those
+    assertions are kept verbatim.
+    """
     rows = []
-    from hermes_router import decision as dm
+    from hermes_router import decision as dm, config_access
 
     monkeypatch.setattr(dm, "ledger_write", lambda row, db_path="": rows.append(row))
+    # Pin the fleet dial explicitly (complexity sub-block = where the fleet
+    # configs carry it) so this test can never pass on a silently-dead knob.
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"complexity": {"consult_min_turns": 2,
+                                                "consult_max_per_task": 1}})
 
     session, task = "s-m4525-20t", "t-m4525-20t"
-    _set_turn(budget, session, 10)  # well past the min-turn floor
 
     frontier_calls = 0
-    refusals = 0
-    for _turn in range(20):
+    floor_refusals = 0
+    cap_refusals = 0
+    for turn in range(10, 30):          # 20 task turns
+        _set_turn(budget, session, turn)
         for leg in ("pre", "post"):
             gate = budget.check(session, task, leg=leg)
             if gate["allow"]:
                 frontier_calls += 1  # the spend this gate stands in front of
+            elif gate["reason"] == "below_min_turns":
+                floor_refusals += 1
+                # the POST age floor (consult_post_min_turns=3) is the only
+                # floor that can refuse here: task turns 1 and 2.
+                assert gate["task_turn"] < 3, gate
             else:
-                refusals += 1
-                assert gate["reason"] == "consult_capped"
+                cap_refusals += 1
+                assert gate["reason"] == "consult_capped", gate
 
     assert frontier_calls == 2, frontier_calls
     assert budget.counts(session, task) == {"pre": 1, "post": 1}
-    assert refusals == 38
+    assert (floor_refusals, cap_refusals) == (2, 36), (floor_refusals, cap_refusals)
+    assert floor_refusals + cap_refusals == 38
     capped = [r for r in rows if r.get("trigger") == "consult_capped"]
     assert len(capped) == 38
     assert all(r.get("choice") == "refused" for r in capped)
@@ -147,7 +172,8 @@ def test_post_choke_point_refuses_second_post_for_same_task(budget, monkeypatch)
     from hermes_router import completion_audit as ca, config_access
 
     monkeypatch.setattr(config_access, "router_section",
-                        lambda: {"consult_min_turns": 0})
+                        lambda: {"consult_min_turns": 0,
+                                 "consult_post_min_turns": 0})
     budget.reset()
     session, task = "s-m4525-post", "t-m4525-post"
     _set_turn(budget, session, 5)
@@ -191,7 +217,9 @@ def _post_seam(monkeypatch, call, session, task):
     from hermes_router import anchor_chain, completion_audit as ca, config_access
 
     monkeypatch.setattr(config_access, "router_section",
-                        lambda: {"consult_min_turns": 0, "consult_max_per_task": 1})
+                        lambda: {"consult_min_turns": 0,
+                                 "consult_post_min_turns": 0,
+                                 "consult_max_per_task": 1})
     ep = SimpleNamespace(model="test-model", base_url="http://127.0.0.1:9/v1",
                          api_key="k", key="k", name="x", scheme="http",
                          timeout=5)
