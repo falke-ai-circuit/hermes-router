@@ -7,6 +7,20 @@ Output: per-turn PASS/FAIL table -> /opt/data/tmp/battery_results.json
 """
 import json, os, sqlite3, subprocess, sys, time, urllib.request
 
+# RETIRED FIELDS (M36-07) — emitted at import time, BEFORE the credential gate
+# and long before the first live scenario, so the retirement reason is visible
+# at the point of check: `... 2>&1 | head -8` and any timed-out run both show
+# it (a print placed after the scenarios only surfaces 4-6 minutes in, and a
+# bare run never reaches it at all). flush=True because stdout is a pipe there.
+RETIRED_FIELDS = (
+    "RETIRED FIELDS: tool_pre (D1,D2,D3,D4) — sessions API has no tool-call wire;",
+    "                pre_spend_usd (D3) — would require seeding the profile's spend ledger;",
+    "                expect_delivery_contains (D3) — cap denial unstaged without pre_spend_usd;",
+    "                anchor_route_fired retired on D1,D2 with tool_pre, kept on D4 (user phrase).",
+)
+for _line in RETIRED_FIELDS:
+    print(_line, flush=True)
+
 # Bearer token resolves from env (GATEWAY_BEARER) — never hardcoded in the
 # repo. Ops: export GATEWAY_BEARER=<token> before running the battery.
 BEARER = os.environ.get("GATEWAY_BEARER", "")
@@ -217,8 +231,9 @@ run_scenario("N3_marker_probe", [
 #
 # FIELD RETIREMENT (M36-07). These scenarios declared fields run_scenario()
 # could never execute, so the runner scored them INCONCLUSIVE by construction
-# and no wave could ever reach overall=PASS. Retired — and PRINTED below so the
-# coverage gap is visible on every run instead of silently graded:
+# and no wave could ever reach overall=PASS. Retired — and PRINTED at module
+# top (RETIRED_FIELDS, before the credential gate) so the coverage gap is
+# visible on every run instead of silently graded:
 #   tool_pre      needs an in-session router_control(request_routing) call; the
 #                 battery's only wire is POST /api/sessions/<sid>/chat, which
 #                 carries text, not tool calls. An in-turn declared claim can
@@ -232,10 +247,6 @@ run_scenario("N3_marker_probe", [
 # and KEPT on D4, whose declaration is a user phrase the battery can send.
 # "forbid_markers" on D2 was already a no-op: seam_free defaults True and
 # check_seams() scans MARKERS, so it is dropped rather than left misleading.
-print("RETIRED FIELDS: tool_pre (D1,D2,D3,D4) — sessions API has no tool-call wire;")
-print("                pre_spend_usd (D3) — would require seeding the profile's spend ledger;")
-print("                expect_delivery_contains (D3) — cap denial unstaged without pre_spend_usd;")
-print("                anchor_route_fired retired on D1,D2 with tool_pre, kept on D4 (user phrase).")
 
 # D1. On-demand higher-pre intent, graded on what the wire can deliver.
 run_scenario("D1_on_demand_higher_pre", [

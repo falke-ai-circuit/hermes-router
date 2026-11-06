@@ -125,6 +125,49 @@ def source_of(path):
     return open(path, errors="replace").read()
 
 
+def _declared_keys(block):
+    """String keys of every dict literal in a source block, or None if unparsable.
+
+    Keys, not values: a token that merely appears in a turn's prose
+    ("explain what tool_pre means") is not a declaration, so scanning raw text
+    would credit a scenario with a field it never carried.
+    """
+    try:
+        tree = ast.parse(block)
+    except SyntaxError:
+        return None
+    keys = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for k in node.keys:
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    keys.add(k.value)
+    return keys
+
+
+def _bounded_window(src, name):
+    """Text window for a scenario whose call node could not be located.
+
+    Start at the scenario's own string literal, stop at the next
+    run_scenario( call (or 4000 chars, whichever first): a bounded fallback
+    beats returning [] (which graded a live un-implemented field as measured).
+    """
+    start = -1
+    for quote in ('"', "'"):
+        start = src.find(quote + name + quote)
+        if start >= 0:
+            break
+    if start < 0:
+        return ""
+    # Walk past the call the literal belongs to, then stop at the FOLLOWING
+    # run_scenario( — bounding to one scenario. Stopping at the first call
+    # would return just the name, i.e. fail open again.
+    first = src.find("run_scenario(", start)
+    nxt = -1 if first < 0 else src.find("run_scenario(", first + 1)
+    end = len(src) if nxt < 0 else nxt
+    return src[start:min(end, start + 4000)]
+
+
 def unimplemented_fields(name, src):
     """Keys declared by THIS scenario's own run_scenario(...) call, and nothing
     beyond it, that the battery's run_scenario() never reads.
@@ -135,24 +178,46 @@ def unimplemented_fields(name, src):
     window runs into the NEXT scenarios, so a scenario gets accused of keys a
     neighbour declared (U1/X1/N3 once cited tool_pre/pre_spend_usd they never
     carried). Bounding by the call node makes that overrun impossible.
+
+    Both call forms are matched — run_scenario("X", [...]) and the keyword form
+    run_scenario(name="X", turns=[...]). Matching only the positional form
+    returned [] for the keyword form, i.e. it failed OPEN on exactly the
+    scenarios it exists to catch.
     """
     try:
         tree = ast.parse(src)
     except SyntaxError:
-        return []
-    block = None
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call)
-                and getattr(node.func, "id", "") == "run_scenario"
-                and len(node.args) >= 1
-                and isinstance(node.args[0], ast.Constant)
-                and node.args[0].value == name):
-            block = ast.get_source_segment(src, node) or ""
-            break
-    if block is None:
-        return []
+        tree = None
+    keys = None
+    if tree is not None:
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and getattr(node.func, "id", "") == "run_scenario"):
+                continue
+            hit = (len(node.args) >= 1
+                   and isinstance(node.args[0], ast.Constant)
+                   and node.args[0].value == name)
+            if not hit:
+                for kw in node.keywords:
+                    if (kw.arg == "name" and isinstance(kw.value, ast.Constant)
+                            and kw.value.value == name):
+                        hit = True
+                        break
+            if hit:
+                block = ast.get_source_segment(src, node) or ""
+                keys = _declared_keys(block)
+                if keys is None:
+                    keys = _declared_keys("x = {" + block.split("[", 1)[-1])
+                break
+    if keys is None:
+        # Name not locatable (or the whole file is unparsable): bounded window.
+        window = _bounded_window(src, name)
+        keys = _declared_keys("y = [" + window + "]") or set()
+        if not keys:
+            import re
+            keys = set(re.findall(r"[\"']([a-z_]+)[\"']\s*:", window))
     body = src[src.find("def run_scenario"):src.find("# ============ SCENARIOS")]
-    return [k for k in UNIMPLEMENTED_KEYS if k in block and k not in body]
+    return [k for k in UNIMPLEMENTED_KEYS if k in keys and k not in body]
 
 
 def main():
@@ -212,6 +277,21 @@ def main():
 
         raw = _txt(e.stdout) + "\n" + _txt(e.stderr)
         proc = subprocess.CompletedProcess(e.cmd, 124, raw, "")
+
+    # The battery prints its RETIRED FIELDS block at import time, before the
+    # credential gate and before any live scenario. Echo it into the runner's
+    # own stdout so the retirement reason is visible where the verdict is read
+    # — including on the timeout path, where the child is killed mid-run.
+    retired_block = []
+    for line in raw.splitlines():
+        if line.startswith("RETIRED FIELDS:"):
+            retired_block = [line]
+        elif retired_block and line.startswith("        "):
+            retired_block.append(line)
+        elif retired_block:
+            break
+    for line in retired_block:
+        print(line, flush=True)
 
     sids, turns = parse_stdout(raw)
     expects_lane = {}
