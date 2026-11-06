@@ -69,8 +69,13 @@ def r18_reset(monkeypatch, tmp_path):
 
 
 def _events(monkeypatch, sink):
-    monkeypatch.setattr(plugin, "_log_route", lambda seam, event_detail="",
-                        **kw: sink.append((seam, event_detail, kw)))
+    # M38-03 T1: the first positional is the route EVENT tag (PRE/POST), not a
+    # field named `seam`. Frozen as `seam`, any emitter that carries a real
+    # `seam` field (reflex_lane writes seam=midturn/every_call) collided with
+    # the parameter — TypeError swallowed in decision_log, so the event row
+    # never landed. Widened here; the assertion surface below is unchanged.
+    monkeypatch.setattr(plugin, "_log_route", lambda event, event_detail="",
+                        **kw: sink.append((event, event_detail, kw)))
 
 
 def _request(text):

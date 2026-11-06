@@ -66,8 +66,13 @@ def r16_reset(monkeypatch, tmp_path):
 def _events(monkeypatch, sink):
     # monkeypatch-tracked: the stub MUST restore at teardown — a leaked
     # no-write _log_route starves later tests' log-file assertions.
-    monkeypatch.setattr(plugin, "_log_route", lambda seam, event_detail="",
-                        **kw: sink.append((seam, event_detail, kw)))
+    # M38-03 T1: the first positional is the route EVENT tag (PRE/POST), not a
+    # field named `seam`. Frozen as `seam`, any emitter that carries a real
+    # `seam` field (reflex_lane writes seam=midturn/every_call) collided with
+    # the parameter — TypeError swallowed in decision_log, so the event row
+    # never landed. Widened here; the assertion surface below is unchanged.
+    monkeypatch.setattr(plugin, "_log_route", lambda event, event_detail="",
+                        **kw: sink.append((event, event_detail, kw)))
 
 
 def _request(text):
@@ -182,6 +187,31 @@ def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
     assert fired and fired[0].get("reason") == "manual_open_question_frontier"
     assert calls, "consult must execute"
     assert "router" in body and "pre-check" in body, body  # R34-19b end-label
+
+
+def test_reflex_held_event_lands_without_emit_failure(r16_reset, monkeypatch,
+                                                     caplog):
+    """M38-03 T1: a `seam` FIELD must not collide with the log surface's first
+    positional. reflex_lane writes seam=midturn/every_call; frozen against a
+    parameter literally named `seam`, the row raised TypeError inside
+    decision_log and was swallowed — the reflex_held that names a silent lane
+    never reached the route log. The row must land, carry its seam, and the
+    emit-failure warning must never fire on this path."""
+    import logging
+
+    from hermes_router import decision_log
+
+    sink = []
+    _events(monkeypatch, sink)
+    with caplog.at_level(logging.WARNING, logger="hermes_router.decision_log"):
+        decision_log.log_event(SID, "reflex_held", reason="nothing_to_deliver",
+                               seam="midturn")
+    rows = [kw for s, d, kw in sink if d is None and s == "POST"]
+    held = [kw for s, d, kw in sink if kw.get("reason") == "nothing_to_deliver"]
+    assert held, sink
+    assert held[-1].get("seam") == "midturn", held[-1]
+    assert not any("route_event_emit_failed" in r.message
+                   for r in caplog.records), caplog.text
 
 
 # ---------------------------------------------------------------------------
