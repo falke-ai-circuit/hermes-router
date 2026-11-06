@@ -153,7 +153,9 @@ def test_anchored_failure_parks_fail_loud_banner(r16_reset, monkeypatch):
     assert _segs, "a failed consult must still record its banner"
     _text = " ".join(s["text"] for s in _segs)
     assert "consult_failed" in _text or "anchored_call_failed" in _text, _text
-    assert body == "agent answer"      # M35-17: the body is the author's bytes
+    # M46-03 (owner ruling, reverses M35-17): the fired lane is VISIBLE.
+    assert str(body).startswith("agent answer")
+    assert DB.BANNER_HEAD in str(body)
 
 
 def test_declared_higherself_success_delivers_banner(r16_reset, monkeypatch):
@@ -178,7 +180,9 @@ def test_declared_higherself_success_delivers_banner(r16_reset, monkeypatch):
     assert _segs, "the consult must register a banner segment"
     assert _segs[0]["lane"] == "frontier", _segs
     assert "pre-check" in _segs[0]["text"] and "row=" in _segs[0]["text"], _segs[0]
-    assert body == "agent answer"      # M35-17: the body is the author's bytes
+    # M46-03 (owner ruling, reverses M35-17): the fired lane is VISIBLE.
+    assert str(body).startswith("agent answer")
+    assert DB.BANNER_HEAD in str(body)
 
 
 def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
@@ -204,7 +208,9 @@ def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
     assert _segs, "the consult must register a banner segment"
     assert _segs[0]["lane"] == "frontier", _segs
     assert "pre-check" in _segs[0]["text"] and "row=" in _segs[0]["text"], _segs[0]
-    assert body == "agent answer"      # M35-17: the body is the author's bytes
+    # M46-03 (owner ruling, reverses M35-17): the fired lane is VISIBLE.
+    assert str(body).startswith("agent answer")
+    assert DB.BANNER_HEAD in str(body)
 
 
 def test_reflex_held_event_lands_without_emit_failure(r16_reset, monkeypatch,

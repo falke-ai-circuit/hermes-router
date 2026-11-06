@@ -47,15 +47,16 @@ tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_sema
 tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum  # accepted-debt: completion_audit passes fold_revision=False by design; the pin was never inverted
 tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold  # accepted-debt: same fold decision exercised through the large-budget branch
 
-# --- optional (8) --- 1 state-dependent + 7 env
+# --- optional (4) --- 1 state-dependent + 3 env
+# M46-03 (2026-11-06): the 4 reason=delivery-defect rows are REMOVED. They were
+# not optional-by-state; they pinned the banner-delivery DEFECT that M46-03
+# fixes (composer reinstated, owner ruling reverses M35-17). All four are green
+# at the M46-03 commit, and 'delivery-defect' was never a legal reason class, so
+# their presence made this pin file unreadable to baseline_check.
 optional tests/decision_lane/test_r53_midturn_mindset.py::test_m1_envelope_carries_the_current_stance  reason=state-dependent  expect="assert None is not None"  # reads live session history: the test never requests the module's _env fixture
 optional tests/routing/test_rider16_fixes.py::test_anchored_failure_logs_route_skipped  reason=env  expect="route_skipped must reach the route log on anchored failure"  # PRE seam short-circuits under the invoking home's classification.pre_classify=false
-optional tests/routing/test_rider16_fixes.py::test_anchored_failure_parks_fail_loud_banner  reason=delivery-defect  expect="consult_failed"  # M38-03 T3: body is the literal 'agent answer' — the parked failure banner never reaches the delivered body (delivery drop, not env)
-optional tests/routing/test_rider16_fixes.py::test_declared_higherself_success_delivers_banner  reason=delivery-defect  expect="assert 'router' in 'agent answer'"  # M38-03 T3: consult routes and parks the banner; the delivered body is still the literal 'agent answer'
-optional tests/routing/test_rider16_fixes.py::test_open_question_success_delivers_banner  reason=delivery-defect  expect="assert 'router' in 'agent answer'"  # M38-03 T3: same drop — route fires, banner parks, body ships bannerless
 optional tests/routing/test_rider16_fixes.py::test_second_identical_manual_ask_consults_nothing  reason=env  expect="first ask must consult"  # same class: zero decision rows because the first ask never consults
 optional tests/routing/test_rider18_fixes.py::test_open_question_emits_frontier_route_fired  reason=env  expect="frontier_route_fired must be emitted"  # same config-conditioned PRE short-circuit, frontier direction
-optional tests/routing/test_rider18_fixes.py::test_declared_frontier_form_also_emits_frontier_event  reason=delivery-defect  expect="calls_ok('agent answer') is False"  # M38-03 T3: declared form routes; the banner is dropped before delivery (route assert passes)
 # RE-PIN 2026-11-01 (R78-U M22B): the four zz_lane_hazard order rows that used
 # to sit above were removed because they now PASS. Cause: the file's autouse
 # fixture cleared only 12 of the 14 lane containers and omitted
