@@ -2248,13 +2248,22 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
     even across fx-retries), consult in a daemon thread, verdict stashed for
     next turn. Never raises, never blocks delivery."""
     key = _fire_marker_key(session_id, ask, model)
+    # R78U M45-25: the POST leg shares the PRE leg's task identity so both
+    # legs land on ONE counter and ONE aggregated banner.
+    try:
+        from . import router_core as _rc_taskid
+
+        _task_id = _rc_taskid.task_id_for(session_id, ask, model)
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        _task_id = ""
     _mark_fired(key)
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
     t = threading.Thread(
         target=_consult_meta, name="router-completion-audit",
         args=(session_id, ask, response_text, request, model, key, pre_brief,
-              pre_trigger), daemon=True)
+              pre_trigger), daemon=True,
+        kwargs={"task_id": _task_id})
     t.start()
 
 
@@ -2288,12 +2297,19 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     with _INFLIGHT_LOCK:
         _INFLIGHT.add(key)
     result: Dict[str, Any] = {"meta": None, "timed_out": False}
+    try:
+        from . import router_core as _rc_taskid
+
+        _task_id = _rc_taskid.task_id_for(session_id, ask, model)
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        _task_id = ""
 
     def _worker() -> None:
         meta = _consult_meta(session_id, ask, response_text, request,
                              model, key, socket_timeout=max(10, int(timeout_s)),
                              pre_brief=pre_brief, pre_trigger=pre_trigger,
-                             fold_revision=fold_revision, diag=diag)
+                             fold_revision=fold_revision, diag=diag,
+                             task_id=_task_id)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -2310,7 +2326,7 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                             tokens_in=meta.get("tokens_in"),
                             tokens_out=meta.get("tokens_out"),
                             est_cost=meta.get("cost"), latency_s=timeout_s,
-                            retries=0, task_id="", session_id=session_id) or ""
+                            retries=0, task_id=_task_id, session_id=session_id) or ""
                         _btext = _btext.rstrip() + _sense_banner_suffix(
                             meta.get("sense_check")) + _doubt_banner_suffix(
                             meta.get("adversarial"))
@@ -2326,7 +2342,7 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                             _btext = _btext[:-1].rstrip()
                         _btext = "%s | %s ·" % (_btext, _row_marker)
                         if _btext:
-                            _dbg.park_anchor_banner(session_id, _btext)
+                            _dbg.park_task_banner(session_id, _task_id, "post", _btext)
                 except Exception:  # noqa: BLE001
                     pass
                 _log("completion_audit_downgraded_async delivered=next_turn",
@@ -2690,11 +2706,29 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                   pre_brief: str = "",
                   pre_trigger: str = "",
                   fold_revision: bool = False,
-                  diag: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                  diag: Optional[Dict[str, Any]] = None,
+                  task_id: str = "") -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
-    Never raises."""
+    Never raises.
+
+    R78U M45-25: gated by consult_budget BEFORE the call — one POST consult
+    per task, and none below the min-turn threshold. A refused leg returns
+    None and leaves a consult_capped row behind (never a silent skip).
+    """
+    try:
+        from . import consult_budget as _cb
+
+        _cap = _cb.check(session_id, task_id, leg="post", ask=ask, model=model)
+        if not _cap.get("allow"):
+            _reason = str(_cap.get("reason") or "consult_capped")
+            logger.info("completion_audit_skipped reason=%s", _reason)
+            if diag is not None:
+                diag["reason"] = _reason
+            return None
+    except Exception:  # noqa: BLE001 — budget check is fail-open
+        pass
     banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
     try:
         chain = anchor_chain.load_anchor_chain()
@@ -3072,7 +3106,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                             lane="frontier-anchor", trigger="completion_audit",
                             model=str(getattr(ep, "model", "") or ""), endpoint=_host_nf,
                             tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
-                            retries=0, task_id="", session_id=session_id)
+                            retries=0, task_id=task_id, session_id=session_id)
                         if _bnf:
                             _bnf = _bnf.rstrip() + "\nverdict: no findings — work is sound"
                             _row_marker_nf = ("row=%s" % int(_rid_nf)
@@ -3081,7 +3115,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                             _bnf = "%s | %s ·" % (
                                 str(_bnf).rstrip().rstrip("·").rstrip(),
                                 _row_marker_nf)
-                            _dbg.park_anchor_banner(session_id, _bnf)
+                            _dbg.park_task_banner(session_id, task_id, "post", _bnf)
                 except Exception:  # noqa: BLE001
                     pass
             # R78U M13: a COMPLETED consult that found nothing is a RESULT.
@@ -3170,7 +3204,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                         lane="frontier-anchor", trigger="completion_audit",
                         model=str(getattr(ep, "model", "") or ""), endpoint=_host,
                         tokens_in=pt, tokens_out=ct, est_cost=cost, latency_s=0.0,
-                        retries=0, task_id="", session_id=session_id)
+                        retries=0, task_id=task_id, session_id=session_id)
                     if _banner:
                         _row_marker = ("row=%s" % int(_rid) if _rid
                                        else "ledger-row MISSING")
@@ -3178,7 +3212,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                         if _banner.endswith("·"):
                             _banner = _banner[:-1].rstrip()
                         _banner = "%s | %s ·" % (_banner, _row_marker)
-                        _dbg.park_anchor_banner(session_id, _banner)
+                        _dbg.park_task_banner(session_id, task_id, "post", _banner)
             except Exception:  # noqa: BLE001 — banner must never break audit
                 pass
         # Leg 6: the consult meta carries the gate's claim source as the

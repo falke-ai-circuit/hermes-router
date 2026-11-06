@@ -1829,6 +1829,20 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
     try:
         key = (str(session_id or ""), str(decision.task_id or ""))
         now = time.time()
+        # R78U M45-25 (contract RULE 1/2/3): the per-task consult budget is
+        # checked IMMEDIATELY BEFORE the spend, behind the complexity gate that
+        # already routed here. One PRE per task; below the min-turn threshold
+        # nothing fires; the refusal is a recorded row, never silent.
+        try:
+            from . import consult_budget as _cb
+
+            _cap = _cb.check(str(session_id or ""),
+                             str(decision.task_id or ""), leg="pre",
+                             model=str(getattr(decision, "model_target", "") or ""))
+            if not _cap.get("allow"):
+                return None
+        except Exception:  # noqa: BLE001 — budget check is fail-open
+            pass
         with _PENDING_SWAP_LOCK:
             done_ts = _SWAP_DONE.get(key)
             if done_ts is not None and now - done_ts <= _SWAP_DONE_TTL:
@@ -2150,6 +2164,13 @@ def _test_reset() -> None:
         _PENDING_SWAP.clear()
         _SWAP_DONE.clear()
         _ANCHOR_FAIL_BACKOFF.clear()
+        # R78U M45-25: per-task consult counters are test-scoped state too.
+        try:
+            from . import consult_budget as _cb_reset
+
+            _cb_reset.reset()
+        except Exception:  # noqa: BLE001 — reset helper never blocks a test
+            pass
         # v3.8.1 P1-2: mark sidecar consumed so tests never re-warm from the
         # real profile home mid-test; the sidecar itself is not deleted.
         global _backoff_sidecar_loaded

@@ -51,6 +51,12 @@ def _reset(monkeypatch):
         "log_routes": False,
     }, raising=False)
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 3)
+    # R78U M45-25: this file pins BACKOFF semantics, not the consult budget —
+    # open the per-task cap so repeated staging can still be observed.
+    from hermes_router import config_access
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"consult_max_per_task": 99,
+                                 "consult_min_turns": 0}, raising=False)
     monkeypatch.setattr(plugin, "_log_route", _capture_log)
     _chain = _test_anchor_chain()
     monkeypatch.setattr(router_core.anchor_chain, "load_anchor_chain", lambda: _chain)

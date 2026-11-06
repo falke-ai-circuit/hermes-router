@@ -3594,9 +3594,9 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                     # park the banner for the POST transform to append to the
                     # DELIVERED turn (one-shot, this session's next delivery).
                     try:
-                        _db.park_anchor_banner(
-                            session_id, _banner,
-                            task_id=str(rec.get("task_id") or ""))
+                        _db.park_task_banner(
+                            session_id, str(rec.get("task_id") or ""),
+                            "pre", _banner)
                         _hub()._log_route("PRE", event_detail="anchor_banner_parked",
                                    session_id=session_id)
                     except Exception:

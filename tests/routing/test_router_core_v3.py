@@ -217,6 +217,15 @@ def test_swap_expiry_after_60s():
 
 
 def test_pre_middleware_dispatcher_logs_and_stages(monkeypatch):
+    # R78U M45-25: the per-task consult budget now sits in front of staging,
+    # and this test drives ONE short turn — under the min-turn floor it would
+    # fire nothing BY CONTRACT. Pin the integration path with the floor off;
+    # the floor itself is pinned in tests/test_m45_25_consult_budget.py.
+    from hermes_router import config_access
+    _real_section = config_access.router_section
+    monkeypatch.setattr(
+        config_access, "router_section",
+        lambda: dict(_real_section() or {}, consult_min_turns=0))
     monkeypatch.setattr(router_core, "_complexity_level", lambda: 3)
     req = {"model": "m", "messages": [{"role": "user", "content": PLAN_ASK}]}
     with mock.patch.object(plugin.router, "call") as venice:

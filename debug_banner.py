@@ -469,6 +469,42 @@ def park_anchor_banner(session_id: str, banner_text: str,
         pass
 
 
+_TASK_BANNER_PARTS: Dict[str, Dict[str, str]] = {}
+
+
+def park_task_banner(session_id: str, task_id: str, leg: str,
+                     banner_text: str) -> None:
+    """R78U M45-25: ONE aggregated banner per task carrying BOTH legs.
+
+    The contract forbids two separate consult banners for one task. Each leg
+    registers its segment here instead of parking directly; the composed text
+    (pre then post) is parked under the SAME task_id, so the lifecycle's R9d
+    per-task replace branch keeps exactly ONE segment for that task — the
+    aggregation is a property of the store, not a second banner.
+
+    Never raises; a park failure leaves the previous slot untouched.
+    """
+    try:
+        sid = str(session_id or "")
+        tid = str(task_id or "")
+        key = "%s\x00%s" % (sid, tid)
+        seg = str(banner_text or "").strip()
+        if not seg:
+            return
+        slot = _TASK_BANNER_PARTS.get(key)
+        if not isinstance(slot, dict):
+            slot = {}
+            if len(_TASK_BANNER_PARTS) > 256:
+                _TASK_BANNER_PARTS.pop(next(iter(_TASK_BANNER_PARTS)), None)
+            _TASK_BANNER_PARTS[key] = slot
+        slot[str(leg or "")] = seg
+        parts = [slot.get("pre") or "", slot.get("post") or ""]
+        composed = "\n".join(p for p in parts if p) or seg
+        park_anchor_banner(sid, composed, task_id=tid)
+    except Exception:  # noqa: BLE001 — banner must never break a turn
+        pass
+
+
 def consume_parked_banner(session_id: str) -> str:
     """Delegate: BannerLifecycle.consume for the "anchor" kind.
     R33f-A consume-once: the semaphore record dies WITH the slot — one

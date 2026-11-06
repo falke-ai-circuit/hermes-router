@@ -133,17 +133,24 @@ def test_new_ask_stages_again():
 # ---------------------------------------------------------------------------
 
 
-def test_ttl_expiry_allows_reconsult(monkeypatch):
+def test_ttl_expiry_still_refused_by_task_budget(monkeypatch):
+    """R78U M45-25 SUPERSEDES the TTL re-consult pin.
+
+    TTL (v3.2.0) governed re-staging inside ONE task; the owner contract adds
+    a per-task budget that governs the task's LIFETIME. Past the TTL the same
+    task still may not consult a second time — the attempt is refused and
+    recorded, not silently dropped.
+    """
+    from hermes_router import consult_budget as cb
     d = router_core.dispatch(PLAN_ASK, session_id="s3", model="m")
     assert router_core.stage_model_swap("s3", d) is not None
     # Age the marker past the TTL.
     key = ("s3", d.task_id)
     with router_core._PENDING_SWAP_LOCK:
         router_core._SWAP_DONE[key] = time.time() - (router_core._SWAP_DONE_TTL + 1.0)
-    # Same ask now stages again (fresh consult allowed).
-    rec = router_core.stage_model_swap("s3", d)
-    assert rec is not None
-    assert router_core.peek_pending_swap("s3") is not None
+    # Same task, TTL expired: the task budget refuses it.
+    assert router_core.stage_model_swap("s3", d) is None
+    assert cb.counts("s3", d.task_id) == {"pre": 1}
 
 
 def test_ttl_boundary_still_blocks():

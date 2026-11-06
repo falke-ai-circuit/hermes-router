@@ -147,6 +147,8 @@ def _knob_whitelist() -> Dict[str, Dict[str, object]]:
 
         "classification.pre_cooldown_seconds": {"type": "int", "min": 0, "max": 86400, "lane": "C"},
         "classification.post_audit_min_turns": {"type": "int", "min": 1, "max": 50, "lane": "C"},
+        "consult_max_per_task": {"type": "int", "min": 0, "max": 10, "lane": "C"},
+        "consult_min_turns": {"type": "int", "min": 0, "max": 50, "lane": "C"},
         "complexity.enabled": {"type": "bool", "lane": "C"},
         "complexity.level": {"type": "int", "min": 0, "max": 3, "lane": "C"},
         "complexity.shadow": {"type": "bool", "lane": "C"},
