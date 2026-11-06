@@ -2716,7 +2716,13 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     R78U M45-25: gated by consult_budget BEFORE the call — one POST consult
     per task, and none below the min-turn threshold. A refused leg returns
     None and leaves a consult_capped row behind (never a silent skip).
+
+    M45-25b F2: the slot is spent at ALLOW time, so every path that reaches
+    the call and comes back with NO provider response (raise, timeout, empty
+    completion) or that never reaches the call at all (no endpoint, daily cap)
+    REFUNDS it. Only a real response keeps the task's one POST spent.
     """
+    _cap_key = ""
     try:
         from . import consult_budget as _cb
 
@@ -2727,8 +2733,24 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             if diag is not None:
                 diag["reason"] = _reason
             return None
+        _cap_key = str(_cap.get("key") or "")
     except Exception:  # noqa: BLE001 — budget check is fail-open
         pass
+
+    def _refund_post(reason: str) -> None:
+        """F2: no provider response -> give the task's POST slot back."""
+        if not _cap_key:
+            return
+        try:
+            from . import consult_budget as _cb_r
+
+            if _cb_r.refund(key=_cap_key, leg="post"):
+                logger.info("completion_audit_budget_refunded reason=%s", reason)
+                if diag is not None:
+                    diag["budget_refunded"] = reason
+        except Exception:  # noqa: BLE001 — a refund never breaks delivery
+            pass
+
     banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
     try:
         chain = anchor_chain.load_anchor_chain()
@@ -2737,6 +2759,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             logger.info("completion_audit_skipped reason=no_primary_endpoint")
             if diag is not None:
                 diag["reason"] = "no_primary_endpoint"
+            _refund_post("no_primary_endpoint")
             return None
         max_chars = audit_max_chars()
         # R34-19e: budget-aware total cap — under ~40s the frontier call cannot
@@ -2820,6 +2843,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 if diag is not None:
                     diag["reason"] = "cap_exhausted"
                     diag["detail"] = _detail
+                _refund_post("cap_exhausted")
                 return None
         try:
             content, cost, pt, ct = anchor_exec.anchored_call(
@@ -2832,6 +2856,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 diag["reason"] = "consult_raised"
                 diag["detail"] = "%s: %.160s" % (type(_ac_err).__name__,
                                                  str(_ac_err))
+            _refund_post("consult_raised")
             return None
         if cost is None and est_cost > 0:
             cost = est_cost
@@ -2898,6 +2923,7 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                 # line — the caller folds it into `audit_gate_returned cause=`.
                 diag["reason"] = _reason_token
                 diag["detail"] = str(_fail_detail or _fail_reason or "")[:200]
+            _refund_post(_reason_token)
             return None
         verdict_text = str(content).strip()
         # R37-1: ONE call carries both halves. The envelope is parsed here (where

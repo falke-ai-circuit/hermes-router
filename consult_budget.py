@@ -12,7 +12,24 @@ Contract implemented here:
           the same task is REFUSED and RECORDED (trigger='consult_capped') —
           auditable, never silent, and never sent to the frontier model.
   RULE 2  short tasks emit neither leg: a task must reach `consult_min_turns`
-          substantive turns before either leg may fire (config knob, default 3).
+          substantive turns before either leg may fire. The knob exists and is
+          read live, but its DEFAULT IS 0 = OPT-IN and NO profile sets it, so
+          RULE 2 IS NOT ENFORCED OUT OF THE BOX. That is a recorded deferral,
+          not an oversight (M45-25b, measured):
+            * floor = 1 is a NO-OP: turn_no is 1-based, so `0 < turn < 1` never
+              holds and the floor can never refuse anything.
+            * floor = 2 suppresses every FIRST-TURN consult. 4 declared-form
+              pins require that behaviour (test_v320_one_consult_per_turn::
+              test_pre_middleware_logs_consult_deduped and ..._second_new_ask_
+              routes_normally, test_rider16_fixes::test_anchored_failure_parks_
+              fail_loud_banner, test_single_claim_point::test_leg7c_auto_then_
+              midturn_tool_claim_no_second_consult): 15 failed / 425 passed vs
+              the 11-failure pre-existing baseline.
+            * floor = 3 was measured by the reviewer at 25 pins red.
+          The threshold is session-scoped while the budget is task-scoped, so no
+          value enforces RULE 2 without killing declared consults. DEFERRED to
+          owner sign-off; until then, set consult_min_turns per profile only if
+          you accept losing first-turn consults.
   RULE 3  the complexity/impact gate stays in FRONT of this module — this is a
           budget check placed immediately before the spend, not a routing gate.
 
@@ -32,11 +49,14 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_PER_TASK = 1     # per leg (one PRE + one POST)
-DEFAULT_MIN_TURNS = 0        # RULE 2 knob — 0 = off (opt-in per profile;
-                             # a default-on floor of 3 regressed 25 existing
-                             # pins that stage single-turn auto consults)
+DEFAULT_MIN_TURNS = 0        # RULE 2 knob — 0 = OFF / opt-in (see the header:
+                             # the floor is unenforced until a profile sets it)
 
 CAPPED_TRIGGER = "consult_capped"
+
+# Bounded store: a gateway lives for weeks and sees an unbounded stream of
+# distinct asks, so an ever-growing per-ask dict is a leak, not a counter.
+MAX_SCOPES = 4096
 
 _LOCK = threading.Lock()
 _COUNTS: Dict[str, Dict[str, int]] = {}
@@ -175,11 +195,66 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
                 return out
             slot[str(leg)] = count + 1
             _TURNS_SEEN[key] = turn
+            _prune_locked()
             out.update({"allow": True, "count": count + 1})
             return out
     except Exception:  # noqa: BLE001 — a broken counter must not stop work
         logger.debug("consult_budget.check failed (fail-open)", exc_info=True)
         return out
+
+
+def _prune_locked() -> None:
+    """Bound the counter store by dropping the OLDEST scopes (dict order).
+
+    Called with _LOCK held. Per-scope counters are only needed until the task
+    ends; evicting the oldest scope costs at most one task its budget, while an
+    unbounded dict costs the gateway memory forever.
+    """
+    while len(_COUNTS) > MAX_SCOPES:
+        _victim = next(iter(_COUNTS))
+        _COUNTS.pop(_victim, None)
+        _TURNS_SEEN.pop(_victim, None)
+    while len(_TURNS_SEEN) > MAX_SCOPES:
+        _TURNS_SEEN.pop(next(iter(_TURNS_SEEN)), None)
+
+
+def refund(session_id: str = "", task_id: str = "", leg: str = "pre",
+           key: str = "", ask: str = "", model: str = "",
+           trace: str = "") -> bool:
+    """Give back ONE consumed slot after a call that produced NO provider response.
+
+    The slot is spent at ALLOW time, before the call. A call that raises, times
+    out, or comes back with an empty completion never billed the provider, so
+    leaving it spent would permanently refuse the same task's next legitimate
+    attempt — which is exactly the documented async recovery (a slow consult
+    delivers its verdict next turn, so the task must still be allowed to try).
+    Keep the slot consumed only when a response actually arrived.
+
+    Idempotent and clamped at zero (a double refund, or a refund after a reset,
+    is a no-op). Never raises.
+    """
+    try:
+        k = str(key or "") or scope_key(session_id, task_id, ask=ask,
+                                        model=model, trace=trace)
+        lg = str(leg)
+        with _LOCK:
+            slot = _COUNTS.get(k)
+            if not slot:
+                return False
+            count = int(slot.get(lg, 0) or 0)
+            if count <= 0:
+                return False
+            if count == 1:
+                slot.pop(lg, None)
+                if not slot:
+                    _COUNTS.pop(k, None)
+                    _TURNS_SEEN.pop(k, None)
+            else:
+                slot[lg] = count - 1
+        return True
+    except Exception:  # noqa: BLE001 — a refund must never break a turn
+        logger.debug("consult_budget.refund failed", exc_info=True)
+        return False
 
 
 def counts(session_id: str = "", task_id: str = "", key: str = "") -> Dict[str, int]:

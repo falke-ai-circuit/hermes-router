@@ -167,3 +167,111 @@ def test_one_aggregated_banner_per_task_carries_both_legs(budget):
     assert len(segs) == 1, segs
     assert "PRE-seg" in segs[0] and "POST-seg" in segs[0]
     assert segs[0].count("frontier-anchor") == 2
+
+
+# ---------------------------------------------------------------------------
+# M45-25b F2 — the slot is spent at ALLOW time, so a call with NO provider
+# response must refund it. Otherwise one provider timeout permanently refuses
+# the task's next POST and kills the documented async recovery (a slow consult
+# delivers its verdict next turn — "slow is NOT failed").
+# ---------------------------------------------------------------------------
+
+def _post_seam(monkeypatch, call, session, task):
+    """Run the REAL POST seam once, with `call` standing in for the provider."""
+    from types import SimpleNamespace
+
+    from hermes_router import anchor_chain, completion_audit as ca, config_access
+
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"consult_min_turns": 0, "consult_max_per_task": 1})
+    ep = SimpleNamespace(model="test-model", base_url="http://127.0.0.1:9/v1",
+                         api_key="k", key="k", name="x", scheme="http",
+                         timeout=5)
+    chain = SimpleNamespace(endpoint_for=lambda role="primary": ep,
+                            pricing={}, daily_cap_usd=10.0)
+    monkeypatch.setattr(anchor_chain, "load_anchor_chain", lambda *a, **k: chain)
+    monkeypatch.setattr(anchor_chain, "estimate_call_cost", lambda *a, **k: 0.0)
+    monkeypatch.setattr(anchor_chain, "cap_check", lambda *a, **k: (True, 0.0, ""))
+    monkeypatch.setattr(anchor_chain, "record_spend", lambda *a, **k: None)
+    monkeypatch.setattr(anchor_chain, "max_tokens_for_headroom", lambda *a, **k: 0)
+    monkeypatch.setattr(ca.anchor_exec, "anchored_call", call)
+    monkeypatch.setattr(ca, "persist_frontier_verdict", lambda *a, **k: None,
+                        raising=False)
+    diag = {}
+    out = ca._consult_meta(session, "ask", "resp", {}, "m", "k",
+                           socket_timeout=10, diag=diag, task_id=task)
+    return out, diag
+
+
+def test_failed_post_call_refunds_the_slot_so_the_same_task_retries(budget, monkeypatch):
+    """F2: raise -> slot refunded -> the SAME task's retry reaches the call."""
+    attempts = []
+
+    def _raise(*_a, **_k):
+        attempts.append("raise")
+        raise RuntimeError("provider blew up")
+
+    def _no_response(*_a, **_k):
+        attempts.append("empty")
+        return None, None, None, None
+
+    session, task = "s-m4525-refund", "t-m4525-refund"
+    _set_turn(budget, session, 5)
+
+    out, diag = _post_seam(monkeypatch, _raise, session, task)
+    assert out is None
+    assert diag.get("reason") == "consult_raised"
+    assert diag.get("budget_refunded") == "consult_raised"
+    assert budget.counts(session, task) == {}, \
+        "a call that produced NO response must not keep the task's POST slot"
+
+    # Same task, next attempt: must reach the provider call AGAIN, never
+    # consult_capped. This is the async-recovery path.
+    out2, diag2 = _post_seam(monkeypatch, _no_response, session, task)
+    assert attempts == ["raise", "empty"], attempts
+    assert out2 is None
+    assert diag2.get("reason") != "consult_capped", diag2
+    assert budget.counts(session, task) == {}, \
+        "an empty completion is a non-response too — refund it"
+
+    # And the retry really is allowed by the gate itself.
+    _set_turn(budget, session, 6)
+    assert budget.check(session, task, leg="post")["allow"] is True
+
+
+def test_successful_post_keeps_the_slot_and_the_third_leg_is_refused(budget, monkeypatch):
+    """F2 control: a REAL response keeps the slot; two legs, third refused."""
+    calls = []
+
+    def _ok(*_a, **_k):
+        calls.append("ok")
+        return "NO-FINDINGS", 0.0, 11, 3
+
+    session, task = "s-m4525-keep", "t-m4525-keep"
+    _set_turn(budget, session, 5)
+
+    pre = budget.check(session, task, leg="pre")
+    assert pre["allow"] is True          # successful PRE keeps its slot
+    out, _diag = _post_seam(monkeypatch, _ok, session, task)
+    assert out is not None               # a response arrived -> slot stays spent
+    assert len(calls) == 1
+    assert budget.counts(session, task) == {"pre": 1, "post": 1}
+
+    # Two successful calls, third refused — on the seam, not just the counter.
+    out2, diag2 = _post_seam(monkeypatch, _ok, session, task)
+    assert len(calls) == 1, "a spent POST must never reach the provider again"
+    assert out2 is None
+    assert diag2.get("reason") == "consult_capped"
+    assert budget.check(session, task, leg="pre")["allow"] is False
+
+
+def test_counter_store_is_bounded(budget, monkeypatch):
+    """Non-blocking: a long-lived gateway must not grow _COUNTS forever."""
+    from hermes_router import config_access
+
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"consult_min_turns": 0, "consult_max_per_task": 1})
+    for i in range(budget.MAX_SCOPES + 50):
+        budget.check("s-prune", "t-%d" % i, leg="pre")
+    assert len(budget._COUNTS) <= budget.MAX_SCOPES
+    assert len(budget._TURNS_SEEN) <= budget.MAX_SCOPES
