@@ -1,0 +1,59 @@
+--- /opt/hermes/hermes_state.py	2026-08-06 12:07:00.000000000 +0000
++++ /opt/data/tmp/m45-23/mod/hermes_state.py	2026-11-06 17:47:29.921727480 +0000
+@@ -6978,6 +6978,56 @@
+                     conn, session_id, model_config_patch, on_missing="raise"
+                 )
+ 
++            # M45-23 — idempotent compaction. A pass whose compacted set is
++            # identical to the session's CURRENT ACTIVE set has nothing to
++            # change: the active rows already ARE the compacted transcript.
++            # It used to fall through to archive-then-reinsert anyway, writing a
++            # second copy of every row under a new id while keeping the row's
++            # own timestamp (each msg carries msg["timestamp"]), so one turn's
++            # content ended up persisted twice. Measured fleet-wide, coder
++            # alone: 7,408 timestamps carrying >1 assistant row, 15,086 extra
++            # copies, and 7,386 of those groups (15,053 copies) are
++            # content-identical — compaction churn, not a rewrite. Every
++            # micro-compaction pass (agent/context_compressor.py
++            # _sync_micro_compact_to_db → archive_and_compact) paid it.
++            # Row ids cannot be reused to dedupe after the fact because
++            # get_messages_as_conversation orders by `id` (insertion order): the
++            # pass has to be skipped, not repaired. Returning the unchanged
++            # active count keeps the caller's contract (return = active count).
++            _active_rows = [
++                tuple(r) for r in conn.execute(
++                    "SELECT role, timestamp, content, tool_call_id "
++                    "FROM messages WHERE session_id = ? AND active = 1 "
++                    "ORDER BY id",
++                    (session_id,),
++                )
++            ]
++            _incoming_rows = []
++            for _msg in compacted_messages:
++                _m_ts = time.time()
++                if _msg.get("timestamp") is not None:
++                    try:
++                        _ts_value = _msg.get("timestamp")
++                        if hasattr(_ts_value, "timestamp"):
++                            _m_ts = float(_ts_value.timestamp())
++                        else:
++                            _m_ts = float(_ts_value)
++                    except (TypeError, ValueError):
++                        logger.debug(
++                            "Ignoring invalid explicit message timestamp: %r",
++                            _msg.get("timestamp"),
++                        )
++                _incoming_rows.append((
++                    _msg.get("role", "unknown"),
++                    _m_ts,
++                    self._encode_content(_msg.get("content")),
++                    _msg.get("tool_call_id"),
++                ))
++            if _active_rows and _active_rows == _incoming_rows:
++                # Nothing changed this pass — no archive, no re-insert, no
++                # duplicate rows. model_config_patch already applied above.
++                return len(_active_rows)
++
+             # Soft-archive the live turns: active=0 hides them from the live
+             # context load, compacted=1 marks them as "summarized away" (vs
+             # rewind/undo's active=0+compacted=0, which means "user took it
