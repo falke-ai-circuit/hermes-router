@@ -17,9 +17,12 @@ Grading rule (the only place a verdict is decided):
   promoted to PASS. Any recorded turn failure -> FAIL. overall=PASS only when
   every scenario is PASS.
 
-Exit: 0 PASS, 1 FAIL, 2 INCONCLUSIVE or runner error. JSON is authoritative.
+Exit: 0 PASS, 1 FAIL, 2 INCONCLUSIVE or runner error, 3 battery wall-clock
+timeout (partial grading is still written, overall=INCONCLUSIVE,
+error="TIMEOUT after Ns"). JSON is authoritative.
 """
 import argparse
+import ast
 import json
 import os
 import sqlite3
@@ -123,13 +126,31 @@ def source_of(path):
 
 
 def unimplemented_fields(name, src):
-    """Keys declared in this scenario's block that run_scenario() never reads."""
-    marker = 'run_scenario("%s"' % name
-    at = src.find(marker)
-    if at < 0:
+    """Keys declared by THIS scenario's own run_scenario(...) call, and nothing
+    beyond it, that the battery's run_scenario() never reads.
+
+    The block is bounded by the AST node of that single call (end_lineno via
+    ast.get_source_segment). A text scan for the next "\\n])" is unsound: when a
+    block's closing formatting differs the scan returns -1 and the fallback
+    window runs into the NEXT scenarios, so a scenario gets accused of keys a
+    neighbour declared (U1/X1/N3 once cited tool_pre/pre_spend_usd they never
+    carried). Bounding by the call node makes that overrun impossible.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
         return []
-    end = src.find("\n])", at)
-    block = src[at:end if end > at else at + 2500]
+    block = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "run_scenario"
+                and len(node.args) >= 1
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == name):
+            block = ast.get_source_segment(src, node) or ""
+            break
+    if block is None:
+        return []
     body = src[src.find("def run_scenario"):src.find("# ============ SCENARIOS")]
     return [k for k in UNIMPLEMENTED_KEYS if k in block and k not in body]
 
@@ -171,9 +192,26 @@ def main():
                BATT_RESULTS=results_tmp)
     started = time.time()
     started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))
-    proc = subprocess.run([sys.executable, os.path.join(REPO, "benchmarks", "behavioral_battery.py")],
-                          env=env, cwd=REPO, capture_output=True, text=True, timeout=a.timeout)
-    raw = proc.stdout + "\n" + proc.stderr
+    timed_out = False
+    try:
+        proc = subprocess.run([sys.executable, os.path.join(REPO, "benchmarks", "behavioral_battery.py")],
+                              env=env, cwd=REPO, capture_output=True, text=True, timeout=a.timeout)
+        raw = proc.stdout + "\n" + proc.stderr
+    except subprocess.TimeoutExpired as e:
+        # The battery is wall-clock bounded; dying here used to kill the runner
+        # before json.dump, so a slow profile produced NO verdict at all. Grade
+        # whatever it managed to record and still write the file.
+        timed_out = True
+
+        def _txt(v):
+            if v is None:
+                return ""
+            if isinstance(v, bytes):
+                return v.decode("utf-8", "replace")
+            return str(v)
+
+        raw = _txt(e.stdout) + "\n" + _txt(e.stderr)
+        proc = subprocess.CompletedProcess(e.cmd, 124, raw, "")
 
     sids, turns = parse_stdout(raw)
     expects_lane = {}
@@ -241,12 +279,20 @@ def main():
            "started_at": started_at, "scenarios": scenarios, "totals": totals,
            "overall": overall, "battery_exit": proc.returncode,
            "output_tail": raw.strip().splitlines()[-6:]}
+    if timed_out:
+        overall = "INCONCLUSIVE"
+        doc["overall"] = overall
+        doc["error"] = "TIMEOUT after %ds" % a.timeout
     json.dump(doc, open(a.out, "w"), indent=1)
     print("profile=%s port=%s head=%s" % (a.profile, port, doc["head_sha"]))
     for s in scenarios:
         print("%-24s %-12s %s" % (s["id"], s["verdict"], s.get("reason", "")))
     print("TOTALS pass=%d fail=%d inconclusive=%d overall=%s"
           % (totals["pass"], totals["fail"], totals["inconclusive"], overall))
+    if timed_out:
+        print("TIMEOUT after %ds — %d scenario(s) graded from partial run; JSON written: %s"
+              % (a.timeout, len(scenarios), a.out))
+        return 3
     return 0 if overall == "PASS" else (1 if overall == "FAIL" else 2)
 
 
