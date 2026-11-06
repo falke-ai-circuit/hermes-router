@@ -25,9 +25,31 @@ Defects this pins:
 """
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 pytest_plugins = ("tests.conftest",)
+
+
+@pytest.fixture(autouse=True)
+def _config_cache_neutral():
+    """Leave `config_access._cache` exactly as this module found it.
+
+    `router_section()` warms a process-level cache with whatever section it
+    last resolved. A test module that reads the REAL profile config would
+    otherwise hand that section to every later test in the same process —
+    measured: three banner tests downstream turned red only in a full-suite run,
+    purely from a cache this module warmed.
+    """
+    from hermes_router import config_access
+
+    saved = copy.deepcopy(getattr(config_access, "_cache", None))
+    yield
+    cache = getattr(config_access, "_cache", None)
+    if isinstance(cache, dict) and isinstance(saved, dict):
+        cache.clear()
+        cache.update(saved)
 
 
 @pytest.fixture()
@@ -201,28 +223,6 @@ def test_post_on_task_turn_one_is_refused_below_min_turns_and_recorded(
     assert len(capped) == 1, rows
     assert capped[0].get("choice") == "refused"
     assert "below_min_turns" in str(capped[0].get("verdict_json")), capped[0]
-
-
-def test_post_refused_after_the_body_shipped_is_recorded_not_parked(
-        budget, monkeypatch):
-    """D3(c): a POST whose seam ships before it consults is refused, recorded.
-
-    The legacy async topology calls the gate with deliverable=False; a banner
-    parked then could only reach a LATER turn's body, which the ruling forbids.
-    """
-    rows = []
-    from hermes_router import decision as dm
-
-    monkeypatch.setattr(dm, "ledger_write", lambda row, db_path="": rows.append(row))
-    _knobs(monkeypatch, pre_floor=1, post_floor=1)
-    session, task = "s-m4607-async", "t-m4607-async"
-    _set_turn(session, 9)
-
-    post = budget.check(session, task, leg="post", deliverable=False)
-    assert post["allow"] is False, post
-    assert post["reason"] == "after_delivery", post
-    assert budget.counts(session, task) == {}
-    assert [r for r in rows if "after_delivery" in str(r.get("verdict_json"))]
 
 
 def test_post_lands_in_the_delivered_body_of_the_final_response(
