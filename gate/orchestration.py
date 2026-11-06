@@ -3358,7 +3358,16 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 pass
 
         # Consume the staged swap now — exactly-once semantics.
-        outcome = _hub().anchor_exec.maybe_execute_anchored(session_id, request)
+        # M45-26F: the consult REWRITES the last user message in place
+        # (anchor_exec.py:1931 / :1951 / :1954). Handing it the live request
+        # let that write reach the fail-open below (`next_call(request)`), so
+        # a failed consult asked the fallback model the CONSULT QUESTION
+        # instead of the dispatched brief — 4 turns ended text-only with an
+        # open session. The frame is built inside maybe_execute_anchored, so
+        # the copy must be the whole payload: the consult keeps its frame,
+        # the caller keeps the brief.
+        outcome = _hub().anchor_exec.maybe_execute_anchored(
+            session_id, _hub().copy.deepcopy(request))
         if isinstance(outcome, tuple) and outcome and outcome[0] == "cap_blocked":
             info = outcome[1] if len(outcome) > 1 else {}
             _hub()._log_route("PRE", event_detail="cap_blocked",
