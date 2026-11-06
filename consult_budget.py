@@ -11,25 +11,22 @@ Contract implemented here:
   RULE 1  one PRE and one POST consult per task, maximum. The third attempt on
           the same task is REFUSED and RECORDED (trigger='consult_capped') —
           auditable, never silent, and never sent to the frontier model.
-  RULE 2  short tasks emit neither leg: a task must reach `consult_min_turns`
-          substantive turns before either leg may fire. The knob exists and is
-          read live, but its DEFAULT IS 0 = OPT-IN and NO profile sets it, so
-          RULE 2 IS NOT ENFORCED OUT OF THE BOX. That is a recorded deferral,
-          not an oversight (M45-25b, measured):
-            * floor = 1 is a NO-OP: turn_no is 1-based, so `0 < turn < 1` never
-              holds and the floor can never refuse anything.
-            * floor = 2 suppresses every FIRST-TURN consult. 4 declared-form
-              pins require that behaviour (test_v320_one_consult_per_turn::
-              test_pre_middleware_logs_consult_deduped and ..._second_new_ask_
-              routes_normally, test_rider16_fixes::test_anchored_failure_parks_
-              fail_loud_banner, test_single_claim_point::test_leg7c_auto_then_
-              midturn_tool_claim_no_second_consult): 15 failed / 425 passed vs
-              the 11-failure pre-existing baseline.
-            * floor = 3 was measured by the reviewer at 25 pins red.
-          The threshold is session-scoped while the budget is task-scoped, so no
-          value enforces RULE 2 without killing declared consults. DEFERRED to
-          owner sign-off; until then, set consult_min_turns per profile only if
-          you accept losing first-turn consults.
+  RULE 2  (M46-06 owner ruling, supersedes the M45-25b deferral) EVERY ask
+          keeps the POSSIBILITY of a consult; the triggers — not a blanket
+          floor — decide whether it fires. Mechanically:
+            * the floor is a REPEAT-consult floor, counted in TASK turns;
+            * the FIRST consult of a task is NEVER floored — it may fire on
+              task turn 1 whenever the complexity/impact gate routed here;
+            * consults after the first must wait until the task has aged to
+              `consult_min_turns` TASK turns (task turn 1 = the session turn
+              on which the task's first consult was attempted).
+          Task turn = session_turn - first_seen_session_turn + 1, so the basis
+          is the task's own age, not the session's turn index. A task with no
+          known session turn (0) fails OPEN, never floored.
+          Knob: `consult_min_turns`, default 1 (documented in plugin.yaml).
+          At 1 the repeat floor is inert (task turn is 1-based, so `task_turn
+          < 1` never holds) and only `consult_max_per_task` binds; set 2+ to
+          make a task age before its second consult. Read live, never cached.
   RULE 3  the complexity/impact gate stays in FRONT of this module — this is a
           budget check placed immediately before the spend, not a routing gate.
 
@@ -49,8 +46,9 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_PER_TASK = 1     # per leg (one PRE + one POST)
-DEFAULT_MIN_TURNS = 0        # RULE 2 knob — 0 = OFF / opt-in (see the header:
-                             # the floor is unenforced until a profile sets it)
+DEFAULT_MIN_TURNS = 1        # RULE 2 knob — REPEAT-consult floor in TASK
+                             # turns (1 = inert: the first consult is never
+                             # floored and a 1-based task turn is never < 1).
 
 CAPPED_TRIGGER = "consult_capped"
 
@@ -61,6 +59,9 @@ MAX_SCOPES = 4096
 _LOCK = threading.Lock()
 _COUNTS: Dict[str, Dict[str, int]] = {}
 _TURNS_SEEN: Dict[str, int] = {}
+# M46-06: session turn on which the scope's FIRST consult was attempted —
+# the anchor that turns a session counter into a TASK-relative turn.
+_TASK_BORN: Dict[str, int] = {}
 
 
 def _knob_int(name: str, default: int) -> int:
@@ -82,7 +83,7 @@ def max_per_task() -> int:
 
 
 def min_turns() -> int:
-    """consult_min_turns (int, default 0 = off; set >0 to enforce RULE 2)."""
+    """consult_min_turns (int, default 1) — REPEAT-consult floor in TASK turns."""
     try:
         return max(0, _knob_int("consult_min_turns", DEFAULT_MIN_TURNS))
     except Exception:  # noqa: BLE001
@@ -97,6 +98,40 @@ def turn_no(session_id: str) -> int:
         return int(_ac.turn_no(session_id) or 0)
     except Exception:  # noqa: BLE001
         return 0
+
+
+def task_turn(session_id: str, key: str = "") -> int:
+    """The TASK's own turn number (1-based) for `key`, or 0 when unknown.
+
+    M46-06 counting basis: task turn = session turn - the session turn on which
+    this scope was first seen + 1. The session counter is only an anchor; the
+    floor compares the TASK's age, which is why a task minted on session turn
+    40 still gets its first consult (task turn 1). Never raises.
+    """
+    try:
+        k = str(key or "")
+        with _LOCK:
+            born = _TASK_BORN.get(k)
+            seen = _TURNS_SEEN.get(k)
+        if born is None:
+            return 0
+        cur = turn_no(session_id) or int(seen or 0)
+        if cur <= 0:
+            return 0
+        return max(1, int(cur) - int(born) + 1)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _task_turn_locked(key: str, session_turn: int) -> int:
+    """Task turn under _LOCK, minting the scope's birth turn on first sight."""
+    if session_turn <= 0:
+        return 0  # unknown session turn -> floor stays open
+    born = _TASK_BORN.get(key)
+    if born is None:
+        _TASK_BORN[key] = int(session_turn)
+        return 1
+    return max(1, int(session_turn) - int(born) + 1)
 
 
 def scope_key(session_id: str, task_id: str = "", ask: str = "",
@@ -173,13 +208,17 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
         turn = turn_no(session_id)
         out.update({"key": key, "cap": cap, "turn": turn})
         with _LOCK:
-            # RULE 2: a task under the floor emits nothing. `turn == 0` means
-            # the session's turn counter was never opened (unit harness or a
-            # caller outside the turn lifecycle, e.g. an API/tool dispatch) —
-            # an UNKNOWN turn must fail open, never silently kill the lane.
-            if floor > 0 and 0 < turn < floor:
-                slot = _COUNTS.get(key) or {}
-                count = int(slot.get(str(leg), 0))
+            slot = _COUNTS.get(key) or {}
+            count = int(slot.get(str(leg), 0))
+            prior = sum(int(v or 0) for v in slot.values())
+            tturn = _task_turn_locked(key, turn)
+            out["task_turn"] = tturn
+            # RULE 2 (M46-06): the floor is a REPEAT-consult floor in TASK
+            # turns. `prior == 0` is a task's FIRST consult — always allowed
+            # through here (the triggers already decided), never floored. A
+            # task turn of 0 means the session counter was never opened (unit
+            # harness / API dispatch) and must fail open, never kill the lane.
+            if floor > 0 and prior > 0 and 0 < tturn < floor:
                 out.update({"allow": False, "count": count,
                             "reason": "below_min_turns"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
@@ -214,8 +253,11 @@ def _prune_locked() -> None:
         _victim = next(iter(_COUNTS))
         _COUNTS.pop(_victim, None)
         _TURNS_SEEN.pop(_victim, None)
+        _TASK_BORN.pop(_victim, None)
     while len(_TURNS_SEEN) > MAX_SCOPES:
         _TURNS_SEEN.pop(next(iter(_TURNS_SEEN)), None)
+    while len(_TASK_BORN) > MAX_SCOPES:
+        _TASK_BORN.pop(next(iter(_TASK_BORN)), None)
 
 
 def refund(session_id: str = "", task_id: str = "", leg: str = "pre",
@@ -275,11 +317,16 @@ def reset(session_id: str = "", task_id: str = "", key: str = "") -> None:
             if k:
                 _COUNTS.pop(k, None)
                 _TURNS_SEEN.pop(k, None)
+                _TASK_BORN.pop(k, None)
                 return
             if session_id or task_id:
-                _COUNTS.pop(scope_key(session_id, task_id), None)
+                _k = scope_key(session_id, task_id)
+                _COUNTS.pop(_k, None)
+                _TURNS_SEEN.pop(_k, None)
+                _TASK_BORN.pop(_k, None)
                 return
             _COUNTS.clear()
             _TURNS_SEEN.clear()
+            _TASK_BORN.clear()
     except Exception:  # noqa: BLE001
         pass

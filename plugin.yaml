@@ -68,7 +68,7 @@ config_schema:
   substance_frame: {type: str, default: "", description: "Override PRE substance frame text"}
   render_method_spec: {type: str, default: "", description: "v3.3.6 method card override — deliverable-shape spec passed to the uncensored renderer (wins over ask-scored SKILL.md lift); per-profile render format contract"}
   consult_max_per_task: {type: int, default: 1, description: "R78U M45-25 per-task consult budget: consults allowed per leg (one PRE + one POST) on one task; the nth+1 is REFUSED and recorded as consult_capped"}
-  consult_min_turns: {type: int, default: 0, description: "R78U M45-25 minimum-turn threshold: a task must reach this many turns before EITHER consult leg may fire (0 = threshold off); short asks emit neither"}
+  consult_min_turns: {type: int, default: 1, description: "R78U M46-06 REPEAT-consult floor in TASK turns (not session turns): a task's FIRST consult is never floored and may fire on task turn 1; each later consult waits until the task has aged to this many task turns. 1 = inert (first-consult-exempt, cap still binds); set 2+ to make a task age. Read live"}
   debug_banner: {type: bool, default: false, description: "v3.6 §10.2 debug route banner — diagnostic appended to the DELIVERED representation only (canonical content never carries it); consequential knob, token-guarded via /router; default OFF"}
   classification:
     type: dict

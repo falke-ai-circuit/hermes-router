@@ -64,8 +64,10 @@ def test_task_driven_20_turns_spends_exactly_one_pre_and_one_post(budget, monkey
     assert all(str(r.get("task_id")) == task for r in capped)
 
 
-def test_task_below_min_turn_threshold_emits_zero_consults(budget, monkeypatch):
-    """RULE 2: a short task fires NEITHER leg, and the skip is recorded."""
+def test_repeat_consult_below_min_turn_floor_is_refused_not_the_first(
+        budget, monkeypatch):
+    """RULE 2 (M46-06): the floor binds REPEATS only; a task's first consult
+    fires on task turn 1 and the refusals are recorded."""
     rows = []
     from hermes_router import decision as dm, config_access
 
@@ -73,19 +75,24 @@ def test_task_below_min_turn_threshold_emits_zero_consults(budget, monkeypatch):
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"consult_min_turns": 3, "consult_max_per_task": 1})
     session, task = "s-m4525-short", "t-m4525-short"
-    _set_turn(budget, session, 1)  # below the configured floor of 3
+    _set_turn(budget, session, 1)  # task turn 1 -> first consult exempt
 
-    for leg in ("pre", "post", "pre", "post"):
+    first = budget.check(session, task, leg="pre")
+    assert first["allow"] is True, first
+    assert first["task_turn"] == 1, first
+
+    for leg in ("post", "pre", "post"):
         gate = budget.check(session, task, leg=leg)
-        assert gate["allow"] is False
-        assert gate["reason"] == "below_min_turns"
+        assert gate["allow"] is False, gate
+        assert gate["reason"] == "below_min_turns", gate
 
-    assert budget.counts(session, task) == {}
-    assert len([r for r in rows if r.get("trigger") == "consult_capped"]) == 4
+    assert budget.counts(session, task) == {"pre": 1}
+    assert len([r for r in rows if r.get("trigger") == "consult_capped"]) == 3
 
 
 def test_knobs_are_read_from_config_not_hardcoded(budget, monkeypatch):
-    """RULE 2/3: floor and cap come from the router config section."""
+    """RULE 2/3: floor and cap come from the router config section; the floor
+    counts the TASK's turns, so the same session turn means different things."""
     from hermes_router import config_access
 
     monkeypatch.setattr(config_access, "router_section",
@@ -94,11 +101,12 @@ def test_knobs_are_read_from_config_not_hardcoded(budget, monkeypatch):
     assert budget.max_per_task() == 3
 
     session, task = "s-m4525-knob", "t-m4525-knob"
-    _set_turn(budget, session, 5)  # 5 < 7 -> still zero
-    assert budget.check(session, task, leg="pre")["allow"] is False
-    _set_turn(budget, session, 7)
-    assert [budget.check(session, task, leg="pre")["allow"] for _ in range(4)] == \
-        [True, True, True, False]
+    _set_turn(budget, session, 5)  # task born here -> task turn 1, first exempt
+    assert budget.check(session, task, leg="pre")["allow"] is True
+    assert budget.check(session, task, leg="pre")["reason"] == "below_min_turns"
+    _set_turn(budget, session, 11)  # task turn 7 -> repeats allowed up to the cap
+    assert [budget.check(session, task, leg="pre")["allow"] for _ in range(3)] == \
+        [True, True, False]
 
 
 def test_pre_choke_point_refuses_second_pre_for_same_task(budget, monkeypatch):
