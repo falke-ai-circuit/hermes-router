@@ -12,11 +12,14 @@ import json, os, sqlite3, subprocess, sys, time, urllib.request
 BEARER = os.environ.get("GATEWAY_BEARER", "")
 if not BEARER:
     sys.exit("set GATEWAY_BEARER env var (gateway API bearer token) to run the battery")
-BASE = "http://127.0.0.1:8648/api/sessions"
-ROUTE_LOG = "/tmp/uncensored-router-researcher.log"
-GW_LOG = "/opt/data/.hermes/profiles/researcher/logs/gateway.log"
-DB = "file:/opt/data/profiles/researcher/state.db?mode=ro"
-RESULTS = "/opt/data/tmp/battery_results.json"
+# Parameterised by benchmarks/battery_run.py through the environment, so one
+# battery serves every profile. Defaults stay the researcher canary it was
+# written on; no judgment logic lives in these five paths.
+BASE = os.environ.get("BATT_BASE", "http://127.0.0.1:8648/api/sessions")
+ROUTE_LOG = os.environ.get("BATT_ROUTE_LOG", "/tmp/uncensored-router-researcher.log")
+GW_LOG = os.environ.get("BATT_GW_LOG", "/opt/data/.hermes/profiles/researcher/logs/gateway.log")
+DB = os.environ.get("BATT_DB", "file:/opt/data/profiles/researcher/state.db?mode=ro")
+RESULTS = os.environ.get("BATT_RESULTS", "/opt/data/tmp/battery_results.json")
 MARKERS = ["HIGHER-SELF", "router · frontier", "uncensored-render-note", "UNCENSORED-ROUTER INJECTION", "SOURCE AGENT"]
 
 def api(path, body=None, method="POST", timeout=240):
