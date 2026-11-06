@@ -37,6 +37,7 @@ from hermes_router import (anchor_exec, decision,  # noqa: E402
                            debug_banner as DB, provider_prices,
                            render_inbox, router_core, route_gate,
                            usage_ledger)
+from hermes_router.features.banners import turn_record as TR  # noqa: E402
 
 SID = "s-rider18"
 
@@ -58,6 +59,7 @@ def r18_reset(monkeypatch, tmp_path):
     DB._ANCHOR_BANNERS.clear()
     DB._ANCHOR_TASKS.clear()
     DB._ANCHOR_SEGS.clear()
+    TR.reset()
     route_gate.clear_turn_claims()
     monkeypatch.setattr(usage_ledger, "_store_path",
                         lambda: str(tmp_path / "tokens.jsonl"))
@@ -156,11 +158,16 @@ def test_declared_frontier_form_also_emits_frontier_event(
         "right long-term call for the fleet?", anchor=anchor)
     fired = [kw for s, d, kw in sink if d == "anchor_route_fired"]
     assert fired, "declared form must still route"
-    assert calls_ok(body)
+    assert _banner_recorded(SID)
 
 
-def calls_ok(body):
-    return "router" in body and "pre-check" in body  # R34-19b end-label
+def _banner_recorded(sid):
+    """M35-17: the banner is a turn RECORD (emitted), never body content."""
+    _seg = TR.record(sid)
+    _segs = _seg.get("segments") or []
+    return bool(_segs) and any(
+        s.get("lane") == "frontier" and "pre-check" in s.get("text", "")
+        for s in _segs)
 
 
 # ---------------------------------------------------------------------------

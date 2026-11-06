@@ -41,6 +41,7 @@ import hermes_router as plugin  # noqa: E402
 from hermes_router import (anchor_exec, decision, debug_banner as DB,  # noqa: E402
                            render_inbox, router_core, route_gate,
                            usage_ledger)
+from hermes_router.features.banners import turn_record as TR  # noqa: E402
 
 SID = "s-rider16"
 
@@ -53,6 +54,7 @@ def r16_reset(monkeypatch, tmp_path):
     DB._ANCHOR_BANNERS.clear()
     DB._ANCHOR_TASKS.clear()
     DB._ANCHOR_SEGS.clear()
+    TR.reset()
     route_gate.clear_turn_claims()
     monkeypatch.setattr(usage_ledger, "_store_path",
                         lambda: str(tmp_path / "tokens.jsonl"))
@@ -144,8 +146,14 @@ def test_anchored_failure_parks_fail_loud_banner(r16_reset, monkeypatch):
     body, sink, _ = _run_turn(monkeypatch, r16_reset,
                               "decide this: what should the fleet prioritize "
                               "next quarter?")
-    # delivery contract: the failure banner reaches the delivered body
-    assert "consult_failed" in body or "anchored_call_failed" in body, body
+    # M35-17 delivery contract: the banner is a turn RECORD, not body content,
+    # and the delivered body is the author's bytes.
+    _rec = TR.record(SID)
+    _segs = _rec.get("segments") or []
+    assert _segs, "a failed consult must still record its banner"
+    _text = " ".join(s["text"] for s in _segs)
+    assert "consult_failed" in _text or "anchored_call_failed" in _text, _text
+    assert body == "agent answer"      # M35-17: the body is the author's bytes
 
 
 def test_declared_higherself_success_delivers_banner(r16_reset, monkeypatch):
@@ -165,7 +173,12 @@ def test_declared_higherself_success_delivers_banner(r16_reset, monkeypatch):
     fired = [kw for s, d, kw in sink if d == "anchor_route_fired"]
     assert fired, "consult must route"
     assert calls, "consult must execute (anchored call ran)"
-    assert "router" in body and "pre-check" in body, body  # R34-19b end-label
+    _rec = TR.record(SID)
+    _segs = _rec.get("segments") or []
+    assert _segs, "the consult must register a banner segment"
+    assert _segs[0]["lane"] == "frontier", _segs
+    assert "pre-check" in _segs[0]["text"] and "row=" in _segs[0]["text"], _segs[0]
+    assert body == "agent answer"      # M35-17: the body is the author's bytes
 
 
 def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
@@ -186,7 +199,12 @@ def test_open_question_success_delivers_banner(r16_reset, monkeypatch):
     fired = [kw for s, d, kw in sink if d == "anchor_route_fired"]
     assert fired and fired[0].get("reason") == "manual_open_question_frontier"
     assert calls, "consult must execute"
-    assert "router" in body and "pre-check" in body, body  # R34-19b end-label
+    _rec = TR.record(SID)
+    _segs = _rec.get("segments") or []
+    assert _segs, "the consult must register a banner segment"
+    assert _segs[0]["lane"] == "frontier", _segs
+    assert "pre-check" in _segs[0]["text"] and "row=" in _segs[0]["text"], _segs[0]
+    assert body == "agent answer"      # M35-17: the body is the author's bytes
 
 
 def test_reflex_held_event_lands_without_emit_failure(r16_reset, monkeypatch,
