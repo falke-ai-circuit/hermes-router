@@ -121,12 +121,14 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
     out1 = plugin.on_transform_llm_output(response_text="t1 plain answer",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    # M35-17: the seam hands back the agent's own bytes (None = pass-through).
-    assert out1 is None or out1 == "t1 plain answer"
-    assert debug_banner.BANNER_HEAD not in str(out1 or "")
+    # M46-03 (owner ruling, reverses M35-17): a lane that fired is VISIBLE in
+    # the delivered bytes. THE INVERTED PIN — this assertion used to enforce
+    # the banner's invisibility.
+    assert str(out1 or "").startswith("t1 plain answer")
+    assert debug_banner.BANNER_HEAD in str(out1 or "")
     assert TAG not in str(out1 or "")             # R20: delivered bodies drop the provenance prefix
-    # M35-17: the rollup provenance is a RECORD line, never a body suffix.
-    assert "impulse (decision)" not in str(out1 or "")
+    # M46-03: the rollup is BOTH a record line and a body receipt.
+    assert "impulse (decision)" in str(out1 or "")
     # R34-3 supersedes the F2 all-ids tail: the tail renders the CHOSEN
     # OPTION'S LABEL (truncated at a clause boundary) + confidence, not the
     # bare option id the reader cannot decode.
@@ -143,6 +145,7 @@ def test_seam1_consult_reaches_api_server_body(r2_reset, monkeypatch):
     out2 = plugin.on_transform_llm_output(response_text="t2 plain answer",
                                           session_id=SID, model="m",
                                           platform="api_server")
+    # next turn: no lane fired, so the host's own bytes pass through untouched
     assert out2 is None
     assert TAG not in (out2 or "")
 
@@ -166,9 +169,8 @@ def test_verdict_after_turn_close_delivers_next_turn(r2_reset, monkeypatch):
     out2 = plugin.on_transform_llm_output(response_text="follow-up turn",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    # M35-17: the unchanged body is the host's own bytes; the aggregate is a
-    # RECORD line for the next turn.
-    assert debug_banner.BANNER_HEAD not in str(out2 or "")
+    # M46-03: the aggregate is visible on the body it delivers.
+    assert debug_banner.BANNER_HEAD in str(out2 or "")
     assert TAG not in str(out2 or "")             # R20: standardized delivered shape
     from hermes_router.features.banners import turn_record as _tr
     assert "impulse (decision)" in _tr.render(SID)

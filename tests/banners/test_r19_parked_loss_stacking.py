@@ -178,14 +178,13 @@ def test_park_round_trip_benign_edge(r4_reset, monkeypatch):
     out1 = plugin.on_transform_llm_output(response_text="t1 plain answer",
                                           session_id=SID, model="m",
                                           platform="api_server")
-    assert debug_banner.BANNER_HEAD not in str(out1 or "")  # record, not body
+    assert debug_banner.BANNER_HEAD in str(out1 or "")  # M46-03: record AND body
     assert TAG not in str(out1 or "")  # R20
     from hermes_router.features.banners import turn_record as _tr
     assert "impulse (decision)" in _tr.render(SID)
-    # the persisted row is the body the user saw — never a banner
+    # the persisted row is the body the user saw — the receipt is part of it
     rows = _persisted(r4_reset)
-    for _role, _text in rows:
-        assert debug_banner.BANNER_HEAD not in str(_text)
+    assert any(debug_banner.BANNER_HEAD in str(_t) for _r, _t in rows)
 
 
 def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
@@ -203,8 +202,8 @@ def test_park_round_trip_empty_body_edge(r4_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    # M35-17: an empty body stays empty; the verdict is RECORDED, not appended.
-    assert not out or debug_banner.BANNER_HEAD not in out
+    # M46-03: the empty-body edge now delivers the receipt ALONE.
+    assert debug_banner.BANNER_HEAD in str(out or "")
     assert TAG not in str(out or "")  # R20
     from hermes_router.features.banners import turn_record as _tr
     assert "impulse (decision)" in _tr.render(SID)
@@ -242,7 +241,7 @@ def test_park_round_trip_audit_sync_edge(r4_reset, monkeypatch):
     out = plugin.on_transform_llm_output(response_text="t3 answer",
                                          session_id=SID, model="m",
                                          platform="api_server")
-    assert debug_banner.BANNER_HEAD not in str(out or "")
+    assert debug_banner.BANNER_HEAD in str(out or "")  # M46-03: visible
     from hermes_router.features.banners import turn_record as _tr
     assert "parked audit note" in _tr.render(SID)
 

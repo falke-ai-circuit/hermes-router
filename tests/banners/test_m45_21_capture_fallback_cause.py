@@ -115,7 +115,9 @@ def test_turn_open_deferral_leaves_the_slot_claimable_exactly_once(monkeypatch):
 
     # ... and that same slot is what the delivery edge takes (same key)
     out, drows = _deliver(monkeypatch, turn=4, sig="ask-abc")
-    assert out == "the answer"
+    # M46-03: the fired lane's receipt rides the delivered bytes.
+    assert out.startswith("the answer")
+    assert db.BANNER_HEAD in out
     assert SID not in db._ANCHOR_BANNERS, "first delivery must claim the park"
     assert SID not in db._PARK_RECORDS
     consume = [f for e, f in drows if e == "anchor_banner_consume"][0]

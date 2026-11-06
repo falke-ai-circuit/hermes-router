@@ -98,10 +98,11 @@ def test_deliver_chokepoint_illegal_edge_raises_and_fail_open(monkeypatch):
     from hermes_router import debug_banner as _DB
 
     monkeypatch.setattr(_DB, "debug_banner_enabled", lambda: True)
-    # M35-17: the body is returned untouched; the segment is recorded.
+    # M46-03: the segment is recorded AND visible in the delivered bytes.
     from hermes_router.features.banners import turn_record as _tr
-    assert _lifecycle().deliver("s-p5b", "body", "anchor", "benign") == "body"
-    assert "BANNER" in _tr.render("s-p5b")
+    _out_b = _lifecycle().deliver("s-p5b", "body", "anchor", "benign")
+    assert _out_b.startswith("body")
+    assert "BANNER" in _out_b and "BANNER" in _tr.render("s-p5b")
 
 
 def test_deliver_append_drops_on_vanish_r33f(monkeypatch):
@@ -112,7 +113,14 @@ def test_deliver_append_drops_on_vanish_r33f(monkeypatch):
     from hermes_router import debug_banner as DB
     from hermes_router.features.banners import kinds
 
-    monkeypatch.setattr(DB, "debug_banner_enabled", lambda: False)
+    # M46-03: the silence knob is `banner_in_body` (default ON).
+    from hermes_router import config_access as _ca
+
+    monkeypatch.setattr(_ca, "router_section",
+                        lambda: {"debug_banner": 1, "banner_in_body": False})
+    monkeypatch.setattr(DB, "_banner_section",
+                        lambda: {"debug_banner": 1, "banner_in_body": False},
+                        raising=True)
     _lifecycle().park(kinds.get("anchor"), "s-p5c", "", "B")
     out = _lifecycle().deliver("s-p5c", "body", "anchor", "benign")
     assert out == "body"                    # base delivered unchanged (fail-open)

@@ -361,6 +361,23 @@ def on_transform_llm_output_guarded(**kwargs):
                 pass
     except Exception:  # noqa: BLE001 — the boundary never breaks delivery
         pass
+    # M46-03 (owner ruling, reverses M35-17) — VISIBILITY AT FINAL RESPONSE.
+    # The api_server seam returns None to mean "deliver the bytes you gave me",
+    # so the lifecycle chokepoint never sees those bytes. This is the last
+    # place that holds them: compose the turn's ONE banner line here, from the
+    # record, so the delivered bytes and the record cannot disagree.
+    try:
+        from ..features.banners import turn_record as _tr_vis
+
+        _sid_vis = str(kwargs.get("session_id") or "")
+        _payload = (final if isinstance(final, str)
+                    else (_original if isinstance(_original, str) else None))
+        if _payload is not None:
+            _composed = _tr_vis.compose_onto(_sid_vis, _payload)
+            if isinstance(_composed, str) and _composed != _payload:
+                final = _composed
+    except Exception:  # noqa: BLE001 — a composer never withholds a turn
+        pass
     # M35-17 — THE ONE EMIT POINT (§2.1). After the boundary strip has produced
     # the exact bytes leaving this function, and before the provenance row
     # closes: this is the only place that knows the segments, the decision and

@@ -142,6 +142,24 @@ class BannerLifecycle:
 
     # --- delivery chokepoint ------------------------------------------------
 
+    def _compose_delivered(self, session_id: str, base: str, mode: str) -> str:
+        """M46-03: attach the turn's ONE banner line to the delivered bytes.
+
+        Rendered from the turn RECORD (turn_record.compose_onto), so the record
+        and the body cannot disagree. Idempotent (a body already carrying the
+        marker is returned untouched) and knob-gated (`banner_in_body`, default
+        ON). Never raises; a composer failure never withholds a turn.
+        """
+        if mode not in ("append", "body"):
+            return base
+        try:
+            from ...features.banners import turn_record as _turn
+
+            out = _turn.compose_onto(session_id, base, mode=mode)
+            return out if isinstance(out, str) else base
+        except Exception:  # noqa: BLE001 — a composer never breaks delivery
+            return base
+
     def deliver(self, session_id: str, text: str, kind_id: str,
                 edge: str, *, mode: str = "append",
                 log_edge: Optional[str] = None,
@@ -303,7 +321,8 @@ class BannerLifecycle:
                            reason=("consume_missed" if _rec_pre
                                    else "no_park_this_turn"),
                            session_id=str(session_id or ""), **_seq)
-            return (text if isinstance(text, str) else "") if mode == "append" else ""
+            return self._compose_delivered(
+                session_id, (text if isinstance(text, str) else ""), mode)
         if mode == "body":
             # M35-17: `mode="body"` no longer substitutes the banner for the
             # body. There is ONE record; the parked text becomes a segment.
@@ -317,7 +336,10 @@ class BannerLifecycle:
             _turn.register(session_id, parked, kind="anchor", edge=_e)
         except Exception:  # noqa: BLE001 — registration never breaks delivery
             pass
-        out = str(base or "")
+        # M46-03 (owner ruling, reverses M35-17): VISIBILITY. A lane that fired
+        # is visible in the delivered bytes. The line is rendered FROM the
+        # record, so the body and the record cannot disagree.
+        out = self._compose_delivered(session_id, str(base or ""), mode)
         landed = bool(parked.strip())
         if log_consume:
             # R34-17 item 3: `parked` reports the PARK (there is a semaphore

@@ -75,8 +75,8 @@ def test_benign_consume_drops_when_append_equal_r33f(r9_reset, monkeypatch):
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="visible reply", session_id=SID, model="minimax-m3")
-    assert out is None or out == "visible reply"   # pass-through contract
-    assert debug_banner.BANNER_HEAD not in str(out or "")
+    assert str(out or "").startswith("visible reply")   # body preserved
+    assert debug_banner.BANNER_HEAD in str(out or "")   # M46-03: visible
     assert not debug_banner._ANCHOR_BANNERS.get(SID)  # DROPPED, not re-parked
     assert "higher-self (frontier)" in _tr.render(SID)
     crec = [f for e, f in r9_reset
@@ -95,7 +95,7 @@ def test_benign_consume_appends_to_delivered_string(r9_reset):
         response_text="the agent's own visible reply", session_id=SID,
         model="minimax-m3")
     delivered = out if isinstance(out, str) else "the agent's own visible reply"
-    assert debug_banner.BANNER_HEAD not in delivered
+    assert debug_banner.BANNER_HEAD in delivered
     block = _tr.render(SID)
     assert "higher-self (frontier)" in block
     assert "openai/gpt-6-astra-pro-flex" in block   # named-model case
@@ -120,8 +120,8 @@ def test_audit_sync_return_merges_parked_banner(r9_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text="original draft", session_id=SID, model="minimax-m3")
     # The audit arm's own return is exercised by the completion-audit node;
-    # what THIS unit fixes is that no body carries a banner either way.
-    assert debug_banner.BANNER_HEAD not in str(out or "")
+    # M46-03: the fired lane is visible on the body that ships.
+    assert debug_banner.BANNER_HEAD in str(out or "")
     assert "openai/gpt-6-astra-pro-flex" in _tr.render(SID)
     rec = [f for e, f in r9_reset
            if f.get("event_detail") == "anchor_banner_consume"]
@@ -144,7 +144,7 @@ def test_no_double_append_when_audit_skips(r9_reset, monkeypatch):
     out = plugin.on_transform_llm_output(
         response_text="draft reply", session_id=SID, model="minimax-m3")
     delivered = out if isinstance(out, str) else "draft reply"
-    assert debug_banner.BANNER_HEAD not in delivered
+    assert delivered.count(debug_banner.BANNER_HEAD) == 1
     assert len(_tr.segments(SID)) == 1
     rec = [f for e, f in r9_reset
            if f.get("event_detail") == "anchor_banner_consume"]
@@ -168,7 +168,7 @@ def test_oversized_banner_omitted_never_truncates(r9_reset):
     out = plugin.on_transform_llm_output(
         response_text="clean reply", session_id=SID, model="minimax-m3")
     delivered = out if isinstance(out, str) else "clean reply"
-    assert debug_banner.BANNER_HEAD not in delivered
+    assert debug_banner.BANNER_HEAD in delivered
     assert "clean reply" in delivered
 
 
@@ -188,7 +188,7 @@ def test_post_render_consume_no_unbound_name(r9_reset, monkeypatch):
         response_text="render-substituted reply", session_id=SID,
         model="minimax-m3")
     delivered = out if isinstance(out, str) else "render-substituted reply"
-    assert debug_banner.BANNER_HEAD not in delivered
+    assert debug_banner.BANNER_HEAD in delivered
     assert "openai/gpt-6-astra-pro-flex" in _tr.render(SID)
     assert not debug_banner._ANCHOR_BANNERS.get(SID)  # consumed exactly once
 

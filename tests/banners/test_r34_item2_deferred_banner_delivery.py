@@ -111,14 +111,14 @@ def test_deferred_banner_reaches_the_next_delivered_body(env, monkeypatch):
     delivered = _lc.LIFECYCLE.deliver(SID, "the actual answer body",
                                       "anchor", "benign")
     assert "the actual answer body" in delivered
-    # M35-17: the banner rides the RECORD, never the delivered body.
-    assert debug_banner.BANNER_HEAD not in delivered
+    # M46-03: the banner rides the RECORD and the delivered body.
+    assert debug_banner.BANNER_HEAD in delivered
     from hermes_router.features.banners import turn_record as _tr
     assert "shadow-self (uncensored" in _tr.render(SID)
 
     # one delivery only — the next edge attaches nothing
     second = _lc.LIFECYCLE.deliver(SID, "next turn body", "anchor", "benign")
-    assert debug_banner.BANNER_HEAD not in second
+    assert second.startswith("next turn body")   # body preserved, no truncation
 
 
 def test_deferred_slot_expires_after_ttl(env, monkeypatch):

@@ -106,7 +106,8 @@ def test_midturn_capture_failure_retains_and_final_close_delivers_once(env):
     with mock.patch.object(canonical, "rewrite_persisted_turn",
                            lambda *a, **k: True):
         out = _sweep("the refactor report")
-    assert (out or "").count("· router ·") == 0
+    # M46-03: the final close pass carries ONE banner (not zero, not two).
+    assert (out or "").count("· router ·") == 1
     assert "impulse (decision)" in _tr.render(SID) or "· router ·" in _tr.render(SID)
 
 

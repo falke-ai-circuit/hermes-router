@@ -88,7 +88,7 @@ def _record(session_id: str) -> Dict[str, Any]:
             rec = None  # turn changed (or record expired) -> new record
     if rec is None:
         rec = {"turn_key": key, "segments": [], "emitted": False,
-               "touched": now, "seq": 0}
+               "attached_at": 0, "touched": now, "seq": 0}
         with _LOCK:
             while len(_RECORDS) >= _MAX_RECORDS:
                 _RECORDS.pop(next(iter(_RECORDS)), None)
@@ -268,3 +268,241 @@ def reset(session_id: str = "") -> None:
             _RECORDS.clear()
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------------------
+# M46-03 — THE DELIVERY COMPOSER (owner ruling, reverses M35-17)
+# ---------------------------------------------------------------------------
+# Owner, verbatim: "each call to whatever lane must produce a banner at final
+# response so that it's visible there was a router activation (for billing and
+# other purposes)". A lane that fired MUST be visible in the delivered bytes;
+# silence is the defect. M35-17 removed the composer and 189 tests kept passing
+# while no user ever saw a banner.
+#
+# The line is rendered FROM this record (`segments()`), never from the parked
+# text, so the record and the body cannot disagree: one source, one string.
+#
+# KNOB: `banner_in_body` in the hermes_router config section. Default ON
+# (absent key = True) because visibility is the owner's requirement; an
+# explicit false/0/off silences the body line without a code change.
+_KNOB = "banner_in_body"
+_TOK_CELL_RE = re.compile(r"^tok\s+(\d+)\s*/\s*(\d+)$")
+_COST_CELL_RE = re.compile(r"^\$([0-9]*\.?[0-9]+)(\*?)$")
+_TRIG_ALIASES = {"consult": "pre-check", "orientation": "pre-check",
+                 "completion_audit": "post-check", "audit": "post-check"}
+
+
+def deliver_in_body_enabled() -> bool:
+    """Is the delivered-body banner line switched on? Default ON. Never raises."""
+    try:
+        from ... import config_access as _ca
+
+        raw = (_ca.router_section() or {}).get(_KNOB, True)
+    except Exception:  # noqa: BLE001 — a missing config read is not a silence
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(int(raw))
+    s = str(raw).strip().lower()
+    if s in ("", "default", "none"):
+        return True
+    return s not in ("0", "false", "off", "no", "disabled")
+
+
+def _head() -> str:
+    try:
+        from ... import debug_banner as _db
+
+        return str(_db.BANNER_HEAD or "· router ·")
+    except Exception:  # noqa: BLE001
+        return "· router ·"
+
+
+def _group_of(lane: str, text: str) -> str:
+    """Which LANE SEGMENT a registered fragment belongs to (aggregation unit)."""
+    s = "%s %s" % (str(lane or ""), str(text or ""))
+    if "decision" in s or "reflex" in s or "impulse" in s:
+        return "decision"
+    if "frontier" in s or "higher-self" in s:
+        return "frontier"
+    if "uncensored" in s or "shadow-self" in s:
+        return "uncensored"
+    return str(lane or "router") or "router"
+
+
+def _parse(seg: str) -> List[Dict[str, Any]]:
+    """Split ONE registered fragment into banner cells, one dict per LINE.
+
+    A registered fragment can carry more than one line: `park_task_banner`
+    composes the frontier PRE and POST legs as "pre\\npost" before parking, and
+    the store keeps that composed text as ONE segment. Parsing only the first
+    line would drop the POST leg and double-count the PRE, so every non-empty
+    line is parsed. Tolerant, never raises.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        head = _head()
+        for raw_line in str(seg or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if head in line:
+                line = line.split(head, 1)[1].strip()
+            cells = [c.strip() for c in line.split("|")] if line else []
+            if not cells:
+                continue
+            cell: Dict[str, Any] = {"label": cells[0], "trigger": "",
+                                    "model": "", "ti": 0, "to": 0,
+                                    "cost": 0.0, "star": False, "extra": []}
+            if len(cells) > 1:
+                t = cells[1].strip().lower()
+                cell["trigger"] = _TRIG_ALIASES.get(t, t)
+            for c in cells[2:]:
+                m = _TOK_CELL_RE.match(c)
+                if m:
+                    cell["ti"] += int(m.group(1))
+                    cell["to"] += int(m.group(2))
+                    continue
+                cm = _COST_CELL_RE.match(c)
+                if cm:
+                    cell["cost"] += float(cm.group(1))
+                    cell["star"] = cell["star"] or bool(cm.group(2))
+                    continue
+                if c.startswith(("initiator=", "provider=")):
+                    if c not in cell["extra"]:
+                        cell["extra"].append(c)
+                    continue
+                if not cell["model"]:
+                    cell["model"] = c
+            out.append(cell)
+    except Exception:  # noqa: BLE001
+        return []
+    return out
+
+
+def _merge(parsed: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Fold one lane's fragments (frontier PRE + POST) into ONE segment."""
+    base = dict(parsed[0])
+    base.update({"ti": 0, "to": 0, "cost": 0.0, "star": False, "extra": []})
+    trigs: List[str] = []
+    models: List[str] = []
+    seen: List[Tuple[Any, ...]] = []
+    for p in parsed:
+        # A leg can arrive twice (registered at park time and again at the
+        # delivery edge); the same measurement is never summed twice.
+        sig = (p["label"], p["trigger"], p["model"], p["ti"], p["to"],
+               round(float(p["cost"]), 8))
+        if sig in seen:
+            continue
+        seen.append(sig)
+        base["ti"] += int(p["ti"])
+        base["to"] += int(p["to"])
+        base["cost"] += float(p["cost"])
+        base["star"] = base["star"] or bool(p["star"])
+        if p["trigger"] and p["trigger"] not in trigs:
+            trigs.append(p["trigger"])
+        if p["model"] and p["model"] not in models:
+            models.append(p["model"])
+        for cell in p["extra"]:
+            if cell not in base["extra"]:
+                base["extra"].append(cell)
+    if set(trigs) == {"pre-check", "post-check"}:
+        base["trigger"] = "pre+post-check"
+    elif trigs:
+        base["trigger"] = "+".join(trigs)
+    base["model"] = "/".join(models)
+    return base
+
+
+def _render_cells(m: Dict[str, Any]) -> str:
+    """One lane's segment inside the line, WITHOUT the head (one head per body)."""
+    cells = [m["label"] or "router"]
+    if m["trigger"]:
+        cells.append(str(m["trigger"]))
+    if m["model"]:
+        cells.append(str(m["model"]))
+    cells.append("tok %d/%d" % (int(m["ti"]), int(m["to"])))
+    cost = max(0.0, float(m["cost"]))
+    cells.append(("$%.4f" % cost) + ("*" if m["star"] else ""))
+    cells.extend(m["extra"])
+    return " | ".join(cells)
+
+
+def compose_line(session_id: str) -> str:
+    """The ONE banner line for this turn, or "" when no lane fired. Never raises.
+
+    Aggregation: fragments are grouped PER LANE; a lane's fragments (frontier
+    PRE + POST, or a decision rollup and its retry) fold into ONE segment with
+    summed tokens/cost and a merged trigger (pre+post-check). Distinct lanes
+    become distinct segments inside the SAME single line, separated by " || ".
+    There is exactly ONE BANNER_HEAD per delivered body.
+    """
+    try:
+        segs = segments(session_id)
+        if not segs:
+            return ""
+        order: List[str] = []
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for seg in segs:
+            text = str(seg.get("text") or "").strip()
+            if not text:
+                continue
+            key = _group_of(str(seg.get("lane") or ""), text)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].extend(_parse(text))
+        if not order:
+            return ""
+        parts = [_render_cells(_merge(groups[k])) for k in order]
+        return "%s %s" % (_head(), " || ".join(parts))
+    except Exception:  # noqa: BLE001 — a render never breaks a delivery
+        return ""
+
+
+def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
+    """Append the record's ONE banner line to the DELIVERED body.
+
+    Returns the body unchanged when the knob is off, when no lane fired, when
+    the body is empty (an append edge with nothing to attach to), or when the
+    body already carries a banner (one banner per delivery — never two).
+    When the body already carries a provenance footer, the BANNER WINS: the
+    footer is stripped so the delivered bytes carry ONE attribution block.
+    Never raises; never returns None for a str input.
+    """
+    try:
+        if not deliver_in_body_enabled():
+            return body
+        line = compose_line(session_id)
+        if not line:
+            return body
+        base = body if isinstance(body, str) else ""
+        if not base.strip():
+            return body
+        if _head() in base:
+            return body
+        # ONE banner per turn, and never a stale one. `emitted` is set by the
+        # ONE emit point (record_turn) — i.e. only once the turn's final bytes
+        # have actually shipped. Before that, an intermediate compose can be
+        # discarded upstream (the delivery-decision edge returns its own bytes),
+        # so it must stay re-attachable. After it, a later pass or a later turn
+        # with no new segment gets its own bytes untouched: the R33f-A
+        # stale-leak ban survives the composer.
+        _rec = _RECORDS.get(str(session_id or ""))
+        _n = len((_rec or {}).get("segments") or [])
+        if (_rec is not None and _rec.get("emitted")
+                and int(_rec.get("attached_at") or 0) == _n):
+            return body
+        try:
+            from ... import provenance_footer as _pf
+
+            if _pf.has_footer(base):
+                base = _pf.strip_footer(base)
+        except Exception:  # noqa: BLE001 — footer handling is best-effort
+            pass
+        if _rec is not None:
+            _rec["attached_at"] = _n
+        return base.rstrip() + "\n" + line
+    except Exception:  # noqa: BLE001
+        return body

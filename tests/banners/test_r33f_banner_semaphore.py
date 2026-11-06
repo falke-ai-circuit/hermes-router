@@ -106,10 +106,9 @@ def test_not_landed_attach_dropped_fail_loud(env):
     debug_banner.park_anchor_banner(SID, _banner())
     out = plugin.on_transform_llm_output(
         response_text="visible reply", session_id=SID, model="minimax-m3")
-    # M35-17: there is no attach to fail — the banner is a RECORD, the body is
-    # the agent's own, and the slot is consumed once, never re-parked.
-    assert out is None or out == "visible reply"
-    assert debug_banner.BANNER_HEAD not in str(out or "")
+    # M46-03: the slot is consumed once AND the receipt reaches the body.
+    assert str(out or "").startswith("visible reply")
+    assert debug_banner.BANNER_HEAD in str(out or "")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)   # NOT re-parked
     from hermes_router.features.banners import turn_record as _tr
     assert "higher-self (frontier)" in _tr.render(SID)
@@ -168,10 +167,9 @@ def test_ownership_claim_releases_slot_before_anchor_consume(env, monkeypatch):
         response_text="I can't write that. held line text here",
         session_id=SID, model="test-model", user_message="the contested ask")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
-    # M35-17: the delivered body carries NO banner — not the render's, not the
-    # stale parked one. The double-append class is unreachable, not deduped.
-    assert debug_banner.BANNER_HEAD not in (out or "")
-    assert "higher-self (frontier)" not in (out or "")
+    # M46-03: exactly ONE receipt line — the double-append class stays dead
+    # (aggregated into one line, not two banners).
+    assert (out or "").count(debug_banner.BANNER_HEAD) == 1
 
 
 def test_claim_with_no_parked_banner_is_silent_noop(env):
@@ -205,7 +203,7 @@ def test_one_delivery_landed_attach_consumes_once(env):
     out = plugin.on_transform_llm_output(
         response_text="the agent's own visible reply", session_id=SID,
         model="minimax-m3")
-    assert debug_banner.BANNER_HEAD not in str(out or "")
+    assert debug_banner.BANNER_HEAD in str(out or "")
     from hermes_router.features.banners import turn_record as _tr
     assert "higher-self (frontier)" in _tr.render(SID)
     out2 = plugin.on_transform_llm_output(
