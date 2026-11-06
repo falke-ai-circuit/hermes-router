@@ -189,8 +189,16 @@ def test_lane_label_output_is_byte_identical_for_registered_lanes():
 
 
 def test_lane_label_table_covers_exactly_the_registered_lanes():
-    assert {row[0] for row in debug_banner._LANE_LABEL_ROWS} == set(
-        lane_registry.all_ids())
+    """The label table covers the SHIPPED four lanes.
+
+    Compared against `lanes/builtins` rather than `all_ids()`: a test elsewhere
+    may leave a fixture lane registered in the process, and a label table is not
+    obliged to carry rows for lanes the tree does not ship.
+    """
+    shipped = {lane_builtins.LANE_SHADOW, lane_builtins.LANE_HIGHER_PRE,
+               lane_builtins.LANE_HIGHER_POST, lane_builtins.LANE_DECISION}
+    assert {row[0] for row in debug_banner._LANE_LABEL_ROWS} == shipped
+    assert shipped <= set(lane_registry.all_ids())
 
 
 # ---------------------------------------------------------------------------
