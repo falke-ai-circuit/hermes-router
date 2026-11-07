@@ -566,3 +566,150 @@ def test_scope_key_rejects_bang_prefixed_identity(budget, monkeypatch):
     assert out["allow"] is True, out                    # never raises outward
     assert out["reason"] == "internal_error", out
     print("scope_key bangs rejected; check() still fail-open: %r" % (out,))
+
+
+# --------------------------------------------------------------------- T12 ----
+# M47-04 (§5 items 1/3/4): the LIVE shape. The platform appends a
+# <memory-context> block to the API copy of the user turn and never to the
+# stored content. The writer hashed the API copy while the POST gate hashed the
+# stored ask, so every provider call was counted on a key nobody read:
+# `model_turns=0`, the floor failed open, and the unit's own seam test could
+# not see it because it fed the SAME text to both edges.
+
+MEMORY_BLOCK = (
+    "\n\n<memory-context>\n"
+    "[System note: the following is recalled memory context, NOT new input.]\n"
+    "recalled facts about this lane and the previous unit\n"
+    "</memory-context>"
+)
+
+
+def test_injected_seam_and_gate_build_one_ask_and_the_floor_fires(
+        budget, monkeypatch):
+    """T12: injected turn -> ONE key on both edges; floor refuses 1-3, allows 4.
+
+    Both sides are the real call shapes and NEITHER is handed the other's key:
+    the writer is `plugin.on_llm_request` fed the API copy (ask + memory block),
+    the reader is `completion_audit._consult_meta` deriving its key from the
+    stored ask exactly as `run_completion_audit_sync` does
+    (`task_id_for(session, ask, model)`). The anchor chain is stubbed to no
+    endpoint so the run stops right after the gate.
+    """
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import completion_audit, router_core, state
+
+    monkeypatch.setattr("hermes_router.anchor_chain.load_anchor_chain",
+                        lambda: _NoEndpointChain())
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid, model = "s-m4704-inj", "glm-5.3"
+    ask = "wire the seam through the injected memory block"
+    api_text = ask + MEMORY_BLOCK
+    tid = router_core.task_id_for(sid, ask, model)
+    injected_tid = router_core.task_id_for(sid, api_text, model)
+    assert injected_tid != tid, "the fixture does not discriminate the two texts"
+
+    for i in (1, 2, 3):
+        _seam_count(plugin, None, sid, api_text, model, "turn-1:api:%d" % i)
+
+    stored = state.get_last_seen(sid) or ""
+    print("stored ask chars=%d | ask key=%r | injected key=%r"
+          % (len(stored), tid, injected_tid))
+    # 1. last-seen carries the ASK, not the API copy
+    assert stored == ask, stored[:120]
+    # 2. the writer landed on the ask's key, not the injected text's
+    assert budget.model_turns(tid) == 3, budget.model_turns(tid)
+    assert budget.model_turns(injected_tid) == 0, budget.model_turns(injected_tid)
+    # 3. writer key == reader key, derived independently
+    assert budget.scope_key(sid, "", ask=stored, model=model) == \
+        budget.scope_key(sid, tid, ask=ask, model=model)
+
+    # 4. the floor REFUSES on model turns 1-3 through the real POST seam
+    for attempt in (1, 2, 3):
+        diag = {}
+        completion_audit._consult_meta(
+            sid, stored, "resp text", {"user_message": stored}, model,
+            "fire-key", socket_timeout=45, diag=diag)
+        assert diag.get("reason") == "below_min_turns", (attempt, diag)
+
+    # 5. and ALLOWS on model turn 4 (the anchor chain is the only thing left)
+    _seam_count(plugin, None, sid, api_text, model, "turn-1:api:4")
+    diag = {}
+    completion_audit._consult_meta(
+        sid, ask, "resp text", {"user_message": ask}, model,
+        "fire-key", socket_timeout=45, diag=diag)
+    assert diag.get("reason") == "no_primary_endpoint", diag
+
+
+def test_model_turn_write_emits_a_route_row(budget, monkeypatch):
+    """T13: every `note_model_turn` write is on the route log (writer observability).
+
+    Its silence is why a counter written to an unread key was invisible even
+    after "every POST decision recorded" shipped: the reader reported
+    `task_turn=0` and nothing named the key the writer used.
+    """
+    rows = []
+    from hermes_router import router_core
+    from hermes_router.core import telemetry
+
+    monkeypatch.setattr(telemetry, "log_route",
+                        lambda event, **f: rows.append((event, f)))
+
+    sid, ask, model = "s-m4704-row", "count this model turn", "glm-5.3"
+    total = budget.note_model_turn(sid, ask=ask, model=model)
+    assert total == 1
+
+    written = [f for e, f in rows if f.get("event_detail") == "model_turn"]
+    assert written, rows
+    row = written[-1]
+    assert rows[-1][0] == "PRE", rows[-1]
+    assert row["count"] == 1, row
+    assert row["key"] == router_core.task_id_for(sid, ask, model), row
+    print("model_turn row: key=%r count=%r task_id=%r"
+          % (row["key"], row["count"], row["task_id"]))
+
+
+def test_legacy_shape_without_injection_still_reads_twenty_three(
+        budget, monkeypatch):
+    """T14 (R5): the injection-free shape is unchanged — 23 turns read as 23.
+
+    Same session text for writer and reader, no memory block: the counter must
+    still reach 23 and the POST gate must see `task_turn=23`, allow=True. The
+    ingress strip is a no-op on this shape, which is the whole check.
+    """
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import router_core, state
+
+    monkeypatch.setattr("hermes_router.anchor_chain.load_anchor_chain",
+                        lambda: _NoEndpointChain())
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid, model = "s-m4704-legacy", "glm-5.3"
+    ask = "the operative ask that ran a tool loop"
+    for i in range(1, 24):
+        _seam_count(plugin, None, sid, ask, model, "turn-1:api:%d" % i)
+
+    stored = state.get_last_seen(sid) or ""
+    key = router_core.task_id_for(sid, ask, model)
+    assert stored == ask, stored[:120]
+    assert budget.model_turns(key) == 23, budget.model_turns(key)
+
+    gate = budget.check(sid, "", leg="post", ask=stored, model=model)
+    print("legacy POST gate: task_turn=%r allow=%r key_match=%s"
+          % (gate.get("task_turn"), gate.get("allow"),
+             gate.get("key") == key))
+    assert gate["allow"] is True, gate
+    assert gate["task_turn"] == 23, gate
+    assert gate["task_turn_basis"] == "model_turns", gate

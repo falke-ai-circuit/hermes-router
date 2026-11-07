@@ -223,6 +223,30 @@ def model_turns(key: str) -> int:
         return 0
 
 
+def _record_model_turn(session_id: str, task_id: str, key: str,
+                       count: int) -> None:
+    """Write ONE route row per `note_model_turn` write (M47-04 / §5 item 3).
+
+    The writer used to be silent, and that silence is why a counter landing on
+    a key nobody reads was invisible — the POST gate then reported `task_turn=0`,
+    indistinguishable from a young task. One `PRE event_detail=model_turn` row
+    with the scope key and the running total makes the next writer/reader
+    mismatch a one-grep diagnosis.
+
+    `task_id` follows `_record_refusal`'s convention (`task_id or key`) so the
+    two families of consult rows group the same way; `key` is always the scope
+    key the counter was actually written under. Never raises.
+    """
+    try:
+        from .core.telemetry import log_route
+
+        log_route("PRE", event_detail="model_turn",
+                  task_id=str(task_id or key), key=str(key),
+                  count=int(count), session_id=str(session_id or ""))
+    except Exception:  # noqa: BLE001 — observability never breaks the counter
+        pass
+
+
 def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
                     model: str = "", trace: str = "",
                     api_request_id: str = "", turn_id: str = "",
@@ -272,7 +296,8 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
             n += 1
             _MODEL_TURNS[k] = n
             _prune_locked()
-            return n
+        _record_model_turn(session_id, task_id, k, n)
+        return n
     except Exception:  # noqa: BLE001 — a counter must never break a turn
         logger.debug("consult_budget.note_model_turn failed", exc_info=True)
         return 0

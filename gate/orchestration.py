@@ -450,6 +450,17 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         if not content.strip():
             return _hs_pass()
 
+        # M47-04 — ONE CANONICAL ASK AT INGRESS. The platform appends its
+        # <memory-context> block to the API copy of the user turn (never to the
+        # stored content), so hashing `content` as the API payload carried it
+        # while the POST gate hashed the stored ask: two keys, one ask, and the
+        # model-turn counter landed where nobody read (M47-03 H1). Stripping
+        # HERE — before the turn-open note, the model-turn writer, the fence,
+        # both last-seen records, the classifier and the PRE gate — means every
+        # consumer of the turn's text hashes ONE string. The strip that used to
+        # sit after `record_last_seen` is gone: it ran 120 lines too late.
+        content = _hub()._strip_memory_context(content)
+
         # R34-14 item 1/2: a user message defines the turn. Same text as the
         # newest CLOSED turn is the same turn (a retry / duplicate transform
         # pass) and does NOT reopen it, so a consult that resolves late stays
@@ -607,9 +618,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # leaving get_last_seen() empty at POST → completion-audit gate saw
         # ask_len=0 and silently skipped every complexity-routed turn.
         _hub().state.record_last_seen(session_id, content)
-        # Router tuning (2026-09-09): strip the <memory-context> block once at
-        # ingress — routing judges the ASK, not ask+memory-noise.
-        content = _hub()._strip_memory_context(content)
+
+        # (M47-04) the <memory-context> strip now runs at ingress, L453 — this
+        # seam stores the stripped ask, and so does the second record below.
 
         # M41-05 RETIREMENT (spec §E rule 2 / §F.2), completed in M41-07b: the
         # PRE intent probe's CONSULTATION path is gone and so is the module.
