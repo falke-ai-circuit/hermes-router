@@ -220,8 +220,16 @@ def test_c1_marker_on_a_path_that_never_reached_the_table_is_stripped(
     print("\n(c1) stripped body:", repr(str(out)[:60]))
 
 
-def test_c2_a_surviving_marker_fragment_withholds_the_turn(monkeypatch,
-                                                           _isolated_ledger):
+def test_c2_a_surviving_marker_fragment_is_stripped_not_withheld(
+        monkeypatch, _isolated_ledger):
+    """OWNER RULING 2026-11-07 (reverses M35-04's withhold-the-turn policy).
+
+    Routing metadata must never ship. It must ALSO never cost the operator the
+    answer: a truncated marker fragment used to swap the entire body for
+    WITHHELD_BODY ("No answer text was released. Re-run the ask."), which made
+    a formatting residue indistinguishable from a lost turn. The fragment is
+    now removed line-wise and the remainder is delivered.
+    """
     sid = "m35-04-c2"
     # Truncated by an output cap: not a well-formed tag line, so the strip
     # cannot remove it — but it is still the router's marker text.
@@ -230,13 +238,29 @@ def test_c2_a_surviving_marker_fragment_withholds_the_turn(monkeypatch,
     out = _seam(monkeypatch, sid, body=leaked,
                 orchestrator=lambda **kw: leaked)
     assert "<turn" not in str(out), f"marker fragment delivered: {out!r}"
-    assert str(out) == reg.WITHHELD_BODY
+    assert str(out) != reg.WITHHELD_BODY, f"answer swallowed by the leak guard: {out!r}"
+    assert BENIGN.strip()[:20] in str(out), f"answer body lost: {out!r}"
     row = _rows(_isolated_ledger)[0]
-    assert row["action"] == "withheld", row
-    assert row["outcome"] == "marker_leak_withheld", row
-    assert row["skip_reason"] == "marker_survived_boundary_strip", row
-    print("\n(c2) withheld body:", repr(str(out)[:60]))
-    print("(c2) withheld row:", json.dumps(row, indent=None))
+    assert row["action"] != "withheld", row
+    print("\n(c2) degraded body:", repr(str(out)[:60]))
+
+
+def test_c2b_nothing_shippable_still_withholds(monkeypatch,
+                                               _isolated_ledger):
+    """The last-resort path survives: when nothing shippable remains, withhold.
+
+    The degrade branch returns "" only when every line carried a fragment; the
+    caller must then ship the notice rather than a void turn. Forced here so the
+    branch is exercised deterministically instead of depending on which
+    fragments the tag-strip happens to catch.
+    """
+    leaked = '<turn declined="false"\n\n' + BENIGN
+    monkeypatch.setattr(reg, "_drop_residual_marker_lines", lambda *a, **k: "")
+
+    body, outcome, marker = reg._sanitize_delivery(leaked, session_id="m35-04-c2b")
+    assert body == reg.WITHHELD_BODY, f"expected last-resort withhold: {body!r}"
+    assert outcome == "marker_leak_withheld", outcome
+    assert marker, "the surviving marker must be reported"
 
 
 def test_c3_the_boundary_preserves_pass_through_none(monkeypatch,

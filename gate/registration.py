@@ -65,16 +65,50 @@ WITHHELD_BODY = (
 )
 
 
+def _drop_residual_marker_lines(text, decl, *, max_passes: int = 6) -> str:
+    """Remove surviving marker FRAGMENTS line-wise. Returns the shippable body.
+
+    Owner ruling 2026-11-07: routing metadata must never ship, but it must never
+    cost the operator the answer either. A truncated or malformed marker
+    fragment used to replace the WHOLE delivered body with the withhold notice,
+    which turns a formatting residue into a swallowed turn. This drops only the
+    line(s) still carrying a fragment and returns what remains; an empty string
+    means nothing shippable survived and the caller withholds.
+
+    Never raises.
+    """
+    try:
+        body = str(text or "")
+        for _ in range(max_passes):
+            if not decl.residual_marker(body):
+                return body.lstrip("\n")
+            lines = body.splitlines()
+            kept = [ln for ln in lines if not decl.residual_marker(ln)]
+            if len(kept) == len(lines):
+                # The fragment spans a line boundary or is embedded mid-line:
+                # excise the reported span itself rather than dropping the line.
+                frag = decl.residual_marker(body)
+                if not frag:
+                    return body.lstrip("\n")
+                body = body.replace(frag, "")
+            else:
+                body = "\n".join(kept)
+        return body.lstrip("\n") if not decl.residual_marker(body) else ""
+    except Exception:  # noqa: BLE001 — a strip failure must not break a turn
+        return ""
+
+
 def _sanitize_delivery(text, *, session_id: str = "") -> tuple:
     """Strip marker text at the DELIVERY BOUNDARY. (body, outcome, marker).
 
     The strip inside the orchestrator is one seam on ONE path; this one sits on
     the edge where the bytes are settled, so it also covers the paths that never
     entered the routing table (router disabled, guard fail-open, passthrough
-    early return). Well-formed tag lines are removed; a surviving fragment
-    (`<turn declined=…` truncated, malformed) withholds the whole body instead
-    of shipping it. Never raises: an unreadable body is delivered unchanged by
-    the caller's judgement, never by an exception.
+    early return). Well-formed tag lines are removed; a surviving fragment is
+    now REMOVED LINE-WISE and the remainder is delivered. Withholding is the
+    last resort, used only when nothing shippable survives. Never raises: an
+    unreadable body is delivered unchanged by the caller's judgement, never by
+    an exception.
     """
     try:
         from ..features.detection import declaration as _decl
@@ -90,7 +124,26 @@ def _sanitize_delivery(text, *, session_id: str = "") -> tuple:
             return text, "", ""
         clean, marker = _decl.scrub_markers(text)
         if marker:
+            # GRACEFUL DEGRADATION (owner ruling 2026-11-07). Strip the
+            # offending line(s) and ship the answer. The old behaviour swapped
+            # the entire body for WITHHELD_BODY ("No answer text was released.
+            # Re-run the ask.") — a routing residue billed to the operator.
+            degraded = _drop_residual_marker_lines(clean, _decl)
             lg = _hub_log_route()
+            if str(degraded or "").strip():
+                if lg is not None:
+                    try:
+                        lg("POST", event_detail="marker_fragment_removed",
+                           reason="marker_survived_boundary_strip",
+                           marker=str(marker)[:32],
+                           severity="warning",
+                           dropped_chars=max(0, len(str(clean or "")) - len(degraded)),
+                           session_id=str(session_id or ""))
+                    except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                        pass
+                return degraded, "", ""
+            # Nothing shippable survived — withhold is the LAST resort, not the
+            # first response to a fragment.
             if lg is not None:
                 try:
                     lg("POST", event_detail="marker_leak_withheld",
