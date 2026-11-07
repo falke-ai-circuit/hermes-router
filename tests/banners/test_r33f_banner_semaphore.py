@@ -167,9 +167,20 @@ def test_ownership_claim_releases_slot_before_anchor_consume(env, monkeypatch):
         response_text="I can't write that. held line text here",
         session_id=SID, model="test-model", user_message="the contested ask")
     assert not debug_banner._ANCHOR_BANNERS.get(SID)
-    # M46-03: exactly ONE receipt line — the double-append class stays dead
-    # (aggregated into one line, not two banners).
-    assert (out or "").count(debug_banner.BANNER_HEAD) == 1
+    # OWNER RULING 2026-11-07 (reverses the M46-03 "exactly ONE receipt line"
+    # contract): each LANE carries its own banner line, so a turn that fired two
+    # lanes shows TWO banner lines — but still only ONE line per lane. A lane
+    # that fired several times aggregates into its single line (summed tokens and
+    # cost, distinct trigger types, action count ×N); it never earns a second.
+    _heads = (out or "").count(debug_banner.BANNER_HEAD)
+    _lanes = set()
+    for _ln in (out or "").splitlines():
+        if debug_banner.BANNER_HEAD in _ln:
+            _lanes.add("frontier" if "higher-self" in _ln else
+                       "uncensored" if "shadow-self" in _ln else
+                       "decision" if ("decision" in _ln or "impulse" in _ln) else "other")
+    assert _heads == len(_lanes), (out, _heads, _lanes)
+    assert _heads >= 1 and _heads <= 3
 
 
 def test_claim_with_no_parked_banner_is_silent_noop(env):

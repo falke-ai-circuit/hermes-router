@@ -384,7 +384,8 @@ def _parse(seg: str) -> List[Dict[str, Any]]:
 def _merge(parsed: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Fold one lane's fragments (frontier PRE + POST) into ONE segment."""
     base = dict(parsed[0])
-    base.update({"ti": 0, "to": 0, "cost": 0.0, "star": False, "extra": []})
+    base.update({"ti": 0, "to": 0, "cost": 0.0, "star": False, "extra": [],
+                 "actions": 0})
     trigs: List[str] = []
     models: List[str] = []
     seen: List[Tuple[Any, ...]] = []
@@ -396,6 +397,7 @@ def _merge(parsed: List[Dict[str, Any]]) -> Dict[str, Any]:
         if sig in seen:
             continue
         seen.append(sig)
+        base["actions"] = int(base.get("actions") or 0) + 1
         base["ti"] += int(p["ti"])
         base["to"] += int(p["to"])
         base["cost"] += float(p["cost"])
@@ -415,16 +417,51 @@ def _merge(parsed: List[Dict[str, Any]]) -> Dict[str, Any]:
     return base
 
 
+def _priced_cost(m: Dict[str, Any]) -> Tuple[float, bool]:
+    """(cost, estimated) for ONE lane.
+
+    A fragment that carried no self-reported cost used to render "$0.0000" even
+    though the lane had really billed tokens — a decision lane showed free while
+    its Jev calls were charged. When the cost cell is absent the router's ONE
+    price lookup prices the lane's own tokens, and the figure is marked
+    estimated so no one reads it as a measured invoice. Never raises.
+    """
+    try:
+        cost = max(0.0, float(m.get("cost") or 0.0))
+        if cost > 0:
+            return cost, False
+        ti = int(m.get("ti") or 0)
+        to = int(m.get("to") or 0)
+        if not (ti or to):
+            return 0.0, False
+        raw = str(m.get("model") or "").split("@")[0].strip()
+        if not raw:
+            return 0.0, False
+        from ...core import usage_ledger as _ul
+
+        row, _key, _src = _ul._price_row(raw)
+        if not isinstance(row, dict):
+            return 0.0, False
+        est = ((ti / 1000000.0) * float(row.get("input_per_1m") or 0.0)
+               + (to / 1000000.0) * float(row.get("output_per_1m") or 0.0))
+        return max(0.0, est), True
+    except Exception:  # noqa: BLE001 — a price never breaks a banner
+        return 0.0, False
+
+
 def _render_cells(m: Dict[str, Any]) -> str:
-    """One lane's segment inside the line, WITHOUT the head (one head per body)."""
+    """One lane's segment inside the block, WITHOUT the head (one head per body)."""
     cells = [m["label"] or "router"]
     if m["trigger"]:
         cells.append(str(m["trigger"]))
+    actions = int(m.get("actions") or 0)
+    if actions > 1:
+        cells.append("\u00d7%d" % actions)
     if m["model"]:
         cells.append(str(m["model"]))
     cells.append("tok %d/%d" % (int(m["ti"]), int(m["to"])))
-    cost = max(0.0, float(m["cost"]))
-    cells.append(("$%.4f" % cost) + ("*" if m["star"] else ""))
+    cost, estimated = _priced_cost(m)
+    cells.append(("$%.4f" % cost) + ("*" if (m["star"] or estimated) else ""))
     cells.extend(m["extra"])
     return " | ".join(cells)
 
@@ -456,7 +493,12 @@ def compose_line(session_id: str) -> str:
         if not order:
             return ""
         parts = [_render_cells(_merge(groups[k])) for k in order]
-        return "%s %s" % (_head(), " || ".join(parts))
+        head = _head()
+        # OWNER RULING 2026-11-07: each LANE carries its OWN banner line. A lane
+        # that fired more than once this turn does not get more lines — its one
+        # line carries the aggregated totals (_merge sums tokens and cost, keeps
+        # the distinct trigger types and counts the actions, rendered as ×N).
+        return "\n".join("%s %s" % (head, p) for p in parts)
     except Exception:  # noqa: BLE001 — a render never breaks a delivery
         return ""
 
@@ -503,6 +545,6 @@ def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
             pass
         if _rec is not None:
             _rec["attached_at"] = _n
-        return base.rstrip() + "\n" + line
+        return base.rstrip() + "\n\n" + line
     except Exception:  # noqa: BLE001
         return body

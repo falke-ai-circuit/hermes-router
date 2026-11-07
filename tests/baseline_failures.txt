@@ -103,7 +103,8 @@ optional tests/routing/test_hermes_aux_source.py::test_aux_raw_call_retry_then_b
 tests/banners/test_r19_11_banner_and_jev.py::test_benign_delivery_then_render_reemits_banner
 tests/banners/test_r19_parked_loss_stacking.py::test_park_round_trip_empty_body_edge
 tests/banners/test_r19_parked_loss_stacking.py::test_park_round_trip_audit_sync_edge
-tests/banners/test_r33f_banner_semaphore.py::test_ownership_claim_releases_slot_before_anchor_consume
+# unpinned 2026-11-07: owner ruling made per-lane banners the contract; this
+# test now asserts banners-per-lane instead of one-receipt-line and must PASS.
 tests/banners/test_r9_banner_delivery_seam.py::test_audit_sync_return_merges_parked_banner
 tests/banners/test_r9_banner_delivery_seam.py::test_oversized_banner_omitted_never_truncates
 
