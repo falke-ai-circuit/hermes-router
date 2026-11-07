@@ -57,6 +57,7 @@ def test_task_driven_20_turns_spends_exactly_one_pre_and_one_post(budget, monkey
     # configs carry it) so this test can never pass on a silently-dead knob.
     monkeypatch.setattr(config_access, "router_section",
                         lambda: {"complexity": {"consult_min_turns": 2,
+                                                "consult_post_min_turns": 3,
                                                 "consult_max_per_task": 1}})
 
     session, task = "s-m4525-20t", "t-m4525-20t"
@@ -66,14 +67,17 @@ def test_task_driven_20_turns_spends_exactly_one_pre_and_one_post(budget, monkey
     cap_refusals = 0
     for turn in range(10, 30):          # 20 task turns
         _set_turn(budget, session, turn)
+        # M46-10: each task turn is one MODEL turn for the POST floor's basis.
+        budget.note_model_turn(session, task)
         for leg in ("pre", "post"):
             gate = budget.check(session, task, leg=leg)
             if gate["allow"]:
                 frontier_calls += 1  # the spend this gate stands in front of
             elif gate["reason"] == "below_min_turns":
                 floor_refusals += 1
-                # the POST age floor (consult_post_min_turns=3) is the only
-                # floor that can refuse here: task turns 1 and 2.
+                # the POST age floor (consult_post_min_turns=3, MODEL turns
+                # since the ask after M46-10) is the only floor that can refuse
+                # here: turns 1 and 2.
                 assert gate["task_turn"] < 3, gate
             else:
                 cap_refusals += 1
@@ -106,6 +110,8 @@ def test_repeat_consult_below_min_turn_floor_is_refused_not_the_first(
     assert first["allow"] is True, first
     assert first["task_turn"] == 1, first
 
+    # one model turn observed: the POST leg's floor (M46-10) can bind
+    budget.note_model_turn(session, task)
     for leg in ("post", "pre", "post"):
         gate = budget.check(session, task, leg=leg)
         assert gate["allow"] is False, gate

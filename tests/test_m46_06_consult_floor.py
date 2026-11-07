@@ -38,6 +38,12 @@ def _set_turn(budget, session_id: str, n: int) -> None:
     ac._TURN_NO[session_id] = n
 
 
+def _note_model_turns(budget, session_id: str, task_id: str, n: int) -> None:
+    """Count `n` MODEL turns for the task — the POST floor's basis (M46-10)."""
+    for _ in range(int(n)):
+        budget.note_model_turn(session_id, task_id)
+
+
 def _knobs(monkeypatch, floor: int, cap: int = 1, post_floor: int = None) -> None:
     """Pin both consult dials. `post_floor` defaults to `floor` so a test that
     moves the age boundary moves the POST's own dial too (M46-07 split the
@@ -82,6 +88,7 @@ def test_second_consult_before_the_floor_is_refused_and_recorded(
     _set_turn(budget, session, 4)
 
     assert budget.check(session, task, leg="pre")["allow"] is True  # first
+    _note_model_turns(budget, session, task, 1)  # ask is one model turn old
     second = budget.check(session, task, leg="post")
     assert second["allow"] is False, second
     assert second["reason"] == "below_min_turns", second
@@ -108,9 +115,10 @@ def test_task_past_the_floor_gets_one_pre_one_post_and_no_more(
 
     _set_turn(budget, session, 100)
     assert budget.check(session, task, leg="pre")["allow"] is True   # task turn 1
+    _note_model_turns(budget, session, task, 1)
     assert budget.check(session, task, leg="post")["allow"] is False  # floored
 
-    _set_turn(budget, session, 101)                                   # task turn 2
+    _note_model_turns(budget, session, task, 1)                       # 2 model turns
     assert budget.check(session, task, leg="post")["allow"] is True
 
     calls, capped = 2, 0

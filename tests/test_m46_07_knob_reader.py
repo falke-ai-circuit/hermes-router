@@ -68,6 +68,20 @@ def _set_turn(session_id: str, n: int) -> None:
     ac._TURN_NO[session_id] = n
 
 
+def _note_model_turns(session_id: str, task_id: str, n: int) -> None:
+    """Count `n` MODEL turns for the task — the POST floor's basis (M46-10).
+
+    The POST age floor no longer reads the user-ask turn counter; it reads the
+    provider-call counter that `note_model_turn` advances at the llm_request
+    seam. Tests drive it directly with the task id, so the scope key is the
+    task, not a re-hashed ask.
+    """
+    from hermes_router import consult_budget as cb
+
+    for _ in range(int(n)):
+        cb.note_model_turn(session_id, task_id)
+
+
 def _knobs(monkeypatch, pre_floor: int = 1, post_floor: int = 3, cap: int = 1) -> None:
     from hermes_router import config_access
 
@@ -194,10 +208,11 @@ def test_pre_then_post_on_the_same_task_both_fire(budget, monkeypatch):
     _set_turn(session, 7)
     assert budget.check(session, task, leg="pre")["allow"] is True
 
-    _set_turn(session, 8)  # task turn 2
+    _note_model_turns(session, task, 2)  # ask has now run 2 model turns
     post = budget.check(session, task, leg="post")
     assert post["allow"] is True, post
     assert post["task_turn"] == 2, post
+    assert post["task_turn_basis"] == "model_turns", post
     assert budget.counts(session, task) == {"pre": 1, "post": 1}
 
 
@@ -213,6 +228,7 @@ def test_post_on_task_turn_one_is_refused_below_min_turns_and_recorded(
     _set_turn(session, 5)
 
     assert budget.check(session, task, leg="pre")["allow"] is True
+    _note_model_turns(session, task, 1)  # ask is one model turn old
     post = budget.check(session, task, leg="post")
     assert post["allow"] is False, post
     assert post["reason"] == "below_min_turns", post
@@ -275,9 +291,10 @@ def test_post_lands_in_the_delivered_body_of_the_final_response(
     _set_turn(sid, 10)
     assert budget.check(sid, task, leg="pre")["allow"] is True
 
-    _set_turn(sid, 12)  # task turn 3 = the POST age floor
+    _note_model_turns(sid, task, 3)  # ask has run 3 model turns = the floor
     post = budget.check(sid, task, leg="post")
     assert post["allow"] is True, post
+    assert post["task_turn_basis"] == "model_turns", post
 
     # Exactly what completion_audit does when the POST fires: park the leg's
     # segment under the task id, then deliver.

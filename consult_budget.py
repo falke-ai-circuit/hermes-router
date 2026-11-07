@@ -21,19 +21,29 @@ Contract implemented here:
               that leg allows it on task turn 1, on any ask, whenever the
               complexity/impact gate routed here;
             * the POST leg has its OWN age floor: `consult_post_min_turns`
-              (default 3), counted from the ORIGINAL ask's first task turn.
+              (default 4), counted in MODEL TURNS since the ORIGINAL ask
+              (M46-10 re-base: one model turn = one provider call / assistant
+              message row, measured by the analyst exactly that way).
               A POST below it is refused `below_min_turns` (recorded);
             * a POST whose delivery seam can no longer put the result in this
               turn's body (the legacy async topology, which consults AFTER the
               response has shipped) is refused `after_delivery` (recorded):
               the ruling requires the POST to land in the delivered body of the
               task's response, not after it.
-          Task turn = session_turn - first_seen_session_turn + 1, so the basis
-          is the task's own age, not the session's turn index. A task with no
-          known session turn (0) fails OPEN, never floored.
+          TWO BASES, deliberately (M46-10):
+            * PRE repeat floor — task turn = session_turn - first_seen_session_turn
+              + 1 (session turns: one per NEW user ask). Unchanged.
+            * POST age floor — MODEL TURNS since the original ask, counted by
+              `note_model_turn()` at the llm_request seam (one call per provider
+              call, i.e. per assistant row). M46-08 measured DEFAULT = 4 in that
+              unit; on the old session-turn basis 4 was UNREACHABLE (median user
+              messages per session is 1, only 3.3% of sessions ever reach 4), so
+              the shipped floor could not honour its own number. The re-base is
+              the fix, not a rename.
+          A scope with no observed model turn (0) fails OPEN, never floored.
           Knobs: `consult_min_turns` (default 1, PRE repeat floor; at 1 inert)
-          and `consult_post_min_turns` (default 3, POST age floor). Read live,
-          never cached.
+          and `consult_post_min_turns` (default 4, POST age floor in model
+          turns). Read live, never cached.
   RULE 3  the complexity/impact gate stays in FRONT of this module — this is a
           budget check placed immediately before the spend, not a routing gate.
 
@@ -56,11 +66,12 @@ DEFAULT_MAX_PER_TASK = 1     # per leg (one PRE + one POST)
 DEFAULT_MIN_TURNS = 1        # RULE 2 knob — PRE REPEAT-consult floor in TASK
                              # turns (1 = inert: the first consult is never
                              # floored and a 1-based task turn is never < 1).
-DEFAULT_POST_MIN_TURNS = 3   # RULE 2 knob — POST age floor in TASK turns,
-                             # counted from the ORIGINAL ask. Default 3 = the
-                             # analyst M46-08 leg's number is not on disk
-                             # (M46-08_DEFAULT.md absent at build time); the
-                             # dial is what M46-08 will measure against.
+DEFAULT_POST_MIN_TURNS = 4   # RULE 2 knob — POST age floor in MODEL TURNS
+                             # since the ORIGINAL ask (M46-08 measurement,
+                             # implemented by M46-10 on the re-based counter).
+                             # On the old session-turn basis 4 was unreachable
+                             # (median 1 user message/session), which is why
+                             # the basis below, not the number, was the defect.
 
 CAPPED_TRIGGER = "consult_capped"
 
@@ -74,6 +85,13 @@ _TURNS_SEEN: Dict[str, int] = {}
 # M46-06: session turn on which the scope's FIRST consult was attempted —
 # the anchor that turns a session counter into a TASK-relative turn.
 _TASK_BORN: Dict[str, int] = {}
+# M46-10: MODEL TURNS observed for a scope since its ask — the POST floor's
+# basis. Incremented by `note_model_turn()` at the llm_request seam, which the
+# host fires once per provider call (= one assistant message row = the unit
+# M46-08 measured). It is NOT derived from `turn_no`: that counter advances per
+# NEW USER ASK, and the fleet median is 1 user message per session, so a floor
+# of 4 on it was unreachable.
+_MODEL_TURNS: Dict[str, int] = {}
 
 
 def _knob_int(name: str, default: int) -> int:
@@ -184,6 +202,43 @@ def _task_turn_locked(key: str, session_turn: int) -> int:
     return max(1, int(session_turn) - int(born) + 1)
 
 
+def model_turns(key: str) -> int:
+    """MODEL TURNS observed for `key` since its ask (0 when none seen).
+
+    M46-10 basis of the POST floor. 0 = unknown -> the floor fails OPEN.
+    """
+    try:
+        with _LOCK:
+            return int(_MODEL_TURNS.get(str(key or "")) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
+                    model: str = "", trace: str = "") -> int:
+    """Count ONE model turn for the ask's scope and return the running total.
+
+    Called from the llm_request seam, which fires once per provider call: every
+    call produces one assistant message row, and an assistant row is exactly
+    the unit M46-08 measured ("turn = one assistant message row in state.db").
+    Task turn 1 = the ask's first model turn, so the counter is literally
+    "model turns since the original ask".
+
+    Idempotence is NOT attempted: each invocation is one provider call. Never
+    raises; 0 means the counter could not be updated (caller fails open).
+    """
+    try:
+        k = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
+        with _LOCK:
+            n = int(_MODEL_TURNS.get(k) or 0) + 1
+            _MODEL_TURNS[k] = n
+            _prune_locked()
+            return n
+    except Exception:  # noqa: BLE001 — a counter must never break a turn
+        logger.debug("consult_budget.note_model_turn failed", exc_info=True)
+        return 0
+
+
 def scope_key(session_id: str, task_id: str = "", ask: str = "",
               model: str = "", trace: str = "") -> str:
     """Task identity for the counter: task_id, else session+trace.
@@ -207,7 +262,8 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
 
 
 def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
-                    count: int, cap: int, reason: str, model: str = "") -> None:
+                    count: int, cap: int, reason: str, model: str = "",
+                    task_turn: int = -1) -> None:
     """Write the auditable refusal row + a route-log line. Never raises."""
     try:
         from . import decision as _dm
@@ -221,8 +277,10 @@ def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
             "model": str(model or ""),
             "choice": "refused",
             "fail_open_reason": CAPPED_TRIGGER,
-            "verdict_json": '{"leg": "%s", "count": %d, "cap": %d, "reason": "%s"}'
-                            % (str(leg), int(count), int(cap), str(reason)),
+            "verdict_json": '{"leg": "%s", "count": %d, "cap": %d, "reason": "%s", '
+                            '"task_turn": %d}'
+                            % (str(leg), int(count), int(cap), str(reason),
+                               int(task_turn)),
             "actual_choice": "refused",
         })
     except Exception:  # noqa: BLE001 — audit never breaks the refusal path
@@ -244,9 +302,13 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
     """Gate ONE consult leg. Call this IMMEDIATELY BEFORE the spend.
 
     Returns {"allow": bool, "leg", "key", "count", "cap", "turn", "task_turn",
-    "reason"}. A refused attempt is RECORDED (ledger row,
+    "task_turn_basis", "reason"}. A refused attempt is RECORDED (ledger row,
     trigger='consult_capped') and does not consume budget. An allowed attempt
     consumes it.
+
+    `task_turn_basis` says which counter the leg was floored on: the PRE leg is
+    on `session_turns` (task-relative user asks), the POST leg on
+    `model_turns` (provider calls since the original ask, M46-10).
 
     `deliverable` says whether a POST's result can still reach THIS turn's
     delivered body. Callers on the response-producing path pass True (default);
@@ -259,7 +321,7 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
     """
     out: Dict[str, Any] = {"allow": True, "leg": str(leg), "key": "",
                            "count": 0, "cap": 0, "turn": 0, "reason": "",
-                           "task_turn": 0}
+                           "task_turn": 0, "task_turn_basis": ""}
     try:
         key = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
         cap = max_per_task()
@@ -274,26 +336,35 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
             # must still be able to reach its POST — that is the PRE->POST gap
             # this unit exists to close. `prior` is therefore THIS leg's count.
             prior = count
-            tturn = _task_turn_locked(key, turn)
+            # M46-10: the two legs sit on DIFFERENT bases. PRE uses the
+            # task-relative SESSION turn (unchanged); POST uses MODEL TURNS
+            # since the original ask, the unit M46-08 measured the default in.
+            if str(leg) == "post":
+                tturn = int(_MODEL_TURNS.get(key) or 0)
+                basis = "model_turns"
+            else:
+                tturn = _task_turn_locked(key, turn)
+                basis = "session_turns"
             out["task_turn"] = tturn
+            out["task_turn_basis"] = basis
             # RULE 2: `prior == 0` is that leg's FIRST consult — always allowed
             # through here (the triggers already decided), never floored. The
             # POST additionally waits until the ASK has aged to
-            # `consult_post_min_turns` task turns, counted from the original
-            # ask. A task turn of 0 means the session counter was never opened
-            # (unit harness / API dispatch) and must fail open, never kill the
-            # lane.
+            # `consult_post_min_turns` MODEL TURNS, counted from the original
+            # ask (M46-10; session turns before). A task turn of 0 means the
+            # counter was never observed (unit harness / API dispatch) and must
+            # fail open, never kill the lane.
             if not deliverable and str(leg) == "post":
                 out.update({"allow": False, "count": count,
                             "reason": "after_delivery"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                "after_delivery", model)
+                                "after_delivery", model, tturn)
                 return out
             if floor > 0 and 0 < tturn < floor and (prior > 0 or str(leg) == "post"):
                 out.update({"allow": False, "count": count,
                             "reason": "below_min_turns"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                "below_min_turns", model)
+                                "below_min_turns", model, tturn)
                 return out
             slot = _COUNTS.setdefault(key, {})
             count = int(slot.get(str(leg), 0))
@@ -301,7 +372,7 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
                 out.update({"allow": False, "count": count,
                             "reason": CAPPED_TRIGGER})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                CAPPED_TRIGGER, model)
+                                CAPPED_TRIGGER, model, tturn)
                 return out
             slot[str(leg)] = count + 1
             _TURNS_SEEN[key] = turn
@@ -325,8 +396,16 @@ def _prune_locked() -> None:
         _COUNTS.pop(_victim, None)
         _TURNS_SEEN.pop(_victim, None)
         _TASK_BORN.pop(_victim, None)
+        _MODEL_TURNS.pop(_victim, None)
     while len(_TURNS_SEEN) > MAX_SCOPES:
-        _TURNS_SEEN.pop(next(iter(_TURNS_SEEN)), None)
+        _victim = next(iter(_TURNS_SEEN))
+        _TURNS_SEEN.pop(_victim, None)
+        _MODEL_TURNS.pop(_victim, None)
+    while len(_MODEL_TURNS) > MAX_SCOPES:
+        _victim = next(iter(_MODEL_TURNS))
+        _MODEL_TURNS.pop(_victim, None)
+        _TURNS_SEEN.pop(_victim, None)
+        _TASK_BORN.pop(_victim, None)
     while len(_TASK_BORN) > MAX_SCOPES:
         _TASK_BORN.pop(next(iter(_TASK_BORN)), None)
 
@@ -389,15 +468,18 @@ def reset(session_id: str = "", task_id: str = "", key: str = "") -> None:
                 _COUNTS.pop(k, None)
                 _TURNS_SEEN.pop(k, None)
                 _TASK_BORN.pop(k, None)
+                _MODEL_TURNS.pop(k, None)
                 return
             if session_id or task_id:
                 _k = scope_key(session_id, task_id)
                 _COUNTS.pop(_k, None)
                 _TURNS_SEEN.pop(_k, None)
                 _TASK_BORN.pop(_k, None)
+                _MODEL_TURNS.pop(_k, None)
                 return
             _COUNTS.clear()
             _TURNS_SEEN.clear()
             _TASK_BORN.clear()
+            _MODEL_TURNS.clear()
     except Exception:  # noqa: BLE001
         pass

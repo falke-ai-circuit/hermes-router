@@ -462,6 +462,23 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         except Exception:  # noqa: BLE001 — ledger never breaks the PRE seam
             pass
 
+        # M46-10: the POST age floor's basis is MODEL TURNS since the ask, so
+        # every provider call is counted for the ask's scope here — the host
+        # fires llm_request once per provider call, and each call is one
+        # assistant message row (the unit M46-08 measured). Counting on the
+        # session-turn counter instead made the measured default 4 unreachable
+        # (median 1 user message per session). Fail-open: a counter that cannot
+        # be written must never cost the turn; the floor then simply sees 0 and
+        # stays open.
+        try:
+            from .. import consult_budget as _cb_turn
+
+            _cb_turn.note_model_turn(
+                _hub()._session_id_from_context(**context),
+                ask=content, model=str(request.get("model") or ""))
+        except Exception:  # noqa: BLE001 — counter never breaks the seam
+            pass
+
         # ------------------------------------------------------------------
         # M41-11: THE DEFERRED JUDGEMENT'S CORRECTION IS APPLIED HERE.
         # A turn whose POST judge did not land inside its budget delivered as
