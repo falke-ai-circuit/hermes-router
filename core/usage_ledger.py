@@ -152,6 +152,17 @@ _MEASURED_PRICING: Dict[str, Dict[str, Any]] = {
                     "source": "measured"},  # preview alias
     "typesafe/jev-preview": {"input_per_1m": 0.042, "output_per_1m": 0.0,
                              "source": "measured"},
+    # The uncensored render lane was UNPRICED: its provider catalog does not
+    # publish rates, so every abliterated render banner read $0.0000 while the
+    # call was really billed — a wrong number, not a missing one. Rates are the
+    # provider's own published listing (3.0 in / 5.0 out per 1M), recorded as
+    # measured, and provider rates still win the moment they appear.
+    "abliteration/abliterated-model-large-v2": {
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
+    "abliterated-model-large-v2": {
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
+    "abliterated-large-v2": {
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
 }
 
 
@@ -166,20 +177,23 @@ def _price_row(model: str) -> Tuple[Optional[Dict[str, Any]], str, str]:
     """
     m = str(model or "")
     try:
+        # OWNER RULING 2026-11-07: the PROVIDER is the price authority and config
+        # is the FALLBACK. Config-first meant a hardcoded literal
+        # (anchor_chain.pricing, e.g. sonnet 2.0/10.0) silently outranked live
+        # data, so a real price change never reached a banner or the ledger. The
+        # provider row is cached (PRICING_TTL_S = 12h) and fail-open, so this is
+        # still a bounded, non-blocking lookup.
+        from .. import provider_prices as _pp
+
+        row = _pp.provider_price_for(m)
+        if isinstance(row, dict):
+            return row, m, "provider"
         from .. import anchor_chain
 
         pricing = anchor_chain.load_anchor_chain().pricing
         row = pricing.get(m) if isinstance(pricing, dict) else None
         if isinstance(row, dict):
             return row, m, "config"
-        # Goran 09-09 ruling (supersedes static estimates): prices come
-        # FROM THE PROVIDER. Fetch per-model pricing from the chain
-        # provider's /models endpoint (cached); unknown model -> 0.0.
-        from .. import provider_prices as _pp
-
-        row = _pp.provider_price_for(m)
-        if isinstance(row, dict):
-            return row, m, "provider"
         # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-hosted reflex
         # models (typesafe/jev-router) were billing banners at $0.0000 — the
         # reflex consults ARE billed (tiny but nonzero: measured $0.042/1M input,
