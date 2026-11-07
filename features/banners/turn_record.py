@@ -319,6 +319,37 @@ def _head() -> str:
         return "· router ·"
 
 
+def _group_of_label(label: str) -> str:
+    """Which LANE a single rendered LINE belongs to, from its own label cell.
+
+    Per-line classification exists because ONE registered segment can carry
+    several lane lines: park_task_banner composes a task's legs, and the
+    decision rollup and the frontier PRE leg can land in the same anchor
+    slot, so the segment text holds 'impulse (decision) ...' AND
+    'higher-self (frontier) ...'. Classifying the SEGMENT (what this module
+    used to do) scanned the whole text with 'decision'/'reflex'/'impulse'
+    tested before 'frontier', so a mixed segment collapsed into the decision
+    bucket and _merge then joined both models and summed both costs — a
+    frontier consult's tokens and dollars were rendered on the decision
+    line (live: `impulse (decision) ... jev @ typesafe/anthropic/
+    claude-sonnet-5.5 ... tok 1751/1022 | $0.0138` for one $0.0137 call).
+    The label cell is authoritative: it is produced by lane_label() from the
+    lane key and cannot contain another lane's identity.
+    """
+    s = str(label or "").lower()
+    # frontier/uncensored first: 'higher-self (frontier)' and
+    # 'shadow-self (uncensored)' never carry decision words, but ordering
+    # them ahead of the decision family keeps a future label that mentions
+    # both (e.g. 'decision | higher-self') from being stolen by decision.
+    if "higher-self" in s or "frontier" in s:
+        return "frontier"
+    if "shadow-self" in s or "uncensored" in s:
+        return "uncensored"
+    if "impulse" in s or "decision" in s or "reflex" in s:
+        return "decision"
+    return ""
+
+
 def _group_of(lane: str, text: str) -> str:
     """Which LANE SEGMENT a registered fragment belongs to (aggregation unit)."""
     s = "%s %s" % (str(lane or ""), str(text or ""))
@@ -485,11 +516,20 @@ def compose_line(session_id: str) -> str:
             text = str(seg.get("text") or "").strip()
             if not text:
                 continue
-            key = _group_of(str(seg.get("lane") or ""), text)
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].extend(_parse(text))
+            lane_hint = str(seg.get("lane") or "")
+            # PER-LINE grouping: a segment can carry several lane lines (see
+            # _group_of_label). Each parsed line joins ITS OWN lane's bucket,
+            # so one lane's tokens/cost can never be rendered on another
+            # lane's line, and each lane still aggregates its own repeats
+            # (two decision verdicts, or a frontier pre+post pair, fold into
+            # one line for that lane).
+            for cell in _parse(text):
+                key = (_group_of_label(cell.get("label") or "")
+                       or _group_of(lane_hint, cell.get("label") or ""))
+                if key not in groups:
+                    groups[key] = []
+                    order.append(key)
+                groups[key].append(cell)
         if not order:
             return ""
         parts = [_render_cells(_merge(groups[k])) for k in order]
