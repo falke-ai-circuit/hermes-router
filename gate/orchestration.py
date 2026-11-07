@@ -470,12 +470,34 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # (median 1 user message per session). Fail-open: a counter that cannot
         # be written must never cost the turn; the floor then simply sees 0 and
         # stays open.
+        #
+        # M46-10b: ONE SCOPE CONVENTION. The task id is computed HERE and
+        # passed explicitly, because the POST gate (completion_audit.py:2303 /
+        # :2312 / :2735) reads the counter under task_id_for(session, ask,
+        # model). Writing with the ask only used to produce `s-<sid>|<hash>`
+        # while the gate read the bare `<hash>`; the two never matched and the
+        # floor was inert on the live path. `api_request_id` makes a provider
+        # RETRY a re-entry rather than a second model turn (the host applies
+        # this middleware inside its own retry loop and reuses the id).
         try:
             from .. import consult_budget as _cb_turn
+            from .. import router_core as _rc_ids
 
+            _cb_turn_sid = _hub()._session_id_from_context(**context)
+            _cb_turn_model = str(request.get("model") or "")
+            _cb_turn_tid = ""
+            try:
+                _cb_turn_tid = str(
+                    _rc_ids.task_id_for(_cb_turn_sid, content,
+                                        _cb_turn_model) or "")
+            except Exception:  # noqa: BLE001 — identity is best-effort
+                _cb_turn_tid = ""
             _cb_turn.note_model_turn(
-                _hub()._session_id_from_context(**context),
-                ask=content, model=str(request.get("model") or ""))
+                _cb_turn_sid, task_id=_cb_turn_tid,
+                ask=content, model=_cb_turn_model,
+                api_request_id=str(context.get("api_request_id") or ""),
+                turn_id=str(context.get("turn_id") or ""),
+                api_call_count=context.get("api_call_count"))
         except Exception:  # noqa: BLE001 — counter never breaks the seam
             pass
 

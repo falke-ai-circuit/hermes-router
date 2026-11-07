@@ -92,6 +92,15 @@ _TASK_BORN: Dict[str, int] = {}
 # NEW USER ASK, and the fleet median is 1 user message per session, so a floor
 # of 4 on it was unreachable.
 _MODEL_TURNS: Dict[str, int] = {}
+# M46-10b: the ids of the provider calls already counted, per scope. The host
+# runs the llm_request middleware inside its OWN retry loop
+# (/opt/hermes/agent/conversation_loop.py:2163 while, :2240 call) and hands the
+# same `api_request_id` to every retry of one provider call — so a retry is a
+# re-entry, not a new model turn. Without this memo a retry double-counts and,
+# once the writer/reader keys agree, the floor fires one turn EARLY (the
+# unsafe direction).
+_MODEL_TURN_IDS: Dict[str, list] = {}
+_MODEL_ID_MEMO = 16          # bounded per scope; a retry storms within a call
 
 
 def _knob_int(name: str, default: int) -> int:
@@ -215,7 +224,9 @@ def model_turns(key: str) -> int:
 
 
 def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
-                    model: str = "", trace: str = "") -> int:
+                    model: str = "", trace: str = "",
+                    api_request_id: str = "", turn_id: str = "",
+                    api_call_count: Any = None) -> int:
     """Count ONE model turn for the ask's scope and return the running total.
 
     Called from the llm_request seam, which fires once per provider call: every
@@ -224,13 +235,30 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
     Task turn 1 = the ask's first model turn, so the counter is literally
     "model turns since the original ask".
 
-    Idempotence is NOT attempted: each invocation is one provider call. Never
-    raises; 0 means the counter could not be updated (caller fails open).
+    Idempotent PER PROVIDER CALL (M46-10b): the host applies this middleware
+    inside its own `while retry_count < max_retries` loop and passes the SAME
+    `api_request_id` to every retry of one call, so a re-entry with an id
+    already counted returns the current total without incrementing. The id is
+    `api_request_id` when supplied, else `turn_id:api_call_count`. No id at all
+    = no dedupe (a direct caller is one call by construction).
+
+    Never raises; 0 means the counter could not be updated (caller fails open).
     """
     try:
         k = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
+        rid = str(api_request_id or "").strip()
+        if not rid and str(turn_id or "").strip():
+            rid = "%s:api:%s" % (str(turn_id).strip(),
+                                 "?" if api_call_count is None
+                                 else str(api_call_count))
         with _LOCK:
-            n = int(_MODEL_TURNS.get(k) or 0) + 1
+            n = int(_MODEL_TURNS.get(k) or 0)
+            if rid:
+                seen = _MODEL_TURN_IDS.get(k) or []
+                if rid in seen:
+                    return n        # the same provider call, retried
+                _MODEL_TURN_IDS[k] = (seen + [rid])[-_MODEL_ID_MEMO:]
+            n += 1
             _MODEL_TURNS[k] = n
             _prune_locked()
             return n
@@ -241,10 +269,18 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
 
 def scope_key(session_id: str, task_id: str = "", ask: str = "",
               model: str = "", trace: str = "") -> str:
-    """Task identity for the counter: task_id, else session+trace.
+    """Task identity for the counter — ONE string per scope, however built.
 
-    `trace` falls back to the deterministic task hash of the ask, so a caller
-    with no task_id still groups by the same ask rather than by nothing.
+    `task_id` wins when the caller has it. When it does not, the same identity
+    is re-derived from the ask (`task_id_for(session, ask, model)`) and returned
+    BARE — not session-prefixed (M46-10b). That is the whole point: the llm
+    request seam writes with the ask, the POST gate reads with a task_id, and
+    before this they produced two strings that never matched (`s-<sid>|<hash>`
+    vs `<hash>`), so the model-turn counter was read as 0 forever and the POST
+    floor never fired on the live path.
+
+    Only a scope with neither a task_id nor an ask falls back to `session|-`
+    (the caller has told us nothing to group by). Never raises.
     """
     tid = str(task_id or "").strip()
     if tid:
@@ -258,7 +294,9 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
             tr = str(router_core.task_id_for(sid, ask, model) or "")
         except Exception:  # noqa: BLE001
             tr = ""
-    return "%s|%s" % (sid, tr or "-")
+    if tr:
+        return tr
+    return "%s|-" % sid
 
 
 def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
@@ -293,6 +331,34 @@ def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
                   count=int(count), cap=int(cap), reason=str(reason),
                   task_id=str(task_id or key), session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001
+        pass
+
+
+def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
+                     task_id: str = "") -> None:
+    """Record EVERY POST gate decision — allowed as well as refused (M46-10b).
+
+    Before this only refusals were recorded, so the shipped defect was
+    invisible: an ALLOWED POST with `task_turn=0` (the inert-floor signature —
+    the key it read had never been written) looked exactly like a legitimately
+    young task in every log. One route line per POST gate call carries the key
+    that was read, the turn measured on it and the counter that turn came from,
+    which makes the fail-open auditable instead of silent. Never raises.
+    """
+    try:
+        from .core.telemetry import log_route
+
+        log_route("POST", event_detail="consult_gate",
+                  leg=str(leg), allow=bool(out.get("allow")),
+                  key=str(out.get("key") or ""),
+                  task_turn=int(out.get("task_turn") or 0),
+                  task_turn_basis=str(out.get("task_turn_basis") or ""),
+                  count=int(out.get("count") or 0),
+                  cap=int(out.get("cap") or 0),
+                  reason=str(out.get("reason") or ""),
+                  task_id=str(task_id or out.get("key") or ""),
+                  session_id=str(session_id or ""))
+    except Exception:  # noqa: BLE001 — observability never breaks the gate
         pass
 
 
@@ -381,7 +447,13 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
             return out
     except Exception:  # noqa: BLE001 — a broken counter must not stop work
         logger.debug("consult_budget.check failed (fail-open)", exc_info=True)
-        return out
+    finally:
+        # M46-10b: EVERY POST decision is recorded, allow included — the
+        # `task_turn=0` allow is the signature of an inert floor and must be
+        # readable without a reproduction.
+        if str(leg) == "post":
+            _record_decision(session_id, leg, out, task_id=task_id)
+    return out
 
 
 def _prune_locked() -> None:
@@ -397,13 +469,16 @@ def _prune_locked() -> None:
         _TURNS_SEEN.pop(_victim, None)
         _TASK_BORN.pop(_victim, None)
         _MODEL_TURNS.pop(_victim, None)
+        _MODEL_TURN_IDS.pop(_victim, None)
     while len(_TURNS_SEEN) > MAX_SCOPES:
         _victim = next(iter(_TURNS_SEEN))
         _TURNS_SEEN.pop(_victim, None)
         _MODEL_TURNS.pop(_victim, None)
+        _MODEL_TURN_IDS.pop(_victim, None)
     while len(_MODEL_TURNS) > MAX_SCOPES:
         _victim = next(iter(_MODEL_TURNS))
         _MODEL_TURNS.pop(_victim, None)
+        _MODEL_TURN_IDS.pop(_victim, None)
         _TURNS_SEEN.pop(_victim, None)
         _TASK_BORN.pop(_victim, None)
     while len(_TASK_BORN) > MAX_SCOPES:
@@ -469,6 +544,7 @@ def reset(session_id: str = "", task_id: str = "", key: str = "") -> None:
                 _TURNS_SEEN.pop(k, None)
                 _TASK_BORN.pop(k, None)
                 _MODEL_TURNS.pop(k, None)
+                _MODEL_TURN_IDS.pop(k, None)
                 return
             if session_id or task_id:
                 _k = scope_key(session_id, task_id)
@@ -476,10 +552,12 @@ def reset(session_id: str = "", task_id: str = "", key: str = "") -> None:
                 _TURNS_SEEN.pop(_k, None)
                 _TASK_BORN.pop(_k, None)
                 _MODEL_TURNS.pop(_k, None)
+                _MODEL_TURN_IDS.pop(_k, None)
                 return
             _COUNTS.clear()
             _TURNS_SEEN.clear()
             _TASK_BORN.clear()
             _MODEL_TURNS.clear()
+            _MODEL_TURN_IDS.clear()
     except Exception:  # noqa: BLE001
         pass

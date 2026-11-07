@@ -305,3 +305,161 @@ def test_llm_request_seam_counts_one_model_turn(monkeypatch):
     assert calls, "llm_request seam never counted a model turn"
     assert calls[0][1].get("ask") == "count this model turn", calls[0]
     assert calls[0][1].get("model") == "test-model", calls[0]
+
+
+# --------------------------------------------------------------------- T6 ----
+# M46-10b (reviewer D3/D5): the writer and the reader must build ONE key, and
+# the real POST seam must enforce it. These three tests exist because the five
+# above all lifted the counter through a `task_id` argument shape production
+# never uses — 29 green while the live path was inert.
+
+class _NoEndpointChain:
+    """Stands in for the anchor chain so the POST stops right AFTER the gate."""
+
+    def endpoint_for(self, _name):  # noqa: D401 — test double
+        return None
+
+
+def _seam_count(plugin, route_gate, session_id: str, text: str, model: str,
+                api_request_id: str) -> None:
+    """Drive the REAL llm_request seam once, exactly as the host calls it."""
+    req = {"model": model,
+           "messages": [{"role": "user", "content": text}]}
+    try:
+        plugin.on_llm_request(
+            request=req, original_request=req,
+            session_id=session_id, task_id="host-effective-task",
+            turn_id="turn-1", api_request_id=api_request_id,
+            api_call_count=1, model=model, provider="test",
+            base_url="http://test", api_mode="chat", platform="test")
+    except Exception:  # noqa: BLE001 — the seam is fail-open by contract
+        pass
+
+
+def _seam_config(monkeypatch, post_floor: int = 4) -> None:
+    from hermes_router import config_access, route_gate
+
+    monkeypatch.setattr(config_access, "router_section",
+                        lambda: {"level": 0,
+                                 "complexity": {"consult_min_turns": 1,
+                                                "consult_post_min_turns":
+                                                    post_floor,
+                                                "consult_max_per_task": 1}})
+    monkeypatch.setattr(route_gate, "fence_pass",
+                        lambda content, request, context, hs: None)
+
+
+def test_seam_and_gate_build_one_scope_and_the_floor_fires(budget, monkeypatch):
+    """T6/D3+D5: writer key == reader key, and the POST seam refuses 1-3, allows 4.
+
+    Both sides are the REAL call shapes: the counter is advanced by
+    `plugin.on_llm_request` (what the host invokes per provider call) and the
+    gate is reached through `completion_audit._consult_meta` (the live POST
+    seam), which passes `task_id_for(session, ask, model)` exactly as
+    `run_completion_audit_sync` does. The anchor chain is stubbed to no
+    endpoint so the run stops right AFTER the gate and its own reason is
+    readable.
+    """
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import completion_audit, router_core
+
+    monkeypatch.setattr("hermes_router.anchor_chain.load_anchor_chain",
+                        lambda: _NoEndpointChain())
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid = "s-m4610-seam"
+    text = "wire the seam to the gate"
+    model = "glm-5.3"
+    tid = router_core.task_id_for(sid, text, model)
+
+    for i in (1, 2, 3):
+        _seam_count(plugin, None, sid, text, model, "turn-1:api:%d" % i)
+
+    # The seam wrote under the task id the POST gate will read.
+    seam_key = budget.scope_key(sid, "", ask=text, model=model)
+    gate_key = budget.scope_key(sid, tid, ask=text, model=model)
+    print("seam key=%r post key=%r MATCH: %s"
+          % (seam_key, gate_key, seam_key == gate_key))
+    assert seam_key == gate_key, (seam_key, gate_key)
+    assert budget.model_turns(gate_key) == 3
+
+    diag = {}
+    completion_audit._consult_meta(sid, text, "resp text", None, model,
+                                   "fire-key", socket_timeout=45, diag=diag,
+                                   task_id=tid)
+    assert diag.get("reason") == "below_min_turns", diag
+
+    _seam_count(plugin, None, sid, text, model, "turn-1:api:4")
+    diag = {}
+    completion_audit._consult_meta(sid, text, "resp text", None, model,
+                                   "fire-key", socket_timeout=45, diag=diag,
+                                   task_id=tid)
+    assert diag.get("reason") == "no_primary_endpoint", diag
+
+
+def test_provider_retry_does_not_double_count(budget, monkeypatch):
+    """T7/D2: the host re-enters the middleware with the SAME api_request_id.
+
+    The host runs the middleware inside its own retry loop
+    (`while retry_count < max_retries`) and reuses the id, so a retry is one
+    provider call. Without this guard, after fix 1 a retry double-counts and
+    the floor fires one turn EARLY — the unsafe direction.
+    """
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import router_core
+
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid, text, model = "s-m4610-retry", "one call, three attempts", "glm-5.3"
+    key = router_core.task_id_for(sid, text, model)
+
+    _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
+    _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
+    _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
+    assert budget.model_turns(key) == 1, budget.model_turns(key)
+
+    _seam_count(plugin, None, sid, text, model, "turn-1:api:2")
+    assert budget.model_turns(key) == 2, budget.model_turns(key)
+
+
+def test_allowed_post_decision_is_recorded_with_turn_basis_and_key(
+        budget, monkeypatch):
+    """T8/D5: an ALLOWED POST carries key/task_turn/task_turn_basis.
+
+    The shipped defect was silent: `task_turn=0` + allow looked like a young
+    task. Every POST decision is now on the route log, allow included.
+    """
+    rows = []
+    from hermes_router.core import telemetry
+
+    monkeypatch.setattr(telemetry, "log_route",
+                        lambda event, **f: rows.append((event, f)))
+    _knobs(monkeypatch, post_floor=4)
+
+    sid, task = "s-m4610-dec", "t-m4610-dec"
+    _model_turns(budget, sid, task, 4)
+    out = budget.check(sid, task, leg="post")
+    assert out["allow"] is True, out
+
+    decided = [f for e, f in rows if f.get("event_detail") == "consult_gate"]
+    assert decided, rows
+    row = decided[-1]
+    assert row["key"] == task, row
+    assert row["task_turn"] == 4, row
+    assert row["task_turn_basis"] == "model_turns", row
+    assert row["allow"] is True, row
+    print("allowed POST decision row: key=%r task_turn=%r basis=%r allow=%r"
+          % (row["key"], row["task_turn"], row["task_turn_basis"],
+             row["allow"]))
