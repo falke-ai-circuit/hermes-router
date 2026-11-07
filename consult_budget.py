@@ -257,6 +257,17 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
                 seen = _MODEL_TURN_IDS.get(k) or []
                 if rid in seen:
                     return n        # the same provider call, retried
+                # N3 (M46-10d) — BOUND: the memo keeps the last 16 ids per
+                # scope, so an id that has fallen off is counted again. That
+                # is reachable only by re-entering with an id older than 16
+                # later calls in the SAME scope. The host computes
+                # `api_request_id` ONCE, before `while retry_count <
+                # max_retries` (`/opt/hermes/agent/conversation_loop.py:2138`
+                # vs `:2163`), and passes that same id on every retry of that
+                # call (`:2240-2249`) — so all retries of one call arrive
+                # consecutively, inside a window of ONE provider call.
+                # Widening the memo costs memory per live scope; the bound is
+                # kept and the residual re-count is documented here instead.
                 _MODEL_TURN_IDS[k] = (seen + [rid])[-_MODEL_ID_MEMO:]
             n += 1
             _MODEL_TURNS[k] = n
@@ -296,6 +307,17 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
             tr = ""
     if tr:
         return tr
+    # N2 (M46-10d) — GUARD, semantics unchanged: this branch merges EVERY
+    # empty-identity scope in a session into one counter, so a younger task
+    # inherits an older task's totals. On the PRE leg that is merely coarse.
+    # On the POST leg it would floor EARLY (fail-CLOSED, the unsafe
+    # direction): a fresh ask would read another ask's model turns.
+    # Reachability today: NONE. The llm_request writer only counts when the
+    # ask text is non-empty (`gate/orchestration.py:449-451` -> `task_id_for`
+    # always supplies a trace), and the POST gate skips `no_ask` before the
+    # gate (`completion_audit.py:1199-1201`) and always passes a `task_id`
+    # (`:2735`). A future caller with POST semantics and no task_id/ask must
+    # NOT land here — pass a trace (or a task_id) instead of widening this.
     return "%s|-" % sid
 
 
@@ -447,6 +469,17 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
             return out
     except Exception:  # noqa: BLE001 — a broken counter must not stop work
         logger.debug("consult_budget.check failed (fail-open)", exc_info=True)
+        # N1 (M46-10d): a fail-open decision must NAME its cause. Without this
+        # the recorded row was `allow=True reason='' key=''` — identical to a
+        # legitimately young task apart from the empty key, so an internal
+        # error read as "the floor was never armed". `out` already carries
+        # `reason=""` from the defaults, so `setdefault` cannot bite here; the
+        # named marker goes on BOTH fields (the key marker cannot collide with
+        # a real scope key: real keys never start with '!').
+        if not out.get("reason"):
+            out["reason"] = "internal_error"
+        if not out.get("key"):
+            out["key"] = "!internal_error"
     finally:
         # M46-10b: EVERY POST decision is recorded, allow included — the
         # `task_turn=0` allow is the signature of an inert floor and must be

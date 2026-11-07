@@ -463,3 +463,37 @@ def test_allowed_post_decision_is_recorded_with_turn_basis_and_key(
     print("allowed POST decision row: key=%r task_turn=%r basis=%r allow=%r"
           % (row["key"], row["task_turn"], row["task_turn_basis"],
              row["allow"]))
+
+
+def test_internal_error_fail_open_row_names_its_cause(budget, monkeypatch):
+    """T9/N1: a fail-open POST names `internal_error` in the recorded row.
+
+    Before this the row was `allow=True reason='' key=''` — the inert-floor
+    signature — so a knob/read failure was indistinguishable from a young task
+    except by the empty key. The direction is unchanged (still fail-OPEN); only
+    the cause is now on the row.
+    """
+    rows = []
+    from hermes_router.core import telemetry
+
+    monkeypatch.setattr(telemetry, "log_route",
+                        lambda event, **f: rows.append((event, f)))
+
+    def _boom():
+        raise RuntimeError("knob read exploded")
+
+    monkeypatch.setattr(budget, "post_min_turns", _boom)
+
+    out = budget.check("s-m4610-n1", "t-m4610-n1", leg="post")
+    assert out["allow"] is True, out          # fail-open is preserved
+    assert out["reason"] == "internal_error", out
+    assert out["key"] == "!internal_error", out
+
+    decided = [f for e, f in rows if f.get("event_detail") == "consult_gate"]
+    assert decided, rows
+    row = decided[-1]
+    assert row["reason"] == "internal_error", row
+    assert row["key"] == "!internal_error", row
+    assert row["allow"] is True, row
+    print("internal-error fail-open row: key=%r allow=%r reason=%r"
+          % (row["key"], row["allow"], row["reason"]))
