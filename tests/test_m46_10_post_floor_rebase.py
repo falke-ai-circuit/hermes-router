@@ -497,3 +497,72 @@ def test_internal_error_fail_open_row_names_its_cause(budget, monkeypatch):
     assert row["allow"] is True, row
     print("internal-error fail-open row: key=%r allow=%r reason=%r"
           % (row["key"], row["allow"], row["reason"]))
+
+
+def test_internal_error_row_does_not_invent_a_task_id(budget, monkeypatch):
+    """T10/N4: with no caller task_id, the row's `task_id` stays EMPTY.
+
+    The fail-open path used to reuse `key` for `task_id`, and that key is the
+    sentinel `!internal_error` — so any consumer grouping `consult_gate` rows
+    by `task_id` saw one phantom task. The cause is still named (key+reason);
+    only the fabricated identity is gone.
+    """
+    rows = []
+    from hermes_router.core import telemetry
+
+    monkeypatch.setattr(telemetry, "log_route",
+                        lambda event, **f: rows.append((event, f)))
+
+    def _boom():
+        raise RuntimeError("knob read exploded")
+
+    monkeypatch.setattr(budget, "post_min_turns", _boom)
+
+    out = budget.check("s-m4610-n4", "", leg="post")
+    assert out["allow"] is True, out           # fail-open preserved
+    assert out["key"] == "!internal_error", out
+    assert out["reason"] == "internal_error", out
+
+    decided = [f for e, f in rows if f.get("event_detail") == "consult_gate"]
+    assert decided, rows
+    row = decided[-1]
+    assert row["task_id"] == "", row
+    assert row["key"] == "!internal_error", row
+    assert row["reason"] == "internal_error", row
+    assert row["allow"] is True, row
+
+    # A caller that DOES pass a task_id keeps it verbatim.
+    out2 = budget.check("s-m4610-n4", "t-m4610-n4", leg="post")
+    row2 = [f for e, f in rows
+            if f.get("event_detail") == "consult_gate"][-1]
+    assert out2["reason"] == "internal_error", out2
+    assert row2["task_id"] == "t-m4610-n4", row2
+    print("error-path rows: no-task_id=%r key=%r reason=%r | with-task_id=%r"
+          % (row["task_id"], row["key"], row["reason"], row2["task_id"]))
+
+
+def test_scope_key_rejects_bang_prefixed_identity(budget, monkeypatch):
+    """T11/N5: the `'!'` sentinel prefix is asserted, not convention.
+
+    `task_id` and `trace` are returned verbatim, so a future caller passing a
+    leading `'!'` would collide with `!internal_error`. `scope_key` now raises;
+    every in-module caller already fails open, so reachability stays none and
+    the gate's outward behaviour is unchanged.
+    """
+    import pytest
+
+    with pytest.raises(ValueError):
+        budget.scope_key("s-m4610-n5", "!internal_error")
+    with pytest.raises(ValueError):
+        budget.scope_key("s-m4610-n5", "", trace="!relabel")
+    # Real identities are untouched, sentinel-free keys still build.
+    assert budget.scope_key("s-m4610-n5", "t-123") == "t-123"
+    assert budget.scope_key("s-m4610-n5") == "s-m4610-n5|-"
+
+    from hermes_router.core import telemetry
+
+    monkeypatch.setattr(telemetry, "log_route", lambda event, **f: None)
+    out = budget.check("s-m4610-n5", "!internal_error", leg="post")
+    assert out["allow"] is True, out                    # never raises outward
+    assert out["reason"] == "internal_error", out
+    print("scope_key bangs rejected; check() still fail-open: %r" % (out,))

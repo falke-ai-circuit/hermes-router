@@ -291,9 +291,22 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
     floor never fired on the live path.
 
     Only a scope with neither a task_id nor an ask falls back to `session|-`
-    (the caller has told us nothing to group by). Never raises.
+    (the caller has told us nothing to group by).
+
+    N5 (M46-10f) — REJECT, do not sanitise: a leading `'!'` is the reserved
+    sentinel prefix (`!internal_error`), so a caller-supplied id that starts
+    with it would collide with the error marker. Raises `ValueError` rather
+    than rewriting the id (a silent rewrite would merge two identities). Every
+    in-module caller of this function sits inside a `try/except` that already
+    fails open (`note_model_turn` -> 0, `check` -> allow, `refund` -> False,
+    `counts`/`reset` -> empty), so the outward "never raises" contract of those
+    callers is unchanged. Reachability today: NONE (`task_id_for` returns
+    `[0-9a-f]{24}` and the only other key is `"%s|-" % sid`).
     """
     tid = str(task_id or "").strip()
+    if tid[:1] == "!":
+        raise ValueError("scope_key: task_id must not start with '!': %r"
+                         % (tid,))
     if tid:
         return tid
     sid = str(session_id or "").strip()
@@ -305,6 +318,8 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
             tr = str(router_core.task_id_for(sid, ask, model) or "")
         except Exception:  # noqa: BLE001
             tr = ""
+    if tr[:1] == "!":
+        raise ValueError("scope_key: trace must not start with '!': %r" % (tr,))
     if tr:
         return tr
     # N2 (M46-10d) — GUARD, semantics unchanged: this branch merges EVERY
@@ -370,15 +385,24 @@ def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
     try:
         from .core.telemetry import log_route
 
+        # N4 (M46-10f) — `task_id` is the CALLER's identity and stays verbatim
+        # (empty when the caller had none). The old fallback reused `key`, which
+        # on the fail-open path is the sentinel `!internal_error`; a consumer
+        # grouping `consult_gate` rows by task_id then saw one phantom task.
+        # The cause is already named by `key` + `reason`, so no extra field is
+        # needed and no reader has to learn a new shape.
+        _key = str(out.get("key") or "")
+        _tid = str(task_id) if str(task_id or "").strip() else (
+            "" if _key[:1] == "!" else _key)
         log_route("POST", event_detail="consult_gate",
                   leg=str(leg), allow=bool(out.get("allow")),
-                  key=str(out.get("key") or ""),
+                  key=_key,
                   task_turn=int(out.get("task_turn") or 0),
                   task_turn_basis=str(out.get("task_turn_basis") or ""),
                   count=int(out.get("count") or 0),
                   cap=int(out.get("cap") or 0),
                   reason=str(out.get("reason") or ""),
-                  task_id=str(task_id or out.get("key") or ""),
+                  task_id=_tid,
                   session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001 — observability never breaks the gate
         pass
