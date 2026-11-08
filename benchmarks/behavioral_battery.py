@@ -7,6 +7,20 @@ Output: per-turn PASS/FAIL table -> /opt/data/tmp/battery_results.json
 """
 import json, os, sqlite3, subprocess, sys, time, urllib.request
 
+# The found-branch read (grep_new_log) decides presence with the SAME row
+# predicate benchmarks/battery_run.py decides ABSENCE with (M36-25). Imported,
+# not copied: one tokenizer for both branches, so a row can never be present to
+# one half of the grader and absent to the other.
+# The import carries a path guard because this file is also loaded by path
+# (tests, probes): as a script `benchmarks/` is already sys.path[0], but an
+# importer running from another cwd has it nowhere. A missing sibling module
+# must never kill the battery before it prints RETIRED FIELDS.
+try:
+    from battery_run import attributable_event_rows
+except ImportError:  # pragma: no cover — script execution takes the branch above
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from battery_run import attributable_event_rows
+
 # RETIRED FIELDS (M36-07) — emitted at import time, BEFORE the credential gate
 # and long before the first live scenario, so the retirement reason is visible
 # at the point of check: `... 2>&1 | head -8` and any timed-out run both show
@@ -49,10 +63,52 @@ def log_tail_marker():
 def os_len(p):
     import os; return os.path.getsize(p)
 
-def grep_new_log(marker_offset, pattern):
+def grep_new_log(marker_offset, pattern, sid=None, since_epoch=None):
+    """Rows THIS scenario wrote for one expected event kind, plus the rejects.
+
+    Returns ``(rows, foreign)``. ``rows`` is the shared predicate's answer:
+    ``battery_run.attributable_event_rows`` — P1 exact ``event_detail=<event>``
+    token, P2 exact ``session_id=<sid>`` token, P3 parseable leading
+    ``^YYYY-MM-DDTHH:MM:SSZ``, P4 inside [turn start, read time]. Non-empty is
+    presence, empty is absence, and both halves of the grader therefore agree
+    about what "present" means. ``foreign`` lists the rows of the same byte
+    window that carry the event token but are NOT this session's — the
+    near-miss a byte-window read used to accept as presence (M36-23/B1: a
+    foreign live session's ``anchor_route_fired``, seven seconds old).
+
+    ``pattern`` may carry extra tokens after the event name
+    (``"completion_audit_gate ok=True"``); they must all appear as whitespace
+    tokens on the accepted row.
+
+    The byte offset only bounds HOW MUCH text is read (seek then filter); it is
+    never the test itself. ``sid=None`` keeps the pre-fix whole-window
+    substring answer for a caller that has no session — the battery has none.
+
+    Caller contract: pass the turn's sid and its start epoch (``t0``).
+    """
     with open(ROUTE_LOG, "rb") as f:
         f.seek(marker_offset)
-        return pattern in f.read().decode("utf-8", "replace")
+        text = f.read().decode("utf-8", "replace")
+    parts = pattern.split()
+    event = parts[0] if parts else pattern
+    extra = parts[1:]
+    if sid is None:
+        return [line for line in text.splitlines() if pattern in line], []
+    rows_all = attributable_event_rows(event, [(ROUTE_LOG, text)], sid,
+                                       since_epoch, time.time())
+    rows = rows_all
+    if extra:
+        rows = [r for r in rows_all
+                if all(tok in set(r[1].split()) for tok in extra)]
+    own = {line for _label, line, _ts in rows_all}
+    # Diagnostic only, and deliberately looser than the predicate: every row
+    # that NAMES the event anywhere in the window and was not accepted — the
+    # wrong-sid exact row and the longer-token row (`anchor_route_fired` for
+    # `route_fired`) alike. It is what a byte-window substring read would have
+    # matched, quoted so the near-miss is visible instead of inferred.
+    foreign = [line for line in text.splitlines()
+               if event in line and line not in own]
+    return rows, foreign
 
 def grep_gw(pattern, since):
     out = subprocess.run(["awk", '$0 >= "' + since + '"' , GW_LOG], capture_output=True, text=True, timeout=20).stdout
@@ -130,12 +186,16 @@ def run_scenario(name, turns, sid=None):
         time.sleep(3)
         ok_all, details = True, []
         for ev in t.get("expect_events", []):
-            found = grep_new_log(off, ev)
-            ok_all &= found
-            if not found: details.append("missing_event:" + ev)
+            rows, foreign = grep_new_log(off, ev, sid=sid, since_epoch=t0)
+            ok_all &= bool(rows)
+            if not rows:
+                details.append("missing_event:" + ev)
+                if foreign:
+                    details.append("near_miss:"
+                                   + foreign[0].strip()[:200].replace("|", "/").replace(";", ","))
         for ev in t.get("forbid_events", []):
-            found = grep_new_log(off, ev)
-            if found:
+            rows, _foreign = grep_new_log(off, ev, sid=sid, since_epoch=t0)
+            if rows:
                 ok_all = False
                 details.append("forbidden_event:" + ev)
         body = get_delivered(sid)
