@@ -23,33 +23,51 @@ error="TIMEOUT after Ns"). JSON is authoritative.
 """
 import argparse
 import ast
+import calendar
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import time
 import urllib.request
 
-import yaml
-
 PROFILES = "/opt/data/profiles"
 REPO = "/opt/data/plugins/hermes_router"
+
+
+def _config_access():
+    """The plugin's single config accessor, imported for THIS script.
+
+    ``benchmarks/`` is not a package, so the script puts the plugin's parent on
+    sys.path and imports the same module the writer uses. Delegating the whole
+    resolution — section reader and key order — is the point (M36-11 item 2):
+    the runner must not own a second copy of the rule the writer applies.
+    """
+    parent = os.path.dirname(REPO)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    from hermes_router.core import config_access  # noqa: PLC0415
+
+    return config_access
 
 
 def router_log_path(profile, profiles_root=PROFILES):
     """Resolve the route log the profile's router actually writes to.
 
-    Read ``hermes_router.log_path`` from ``<profiles_root>/<profile>/config.yaml``
-    — the same key the plugin's log writer resolves — instead of probing for
-    whichever log happens to exist. The old exists() probe fell back to
+    Resolution is DELEGATED, not re-implemented: the profile's ``config.yaml``
+    is read with ``config_access.section_at`` (the writer's own yaml reader,
+    mtime-keyed) and the path is taken with ``config_access.route_log_path``,
+    which applies the writer's key order — ``paths.log_path`` then the deployed
+    legacy ``log_path``. The old exists() probe fell back to
     ``/tmp/uncensored-router-<profile>.log``; for coder and operative that
-    graded a tombstone (a file carrying none of the battery's session rows)
-    while the live rows sat in the configured per-profile log.
+    graded a tombstone while the live rows sat in the configured log.
 
-    A configured path that is missing has no safe substitute, so this raises
-    RuntimeError naming the resolved path: grading a different log than the one
-    the router writes is worse than not grading at all.
+    Kept on top of the delegation: the two loud checks. A section that names no
+    path, or a named path that does not exist, raises RuntimeError naming the
+    resolved path — grading a different log than the one the router writes is
+    worse than not grading at all.
 
     Returns the configured path, made absolute against the profile directory if
     the config gives it relative.
@@ -59,14 +77,13 @@ def router_log_path(profile, profiles_root=PROFILES):
         raise RuntimeError(
             "router log path unresolved: no config at %s for profile %r"
             % (cfg_path, profile))
-    with open(cfg_path, errors="replace") as fh:
-        cfg = yaml.safe_load(fh) or {}
-    section = cfg.get("hermes_router")
-    if not isinstance(section, dict) or not section.get("log_path"):
+    access = _config_access()
+    configured = access.route_log_path(access.section_at(cfg_path))
+    if not configured:
         raise RuntimeError(
             "router log path unresolved: hermes_router.log_path is not set in %s"
             % cfg_path)
-    log_path = os.path.expanduser(str(section["log_path"]))
+    log_path = os.path.expanduser(str(configured))
     if not os.path.isabs(log_path):
         log_path = os.path.join(os.path.dirname(cfg_path), log_path)
     if not os.path.exists(log_path):
@@ -74,6 +91,49 @@ def router_log_path(profile, profiles_root=PROFILES):
             "router log path unresolved: hermes_router.log_path %s does not exist "
             "(profile %r, config %s)" % (log_path, profile, cfg_path))
     return log_path
+
+
+# A row timestamp, or the file's own mtime, must land no earlier than this many
+# seconds before the run started. Rows are the evidence grading consumes; the
+# mtime window only absorbs clock rounding and a write that happened while the
+# runner was starting up.
+FRESHNESS_WINDOW_SEC = 300
+TS_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
+
+
+def _row_epoch(line):
+    """Epoch seconds of a route-log row's leading ISO timestamp, else None."""
+    m = TS_RE.match(line)
+    if not m:
+        return None
+    try:
+        return calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError:
+        return None
+
+
+def grade_freshness(text, size, mtime, started_epoch,
+                    window=FRESHNESS_WINDOW_SEC):
+    """None when the graded log proves it was written during this run, else
+    the INCONCLUSIVE reason.
+
+    M36-11 item 1: a configured log that no writer touches resolves cleanly,
+    contributes zero rows, and every missing_event becomes a false FAIL charged
+    to the router. Freshness is decided before grading: a non-empty file with
+    either a row timestamp at/after the run start or an mtime inside the window
+    is gradable; an empty file is never gradable, whatever its mtime (the
+    reviewer's probe: a 0-byte file touched now).
+    """
+    if not size:
+        return "GRADED_LOG_STALE"
+    cutoff = started_epoch - window
+    for line in str(text or "").splitlines():
+        ts = _row_epoch(line)
+        if ts is not None and ts >= cutoff:
+            return None
+    if mtime is not None and mtime >= cutoff:
+        return None
+    return "GRADED_LOG_STALE"
 
 
 def env_of(profile):
@@ -434,6 +494,30 @@ def main():
         except Exception:
             pass
     graded_text = _read_log_text(route_log)
+    # M36-11 item 1: freshness is decided before a single verdict is written.
+    # A configured log nobody writes contributes zero rows, so every
+    # missing_event would become a false FAIL charged to the router.
+    try:
+        _st = os.stat(route_log)
+        log_size, log_mtime = _st.st_size, _st.st_mtime
+    except OSError:
+        log_size, log_mtime = 0, None
+    stale_reason = grade_freshness(graded_text, log_size, log_mtime, started)
+    if stale_reason:
+        doc = {"profile": a.profile, "port": int(port), "head_sha": head_sha(),
+               "started_at": started_at, "route_log": route_log,
+               "scenarios": [], "totals": {"pass": 0, "fail": 0, "inconclusive": 0},
+               "overall": "INCONCLUSIVE", "reason": stale_reason,
+               "error": "graded log %s carries no row at/after run start %s "
+                        "(size=%d bytes) — not graded"
+                        % (route_log, started_at, log_size),
+               "battery_exit": proc.returncode}
+        json.dump(doc, open(a.out, "w"), indent=1)
+        print("profile=%s port=%s head=%s" % (a.profile, port, doc["head_sha"]))
+        print("INCONCLUSIVE: %s — %s" % (stale_reason, route_log))
+        print("TOTALS pass=0 fail=0 inconclusive=0 overall=INCONCLUSIVE (%s)"
+              % stale_reason)
+        return 2
     other_logs = []
     for label, path in (
             ("%s/uncensored-router.log" % a.profile,

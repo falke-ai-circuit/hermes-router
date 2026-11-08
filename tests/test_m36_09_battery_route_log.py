@@ -193,3 +193,72 @@ def test_session_window_keeps_only_the_named_sessions_rows():
     cls, _ = mod.classify_absent_event(
         "anchor_route_fired", graded, [], window_text=window)
     assert cls == "not_instrumented_path_not_taken"
+
+
+# --- M36-11 item 2: the runner delegates resolution, it does not re-derive ---
+
+def test_resolver_uses_the_writers_key_order(tmp_path):
+    """paths.log_path (grouped) must win over legacy log_path, as in the writer."""
+    grouped = tmp_path / "grouped.log"
+    legacy = tmp_path / "legacy.log"
+    grouped.write_text("row\n")
+    legacy.write_text("row\n")
+    pdir = tmp_path / "p6"
+    pdir.mkdir()
+    (pdir / "config.yaml").write_text(
+        "hermes_router:\n"
+        "  log_path: %s\n"
+        "  paths:\n"
+        "    log_path: %s\n" % (legacy, grouped)
+    )
+    mod = _runner()
+    assert mod.router_log_path("p6", profiles_root=str(tmp_path)) == str(grouped)
+
+
+def test_resolver_delegates_to_config_access(tmp_path):
+    """The resolver's answer is config_access.route_log_path's answer, not a copy."""
+    log = tmp_path / "delegated.log"
+    log.write_text("row\n")
+    _profile(tmp_path, "p7", log)
+    mod = _runner()
+    access = mod._config_access()
+    section = access.section_at(str(tmp_path / "p7" / "config.yaml"))
+    assert mod.router_log_path("p7", profiles_root=str(tmp_path)) == \
+        access.route_log_path(section)
+
+
+# --- M36-11 item 1: a stale graded log is INCONCLUSIVE, never a FAIL ---------
+
+RUN_START = 1794000000.0  # fixed epoch: rows below are stamped around it
+
+
+def _stamp(epoch):
+    import time as _t
+    return _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime(epoch))
+
+
+def test_empty_configured_log_is_stale_not_gradable():
+    """The reviewer's probe: a 0-byte configured file, mtime now."""
+    mod = _runner()
+    assert mod.grade_freshness("", 0, RUN_START, RUN_START) == "GRADED_LOG_STALE"
+    assert mod.grade_freshness("", 0, RUN_START + 5, RUN_START) == "GRADED_LOG_STALE"
+
+
+def test_rows_from_before_the_run_are_stale():
+    mod = _runner()
+    old = "%s PRE event_detail=route_fired\n" % _stamp(RUN_START - 7200)
+    assert mod.grade_freshness(old, len(old), RUN_START - 7200, RUN_START) == \
+        "GRADED_LOG_STALE"
+
+
+def test_row_during_the_run_is_gradable_even_with_an_old_mtime():
+    mod = _runner()
+    fresh = ("%s PRE event_detail=route_fired\n" % _stamp(RUN_START - 7200)
+             + "%s POST event_detail=main_body_kept\n" % _stamp(RUN_START + 30))
+    assert mod.grade_freshness(fresh, len(fresh), RUN_START - 7200, RUN_START) is None
+
+
+def test_mtime_inside_the_window_is_gradable_for_unparsed_rows():
+    mod = _runner()
+    text = "no timestamp here\n"
+    assert mod.grade_freshness(text, len(text), RUN_START + 10, RUN_START) is None
