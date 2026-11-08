@@ -31,8 +31,49 @@ import sys
 import time
 import urllib.request
 
+import yaml
+
 PROFILES = "/opt/data/profiles"
 REPO = "/opt/data/plugins/hermes_router"
+
+
+def router_log_path(profile, profiles_root=PROFILES):
+    """Resolve the route log the profile's router actually writes to.
+
+    Read ``hermes_router.log_path`` from ``<profiles_root>/<profile>/config.yaml``
+    — the same key the plugin's log writer resolves — instead of probing for
+    whichever log happens to exist. The old exists() probe fell back to
+    ``/tmp/uncensored-router-<profile>.log``; for coder and operative that
+    graded a tombstone (a file carrying none of the battery's session rows)
+    while the live rows sat in the configured per-profile log.
+
+    A configured path that is missing has no safe substitute, so this raises
+    RuntimeError naming the resolved path: grading a different log than the one
+    the router writes is worse than not grading at all.
+
+    Returns the configured path, made absolute against the profile directory if
+    the config gives it relative.
+    """
+    cfg_path = os.path.join(profiles_root, profile, "config.yaml")
+    if not os.path.exists(cfg_path):
+        raise RuntimeError(
+            "router log path unresolved: no config at %s for profile %r"
+            % (cfg_path, profile))
+    with open(cfg_path, errors="replace") as fh:
+        cfg = yaml.safe_load(fh) or {}
+    section = cfg.get("hermes_router")
+    if not isinstance(section, dict) or not section.get("log_path"):
+        raise RuntimeError(
+            "router log path unresolved: hermes_router.log_path is not set in %s"
+            % cfg_path)
+    log_path = os.path.expanduser(str(section["log_path"]))
+    if not os.path.isabs(log_path):
+        log_path = os.path.join(os.path.dirname(cfg_path), log_path)
+    if not os.path.exists(log_path):
+        raise RuntimeError(
+            "router log path unresolved: hermes_router.log_path %s does not exist "
+            "(profile %r, config %s)" % (log_path, profile, cfg_path))
+    return log_path
 
 
 def env_of(profile):
@@ -246,9 +287,13 @@ def main():
         print("INCONCLUSIVE: gateway probe failed on %s (%s)" % (base, why))
         return 2
 
-    route_log = os.path.join(PROFILES, a.profile, "uncensored-router.log")
-    if not os.path.exists(route_log):
-        route_log = "/tmp/uncensored-router-%s.log" % a.profile
+    try:
+        route_log = router_log_path(a.profile)
+    except RuntimeError as e:
+        json.dump({"profile": a.profile, "overall": "INCONCLUSIVE", "totals": {},
+                   "error": str(e)}, open(a.out, "w"), indent=1)
+        print("INCONCLUSIVE: %s" % e)
+        return 2
     results_tmp = a.out + ".battery.json"
     env = dict(os.environ, GATEWAY_BEARER=key, BATT_BASE="http://127.0.0.1:%s/api/sessions" % port,
                BATT_ROUTE_LOG=route_log,
