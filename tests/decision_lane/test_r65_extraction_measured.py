@@ -106,11 +106,21 @@ def test_parse_never_raises_on_garbage():
         assert dx.parse(junk, cands) in (None, ) or isinstance(dx.parse(junk, cands), dict)
 
 
-def test_over_budget_block_emits_nothing():
+def test_over_budget_block_still_ships_rather_than_muting_the_lane():
+    """M40-07 re-point. The old pin asserted `render(..., limit=120) == ""`.
+
+    The mandated contract wording (it does not override the user) plus a 3-option
+    board cannot fit a 120- or 400-char budget, so that pin's premise is now a
+    silent lane mute — F4's failure mode. The budget is soft: the block ships,
+    audit furniture (the register line) is shed first, and the contract stays.
+    """
     got = {"options": [{"p": 0.6, "label": "a" * 300, "move": "fix", "kind": "edit", "target": ""},
                        {"p": 0.4, "label": "b" * 300, "move": "fix", "kind": "edit", "target": ""}],
            "mindset": {}}
-    assert dx.render(got, limit=120) == ""
+    body = dx.render(got, limit=120)
+    assert body, "the lane must not be muted by a budget"
+    assert dx.USE_CONTRACT in body, "the contract is the behavioural part — never shed"
+    assert "register: board" not in body, "audit furniture is what gives way"
 
 
 def test_lane_stays_silent_without_a_file_to_act_on(monkeypatch):

@@ -572,7 +572,10 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
         # register line are audit furniture. Indices are looked up by identity, not by
         # position - an earlier version assumed a fixed layout and returned an EMPTY block
         # once another line was inserted, which silently muted the lane.
-        optional = [reg] + ([str(basis)[:120]] if basis else []) + ([lines[-2]] if "dials: " in lines[-2] else [])
+        # M40-07: the DIALS are not shed. They are the payload on a soft reading ("no move
+        # to take here - the dials describe ..."), so dropping them to fit a budget removes
+        # the only thing that reading carries. Only audit furniture is optional now.
+        optional = [reg] + ([str(basis)[:120]] if basis else [])
         keep = list(lines)
         if len("\n".join(keep)) <= limit:
             return "\n".join(keep)

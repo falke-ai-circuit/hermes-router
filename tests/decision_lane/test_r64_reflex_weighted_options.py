@@ -93,7 +93,9 @@ def test_every_call_delivers_on_the_request_surface(monkeypatch):
     assert rl.run_on_request(req, session_id="e1", cfg=ON) is True
     last = req["messages"][-1]
     assert "80%" in last["content"]
-    assert last["role"] == "user", "the reading must not become an assistant turn"
+    # M40-07: `system` — the only role the router may write. Not an assistant
+    # turn and not the user's own voice either.
+    assert last["role"] == "system", "the reading must not become a speaking turn"
 
 
 def test_no_work_in_request_means_no_call(monkeypatch):
