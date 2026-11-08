@@ -195,46 +195,6 @@ def router_section() -> Dict[str, Any]:
     return {}
 
 
-def section_at(path: str) -> Dict[str, Any]:
-    """Router section read from an EXPLICIT config file, else {}.
-
-    Same reader the writer uses for a profile-co-located yaml (``_read_yaml``,
-    mtime-keyed), but pointed at a file the caller names. Graders run in their
-    own process and must resolve ANOTHER profile's config; ``router_section()``
-    answers for THIS process, which is the wrong profile for a battery run.
-    Never raises.
-    """
-    if not path or not os.path.isfile(path):
-        return {}
-    return _read_yaml(path)
-
-
-def route_log_path(section: Optional[Dict[str, Any]] = None,
-                   default: Optional[str] = None) -> Optional[str]:
-    """The route log path named by a router section, by the WRITER's key order.
-
-    One resolution rule for writer and grader (M36-11 item 2): grouped
-    ``paths.log_path`` first, then the deployed legacy ``log_path`` — exactly
-    the order ``core.telemetry._log_path`` reads through ``_cfg_scalar``.
-    Returns ``default`` when the section names no path. Never raises.
-
-    A section may be passed in (graders reading another profile); with no
-    argument the process's own section is used.
-    """
-    sec: Any = router_section() if section is None else section
-    if not isinstance(sec, dict):
-        return default
-    value = None
-    paths = sec.get("paths")
-    if isinstance(paths, dict):
-        value = paths.get("log_path")
-    if not value:
-        value = sec.get("log_path")
-    if not value:
-        return default
-    return str(value)
-
-
 def sub_block(name: str) -> Dict[str, Any]:
     """A named sub-block of the router section (complexity, decision_head,
     anchor_chain, ...). {} on miss. Never raises.
@@ -727,3 +687,43 @@ def reset_cache() -> None:
     _cache["mtime"] = None
     _cache["path"] = None
     _cache["section"] = None
+
+
+def section_at(path: str) -> Dict[str, Any]:
+    """Router section read from an EXPLICIT config file, else {}.
+
+    Same reader the writer uses for a profile-co-located yaml (``_read_yaml``,
+    mtime-keyed), but pointed at a file the caller names. Graders run in their
+    own process and must resolve ANOTHER profile's config; ``router_section()``
+    answers for THIS process, which is the wrong profile for a battery run.
+    Never raises.
+    """
+    if not path or not os.path.isfile(path):
+        return {}
+    return _read_yaml(path)
+
+
+def route_log_path(section: Optional[Dict[str, Any]] = None,
+                   default: Optional[str] = None) -> Optional[str]:
+    """The route log path named by a router section, by the WRITER's key order.
+
+    One resolution rule for writer and grader (M36-11 item 2): grouped
+    ``paths.log_path`` first, then the deployed legacy ``log_path`` — exactly
+    the order ``core.telemetry._log_path`` reads through ``_cfg_scalar``.
+    Returns ``default`` when the section names no path. Never raises.
+
+    A section may be passed in (graders reading another profile); with no
+    argument the process's own section is used.
+    """
+    sec: Any = router_section() if section is None else section
+    if not isinstance(sec, dict):
+        return default
+    value = None
+    paths = sec.get("paths")
+    if isinstance(paths, dict):
+        value = paths.get("log_path")
+    if not value:
+        value = sec.get("log_path")
+    if not value:
+        return default
+    return str(value)
