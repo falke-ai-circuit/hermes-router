@@ -309,14 +309,18 @@ def classify_absent_event(event, graded_text, attributed=(), window_text=None,
     to ``graded_text``. ``stale_reason`` is the freshness NOTE, used only as the
     fallback label; it never adds or removes a class.
 
+    Order is the ruling's precedence (M36-17 §PRECEDENCE, M36-19 F1): proven
+    attribution, then the stale fallback, then the fresh ladder. A stale path
+    arrives at exactly two labels — ABSENT_DRIFT or ABSENT_STALE_UNATTRIB —
+    never None. The "event is present" test is a whitespace token
+    ``event_detail=<event>``, so a different emit site
+    (``route_fired_no_stash``, ``anchor_route_fired``, ``xroute_fired``) can
+    never answer for the event under test.
+
     Returns ``(cls, evidence)``. ``cls`` is ABSENT_DRIFT, ABSENT_STALE_UNATTRIB,
     ABSENT_UNREACHED, or None when nothing on disk supports a claim.
     """
     window = graded_text if window_text is None else window_text
-    if window_text is None and event in graded_text:
-        return None, "event present in the graded log; not an absence"
-    if event in window:
-        return None, "event present in the window; not an absence"
     if attributed:
         label, _line, ts = attributed[0]
         return ABSENT_DRIFT, (
@@ -339,6 +343,9 @@ def classify_absent_event(event, graded_text, attributed=(), window_text=None,
                 % (", ".join("%s (%d row(s))" % (l, n) for l, n in counts.items()),
                    event))
         return ABSENT_STALE_UNATTRIB, evidence
+    event_tok = "event_detail=" + event
+    if any(event_tok in set(line.split()) for line in window.splitlines()):
+        return None, ("%s present in the window; not an absence" % event)
     hit = [m for m in UNREACHED_MARKERS.get(event, ()) if m in window]
     if hit:
         return ABSENT_UNREACHED, (

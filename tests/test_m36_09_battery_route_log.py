@@ -750,3 +750,91 @@ def test_m36_17_predicate_needs_the_whole_line():
                                        RUN_START, RUN_START)
     assert len(rows) == 1
     assert rows[0][1].endswith("session_id=SID-1")
+
+
+# --- M36-19 F1/F2: precedence order, stale-path totality, exact window token --
+#
+# F1(F1a) shipped green because nothing pinned the two edges: the window gate was
+# a SUBSTRING test that ran BEFORE attribution (so a different emit site answered
+# for `route_fired`, and the stale path returned None — a third value the ruling
+# forbids), and P4's upper bound was untested. The three drives below pin them.
+
+STALE_EARLIER = RUN_START - 7200
+
+
+def test_m36_20_stale_window_foreign_emit_site_still_gets_the_stale_label(
+        tmp_path, monkeypatch):
+    """Stale + `route_fired_no_stash` in this session's window, no sibling row.
+
+    `route_fired_no_stash` contains `route_fired`, so the retired substring gate
+    returned None ("not an absence") on a STALE run: the fallback label was
+    deleted, and the verdict lost its absent_class (M36-19 F1a). The stale path
+    has exactly two labels; None is not one of them.
+    """
+    graded = ("%s POST session_id=SID-1 event_detail=route_fired_no_stash "
+              "lane=main\n" % _stamp(STALE_EARLIER))
+    rc, doc, stdout = _main_attr(tmp_path, monkeypatch, "m3620_no_stash",
+                                 graded, None, graded_mtime=STALE_EARLIER)
+    entry = doc["scenarios"][0]
+    assert doc["log_freshness"] == "GRADED_LOG_STALE"
+    assert entry["absent_class"] == "unattributable_stale_log"
+    assert "not an absence" not in entry["absent_evidence"]
+    assert "no path drift is claimed" in entry["absent_evidence"]
+    assert entry["verdict"] == "FAIL" and rc == 1
+
+    # same shape with a FOREIGN sid row next to it: still the stale label.
+    rc, doc, _ = _main_attr(tmp_path, monkeypatch, "m3620_foreign",
+                            graded, _attr_row(RUN_START, sid="SID-9"),
+                            graded_mtime=STALE_EARLIER)
+    assert doc["scenarios"][0]["absent_class"] == "unattributable_stale_log"
+
+    # the gate itself is load-bearing: a real `route_fired` row in the window
+    # beats a stand-down marker in the same window. With the token gate off the
+    # marker labels a turn that did fire -> not_instrumented_path_not_taken.
+    present = ("%s POST session_id=SID-1 event_detail=route_fired lane=main\n"
+               "%s POST session_id=SID-1 event_detail=route_fired_no_stash\n"
+               % (_stamp(RUN_START), _stamp(RUN_START)))
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event(
+        "route_fired", present, [], window_text=mod.session_window(present, "SID-1"))
+    assert cls is None
+    assert "not an absence" in evidence
+
+
+def test_m36_20_stale_anchor_emit_does_not_hide_provable_drift(tmp_path, monkeypatch):
+    """Stale window holding only `anchor_route_fired` + an attributable sibling.
+
+    `anchor_route_fired` contains `route_fired`; under the substring gate the
+    window looked like it already carried the event and a provable drift claim
+    was replaced by "not an absence" (M36-19 F1b, ruling §PRECEDENCE 1).
+    """
+    graded = ("%s POST session_id=SID-1 event_detail=anchor_route_fired "
+              "lane=main\n" % _stamp(STALE_EARLIER))
+    rc, doc, stdout = _main_attr(tmp_path, monkeypatch, "m3620_anchor",
+                                 graded, _attr_row(RUN_START),
+                                 graded_mtime=STALE_EARLIER)
+    entry = doc["scenarios"][0]
+    assert doc["log_freshness"] == "GRADED_LOG_STALE"
+    assert entry["absent_class"] == "grader_path_drift"
+    assert "this run's own row was written to a file the grader did not read" \
+        in entry["absent_evidence"]
+    assert "not an absence" not in entry["absent_evidence"]
+    assert entry["verdict"] == "FAIL" and rc == 1
+
+
+def test_m36_20_p4_upper_bound_is_the_sibling_read_time(tmp_path, monkeypatch):
+    """ts == read_epoch+1 is attributable; read_epoch+2 is not (P4 upper bound)."""
+    mod = _runner()
+    for ts, expected in ((RUN_START + 61, 1), (RUN_START + 62, 0)):
+        rows = mod.attributable_event_rows(
+            "route_fired", [("sib.log", _attr_row(ts))], "SID-1",
+            RUN_START, RUN_START + 60)
+        assert len(rows) == expected, (ts, rows)
+
+    # end to end: main() freezes its clock at RUN_START, so the bound is +1s
+    rc, doc, _ = _main_attr(tmp_path, monkeypatch, "m3620_hi_edge",
+                            FRESH_GRADED, _attr_row(RUN_START + 1))
+    assert doc["scenarios"][0]["absent_class"] == "grader_path_drift"
+    rc, doc, _ = _main_attr(tmp_path, monkeypatch, "m3620_hi_plus_one",
+                            FRESH_GRADED, _attr_row(RUN_START + 2))
+    assert doc["scenarios"][0]["absent_class"] is None
