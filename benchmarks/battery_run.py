@@ -217,6 +217,12 @@ def lane_fired(row):
 ABSENT_DRIFT = "grader_path_drift"
 ABSENT_UNREACHED = "not_instrumented_path_not_taken"
 
+# M36-15/B1: the third answer, and the only honest one when the graded log
+# carries none of this run's rows. A row in a sibling log then proves nothing
+# about where THIS run's row went — the sibling may be an old tombstone — so
+# asserting ABSENT_DRIFT would be a wrong cause on a real FAIL.
+ABSENT_STALE_UNATTRIB = "unattributable_stale_log"
+
 # Stand-down rows that prove an emit arm was unreachable, per event kind. Names
 # are the ones M36-08 found in the live logs for the unreached turns.
 UNREACHED_MARKERS = {
@@ -559,12 +565,25 @@ def main():
                     if ev and ev not in absent:
                         absent.append(ev)
         if absent:
-            cls, ev = classify_absent_event(
-                absent[0], graded_text, other_logs,
-                window_text=session_window(graded_text, sid))
             entry["absent_event"] = absent[0]
-            entry["absent_class"] = cls
-            entry["absent_evidence"] = ev
+            if stale_reason:
+                # M36-15/B1: the graded log carries no row at/after run start,
+                # so every expected event is trivially "absent" and the first
+                # sibling that matches (usually the frozen /tmp tombstone) would
+                # claim the grader read a file the router did not write. That is
+                # false — the grader read exactly the configured log. Keep the
+                # FAIL, drop the accusation.
+                entry["absent_class"] = ABSENT_STALE_UNATTRIB
+                entry["absent_evidence"] = (
+                    "%s absent, and the graded log is stale (%s) — a row in a "
+                    "sibling log cannot establish where this run's row was "
+                    "written, so no path drift is claimed" % (absent[0], stale_reason))
+            else:
+                cls, ev = classify_absent_event(
+                    absent[0], graded_text, other_logs,
+                    window_text=session_window(graded_text, sid))
+                entry["absent_class"] = cls
+                entry["absent_evidence"] = ev
         if not trs:
             entry.update(verdict="INCONCLUSIVE", reason="NO_TURNS_RECORDED",
                          evidence="battery stdout has no graded turn for %s" % name)
@@ -633,6 +652,10 @@ def main():
         print("%-24s %-12s %s" % (s["id"], s["verdict"], s.get("reason", "")))
     print("TOTALS pass=%d fail=%d inconclusive=%d overall=%s"
           % (totals["pass"], totals["fail"], totals["inconclusive"], overall))
+    if stale_reason:
+        # M36-15/F2: JSON is the artifact, but the console is where the verdict
+        # is usually read. One line so a stale grade never looks clean here.
+        print("NOTE: graded log stale — verdicts rest on turns + ledger")
     if timed_out:
         print("TIMEOUT after %ds — %d scenario(s) graded from partial run; JSON written: %s"
               % (a.timeout, len(scenarios), a.out))

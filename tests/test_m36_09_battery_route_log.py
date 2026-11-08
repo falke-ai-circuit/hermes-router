@@ -454,3 +454,96 @@ def test_relative_log_path_is_absolutised_by_the_shared_rule(tmp_path):
     assert access.abs_route_log_path("logs/router.log", str(pdir)) == expected
     assert access.route_log_path(section, profile_dir=str(pdir)) == expected
     assert mod.router_log_path("p9", profiles_root=str(tmp_path)) == expected
+
+
+# --- M36-15/B1: a stale log must not accuse a path drift it cannot see -----
+#
+# With a stale graded log every expected event is trivially absent, so the old
+# classifier matched the first sibling log holding the name (usually the frozen
+# /tmp tombstone) and shipped "the grader read a file the router did not write"
+# on a FAIL whose real cause was the failed turn. The signal is only valid when
+# the graded log is fresh; both directions are pinned here.
+
+def _main_with_sibling(tmp_path, monkeypatch, profile, log_text, sibling_text):
+    """main() where the graded log is ``log_text`` and a sibling log holds
+    ``sibling_text``; returns (rc, doc, stdout)."""
+    import io
+    import json
+    from contextlib import redirect_stdout
+
+    mod = _runner()
+    graded = tmp_path / "graded.log"
+    graded.write_text(log_text)
+    sibdir = tmp_path / profile
+    sibdir.mkdir()
+    (sibdir / "uncensored-router.log").write_text(sibling_text)
+    monkeypatch.setattr(mod, "PROFILES", str(tmp_path))
+    monkeypatch.setattr(mod, "env_of",
+                        lambda p: {"API_SERVER_KEY": "k", "API_SERVER_PORT": "1"})
+    monkeypatch.setattr(mod, "probe", lambda base, key: (True, "ok"))
+    monkeypatch.setattr(mod, "router_log_path", lambda p: str(graded))
+    monkeypatch.setattr(mod, "head_sha", lambda: "deadbeef")
+    monkeypatch.setattr(mod, "parse_stdout",
+                        lambda raw: ({"s1": "SID-1"},
+                                     {"s1": [{"ok": False,
+                                              "detail": "missing_event:route_fired"}]}))
+    monkeypatch.setattr(mod, "read_ledger",
+                        lambda p, start: (str(tmp_path / "decisions.jsonl"),
+                                          [_ledger_row("SID-1")]))
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"returncode": 0,
+                                                       "stdout": "", "stderr": ""})())
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv",
+                        ["battery_run.py", "--profile", profile, "--out", str(out)])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = mod.main()
+    return rc, json.loads(out.read_text()), buf.getvalue()
+
+
+TOMBSTONE = ("2026-09-01T00:00:00Z POST session_id=SID-1 "
+             "event_detail=route_fired lane=lane\n")
+
+
+def test_stale_log_does_not_accuse_grader_path_drift(tmp_path, monkeypatch):
+    """A frozen tombstone sibling must not become a path-drift claim on a FAIL.
+
+    The graded log is empty (GRADED_LOG_STALE), the turn failed, the ledger
+    carries the run: the FAIL ships, the cause stays unattributed.
+    """
+    rc, doc, stdout = _main_with_sibling(
+        tmp_path, monkeypatch, "m3615stale", log_text="", sibling_text=TOMBSTONE)
+    entry = doc["scenarios"][0]
+    assert rc == 1
+    assert doc["overall"] == "FAIL"
+    assert doc["totals"]["fail"] == 1
+    assert doc["log_freshness"] == "GRADED_LOG_STALE"
+    assert entry["verdict"] == "FAIL"
+    assert entry["turns_failed"] == 1
+    assert entry["absent_class"] == "unattributable_stale_log"
+    assert "grader_path_drift" not in entry["reason"]
+    assert "grader_path_drift" not in entry["absent_evidence"]
+    assert "grader_path_drift" not in stdout
+    # F2: the reader of the console summary is told the log was silent.
+    assert "NOTE: graded log stale" in stdout
+
+
+def test_fresh_log_still_reports_grader_path_drift(tmp_path, monkeypatch):
+    """Control: the class survives where it IS established — a fresh grade.
+
+    The graded log has this run's rows (fresh), route_fired is genuinely
+    missing there, and the sibling log holds it. Blanket removal would delete
+    a real signal; this asserts it is still reported.
+    """
+    import time
+
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    fresh = ("%s POST session_id=SID-1 event_detail=other_event lane=main\n" % now)
+    rc, doc, _ = _main_with_sibling(
+        tmp_path, monkeypatch, "m3615fresh", log_text=fresh, sibling_text=TOMBSTONE)
+    entry = doc["scenarios"][0]
+    assert doc["log_freshness"] == "fresh"
+    assert rc == 1 and entry["verdict"] == "FAIL"
+    assert entry["absent_class"] == "grader_path_drift"
+    assert "the grader read a file the router did not write" in entry["absent_evidence"]
