@@ -262,3 +262,37 @@ def test_mtime_inside_the_window_is_gradable_for_unparsed_rows():
     mod = _runner()
     text = "no timestamp here\n"
     assert mod.grade_freshness(text, len(text), RUN_START + 10, RUN_START) is None
+
+
+def test_runner_writes_inconclusive_and_exits_2_on_a_stale_graded_log(tmp_path, monkeypatch):
+    """Item 1, end to end at the runner's verdict boundary.
+
+    The gateway is stubbed (probe + battery subprocess): what is pinned here is
+    the runner's contract — a configured log carrying no row at/after run start
+    produces overall=INCONCLUSIVE, reason=GRADED_LOG_STALE, zero graded
+    scenarios and exit 2, never a FAIL charged to the router.
+    """
+    import json
+
+    mod = _runner()
+    stale = tmp_path / "stale-empty.log"
+    stale.write_text("")
+    monkeypatch.setattr(mod, "env_of",
+                        lambda p: {"API_SERVER_KEY": "k", "API_SERVER_PORT": "1"})
+    monkeypatch.setattr(mod, "probe", lambda base, key: (True, "ok"))
+    monkeypatch.setattr(mod, "router_log_path", lambda p: str(stale))
+    monkeypatch.setattr(mod, "head_sha", lambda: "deadbeef")
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"returncode": 0,
+                                                       "stdout": "", "stderr": ""})())
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv",
+                        ["battery_run.py", "--profile", "pz", "--out", str(out)])
+
+    rc = mod.main()
+    doc = json.loads(out.read_text())
+    assert rc == 2
+    assert doc["overall"] == "INCONCLUSIVE"
+    assert doc["reason"] == "GRADED_LOG_STALE"
+    assert doc["scenarios"] == []
+    assert doc["totals"]["fail"] == 0

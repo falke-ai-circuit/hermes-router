@@ -116,8 +116,17 @@ def _paths_config(name: str, default: Any) -> Any:
 
 def _log_path() -> str:
     value = _cfg_scalar("log_path", "log_path")
-    if value is _MISSING_CFG:
-        value = _paths_config("log_path", "") or DEFAULT_LOG_PATH
+    if value is _MISSING_CFG or not value:
+        # The on-disk section is resolved by the ONE shared rule in
+        # config_access.route_log_path — the same function the battery runner
+        # and the fleet's audit scripts call (M36-11 item 2), so writer and
+        # grader cannot resolve different files for the same config.
+        try:
+            from . import config_access
+
+            value = config_access.route_log_path() or DEFAULT_LOG_PATH
+        except Exception:  # noqa: BLE001
+            value = DEFAULT_LOG_PATH
     return str(value) if value else DEFAULT_LOG_PATH
 
 
