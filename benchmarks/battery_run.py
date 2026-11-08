@@ -135,6 +135,79 @@ def lane_fired(row):
                 or row.get("replacement_path"))
 
 
+# --- why an EXPECTED event kind has no row -------------------------------
+# Every kind the battery expects has a live emit site at HEAD (M36-08:
+# gate/orchestration.py:3620 anchor_route_fired, :3116/:3111 route_fired,
+# completion_audit.py:1397 completion_audit_gate). An absent name therefore
+# never means "missing emitter" — it means one of exactly two things, and the
+# grader must name which:
+#
+#   grader_path_drift               the row EXISTS, in a log this run did not read
+#   not_instrumented_path_not_taken no row anywhere, and a skip/refusal row in
+#                                   the same window shows the emit arm stood down
+#                                   BEFORE the log line (impact gate, cadence, or
+#                                   not-a-denial defer)
+#
+# When neither the row nor a stand-down row is present the classifier returns
+# None plus what it looked for: an unexplained absence is reported as such, not
+# promoted to a diagnosis. A missing-emitter label is never emitted.
+ABSENT_DRIFT = "grader_path_drift"
+ABSENT_UNREACHED = "not_instrumented_path_not_taken"
+
+# Stand-down rows that prove an emit arm was unreachable, per event kind. Names
+# are the ones M36-08 found in the live logs for the unreached turns.
+UNREACHED_MARKERS = {
+    "anchor_route_fired": ("pre_no_impact", "complexity_skip"),
+    "route_fired": ("not_a_denial", "lane_decision_deferred", "gate_abstain",
+                    "main_body_kept", "route_fired_no_stash"),
+    "completion_audit_gate": ("audit_gate_skip", "cadence"),
+}
+
+
+def classify_absent_event(event, graded_text, other_texts=(), window_text=None):
+    """Classify an expected event kind that has no row in the graded log.
+
+    ``graded_text`` is the log this run actually graded; ``other_texts`` is an
+    iterable of ``(label, text)`` for logs the router may write instead (the
+    per-profile file, the /tmp sibling). ``window_text`` narrows the stand-down
+    search — defaults to ``graded_text``.
+
+    Returns ``(cls, evidence)``. ``cls`` is ABSENT_DRIFT, ABSENT_UNREACHED, or
+    None when nothing on disk supports either claim.
+    """
+    if event in graded_text:
+        return None, "event present in the graded log; not an absence"
+    window = graded_text if window_text is None else window_text
+    if event in window:
+        return None, "event present in the window; not an absence"
+    for label, text in other_texts:
+        if text and event in text:
+            return ABSENT_DRIFT, (
+                "%s present in %s, absent from the graded log — the grader read "
+                "a file the router did not write" % (event, label))
+    hit = [m for m in UNREACHED_MARKERS.get(event, ()) if m in window]
+    if hit:
+        return ABSENT_UNREACHED, (
+            "%s absent and %s in the same window — the emit arm was not reached"
+            % (event, " / ".join(hit)))
+    return None, (
+        "%s absent and no stand-down row (%s) in the window — absence not "
+        "explained by this classifier"
+        % (event, " / ".join(UNREACHED_MARKERS.get(event, ())) or "none known"))
+
+
+def _read_log_text(path, limit=4_000_000):
+    """Tail of a route log, or "" — a missing/locked log never breaks grading."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
 def parse_stdout(text):
     """scenario -> sid, and scenario -> [turn rows] from the battery's own prints."""
     sids, turns = {}, {}
@@ -347,6 +420,15 @@ def main():
                 expects_lane[r["scenario"]] = ("route_fired" in exp) or ("anchor_route_fired" in exp)
         except Exception:
             pass
+    graded_text = _read_log_text(route_log)
+    other_logs = []
+    for label, path in (
+            ("%s/uncensored-router.log" % a.profile,
+             os.path.join(PROFILES, a.profile, "uncensored-router.log")),
+            ("/tmp/uncensored-router-%s.log" % a.profile,
+             "/tmp/uncensored-router-%s.log" % a.profile)):
+        if os.path.abspath(path) != os.path.abspath(route_log):
+            other_logs.append((label, _read_log_text(path, 400000)))
     ledger_path, rows = read_ledger(a.profile, started)
     by_sid = {}
     for r in rows:
@@ -360,6 +442,19 @@ def main():
         fired = [r for r in recs if lane_fired(r)]
         entry = {"id": name, "sid": sid, "turns": len(trs),
                  "turns_failed": sum(1 for t in trs if not t["ok"])}
+        absent = []
+        for t in trs:
+            for part in str(t.get("detail", "")).split(";"):
+                part = part.strip()
+                if part.startswith("missing_event:"):
+                    ev = part.split(":", 1)[1].strip()
+                    if ev and ev not in absent:
+                        absent.append(ev)
+        if absent:
+            cls, ev = classify_absent_event(absent[0], graded_text, other_logs)
+            entry["absent_event"] = absent[0]
+            entry["absent_class"] = cls
+            entry["absent_evidence"] = ev
         if not trs:
             entry.update(verdict="INCONCLUSIVE", reason="NO_TURNS_RECORDED",
                          evidence="battery stdout has no graded turn for %s" % name)
@@ -379,7 +474,10 @@ def main():
                          evidence="%s: %d row(s) for %s, none with rule_id!=none/lane!=main"
                                   % (ledger_path, len(recs), sid))
         elif entry["turns_failed"]:
-            entry.update(verdict="FAIL", reason="%d/%d turns failed" % (entry["turns_failed"], len(trs)),
+            reason = "%d/%d turns failed" % (entry["turns_failed"], len(trs))
+            if entry.get("absent_class"):
+                reason += "; absent_class=%s" % entry["absent_class"]
+            entry.update(verdict="FAIL", reason=reason,
                          evidence="%s: %s" % (results_tmp, [t["detail"] for t in trs if not t["ok"]][:3]))
         else:
             cite = (fired or recs)[0]

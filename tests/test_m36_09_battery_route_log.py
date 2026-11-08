@@ -86,3 +86,71 @@ def test_resolver_raises_when_config_lacks_log_path(tmp_path):
     with pytest.raises(RuntimeError) as ei:
         mod.router_log_path("p4", profiles_root=str(tmp_path))
     assert "log_path" in str(ei.value)
+
+
+# --- class-aware absence labels -------------------------------------------
+# Rows below are copied from the M36-08 live-log evidence, one fixture per
+# class, so the label is pinned against a real observed window rather than a
+# shape invented for the test.
+
+F1_WINDOW = (
+    "2026-11-06T11:00:03Z PRE event_detail=complexity_skip "
+    "reason=pre_no_impact stage1=clear_complex score=1\n"
+)
+U1_WINDOW = (
+    "2026-11-06T10:57:35Z PRE event_detail=denial_class cls=not_a_denial\n"
+    "2026-11-06T10:57:35Z PRE event_detail=rule_table_decision rule=3 "
+    "predicate=gate_abstain action=defer\n"
+    "2026-11-06T10:57:35Z POST event_detail=main_body_kept\n"
+)
+F2_CADENCE = (
+    "2026-11-05T18:13:00Z POST event_detail=audit_gate_skip reason=cadence "
+    "turn=2 of=3\n"
+)
+
+
+def test_class_drift_when_the_row_exists_in_a_log_not_graded():
+    """Row present elsewhere -> grader_path_drift, by its exact class string."""
+    graded = F1_WINDOW
+    configured = F1_WINDOW + (
+        "2026-11-06T10:57:35Z POST event_detail=completion_audit_gate ok=True "
+        "reason=ok turn=2 of=3 closure=True\n"
+    )
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event(
+        "completion_audit_gate", graded, [("coder/uncensored-router.log", configured)])
+    assert cls == "grader_path_drift"
+    assert "coder/uncensored-router.log" in evidence
+
+
+def test_class_unreached_when_the_impact_gate_stood_down():
+    """F1: the tradeoff ask never staged a swap -> path not taken, not missing."""
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event("anchor_route_fired", F1_WINDOW, [])
+    assert cls == "not_instrumented_path_not_taken"
+    assert "pre_no_impact" in evidence
+
+
+def test_class_unreached_when_the_render_was_not_a_denial():
+    """U1: refusal class not_a_denial + rule 3 defer leaves :3116 unreachable."""
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event("route_fired", U1_WINDOW, [])
+    assert cls == "not_instrumented_path_not_taken"
+    assert "not_a_denial" in evidence
+
+
+def test_class_unreached_when_the_audit_gate_skipped_on_cadence():
+    """F2 shadow: cadence skip means the gate row is never written."""
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event("completion_audit_gate", F2_CADENCE, [])
+    assert cls == "not_instrumented_path_not_taken"
+    assert "audit_gate_skip" in evidence
+
+
+def test_absence_is_never_labelled_missing_emitter():
+    """No evidence -> no class, and the string never appears in the runner."""
+    mod = _runner()
+    cls, evidence = mod.classify_absent_event("anchor_route_fired", "benign turn\n", [])
+    assert cls is None
+    assert "missing_emitter" not in evidence
+    assert "missing_emitter" not in open(RUNNER, errors="replace").read()
