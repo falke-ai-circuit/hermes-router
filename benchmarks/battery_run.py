@@ -175,9 +175,9 @@ def classify_absent_event(event, graded_text, other_texts=(), window_text=None):
     Returns ``(cls, evidence)``. ``cls`` is ABSENT_DRIFT, ABSENT_UNREACHED, or
     None when nothing on disk supports either claim.
     """
-    if event in graded_text:
-        return None, "event present in the graded log; not an absence"
     window = graded_text if window_text is None else window_text
+    if window_text is None and event in graded_text:
+        return None, "event present in the graded log; not an absence"
     if event in window:
         return None, "event present in the window; not an absence"
     for label, text in other_texts:
@@ -206,6 +206,19 @@ def _read_log_text(path, limit=4_000_000):
             return fh.read().decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def session_window(text, sid):
+    """Rows of a route log that name ONE session.
+
+    The slice a verdict may reason from: without it a stand-down row from an
+    earlier, unrelated turn in the same 4 MB tail would label this turn's
+    absence as path-not-taken (REVIEW P2-1). Every route row carries
+    session_id=; a session with no rows yields "" — no evidence, no label.
+    """
+    if not text or not sid:
+        return ""
+    return "\n".join(line for line in text.splitlines() if sid in line)
 
 
 def parse_stdout(text):
@@ -451,7 +464,9 @@ def main():
                     if ev and ev not in absent:
                         absent.append(ev)
         if absent:
-            cls, ev = classify_absent_event(absent[0], graded_text, other_logs)
+            cls, ev = classify_absent_event(
+                absent[0], graded_text, other_logs,
+                window_text=session_window(graded_text, sid))
             entry["absent_event"] = absent[0]
             entry["absent_class"] = cls
             entry["absent_evidence"] = ev

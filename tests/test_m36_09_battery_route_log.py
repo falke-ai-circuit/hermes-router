@@ -154,3 +154,42 @@ def test_absence_is_never_labelled_missing_emitter():
     assert cls is None
     assert "missing_emitter" not in evidence
     assert "missing_emitter" not in open(RUNNER, errors="replace").read()
+
+
+# --- REVIEW P2-1: the stand-down slice is the turn's own session -----------
+
+SID_A = "api_1793962551_74da86fd"
+SID_B = "api_1793999999_deadbeef"
+
+
+def test_stand_down_row_from_another_session_does_not_label_this_one():
+    """A borrowed skip row must not convert this session's absence into a class."""
+    graded = (
+        "2026-11-06T11:00:03Z PRE session_id=%s event_detail=complexity_skip "
+        "reason=pre_no_impact\n" % SID_A
+    )
+    mod = _runner()
+    # Without the window the tail does support the class (the P2-1 defect shape).
+    borrowed, _ = mod.classify_absent_event("anchor_route_fired", graded, [])
+    assert borrowed == "not_instrumented_path_not_taken"
+    # With the turn's own session slice there is no row at all -> no class.
+    cls, _ = mod.classify_absent_event(
+        "anchor_route_fired", graded, [],
+        window_text=mod.session_window(graded, SID_B))
+    assert cls is None
+
+
+def test_session_window_keeps_only_the_named_sessions_rows():
+    graded = (
+        "2026-11-06T11:00:03Z PRE session_id=%s event_detail=complexity_skip "
+        "reason=pre_no_impact\n" % SID_A
+        + "2026-11-06T11:00:09Z PRE session_id=%s event_detail=complexity_skip "
+          "reason=pre_no_impact\n" % SID_B
+    )
+    mod = _runner()
+    window = mod.session_window(graded, SID_B)
+    assert SID_B in window
+    assert SID_A not in window
+    cls, _ = mod.classify_absent_event(
+        "anchor_route_fired", graded, [], window_text=window)
+    assert cls == "not_instrumented_path_not_taken"
