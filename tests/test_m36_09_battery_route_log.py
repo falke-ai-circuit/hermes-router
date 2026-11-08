@@ -296,3 +296,161 @@ def test_runner_writes_inconclusive_and_exits_2_on_a_stale_graded_log(tmp_path, 
     assert doc["reason"] == "GRADED_LOG_STALE"
     assert doc["scenarios"] == []
     assert doc["totals"]["fail"] == 0
+    assert "ledger" in doc["error"]
+
+
+# --- M36-13 item 1: freshness must not gate evidence it does not cover ------
+#
+# The M36-11 guard was evaluated before grading and consulted only the log, so
+# a run with recorded-and-failed turns emitted INCONCLUSIVE with scenarios=[]
+# and the turn failure vanished; a ledger-proven PASS was suppressed the same
+# way. Order at HEAD: turns -> ledger -> freshness, and GRADED_LOG_STALE only
+# when neither the log nor the ledger carries the run.
+
+CONDUCTOR_ROUTE_LOG = "/opt/data/profiles/conductor/scripts/route_log.py"
+
+
+def _main_with_evidence(tmp_path, monkeypatch, sids, turns, rows,
+                        log_text=""):
+    """Run main() with the gateway, battery stdout and ledger stubbed.
+
+    ``log_text`` is written to the graded log: "" is the reviewer's probe (the
+    configured file exists, 0 bytes, so grade_freshness says STALE).
+    """
+    import json
+
+    mod = _runner()
+    stale = tmp_path / "graded.log"
+    stale.write_text(log_text)
+    monkeypatch.setattr(mod, "env_of",
+                        lambda p: {"API_SERVER_KEY": "k", "API_SERVER_PORT": "1"})
+    monkeypatch.setattr(mod, "probe", lambda base, key: (True, "ok"))
+    monkeypatch.setattr(mod, "router_log_path", lambda p: str(stale))
+    monkeypatch.setattr(mod, "head_sha", lambda: "deadbeef")
+    monkeypatch.setattr(mod, "parse_stdout", lambda raw: (sids, turns))
+    monkeypatch.setattr(mod, "read_ledger",
+                        lambda p, start: (str(tmp_path / "decisions.jsonl"), rows))
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"returncode": 0,
+                                                       "stdout": "", "stderr": ""})())
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv",
+                        ["battery_run.py", "--profile", "pz", "--out", str(out)])
+    rc = mod.main()
+    return rc, json.loads(out.read_text())
+
+
+def _ledger_row(sid, line=7):
+    return {"session_id": sid, "ts": RUN_START + 1, "rule_id": "r1",
+            "lane": "main", "event_seq": 1, "replaced": None,
+            "replacement_path": None, "delivered_chars": 12, "_line": line}
+
+
+def test_empty_log_with_failed_turns_is_a_FAIL_not_INCONCLUSIVE(tmp_path, monkeypatch):
+    """The reviewer's probe, fixed: empty log + 1 recorded failed turn -> FAIL.
+
+    The ledger carries the run's row, so the run is attributable; the turn
+    failure is the verdict and must survive a stale log.
+    """
+    rc, doc = _main_with_evidence(
+        tmp_path, monkeypatch,
+        sids={"s1": "SID-1"},
+        turns={"s1": [{"ok": False, "detail": "missing_event:route_fired"}]},
+        rows=[_ledger_row("SID-1")])
+    assert rc == 1
+    assert doc["overall"] == "FAIL"
+    assert doc["totals"]["fail"] == 1
+    assert len(doc["scenarios"]) == 1
+    assert doc["scenarios"][0]["verdict"] == "FAIL"
+    assert doc["scenarios"][0]["turns_failed"] == 1
+    assert doc["log_freshness"] == "GRADED_LOG_STALE"
+    assert "stale_log_note" in doc
+
+
+def test_ledger_proven_PASS_survives_a_stale_log(tmp_path, monkeypatch):
+    """The reverse damage: a lane-attributing ledger row keeps its PASS.
+
+    The log carries no row at/after run start; the verdict is not discarded —
+    it is graded normally and the stale log becomes a note.
+    """
+    rc, doc = _main_with_evidence(
+        tmp_path, monkeypatch,
+        sids={"s1": "SID-1"},
+        turns={"s1": [{"ok": True, "detail": "ok"}]},
+        rows=[_ledger_row("SID-1")])
+    assert rc == 0
+    assert doc["overall"] == "PASS"
+    assert doc["scenarios"][0]["verdict"] == "PASS"
+    assert doc["log_freshness"] == "GRADED_LOG_STALE"
+    assert "stale_log_note" in doc
+
+
+def test_absent_run_is_still_GRADED_LOG_STALE(tmp_path, monkeypatch):
+    """Neither the log nor the ledger carries the run: the guard still fires."""
+    rc, doc = _main_with_evidence(
+        tmp_path, monkeypatch, sids={}, turns={}, rows=[])
+    assert rc == 2
+    assert doc["overall"] == "INCONCLUSIVE"
+    assert doc["reason"] == "GRADED_LOG_STALE"
+    assert doc["scenarios"] == []
+
+
+# --- M36-13 item 2: ONE resolution rule across the four consumers -----------
+#
+# Behaviour chosen: the fleet CONVENTION, not a loud raise. The writer
+# (core.telemetry._log_path) must always have a destination — a profile that
+# loses the key would otherwise lose its telemetry — and the convention is the
+# path it already wrote. With one rule, the four consumers can differ only on
+# whether the file exists, never on which file it is.
+
+def test_unset_log_path_resolves_to_one_convention_everywhere(tmp_path, monkeypatch):
+    pdir = tmp_path / "p8"
+    pdir.mkdir()
+    (pdir / "config.yaml").write_text("hermes_router:\n  enabled: true\n")
+    convention = pdir / "uncensored-router.log"
+    convention.write_text("row\n")
+    mod = _runner()
+    access = mod._config_access()
+    section = access.section_at(str(pdir / "config.yaml"))
+    # 1. the battery grader
+    assert mod.router_log_path("p8", profiles_root=str(tmp_path)) == str(convention)
+    # 2. the shared accessor
+    assert access.route_log_path(section, profile_dir=str(pdir)) == str(convention)
+    # 3. the writer (core.telemetry), same rule with the live patch surface empty
+    from hermes_router.core import telemetry
+    monkeypatch.setattr(telemetry, "_cfg_scalar", lambda n, l: telemetry._MISSING_CFG)
+    monkeypatch.setattr(access, "router_section", lambda: {})
+    monkeypatch.setattr(access, "config_path", lambda: str(pdir / "config.yaml"))
+    assert telemetry._log_path() == str(convention)
+
+
+@pytest.mark.skipif(not os.path.exists(CONDUCTOR_ROUTE_LOG),
+                    reason="conductor scripts are not on this host")
+def test_conductor_audit_script_resolves_the_same_convention(tmp_path):
+    import importlib.util
+
+    pdir = tmp_path / "p8"
+    pdir.mkdir()
+    (pdir / "config.yaml").write_text("hermes_router:\n  enabled: true\n")
+    convention = pdir / "uncensored-router.log"
+    convention.write_text("row\n")
+    spec = importlib.util.spec_from_file_location("route_log_m36_13", CONDUCTOR_ROUTE_LOG)
+    rl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rl)
+    # 4. the audit scripts' resolver
+    assert rl.route_log("p8", profiles_root=str(tmp_path)) == str(convention)
+
+
+def test_relative_log_path_is_absolutised_by_the_shared_rule(tmp_path):
+    pdir = tmp_path / "p9"
+    (pdir / "logs").mkdir(parents=True)
+    (pdir / "logs" / "router.log").write_text("row\n")
+    (pdir / "config.yaml").write_text(
+        "hermes_router:\n  log_path: logs/router.log\n")
+    expected = os.path.join(str(pdir), "logs", "router.log")
+    mod = _runner()
+    access = mod._config_access()
+    section = access.section_at(str(pdir / "config.yaml"))
+    assert access.abs_route_log_path("logs/router.log", str(pdir)) == expected
+    assert access.route_log_path(section, profile_dir=str(pdir)) == expected
+    assert mod.router_log_path("p9", profiles_root=str(tmp_path)) == expected

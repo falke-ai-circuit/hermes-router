@@ -60,17 +60,17 @@ def router_log_path(profile, profiles_root=PROFILES):
     is read with ``config_access.section_at`` (the writer's own yaml reader,
     mtime-keyed) and the path is taken with ``config_access.route_log_path``,
     which applies the writer's key order — ``paths.log_path`` then the deployed
-    legacy ``log_path``. The old exists() probe fell back to
-    ``/tmp/uncensored-router-<profile>.log``; for coder and operative that
-    graded a tombstone while the live rows sat in the configured log.
+    legacy ``log_path`` — makes a RELATIVE value absolute against the profile
+    directory, and answers an UNSET key with the fleet convention
+    ``<profile>/uncensored-router.log`` (M36-13 item 2: one behaviour for all
+    four consumers, never a battery-only fallback).
 
-    Kept on top of the delegation: the two loud checks. A section that names no
-    path, or a named path that does not exist, raises RuntimeError naming the
-    resolved path — grading a different log than the one the router writes is
-    worse than not grading at all.
+    Kept on top of the delegation: the existence check. A path that the config
+    never named and that does not exist yet cannot be graded; the error names
+    the same path every other consumer resolved, so the disagreement is about
+    the file's presence, never about which file.
 
-    Returns the configured path, made absolute against the profile directory if
-    the config gives it relative.
+    Returns the absolute route-log path.
     """
     cfg_path = os.path.join(profiles_root, profile, "config.yaml")
     if not os.path.exists(cfg_path):
@@ -78,14 +78,17 @@ def router_log_path(profile, profiles_root=PROFILES):
             "router log path unresolved: no config at %s for profile %r"
             % (cfg_path, profile))
     access = _config_access()
-    configured = access.route_log_path(access.section_at(cfg_path))
-    if not configured:
-        raise RuntimeError(
-            "router log path unresolved: hermes_router.log_path is not set in %s"
-            % cfg_path)
-    log_path = os.path.expanduser(str(configured))
-    if not os.path.isabs(log_path):
-        log_path = os.path.join(os.path.dirname(cfg_path), log_path)
+    section = access.section_at(cfg_path)
+    profile_dir = os.path.dirname(cfg_path)
+    named = access.route_log_path(section)
+    log_path = access.route_log_path(section, profile_dir=profile_dir)
+    if not named:
+        if not log_path or not os.path.exists(log_path):
+            raise RuntimeError(
+                "router log path unresolved: hermes_router.log_path is not set "
+                "in %s and the convention path %s does not exist (profile %r)"
+                % (cfg_path, log_path, profile))
+        return log_path
     if not os.path.exists(log_path):
         raise RuntimeError(
             "router log path unresolved: hermes_router.log_path %s does not exist "
@@ -494,30 +497,17 @@ def main():
         except Exception:
             pass
     graded_text = _read_log_text(route_log)
-    # M36-11 item 1: freshness is decided before a single verdict is written.
-    # A configured log nobody writes contributes zero rows, so every
-    # missing_event would become a false FAIL charged to the router.
+    # M36-13 item 1: freshness is COMPUTED here but it no longer gates the
+    # evidence. Turn records and ledger rows are independent of the route log —
+    # a run whose turns failed, or whose ledger rows attribute the lane, is
+    # graded normally with the stale log carried as a note. Only a run that
+    # NEITHER the log NOR the ledger carries is GRADED_LOG_STALE.
     try:
         _st = os.stat(route_log)
         log_size, log_mtime = _st.st_size, _st.st_mtime
     except OSError:
         log_size, log_mtime = 0, None
     stale_reason = grade_freshness(graded_text, log_size, log_mtime, started)
-    if stale_reason:
-        doc = {"profile": a.profile, "port": int(port), "head_sha": head_sha(),
-               "started_at": started_at, "route_log": route_log,
-               "scenarios": [], "totals": {"pass": 0, "fail": 0, "inconclusive": 0},
-               "overall": "INCONCLUSIVE", "reason": stale_reason,
-               "error": "graded log %s carries no row at/after run start %s "
-                        "(size=%d bytes) — not graded"
-                        % (route_log, started_at, log_size),
-               "battery_exit": proc.returncode}
-        json.dump(doc, open(a.out, "w"), indent=1)
-        print("profile=%s port=%s head=%s" % (a.profile, port, doc["head_sha"]))
-        print("INCONCLUSIVE: %s — %s" % (stale_reason, route_log))
-        print("TOTALS pass=0 fail=0 inconclusive=0 overall=INCONCLUSIVE (%s)"
-              % stale_reason)
-        return 2
     other_logs = []
     for label, path in (
             ("%s/uncensored-router.log" % a.profile,
@@ -530,6 +520,27 @@ def main():
     by_sid = {}
     for r in rows:
         by_sid.setdefault(r.get("session_id", ""), []).append(r)
+
+    # The guard's real contract: a run the log does not carry AND the ledger
+    # does not carry is not gradable — never a FAIL charged to the router.
+    # Recorded turns count as carried evidence even when nothing was written
+    # to the ledger yet, so they are graded (NO_ATTRIBUTION / FAIL / PASS).
+    if stale_reason and not rows and not sids:
+        doc = {"profile": a.profile, "port": int(port), "head_sha": head_sha(),
+               "started_at": started_at, "route_log": route_log,
+               "scenarios": [], "totals": {"pass": 0, "fail": 0, "inconclusive": 0},
+               "overall": "INCONCLUSIVE", "reason": stale_reason,
+               "error": "graded log %s carries no row at/after run start %s "
+                        "(size=%d bytes) and the ledger %s carries no row for "
+                        "this run — not graded"
+                        % (route_log, started_at, log_size, ledger_path),
+               "battery_exit": proc.returncode}
+        json.dump(doc, open(a.out, "w"), indent=1)
+        print("profile=%s port=%s head=%s" % (a.profile, port, doc["head_sha"]))
+        print("INCONCLUSIVE: %s — %s" % (stale_reason, route_log))
+        print("TOTALS pass=0 fail=0 inconclusive=0 overall=INCONCLUSIVE (%s)"
+              % stale_reason)
+        return 2
 
     scenarios = []
     for name in (sids or {}):
@@ -564,6 +575,15 @@ def main():
             entry.update(verdict="INCONCLUSIVE", reason="DECLARED_FIELD_UNIMPLEMENTED:" + ",".join(miss),
                          evidence="benchmarks/behavioral_battery.py: run_scenario reads no %s; the scenario's %s expectation was never executed"
                                   % (miss[0], "/".join(miss)))
+        elif entry["turns_failed"]:
+            # M36-13 item 1: a recorded-then-failed turn is EVIDENCE and is
+            # graded before attribution can turn it into LANE_NOT_FIRED or
+            # NO_ATTRIBUTION. A stale log does not erase it.
+            reason = "%d/%d turns failed" % (entry["turns_failed"], len(trs))
+            if entry.get("absent_class"):
+                reason += "; absent_class=%s" % entry["absent_class"]
+            entry.update(verdict="FAIL", reason=reason,
+                         evidence="%s: %s" % (results_tmp, [t["detail"] for t in trs if not t["ok"]][:3]))
         elif not recs:
             entry.update(verdict="INCONCLUSIVE", reason="NO_ATTRIBUTION",
                          evidence="%s: no decision row for session_id=%s after %s"
@@ -572,12 +592,6 @@ def main():
             entry.update(verdict="INCONCLUSIVE", reason="LANE_NOT_FIRED",
                          evidence="%s: %d row(s) for %s, none with rule_id!=none/lane!=main"
                                   % (ledger_path, len(recs), sid))
-        elif entry["turns_failed"]:
-            reason = "%d/%d turns failed" % (entry["turns_failed"], len(trs))
-            if entry.get("absent_class"):
-                reason += "; absent_class=%s" % entry["absent_class"]
-            entry.update(verdict="FAIL", reason=reason,
-                         evidence="%s: %s" % (results_tmp, [t["detail"] for t in trs if not t["ok"]][:3]))
         else:
             cite = (fired or recs)[0]
             entry.update(verdict="PASS", reason="lane attributed",
@@ -598,9 +612,17 @@ def main():
     else:
         overall = "INCONCLUSIVE"
     doc = {"profile": a.profile, "port": int(port), "head_sha": head_sha(),
-           "started_at": started_at, "scenarios": scenarios, "totals": totals,
-           "overall": overall, "battery_exit": proc.returncode,
+           "started_at": started_at, "route_log": route_log, "scenarios": scenarios,
+           "totals": totals, "overall": overall, "battery_exit": proc.returncode,
+           "log_freshness": stale_reason or "fresh",
            "output_tail": raw.strip().splitlines()[-6:]}
+    if stale_reason:
+        # Graded on recorded turns / ledger attribution, but the reader must
+        # know the log itself carried none of this run's rows.
+        doc["stale_log_note"] = (
+            "graded log %s carries no row at/after run start %s (size=%d bytes); "
+            "verdicts rest on the battery's turn records and on %d ledger row(s) "
+            "for this run" % (route_log, started_at, log_size, len(rows)))
     if timed_out:
         overall = "INCONCLUSIVE"
         doc["overall"] = overall

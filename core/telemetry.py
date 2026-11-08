@@ -115,17 +115,28 @@ def _paths_config(name: str, default: Any) -> Any:
 
 
 def _log_path() -> str:
-    value = _cfg_scalar("log_path", "log_path")
-    if value is _MISSING_CFG or not value:
-        # The on-disk section is resolved by the ONE shared rule in
-        # config_access.route_log_path — the same function the battery runner
-        # and the fleet's audit scripts call (M36-11 item 2), so writer and
-        # grader cannot resolve different files for the same config.
-        try:
-            from . import config_access
+    """Absolute route-log path, resolved by the ONE shared rule.
 
-            value = config_access.route_log_path() or DEFAULT_LOG_PATH
-        except Exception:  # noqa: BLE001
+    M36-13 item 2: the writer owns no fallback of its own any more. The live
+    `_cfg` patch surface is read first (grouped ``paths.log_path``, then legacy
+    ``log_path``); a configured value is then absolutised by
+    ``config_access.abs_route_log_path`` and an UNSET key resolves to
+    ``config_access.route_log_path``'s fleet convention
+    ``<profile>/uncensored-router.log`` — the same answer the battery grader and
+    conductor's audit scripts get. ``DEFAULT_LOG_PATH`` survives only as the
+    last resort when the accessor itself is unimportable, so a router can never
+    end up with no destination.
+    """
+    value = _cfg_scalar("log_path", "log_path")
+    try:
+        from . import config_access
+
+        if value is _MISSING_CFG or not value:
+            value = config_access.route_log_path()
+        else:
+            value = config_access.abs_route_log_path(str(value))
+    except Exception:  # noqa: BLE001
+        if value is _MISSING_CFG or not value:
             value = DEFAULT_LOG_PATH
     return str(value) if value else DEFAULT_LOG_PATH
 

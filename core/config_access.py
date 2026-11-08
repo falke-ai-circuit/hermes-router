@@ -703,27 +703,75 @@ def section_at(path: str) -> Dict[str, Any]:
     return _read_yaml(path)
 
 
+ROUTE_LOG_BASENAME = "uncensored-router.log"
+
+
+def profile_config_dir() -> Optional[str]:
+    """Directory of this process's active profile config, or None. Never raises."""
+    try:
+        cfg = config_path()
+    except Exception:  # noqa: BLE001
+        return None
+    return os.path.dirname(cfg) if cfg else None
+
+
+def abs_route_log_path(value: str, profile_dir: Optional[str] = None) -> str:
+    """Make a route-log value absolute against its profile directory.
+
+    M36-13 item 2: the absolutisation lives HERE, not only in the battery, so a
+    RELATIVE ``log_path`` cannot mean one file to the grader and another (cwd-
+    relative) file to the writer. ``profile_dir`` is the directory of the config
+    the value came from; it defaults to this process's own profile config
+    directory. An absolute value is returned expanded and unchanged. Never
+    raises.
+    """
+    path = os.path.expanduser(str(value))
+    if os.path.isabs(path):
+        return path
+    base = profile_dir or profile_config_dir()
+    return os.path.join(base, path) if base else path
+
+
 def route_log_path(section: Optional[Dict[str, Any]] = None,
-                   default: Optional[str] = None) -> Optional[str]:
-    """The route log path named by a router section, by the WRITER's key order.
+                   default: Optional[str] = None,
+                   profile_dir: Optional[str] = None) -> Optional[str]:
+    """Absolute route-log path for a router section — the ONE resolution rule.
 
-    One resolution rule for writer and grader (M36-11 item 2): grouped
-    ``paths.log_path`` first, then the deployed legacy ``log_path`` — exactly
-    the order ``core.telemetry._log_path`` reads through ``_cfg_scalar``.
-    Returns ``default`` when the section names no path. Never raises.
+    M36-13 item 2: the writer, the battery grader and conductor's audit scripts
+    must not each answer an UNSET ``log_path`` differently. The rule applied
+    here, and delegated to by all of them:
 
-    A section may be passed in (graders reading another profile); with no
-    argument the process's own section is used.
+      1. grouped ``paths.log_path`` first, then the deployed legacy
+         ``log_path`` — the writer's key order;
+      2. the value is expanded and, when relative, made absolute against
+         ``profile_dir`` via :func:`abs_route_log_path`;
+      3. when the section names no path, the fleet convention
+         ``<profile_dir>/uncensored-router.log`` is returned.
+
+    Chosen over "all four raise loudly" because ``core.telemetry._log_path`` is
+    the WRITER: a router whose profile lost the key must still have a
+    destination, and the convention is the path it already wrote. Raising there
+    would turn a missing key into lost telemetry; one shared convention turns
+    it into a documented file the grader and the audit scripts also read, so
+    the four consumers can only disagree about whether the file exists, never
+    about which file it is.
+
+    ``default`` still short-circuits for callers that want their own literal.
+    ``profile_dir`` defaults to this process's own config directory. Never
+    raises; returns None only when no section value, no default and no profile
+    directory are available.
     """
     sec: Any = router_section() if section is None else section
-    if not isinstance(sec, dict):
-        return default
     value = None
-    paths = sec.get("paths")
-    if isinstance(paths, dict):
-        value = paths.get("log_path")
-    if not value:
-        value = sec.get("log_path")
-    if not value:
+    if isinstance(sec, dict):
+        paths = sec.get("paths")
+        if isinstance(paths, dict):
+            value = paths.get("log_path")
+        if not value:
+            value = sec.get("log_path")
+    if value:
+        return abs_route_log_path(value, profile_dir)
+    if default is not None:
         return default
-    return str(value)
+    base = profile_dir or profile_config_dir()
+    return os.path.join(base, ROUTE_LOG_BASENAME) if base else None
