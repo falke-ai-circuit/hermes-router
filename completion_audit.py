@@ -761,8 +761,57 @@ def audit_topology() -> str:
 
 # ------------------------------------------------------- once-per-task ------
 
-def _fire_marker_key(session_id: str, ask: str, model: str) -> str:
-    return router_core.task_id_for(session_id, ask, model)
+def _resolve_scope(session_id: str, ask: str, model: str,
+                   scope_id: str = "") -> Tuple[str, str]:
+    """Resolve the POST consult SCOPE, in the ruling's order and nothing else.
+
+    M47-08 §3: the scope is a TURN identity (`s:<session>|t:<n>`), one key for
+    the model-turn counter AND the per-task cap. Resolution:
+      1. an explicit `scope_id` captured at FIRE time (required by the async
+         path, whose thread can outlive the turn it belongs to);
+      2. `state.scope_for(session)` — the stamp the same turn's llm_request
+         pass wrote;
+      3. last resort: the ask-text id `task_id_for(...)`, tagged
+         `scope_source=text_fallback` so the residual on non-api platforms is
+         COUNTED, never asserted away.
+
+    Returns (scope, source). Never raises.
+    """
+    _sid = str(session_id or "")
+    _explicit = str(scope_id or "").strip()
+    if _explicit:
+        return _explicit, "fire_time"
+    try:
+        from . import state as _st
+
+        _stamped = str(_st.scope_for(_sid) or "").strip()
+        if _stamped:
+            return _stamped, "stamp"
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        pass
+    try:
+        return str(router_core.task_id_for(_sid, ask, model) or ""), "text_fallback"
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        return "", "text_fallback"
+
+
+def _fire_marker_key(session_id: str, ask: str, model: str,
+                     scope_id: str = "") -> str:
+    """Once-per-task audit dedupe key — the SAME scope as the counter/cap.
+
+    M47-09: this was `task_id_for(...)` (ask text), so it split on exactly the
+    shapes the scope ruling closed and re-audited one task (or audited the same
+    turn twice). It reads the scope id now; the text id survives only as the
+    logged fallback (`_resolve_scope`).
+    """
+    _scope, _source = _resolve_scope(session_id, ask, model, scope_id)
+    if _source == "text_fallback":
+        try:
+            _log("consult_scope_source", scope_source=_source,
+                 task_id=_scope, session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+    return _scope
 
 
 def _already_fired(key: str) -> bool:
@@ -800,7 +849,8 @@ def _is_complex_ask(ask: str) -> bool:
 
 
 def eligible(session_id: str, ask: str, response_text: str, model: str = "",
-             turn_n: Optional[int] = None, paired: bool = False) -> Tuple[bool, str]:
+             turn_n: Optional[int] = None, paired: bool = False,
+             scope_id: str = "") -> Tuple[bool, str]:
     """Fire decision for the completion audit. Returns (ok, reason).
 
     R34-19: `paired=True` = a PRE advisory exists for this turn, so this is
@@ -838,7 +888,7 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     # reads the WORK (work_mass_gate), never the ask — that incoherence (post
     # confirming pre) is the defect this rider removes. `audit_mode=complex`
     # still means "not every turn", but the discriminator is realised work.
-    key = _fire_marker_key(session_id, ask, model)
+    key = _fire_marker_key(session_id, ask, model, scope_id=scope_id)
     if _already_fired(key):
         return False, "already_fired_this_task"
     if _has_pending(session_id):
@@ -1200,6 +1250,14 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         if not ask.strip():
             _skip("no_ask", session_id=session_id)
             return None
+        # M47-09: resolve the consult SCOPE ONCE, at FIRE time, and carry it
+        # down every path — eligibility marker, sync consult, and the async
+        # daemon thread (whose turn may already have been closed by the time it
+        # runs). Order: stamp -> text fallback (logged `text_fallback`).
+        _scope_id, _scope_source = _resolve_scope(session_id, ask, model)
+        if _scope_source == "text_fallback":
+            _log("consult_scope_source", scope_source=_scope_source,
+                 task_id=_scope_id, session_id=session_id)
         # R34-19: bind the pairing to THIS ask — a PRE recorded for another
         # turn in the same session is not this turn's PRE.
         # R34-19k: this second, ask-bound read must not ERASE claim-derived
@@ -1393,7 +1451,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
              rework=int(_wm.get("reworks") or 0), paired=bool(_pair),
              session_id=session_id)
         _ok, _why = eligible(session_id, ask, response_text, model,
-                             turn_n=_turn_n, paired=bool(_pair))
+                             turn_n=_turn_n, paired=bool(_pair),
+                             scope_id=_scope_id)
         _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
                    turn=_turn_n, of=_min_turns, closure=_closure,
@@ -1454,7 +1513,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
                     timeout_s=_sync_budget, fold_revision=False,
-                    diag=_diag, **_sync_kw)
+                    diag=_diag, scope_id=_scope_id, **_sync_kw)
             except Exception as _sx:  # noqa: BLE001
                 _diag["reason"] = "consult_raised"
                 _diag["detail"] = type(_sx).__name__
@@ -2243,13 +2302,16 @@ def _strip_render_mandate(card: str) -> str:
 
 def run_completion_audit(session_id: str, ask: str, response_text: str,
                          request: Optional[dict], model: str = "",
-                         pre_brief: str = "", pre_trigger: str = "") -> None:
+                         pre_brief: str = "", pre_trigger: str = "",
+                         scope_id: str = "") -> None:
     """Fire the audit ASYNC (legacy path): marker set FIRST (once-per-task
     even across fx-retries), consult in a daemon thread, verdict stashed for
     next turn. Never raises, never blocks delivery."""
-    key = _fire_marker_key(session_id, ask, model)
+    key = _fire_marker_key(session_id, ask, model, scope_id=scope_id)
     # R78U M45-25: the POST leg shares the PRE leg's task identity so both
     # legs land on ONE counter and ONE aggregated banner.
+    # M47-09: the CLAIM id (`task_id`) stays ask-hashed and rides the rows as
+    # the join field; the SCOPE id is what keys the counter and the cap.
     try:
         from . import router_core as _rc_taskid
 
@@ -2263,7 +2325,7 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
         target=_consult_meta, name="router-completion-audit",
         args=(session_id, ask, response_text, request, model, key, pre_brief,
               pre_trigger), daemon=True,
-        kwargs={"task_id": _task_id})
+        kwargs={"task_id": _task_id, "scope_id": key})
     t.start()
 
 
@@ -2273,7 +2335,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               pre_brief: str = "",
                               pre_trigger: str = "",
                               fold_revision: bool = True,
-                              diag: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                              diag: Optional[Dict[str, Any]] = None,
+                              scope_id: str = "") -> Optional[Dict[str, Any]]:
     """Sync POST audit (Goran 2026-09-10; R37-1 folded revision): frontier
     consult completes BEFORE delivery and returns BOTH halves in ONE call —
     the verdict and (when the defect is text-fixable) the corrected final
@@ -2309,7 +2372,7 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                              model, key, socket_timeout=max(10, int(timeout_s)),
                              pre_brief=pre_brief, pre_trigger=pre_trigger,
                              fold_revision=fold_revision, diag=diag,
-                             task_id=_task_id)
+                             task_id=_task_id, scope_id=key)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -2707,7 +2770,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                   pre_trigger: str = "",
                   fold_revision: bool = False,
                   diag: Optional[Dict[str, Any]] = None,
-                  task_id: str = "") -> Optional[Dict[str, Any]]:
+                  task_id: str = "",
+                  scope_id: str = "") -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -2729,11 +2793,18 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     # pass the seam's deliverability to the gate, which refuses such a POST
     # (`after_delivery`) instead of parking a banner the body cannot carry.
     _banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
+    # M47-09: `_scope_source` names WHERE this row's key came from — a reviewer
+    # counts `text_fallback` residuals instead of guessing (ruling §3/§6).
+    if scope_id:
+        _scope_source = "fire_time"
+    else:
+        scope_id, _scope_source = _resolve_scope(session_id, ask, model)
     try:
         from . import consult_budget as _cb
 
         _cap = _cb.check(session_id, task_id, leg="post", ask=ask, model=model,
-                         deliverable=not _banner_park)
+                         deliverable=not _banner_park, scope_id=scope_id or key,
+                         scope_source=_scope_source)
         if not _cap.get("allow"):
             _reason = str(_cap.get("reason") or "consult_capped")
             logger.info("completion_audit_skipped reason=%s", _reason)

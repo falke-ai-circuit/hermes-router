@@ -220,6 +220,8 @@ def clear() -> None:
         _SESSION_STATE.clear()
     with _TURN_COUNTER_LOCK:
         _TURN_COUNTERS.clear()
+    with _SCOPE_STAMP_LOCK:
+        _SCOPE_STAMP.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -607,6 +609,74 @@ def advance_turn_identity(session_id: str, user_hash: str,
             return int(entry[0])
     except Exception:
         return 1
+
+
+# ---------------------------------------------------------------------------
+# Scope stamp (M47-09 — POST consult scope identity)
+# ---------------------------------------------------------------------------
+# The POST seam (transform_llm_output) receives NO host turn id, so the turn
+# identity minted at the llm_request seam must be readable there. The stamp is
+# that bridge: one string, written in the same pass that counts the model turn,
+# read by the POST gate while it closes the same turn.
+#
+# M47-08 ruling: the scope is a TURN identity, not an ask-text hash. The
+# transformation vocabulary of the injected text belongs to the host, so any
+# text identity re-opens a new shape every time the host's append format moves
+# (four rounds did exactly that). One key, both the counter and the cap.
+
+_SCOPE_STAMP_LOCK = threading.Lock()
+_SCOPE_STAMP: Dict[str, str] = {}  # session_id -> scope_id of the current turn
+_SCOPE_STAMP_MAX = 256
+
+
+def make_scope_id(session_id: str, turn_id: Optional[int] = None) -> str:
+    """Build the ONE consult scope id: `s:<session_id>|t:<turn_id>`.
+
+    `turn_id` defaults to the session's current turn identity. The id is opaque
+    to every consumer except equality: the counter and the cap both key on it.
+    Never raises.
+    """
+    try:
+        n = int(current_turn_id(session_id) if turn_id is None else turn_id)
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        n = 1
+    return "s:%s|t:%d" % (str(session_id or ""), n)
+
+
+def record_scope(session_id: str, scope_id: str) -> None:
+    """Stamp `scope_id` as the session's current turn scope.
+
+    Same shape/bounding discipline as `record_last_seen`: bounded FIFO eviction,
+    never raises, and no TTL — a stale stamp is harmless because the POST edge
+    that could read it belongs to the turn that wrote it, and a newer turn
+    overwrites it before its own POST pass.
+    """
+    try:
+        with _SCOPE_STAMP_LOCK:
+            if session_id:
+                _SCOPE_STAMP[session_id] = str(scope_id or "")
+                while len(_SCOPE_STAMP) > _SCOPE_STAMP_MAX:
+                    _SCOPE_STAMP.pop(next(iter(_SCOPE_STAMP)))
+    except Exception:  # noqa: BLE001 — a stamp never breaks a turn
+        pass
+
+
+def scope_for(session_id: str) -> Optional[str]:
+    """Read the stamped scope for the session, or None when nothing was stamped."""
+    with _SCOPE_STAMP_LOCK:
+        return _SCOPE_STAMP.get(session_id or "") or None
+
+
+def reset_scope(session_id: Optional[str] = None) -> None:
+    """Test/recovery hook. Never raises."""
+    try:
+        with _SCOPE_STAMP_LOCK:
+            if session_id is None:
+                _SCOPE_STAMP.clear()
+            else:
+                _SCOPE_STAMP.pop(session_id or "", None)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reset_turn_identity(session_id: Optional[str] = None) -> None:

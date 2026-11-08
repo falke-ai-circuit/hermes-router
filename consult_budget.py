@@ -224,7 +224,7 @@ def model_turns(key: str) -> int:
 
 
 def _record_model_turn(session_id: str, task_id: str, key: str,
-                       count: int) -> None:
+                       count: int, scope_id: str = "") -> None:
     """Write ONE route row per `note_model_turn` write (M47-04 / §5 item 3).
 
     The writer used to be silent, and that silence is why a counter landing on
@@ -235,13 +235,17 @@ def _record_model_turn(session_id: str, task_id: str, key: str,
 
     `task_id` follows `_record_refusal`'s convention (`task_id or key`) so the
     two families of consult rows group the same way; `key` is always the scope
-    key the counter was actually written under. Never raises.
+    key the counter was actually written under. M47-09 (§7): every consult row
+    carries BOTH identities — `scope_id` (turn identity, the counter/cap key)
+    and `task_id` (claim identity, ask-hashed) — so the join is a two-field
+    lookup, never a re-derivation. Never raises.
     """
     try:
         from .core.telemetry import log_route
 
         log_route("PRE", event_detail="model_turn",
-                  task_id=str(task_id or key), key=str(key),
+                  task_id=str(task_id or key), scope_id=str(scope_id or key),
+                  key=str(key),
                   count=int(count), session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001 — observability never breaks the counter
         pass
@@ -250,7 +254,7 @@ def _record_model_turn(session_id: str, task_id: str, key: str,
 def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
                     model: str = "", trace: str = "",
                     api_request_id: str = "", turn_id: str = "",
-                    api_call_count: Any = None) -> int:
+                    api_call_count: Any = None, scope_id: str = "") -> int:
     """Count ONE model turn for the ask's scope and return the running total.
 
     Called from the llm_request seam, which fires once per provider call: every
@@ -269,7 +273,8 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
     Never raises; 0 means the counter could not be updated (caller fails open).
     """
     try:
-        k = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
+        k = scope_key(session_id, scope_id or task_id, ask=ask, model=model,
+                      trace=trace)
         rid = str(api_request_id or "").strip()
         if not rid and str(turn_id or "").strip():
             rid = "%s:api:%s" % (str(turn_id).strip(),
@@ -296,7 +301,7 @@ def note_model_turn(session_id: str, task_id: str = "", ask: str = "",
             n += 1
             _MODEL_TURNS[k] = n
             _prune_locked()
-        _record_model_turn(session_id, task_id, k, n)
+        _record_model_turn(session_id, task_id, k, n, scope_id=scope_id)
         return n
     except Exception:  # noqa: BLE001 — a counter must never break a turn
         logger.debug("consult_budget.note_model_turn failed", exc_info=True)
@@ -363,7 +368,7 @@ def scope_key(session_id: str, task_id: str = "", ask: str = "",
 
 def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
                     count: int, cap: int, reason: str, model: str = "",
-                    task_turn: int = -1) -> None:
+                    task_turn: int = -1, scope_id: str = "") -> None:
     """Write the auditable refusal row + a route-log line. Never raises."""
     try:
         from . import decision as _dm
@@ -371,6 +376,7 @@ def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
         _dm.ledger_write({
             "session_id": str(session_id or ""),
             "task_id": str(task_id or key),
+            "scope_id": str(scope_id or key),
             "trigger": CAPPED_TRIGGER,
             "trigger_kind": "capped",
             "fork_class": "not_a_fork",
@@ -391,13 +397,14 @@ def _record_refusal(session_id: str, task_id: str, leg: str, key: str,
         log_route("PRE" if leg == "pre" else "POST",
                   event_detail=CAPPED_TRIGGER, leg=str(leg),
                   count=int(count), cap=int(cap), reason=str(reason),
-                  task_id=str(task_id or key), session_id=str(session_id or ""))
+                  task_id=str(task_id or key), scope_id=str(scope_id or key),
+                  session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001
         pass
 
 
 def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
-                     task_id: str = "") -> None:
+                     task_id: str = "", scope_id: str = "") -> None:
     """Record EVERY POST gate decision — allowed as well as refused (M46-10b).
 
     Before this only refusals were recorded, so the shipped defect was
@@ -419,6 +426,7 @@ def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
         _key = str(out.get("key") or "")
         _tid = str(task_id) if str(task_id or "").strip() else (
             "" if _key[:1] == "!" else _key)
+        _sid = str(scope_id or out.get("scope_id") or "")
         log_route("POST", event_detail="consult_gate",
                   leg=str(leg), allow=bool(out.get("allow")),
                   key=_key,
@@ -428,6 +436,8 @@ def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
                   cap=int(out.get("cap") or 0),
                   reason=str(out.get("reason") or ""),
                   task_id=_tid,
+                  scope_id=_sid if _sid and _sid[:1] != "!" else "",
+                  scope_source=str(out.get("scope_source") or ""),
                   session_id=str(session_id or ""))
     except Exception:  # noqa: BLE001 — observability never breaks the gate
         pass
@@ -435,7 +445,8 @@ def _record_decision(session_id: str, leg: str, out: Dict[str, Any],
 
 def check(session_id: str, task_id: str = "", leg: str = "pre",
           ask: str = "", model: str = "", trace: str = "",
-          deliverable: bool = True) -> Dict[str, Any]:
+          deliverable: bool = True, scope_id: str = "",
+          scope_source: str = "") -> Dict[str, Any]:
     """Gate ONE consult leg. Call this IMMEDIATELY BEFORE the spend.
 
     Returns {"allow": bool, "leg", "key", "count", "cap", "turn", "task_turn",
@@ -458,9 +469,12 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
     """
     out: Dict[str, Any] = {"allow": True, "leg": str(leg), "key": "",
                            "count": 0, "cap": 0, "turn": 0, "reason": "",
-                           "task_turn": 0, "task_turn_basis": ""}
+                           "task_turn": 0, "task_turn_basis": "",
+                           "scope_id": str(scope_id or ""),
+                           "scope_source": str(scope_source or "")}
     try:
-        key = scope_key(session_id, task_id, ask=ask, model=model, trace=trace)
+        key = scope_key(session_id, scope_id or task_id, ask=ask, model=model,
+                        trace=trace)
         cap = max_per_task()
         floor = post_min_turns() if str(leg) == "post" else min_turns()
         turn = turn_no(session_id)
@@ -495,13 +509,15 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
                 out.update({"allow": False, "count": count,
                             "reason": "after_delivery"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                "after_delivery", model, tturn)
+                                "after_delivery", model, tturn,
+                                scope_id=scope_id)
                 return out
             if floor > 0 and 0 < tturn < floor and (prior > 0 or str(leg) == "post"):
                 out.update({"allow": False, "count": count,
                             "reason": "below_min_turns"})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                "below_min_turns", model, tturn)
+                                "below_min_turns", model, tturn,
+                                scope_id=scope_id)
                 return out
             slot = _COUNTS.setdefault(key, {})
             count = int(slot.get(str(leg), 0))
@@ -509,7 +525,8 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
                 out.update({"allow": False, "count": count,
                             "reason": CAPPED_TRIGGER})
                 _record_refusal(session_id, task_id, leg, key, count, cap,
-                                CAPPED_TRIGGER, model, tturn)
+                                CAPPED_TRIGGER, model, tturn,
+                                scope_id=scope_id)
                 return out
             slot[str(leg)] = count + 1
             _TURNS_SEEN[key] = turn
@@ -534,7 +551,8 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
         # `task_turn=0` allow is the signature of an inert floor and must be
         # readable without a reproduction.
         if str(leg) == "post":
-            _record_decision(session_id, leg, out, task_id=task_id)
+            _record_decision(session_id, leg, out, task_id=task_id,
+                             scope_id=scope_id)
     return out
 
 

@@ -514,7 +514,57 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             _ingress_sid = _hub()._session_id_from_context(**context)
         except Exception:  # noqa: BLE001 — identity is best-effort
             _ingress_sid = ""
+        # M47-09: the RAW last-user text is kept for the TURN IDENTITY's change
+        # detector. Canonicalisation is text hygiene (it feeds the classifier,
+        # the fence, the PRE gate); identity must not ride on it, because
+        # `_canonical_ingress_ask` accepts a stored ask whose first 4,000 chars
+        # are contained in the API copy — so two DIFFERENT long asks sharing a
+        # 4,000-char prefix canonicalise to the SAME string and the turn counter
+        # would hold through a genuinely new ask. Raw text differs whenever the
+        # user asked something different; a duplicate send is byte-identical and
+        # still holds.
+        _raw_ask = content
         content = _canonical_ingress_ask(content, _ingress_sid)
+
+        # ------------------------------------------------------------------
+        # M47-09 — THE TURN IDENTITY IS MINTED HERE, BEFORE ANY CONSUMER.
+        # M47-08 ruling (§3): POST consult scope identity is a platform-seam
+        # TURN ID, one key for the model-turn counter AND the per-task cap —
+        # not an ask-text hash. Four rounds (a697594, c6a7a04, 4bd22e6,
+        # 92095be) each closed one text shape and opened the next, because the
+        # injected-text vocabulary belongs to the host. The counter and the cap
+        # are both process-local, so the key only has to be equal inside this
+        # process: `core/state.current_turn_id` already mints exactly that, and
+        # advances ONLY when the last-user hash changes (a duplicate send or a
+        # tool-loop re-fire holds the same turn).
+        #
+        # The advance used to sit below (line ~710); it moves above the
+        # model-turn writer because the writer now keys on the scope the advance
+        # produces. Nothing between the two positions reads turn identity; the
+        # PRE domain gate's `mark_pre_domain` still runs after this, which is
+        # what it requires.
+        #
+        # `record_scope` is the BRIDGE to the POST edge: the host's
+        # transform_llm_output passes no turn id (turn_finalizer.py:548-556), so
+        # the POST gate reads the stamp of the turn it is closing instead of
+        # re-deriving an identity from the delivered text.
+        # ------------------------------------------------------------------
+        try:
+            _is_tool_loop = any(
+                isinstance(m, dict) and str(m.get("role") or "") == "tool"
+                for m in (request.get("messages") or []))
+        except Exception:  # noqa: BLE001 — fail-open to non-continuation
+            _is_tool_loop = False
+        _scope_id = ""
+        try:
+            _scope_id = _hub().state.make_scope_id(
+                _ingress_sid,
+                _hub().state.advance_turn_identity(
+                    _ingress_sid, _hub().state.hash_text(_raw_ask or ""),
+                    is_continuation=bool(_is_tool_loop)))
+            _hub().state.record_scope(_ingress_sid, _scope_id)
+        except Exception:  # noqa: BLE001 — identity is best-effort, never binding
+            _scope_id = ""
 
         # R34-14 item 1/2: a user message defines the turn. Same text as the
         # newest CLOSED turn is the same turn (a retry / duplicate transform
@@ -545,11 +595,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # floor was inert on the live path. `api_request_id` makes a provider
         # RETRY a re-entry rather than a second model turn (the host applies
         # this middleware inside its own retry loop and reuses the id).
+        # M47-09 (§3): the writer keys on the SCOPE, not on the ask. `task_id`
+        # stays on the row as the CLAIM identity (ask-hashed, unchanged this
+        # unit) so a budget row joins a claim row by two fields instead of a
+        # re-derivation. `scope_id` is the counter's key.
         try:
             from .. import consult_budget as _cb_turn
             from .. import router_core as _rc_ids
 
-            _cb_turn_sid = _hub()._session_id_from_context(**context)
+            _cb_turn_sid = _ingress_sid or _hub()._session_id_from_context(**context)
             _cb_turn_model = str(request.get("model") or "")
             _cb_turn_tid = ""
             try:
@@ -559,7 +613,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             except Exception:  # noqa: BLE001 — identity is best-effort
                 _cb_turn_tid = ""
             _cb_turn.note_model_turn(
-                _cb_turn_sid, task_id=_cb_turn_tid,
+                _cb_turn_sid, task_id=_cb_turn_tid, scope_id=_scope_id,
                 ask=content, model=_cb_turn_model,
                 api_request_id=str(context.get("api_request_id") or ""),
                 turn_id=str(context.get("turn_id") or ""),
@@ -694,24 +748,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                            session_id=session_id)
         except Exception:  # noqa: BLE001 — guard must never break routing
             _hub().logger.debug("orientation-leak guard wiring error", exc_info=True)
-        # Leg 7b (single claim point, key continuity): advance the session's
-        # TURN IDENTITY before the gate's claim phase. Tool-loop passes
-        # (tool-role messages present) are continuations of the SAME turn —
-        # the counter holds; otherwise a changed last-user hash means a new
-        # user turn. router_tools and route_gate share this identity, so a
-        # claim registered mid-turn binds every later pass of the turn.
-        try:
-            _is_tool_loop = any(
-                isinstance(m, dict) and str(m.get("role") or "") == "tool"
-                for m in (request.get("messages") or []))
-        except Exception:  # noqa: BLE001 — fail-open to non-continuation
-            _is_tool_loop = False
-        try:
-            _hub().state.advance_turn_identity(
-                session_id, _hub().state.hash_text(content or ""),
-                is_continuation=bool(_is_tool_loop))
-        except Exception:  # noqa: BLE001 — fail-open, never block delivery
-            pass
+        # Leg 7b (single claim point, key continuity) — the turn identity was
+        # ALREADY advanced above, before the model-turn writer (M47-09): the
+        # writer keys on the scope that advance mints, so there is exactly one
+        # advance per pass and it cannot lag the counter it feeds.
         # M35-04 TOTALITY: ARM the turn. The POST seam DISARMS it; when the host
         # never calls that seam (skip after a slow/overlapping invocation, an
         # interrupted turn, an error before the finalizer) the post_llm_call

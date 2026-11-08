@@ -1836,9 +1836,24 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         try:
             from . import consult_budget as _cb
 
+            # M47-09: the PRE leg reads the SAME scope the POST leg reads —
+            # the stamp written by this turn's llm_request pass (this call IS
+            # inside that pass, after the advance). One scope convention for
+            # both legs, per M46-10b. Text fallback only when no stamp exists.
+            _scope = ""
+            try:
+                from . import state as _st_scope
+
+                _scope = str(_st_scope.scope_for(str(session_id or "")) or "")
+                if not _scope:
+                    _scope = _st_scope.make_scope_id(str(session_id or ""))
+            except Exception:  # noqa: BLE001 — identity is best-effort
+                _scope = ""
             _cap = _cb.check(str(session_id or ""),
                              str(decision.task_id or ""), leg="pre",
-                             model=str(getattr(decision, "model_target", "") or ""))
+                             model=str(getattr(decision, "model_target", "") or ""),
+                             scope_id=_scope,
+                             scope_source="stamp" if _scope else "text_fallback")
             if not _cap.get("allow"):
                 return None
         except Exception:  # noqa: BLE001 — budget check is fail-open

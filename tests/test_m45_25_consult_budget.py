@@ -170,7 +170,12 @@ def test_pre_choke_point_refuses_second_pre_for_same_task(budget, monkeypatch):
     second = rc.stage_model_swap(session, dec)
     assert first is not None
     assert second is None
-    assert budget.counts(session, "t-m4525-stage") == {"pre": 1}
+    # M47-09: the PRE leg keys on the turn SCOPE (`s:<sid>|t:<n>`), not on the
+    # ask-hashed claim id — so the counter is read under the scope.
+    from hermes_router import state as _st
+
+    assert budget.counts(session, _st.make_scope_id(session)) == {"pre": 1}
+    assert budget.counts(session, "t-m4525-stage") == {}
 
 
 def test_post_choke_point_refuses_second_post_for_same_task(budget, monkeypatch):
@@ -183,10 +188,11 @@ def test_post_choke_point_refuses_second_post_for_same_task(budget, monkeypatch)
     budget.reset()
     session, task = "s-m4525-post", "t-m4525-post"
     _set_turn(budget, session, 5)
-    budget.check(session, task, leg="post")  # spend the task's one POST
+    budget.check(session, task, leg="post", scope_id=task)  # spend the task's one POST
     diag = {}
     out = ca._consult_meta(session, "ask", "resp", {}, "m", "k",
-                           socket_timeout=10, diag=diag, task_id=task)
+                           socket_timeout=10, diag=diag, task_id=task,
+                           scope_id=task)
     assert out is None
     assert diag.get("reason") == "consult_capped"
 
@@ -241,7 +247,8 @@ def _post_seam(monkeypatch, call, session, task):
                         raising=False)
     diag = {}
     out = ca._consult_meta(session, "ask", "resp", {}, "m", "k",
-                           socket_timeout=10, diag=diag, task_id=task)
+                           socket_timeout=10, diag=diag, task_id=task,
+                           scope_id=task)
     return out, diag
 
 

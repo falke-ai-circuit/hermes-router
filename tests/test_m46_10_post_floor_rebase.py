@@ -355,10 +355,10 @@ def test_seam_and_gate_build_one_scope_and_the_floor_fires(budget, monkeypatch):
     Both sides are the REAL call shapes: the counter is advanced by
     `plugin.on_llm_request` (what the host invokes per provider call) and the
     gate is reached through `completion_audit._consult_meta` (the live POST
-    seam), which passes `task_id_for(session, ask, model)` exactly as
-    `run_completion_audit_sync` does. The anchor chain is stubbed to no
-    endpoint so the run stops right AFTER the gate and its own reason is
-    readable.
+    seam), which resolves the TURN SCOPE from the stamp exactly as
+    `run_completion_audit_sync` does (M47-09, ruling §3). The anchor chain is
+    stubbed to no endpoint so the run stops right AFTER the gate and its own
+    reason is readable.
     """
     import sys
 
@@ -366,7 +366,7 @@ def test_seam_and_gate_build_one_scope_and_the_floor_fires(budget, monkeypatch):
     if _P not in sys.path:
         sys.path.insert(0, _P)
     import hermes_router as plugin
-    from hermes_router import completion_audit, router_core
+    from hermes_router import completion_audit, router_core, state
 
     monkeypatch.setattr("hermes_router.anchor_chain.load_anchor_chain",
                         lambda: _NoEndpointChain())
@@ -381,13 +381,11 @@ def test_seam_and_gate_build_one_scope_and_the_floor_fires(budget, monkeypatch):
     for i in (1, 2, 3):
         _seam_count(plugin, None, sid, text, model, "turn-1:api:%d" % i)
 
-    # The seam wrote under the task id the POST gate will read.
-    seam_key = budget.scope_key(sid, "", ask=text, model=model)
-    gate_key = budget.scope_key(sid, tid, ask=text, model=model)
-    print("seam key=%r post key=%r MATCH: %s"
-          % (seam_key, gate_key, seam_key == gate_key))
-    assert seam_key == gate_key, (seam_key, gate_key)
-    assert budget.model_turns(gate_key) == 3
+    # The seam wrote under the turn SCOPE the POST gate will read.
+    scope = state.scope_for(sid)
+    assert scope == "s:%s|t:1" % sid, scope
+    assert scope != tid  # two identities, joined by two fields on the row
+    assert budget.model_turns(scope) == 3, budget.model_turns(scope)
 
     diag = {}
     completion_audit._consult_meta(sid, text, "resp text", None, model,
@@ -423,9 +421,11 @@ def test_provider_retry_does_not_double_count(budget, monkeypatch):
     _seam_config(monkeypatch)
 
     sid, text, model = "s-m4610-retry", "one call, three attempts", "glm-5.3"
-    key = router_core.task_id_for(sid, text, model)
 
     _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
+    from hermes_router import state
+
+    key = state.scope_for(sid)  # M47-09: the counter lives on the turn scope
     _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
     _seam_count(plugin, None, sid, text, model, "turn-1:api:1")
     assert budget.model_turns(key) == 1, budget.model_turns(key)
@@ -623,12 +623,16 @@ def test_injected_seam_and_gate_build_one_ask_and_the_floor_fires(
           % (len(stored), tid, injected_tid))
     # 1. last-seen carries the ASK, not the API copy
     assert stored == ask, stored[:120]
-    # 2. the writer landed on the ask's key, not the injected text's
-    assert budget.model_turns(tid) == 3, budget.model_turns(tid)
+    # 2. M47-09: the writer keys on the TURN SCOPE — neither text's hash. The
+    #    ask-hashed ids stay on the rows as the CLAIM identity and carry no
+    #    counter, so the injected text cannot open a second bucket either.
+    scope = state.scope_for(sid)
+    assert scope == "s:%s|t:1" % sid, scope
+    assert budget.model_turns(scope) == 3, budget.model_turns(scope)
+    assert budget.model_turns(tid) == 0, budget.model_turns(tid)
     assert budget.model_turns(injected_tid) == 0, budget.model_turns(injected_tid)
-    # 3. writer key == reader key, derived independently
-    assert budget.scope_key(sid, "", ask=stored, model=model) == \
-        budget.scope_key(sid, tid, ask=ask, model=model)
+    # 3. writer key == reader key: the POST edge resolves the same stamp
+    assert completion_audit._resolve_scope(sid, stored, model)[0] == scope
 
     # 4. the floor REFUSES on model turns 1-3 through the real POST seam
     for attempt in (1, 2, 3):
@@ -702,14 +706,15 @@ def test_legacy_shape_without_injection_still_reads_twenty_three(
         _seam_count(plugin, None, sid, ask, model, "turn-1:api:%d" % i)
 
     stored = state.get_last_seen(sid) or ""
-    key = router_core.task_id_for(sid, ask, model)
+    scope = state.scope_for(sid)  # M47-09: the writer keys on the turn scope
     assert stored == ask, stored[:120]
-    assert budget.model_turns(key) == 23, budget.model_turns(key)
+    assert budget.model_turns(scope) == 23, budget.model_turns(scope)
 
-    gate = budget.check(sid, "", leg="post", ask=stored, model=model)
+    gate = budget.check(sid, "", leg="post", ask=stored, model=model,
+                        scope_id=scope)
     print("legacy POST gate: task_turn=%r allow=%r key_match=%s"
           % (gate.get("task_turn"), gate.get("allow"),
-             gate.get("key") == key))
+             gate.get("key") == scope))
     assert gate["allow"] is True, gate
     assert gate["task_turn"] == 23, gate
     assert gate["task_turn_basis"] == "model_turns", gate
@@ -771,10 +776,13 @@ def test_prefixed_api_copy_yields_one_key_and_the_floor_fires(budget, monkeypatc
     print("prefixed: stored chars=%d | ask key=%r | prefixed key=%r"
           % (len(stored), tid, prefixed_tid))
     assert stored == ask, stored[:120]
-    assert budget.model_turns(tid) == 3, budget.model_turns(tid)
+    # M47-09: one key on both edges — the TURN SCOPE, resolved from the stamp.
+    scope = state.scope_for(sid)
+    assert scope == "s:%s|t:1" % sid, scope
+    assert budget.model_turns(scope) == 3, budget.model_turns(scope)
+    assert budget.model_turns(tid) == 0, budget.model_turns(tid)
     assert budget.model_turns(prefixed_tid) == 0, budget.model_turns(prefixed_tid)
-    assert budget.scope_key(sid, "", ask=stored, model=model) == \
-        budget.scope_key(sid, tid, ask=ask, model=model)
+    assert completion_audit._resolve_scope(sid, stored, model)[0] == scope
 
     for attempt in (1, 2, 3):
         diag = {}
@@ -812,11 +820,12 @@ def test_clean_shape_with_store_row_still_reads_twenty_three(budget, monkeypatch
         _seam_count(plugin, None, sid, ask, model, "turn-1:api:%d" % i)
 
     stored = state.get_last_seen(sid) or ""
-    key = router_core.task_id_for(sid, ask, model)
+    scope = state.scope_for(sid)  # M47-09: the counter lives on the turn scope
     assert stored == ask, stored[:120]
-    assert budget.model_turns(key) == 23, budget.model_turns(key)
+    assert budget.model_turns(scope) == 23, budget.model_turns(scope)
 
-    gate = budget.check(sid, "", leg="post", ask=stored, model=model)
+    gate = budget.check(sid, "", leg="post", ask=stored, model=model,
+                        scope_id=scope)
     assert gate["allow"] is True, gate
     assert gate["task_turn"] == 23, gate
     assert gate["task_turn_basis"] == "model_turns", gate
