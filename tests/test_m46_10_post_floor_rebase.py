@@ -713,3 +713,110 @@ def test_legacy_shape_without_injection_still_reads_twenty_three(
     assert gate["allow"] is True, gate
     assert gate["task_turn"] == 23, gate
     assert gate["task_turn_basis"] == "model_turns", gate
+
+
+# --------------------------------------------------------------------- T15 ----
+# M47-06 (§1): the divergence was not only the trailing block. The host
+# PREFIXES the API copy with platform text the store never holds, so the writer
+# key stayed different from the reader key even with the trailing strip in
+# place: measured `writer turns 3 / reader turns 0` and 594 divergent copies in
+# a 40,051-row replay.
+
+PLATFORM_PREFIX = (
+    "[System note: A new message has arrived. Respond to the newest ask below.]\n\n"
+    "[Context from the interrupted assistant response]\n"
+    "the previous turn was cut mid-render; the work below still stands\n"
+    "---\n"
+)
+
+
+def _store_holds(monkeypatch, ask: str) -> None:
+    """The host's state.db already holds this turn's user row when the first
+    provider call fires (session_store docstring, verified live 2026-09-01).
+    Stub that read with the row the host would return."""
+    from hermes_router import session_store
+
+    monkeypatch.setattr(session_store, "get_last_user_message",
+                        lambda session_id: ask)
+
+
+def test_prefixed_api_copy_yields_one_key_and_the_floor_fires(budget, monkeypatch):
+    """T15: prefixed API copy -> writer key == reader key; floor refuses 1-3,
+    allows 4. Neither side is handed the other's key."""
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import completion_audit, router_core, state
+
+    monkeypatch.setattr("hermes_router.anchor_chain.load_anchor_chain",
+                        lambda: _NoEndpointChain())
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid, model = "s-m4706-prefixed", "glm-5.3"
+    ask = "wire the seam through the platform prefix"
+    api_text = PLATFORM_PREFIX + ask + MEMORY_BLOCK
+    tid = router_core.task_id_for(sid, ask, model)
+    prefixed_tid = router_core.task_id_for(sid, api_text, model)
+    assert prefixed_tid != tid, "the fixture does not discriminate the two texts"
+
+    _store_holds(monkeypatch, ask)
+    for i in (1, 2, 3):
+        _seam_count(plugin, None, sid, api_text, model, "turn-1:api:%d" % i)
+
+    stored = state.get_last_seen(sid) or ""
+    print("prefixed: stored chars=%d | ask key=%r | prefixed key=%r"
+          % (len(stored), tid, prefixed_tid))
+    assert stored == ask, stored[:120]
+    assert budget.model_turns(tid) == 3, budget.model_turns(tid)
+    assert budget.model_turns(prefixed_tid) == 0, budget.model_turns(prefixed_tid)
+    assert budget.scope_key(sid, "", ask=stored, model=model) == \
+        budget.scope_key(sid, tid, ask=ask, model=model)
+
+    for attempt in (1, 2, 3):
+        diag = {}
+        completion_audit._consult_meta(
+            sid, stored, "resp text", {"user_message": stored}, model,
+            "fire-key", socket_timeout=45, diag=diag)
+        assert diag.get("reason") == "below_min_turns", (attempt, diag)
+
+    _seam_count(plugin, None, sid, api_text, model, "turn-1:api:4")
+    diag = {}
+    completion_audit._consult_meta(
+        sid, ask, "resp text", {"user_message": ask}, model,
+        "fire-key", socket_timeout=45, diag=diag)
+    assert diag.get("reason") == "no_primary_endpoint", diag
+
+
+def test_clean_shape_with_store_row_still_reads_twenty_three(budget, monkeypatch):
+    """T16: the canonical-ask read is a no-op on the injection-free shape —
+    23 model turns still read as 23, allow=True (R5 invariant, re-pinned)."""
+    import sys
+
+    _P = "/opt/data/plugins"
+    if _P not in sys.path:
+        sys.path.insert(0, _P)
+    import hermes_router as plugin
+    from hermes_router import router_core, state
+
+    monkeypatch.setattr(plugin, "_log_route", lambda e, **f: None)
+    _seam_config(monkeypatch)
+
+    sid, model = "s-m4706-clean23", "glm-5.3"
+    ask = "the operative ask that ran a tool loop"
+    _store_holds(monkeypatch, ask)
+    for i in range(1, 24):
+        _seam_count(plugin, None, sid, ask, model, "turn-1:api:%d" % i)
+
+    stored = state.get_last_seen(sid) or ""
+    key = router_core.task_id_for(sid, ask, model)
+    assert stored == ask, stored[:120]
+    assert budget.model_turns(key) == 23, budget.model_turns(key)
+
+    gate = budget.check(sid, "", leg="post", ask=stored, model=model)
+    assert gate["allow"] is True, gate
+    assert gate["task_turn"] == 23, gate
+    assert gate["task_turn_basis"] == "model_turns", gate

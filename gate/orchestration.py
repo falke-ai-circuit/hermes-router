@@ -224,6 +224,52 @@ def _strip_memory_context(*args: Any, **kwargs: Any) -> str:
     return _hub()._dispatcher_pre._strip_memory_context(*args, **kwargs)
 
 
+def _canonical_ingress_ask(api_text: str, session_id: str) -> str:
+    """Return the ask the POST READER hashes, for a live API copy.
+
+    M47-06 — the writer/reader key divergence was not only the trailing
+    <memory-context> block. The host also PREFIXES the API copy with platform
+    turns the router never sees in the store (`[System note: A new message has
+    arrived…]`, `[Context from the interrupted assistant response]`, `[Note:
+    model was just switched…]`, the gateway-shutdown note). Hashing the API copy
+    therefore still produced a different task id from the stored ask the POST
+    gate hashes (`writer turns 3 / reader turns 0`; 594 divergent copies in a
+    40,051-row replay).
+
+    The canonical text is the STORED ask — `state.get_last_seen` once this turn
+    recorded it, else the host's persisted user row (`session_store`), which the
+    gateway commits before the turn's first provider call. The API copy is only
+    the fallback when neither store holds this turn's text, and a stored
+    candidate is accepted only if it is literally contained in the API copy
+    (a previous turn's ask is not, so a stale cache can never win). No
+    per-prefix strip list: unknown platform prefixes are handled by preferring
+    the stored ask.
+    """
+    try:
+        text = _hub()._strip_memory_context(api_text)
+    except Exception:  # noqa: BLE001 — the strip must never cost the ask
+        text = api_text
+    stored = ""
+    try:
+        stored = str(_hub().state.get_last_seen(session_id) or "")
+    except Exception:  # noqa: BLE001 — cache read is best-effort
+        stored = ""
+    if not stored.strip():
+        try:
+            stored = str(_hub().session_store.get_last_user_message(session_id) or "")
+        except Exception:  # noqa: BLE001 — store read is best-effort
+            stored = ""
+    stored = stored.strip()
+    # `task_id_for` hashes the first 4000 chars; containment is judged on that
+    # same prefix so a store cap can never reject a genuinely matching ask.
+    if stored and stored[:4000] in str(api_text):
+        try:
+            return _hub()._strip_memory_context(stored)
+        except Exception:  # noqa: BLE001
+            return stored
+    return text
+
+
 def _dispatch_pass(*args: Any, **kwargs: Any) -> bool:
     return _hub()._dispatcher_pre._dispatch_pass(*args, **kwargs)
 
@@ -454,12 +500,21 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # <memory-context> block to the API copy of the user turn (never to the
         # stored content), so hashing `content` as the API payload carried it
         # while the POST gate hashed the stored ask: two keys, one ask, and the
-        # model-turn counter landed where nobody read (M47-03 H1). Stripping
+        # model-turn counter landed where nobody read (M47-03 H1). Resolving
         # HERE — before the turn-open note, the model-turn writer, the fence,
         # both last-seen records, the classifier and the PRE gate — means every
         # consumer of the turn's text hashes ONE string. The strip that used to
         # sit after `record_last_seen` is gone: it ran 120 lines too late.
-        content = _hub()._strip_memory_context(content)
+        #
+        # M47-06 — `_canonical_ingress_ask` extends the same rule to the
+        # platform PREFIXES the host adds to the API copy (new-message note,
+        # interrupted-response context, model-switch note, shutdown note): the
+        # stored ask wins when it exists, the API copy is the fallback only.
+        try:
+            _ingress_sid = _hub()._session_id_from_context(**context)
+        except Exception:  # noqa: BLE001 — identity is best-effort
+            _ingress_sid = ""
+        content = _canonical_ingress_ask(content, _ingress_sid)
 
         # R34-14 item 1/2: a user message defines the turn. Same text as the
         # newest CLOSED turn is the same turn (a retry / duplicate transform

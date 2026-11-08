@@ -387,19 +387,38 @@ def _history_reconcile_pass(request: Any, session_id: str) -> None:
         logger.debug("uncensored-router history reconciliation failed", exc_info=True)
 
 
+_MEMORY_TAIL_MARKER = "\n[ \t]*\n[ \t]*$"
+_MEMORY_TAIL_RE = re.compile(_MEMORY_TAIL_MARKER)
+
+
 def _strip_memory_context(content: str) -> str:
     """Pass 6a — Router tuning (2026-09-09): the platform appends a
     <memory-context> block (recalled graph facts) to the user message.
     Routing decisions (task_id hashing, complexity classify, verify-exempt)
     must judge the ASK, not ask+memory-noise. Strip once at ingress; DB
-    rows untouched."""
+    rows untouched.
+
+    M47-06 — only a TRAILING block is platform text. The block must close the
+    text with `</memory-context>` and open with `<memory-context>` after a
+    blank line. A `<memory-context>` the user typed INSIDE their ask is the
+    user's own words: cutting at the first literal (the old behavior) turned a
+    120-char ask into 27 chars and collapsed two distinct asks onto one key
+    (`92d66e20ae6577ae605b8770`). Interior literals are returned untouched.
+    """
     try:
-        _mc = content.find("<memory-context>")
-        if _mc != -1:
-            content = content[:_mc].rstrip()
-    except Exception:
-        pass
-    return content
+        text = str(content or "")
+        tail = text.rstrip()
+        if not tail.endswith("</memory-context>"):
+            return content
+        _open = tail.rfind("<memory-context>")
+        if _open == -1:
+            return content
+        head = tail[:_open]
+        if not _MEMORY_TAIL_RE.search(head):
+            return content
+        return head.rstrip()
+    except Exception:  # noqa: BLE001 — a strip must never cost the ask
+        return content
     # v3.0.0 complexity lane — SINGLE PRE dispatcher pass on immutable
     # ingress text. Runs BEFORE the uncensored classification; uncensored
     # matching still happens below and stays byte-identical. When the

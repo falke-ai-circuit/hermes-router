@@ -46,3 +46,63 @@ def test_audit_asks_match_planning_arch():
 def test_routine_asks_stay_simple():
     for ask in ("what time is the meeting", "fix this python bug"):
         assert stage1_signals(ask)["planning_arch"] == 0, ask
+
+
+# ---------------------------------------------------------------------------
+# M47-06 (§2): the ingress strip replaced the ASK with its first 27 chars when
+# the user typed the literal tag themselves — two distinct asks then collapsed
+# onto one task key (`92d66e20ae6577ae605b8770`, model_turns 2). Only a
+# TRAILING platform block is strippable; an interior literal is user text.
+# ---------------------------------------------------------------------------
+
+INTERIOR_TAG_ASK = (
+    "Earlier you told me the tag <memory-context> marks recalled memory. "
+    "Anyway: do the deploy now and confirm when it is up."
+)
+
+TRAILING_BLOCK = (
+    "\n\n<memory-context>\n"
+    "[System note: the following is recalled memory context, NOT new input.]\n"
+    "recalled facts about this lane\n"
+    "</memory-context>"
+)
+
+
+def _strip(text: str) -> str:
+    from hermes_router.passes.dispatcher_pre import _strip_memory_context
+
+    return _strip_memory_context(text)
+
+
+def test_interior_memory_tag_is_user_text_and_survives():
+    assert _strip(INTERIOR_TAG_ASK) == INTERIOR_TAG_ASK
+
+
+def test_asks_differing_after_the_interior_marker_hash_differently():
+    from hermes_router import router_core
+
+    other = INTERIOR_TAG_ASK.replace("do the deploy now", "stop the deploy now")
+    assert other != INTERIOR_TAG_ASK
+    ka = router_core.task_id_for("s-m4706-strip", _strip(INTERIOR_TAG_ASK), "m")
+    kb = router_core.task_id_for("s-m4706-strip", _strip(other), "m")
+    print("interior-marker keys: %r / %r (chars %d / %d)"
+          % (ka, kb, len(_strip(INTERIOR_TAG_ASK)), len(_strip(other))))
+    assert ka != kb
+    assert len(_strip(INTERIOR_TAG_ASK)) == len(INTERIOR_TAG_ASK)
+
+
+def test_trailing_platform_block_is_still_stripped():
+    assert _strip(INTERIOR_TAG_ASK + TRAILING_BLOCK) == INTERIOR_TAG_ASK
+
+
+def test_unterminated_tag_is_not_a_platform_block():
+    """No closing tag → not the platform's block; the words stay."""
+    text = "keep this <memory-context> because it never closes"
+    assert _strip(text) == text
+
+
+def test_trailing_closer_without_a_blank_line_is_not_stripped():
+    """The block must follow a blank line at the tail: `ask\\n<memory-context>…`
+    is not the host's shape, so nothing is removed."""
+    text = "ask\n<memory-context>inline</memory-context>"
+    assert _strip(text) == text
