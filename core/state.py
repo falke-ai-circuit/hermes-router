@@ -567,8 +567,51 @@ def substantive_turn_count(session_id: str) -> int:
 # (tool-loop continuations, re-fires of the same ask) keeps the counter.
 
 _TURN_ID_LOCK = threading.Lock()
-_TURN_ID: Dict[str, List] = {}  # session_id -> [counter:int, last_hash:str]
+_TURN_ID: Dict[str, List] = {}  # sid -> [counter:int, last_hash:str, incarnation:int]
 _TURN_ID_MAX = 512
+
+# M47-11 (F1): INCARNATION. The turn ordinal is per-session and this map is
+# FIFO-bounded, so an evicted session that returns used to be recreated at
+# counter 1 and re-mint the IDENTICAL scope string `s:<sid>|t:1` — while the
+# counter store (`consult_budget.MAX_SCOPES = 4096`) still held that key. A
+# brand-new ask then inherited a previous ask's model turns: wrong-allow on the
+# POST floor, or a spent slot refused as another task's. Every entry CREATED
+# below burns the next value of this process-monotonic sequence; reuse keeps
+# its incarnation, so one turn is still one scope and a recreated entry stamps
+# a scope id no earlier turn can ever own again.
+_TURN_INC_SEQ = 0
+
+
+def _turn_entry_locked(session_id: str) -> List:
+    """Fetch (or CREATE, with a fresh incarnation) the session's turn entry.
+
+    Caller holds `_TURN_ID_LOCK`. Creation is the ONLY place an incarnation is
+    burned; a reused entry keeps the one it was created with.
+    """
+    global _TURN_INC_SEQ
+    sid = session_id or ""
+    entry = _TURN_ID.get(sid)
+    if entry is None:
+        _TURN_INC_SEQ += 1
+        entry = [1, "", _TURN_INC_SEQ]
+        _TURN_ID[sid] = entry
+        while len(_TURN_ID) > _TURN_ID_MAX:
+            _TURN_ID.pop(next(iter(_TURN_ID)))
+    return entry
+
+
+def turn_incarnation(session_id: str) -> int:
+    """Process-monotonic incarnation of the session's turn entry.
+
+    Never reused inside one process: a session whose entry was evicted and
+    recreated gets a new value, which is what makes its scope ids non-reusable.
+    Fail-open: 0 when unavailable. Never raises.
+    """
+    try:
+        with _TURN_ID_LOCK:
+            return int(_turn_entry_locked(session_id)[2])
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        return 0
 
 
 def current_turn_id(session_id: str) -> int:
@@ -594,12 +637,7 @@ def advance_turn_identity(session_id: str, user_hash: str,
     try:
         sid = session_id or ""
         with _TURN_ID_LOCK:
-            entry = _TURN_ID.get(sid)
-            if entry is None:
-                entry = [1, ""]
-                _TURN_ID[sid] = entry
-                while len(_TURN_ID) > _TURN_ID_MAX:
-                    _TURN_ID.pop(next(iter(_TURN_ID)))
+            entry = _turn_entry_locked(sid)
             if not is_continuation:
                 new_hash = str(user_hash or "")
                 if entry[1] and new_hash != entry[1]:
@@ -630,17 +668,23 @@ _SCOPE_STAMP_MAX = 256
 
 
 def make_scope_id(session_id: str, turn_id: Optional[int] = None) -> str:
-    """Build the ONE consult scope id: `s:<session_id>|t:<turn_id>`.
+    """Build the ONE consult scope id: `s:<session_id>|i:<inc>|t:<turn_id>`.
 
-    `turn_id` defaults to the session's current turn identity. The id is opaque
-    to every consumer except equality: the counter and the cap both key on it.
-    Never raises.
+    `turn_id` defaults to the session's current turn identity; `inc` is the
+    entry's incarnation (M47-11/F1), so the string a session mints is NEVER
+    reissued, even after its `_TURN_ID` entry was evicted and recreated at
+    counter 1. The id is opaque to every consumer except equality: the counter
+    and the cap both key on it. Never raises.
     """
+    inc = 0
     try:
-        n = int(current_turn_id(session_id) if turn_id is None else turn_id)
+        with _TURN_ID_LOCK:
+            entry = _turn_entry_locked(session_id)
+            inc = int(entry[2])
+            n = int(entry[0] if turn_id is None else turn_id)
     except Exception:  # noqa: BLE001 — identity is best-effort
         n = 1
-    return "s:%s|t:%d" % (str(session_id or ""), n)
+    return "s:%s|i:%d|t:%d" % (str(session_id or ""), inc, n)
 
 
 def record_scope(session_id: str, scope_id: str) -> None:

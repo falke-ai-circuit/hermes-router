@@ -1841,19 +1841,29 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
             # inside that pass, after the advance). One scope convention for
             # both legs, per M46-10b. Text fallback only when no stamp exists.
             _scope = ""
+            # M47-11 (F2): the label names the branch that actually produced
+            # the id. `make_scope_id` is a TURN-ID fallback and never returns
+            # empty, so the old `"stamp" if _scope else "text_fallback"` labelled
+            # the turn fallback as a stamp and made `text_fallback` unreachable
+            # here — two residuals read as zero.
+            _scope_source = "text_fallback"
             try:
                 from . import state as _st_scope
 
                 _scope = str(_st_scope.scope_for(str(session_id or "")) or "")
-                if not _scope:
+                if _scope:
+                    _scope_source = "stamp"
+                else:
                     _scope = _st_scope.make_scope_id(str(session_id or ""))
+                    _scope_source = "turn_fallback" if _scope else "text_fallback"
             except Exception:  # noqa: BLE001 — identity is best-effort
                 _scope = ""
+                _scope_source = "text_fallback"
             _cap = _cb.check(str(session_id or ""),
                              str(decision.task_id or ""), leg="pre",
                              model=str(getattr(decision, "model_target", "") or ""),
                              scope_id=_scope,
-                             scope_source="stamp" if _scope else "text_fallback")
+                             scope_source=_scope_source)
             if not _cap.get("allow"):
                 return None
         except Exception:  # noqa: BLE001 — budget check is fail-open

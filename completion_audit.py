@@ -795,14 +795,21 @@ def _resolve_scope(session_id: str, ask: str, model: str,
         return "", "text_fallback"
 
 
-def _fire_marker_key(session_id: str, ask: str, model: str,
-                     scope_id: str = "") -> str:
+def _fire_marker_key_ex(session_id: str, ask: str, model: str,
+                        scope_id: str = "") -> Tuple[str, str]:
     """Once-per-task audit dedupe key — the SAME scope as the counter/cap.
 
     M47-09: this was `task_id_for(...)` (ask text), so it split on exactly the
     shapes the scope ruling closed and re-audited one task (or audited the same
     turn twice). It reads the scope id now; the text id survives only as the
     logged fallback (`_resolve_scope`).
+
+    M47-11 (F2): the SOURCE travels out with the id. It used to be dropped at
+    this seam and re-inferred in `_consult_meta` from "an id was passed", so a
+    fire-time capture of a TEXT id was logged `fire_time` and the residual was
+    unreadable exactly where it is counted.
+
+    Returns (scope, source). Never raises.
     """
     _scope, _source = _resolve_scope(session_id, ask, model, scope_id)
     if _source == "text_fallback":
@@ -811,7 +818,13 @@ def _fire_marker_key(session_id: str, ask: str, model: str,
                  task_id=_scope, session_id=str(session_id or ""))
         except Exception:  # noqa: BLE001 — observability only
             pass
-    return _scope
+    return _scope, _source
+
+
+def _fire_marker_key(session_id: str, ask: str, model: str,
+                     scope_id: str = "") -> str:
+    """The scope id alone — thin call; `_fire_marker_key_ex` carries the source."""
+    return _fire_marker_key_ex(session_id, ask, model, scope_id)[0]
 
 
 def _already_fired(key: str) -> bool:
@@ -1513,7 +1526,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
                     timeout_s=_sync_budget, fold_revision=False,
-                    diag=_diag, scope_id=_scope_id, **_sync_kw)
+                    diag=_diag, scope_id=_scope_id,
+                    scope_source=_scope_source, **_sync_kw)
             except Exception as _sx:  # noqa: BLE001
                 _diag["reason"] = "consult_raised"
                 _diag["detail"] = type(_sx).__name__
@@ -1712,7 +1726,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         _req = (context or {}).get("request") if isinstance(context, dict) else None
         run_completion_audit(session_id, ask, response_text, _req, model,
                              pre_brief=(str(_pair_ctx.get("text") or "") if _pair_ctx else ""),
-                             pre_trigger=(str(_pair_ctx.get("trigger") or "") if _pair_ctx else ""))
+                             pre_trigger=(str(_pair_ctx.get("trigger") or "") if _pair_ctx else ""),
+                             scope_id=_scope_id, scope_source=_scope_source)
         if _pair:
             _log_pair("post", True, pre_trigger=str(_pair.get("trigger") or ""),
                       session_id=session_id)
@@ -2303,11 +2318,12 @@ def _strip_render_mandate(card: str) -> str:
 def run_completion_audit(session_id: str, ask: str, response_text: str,
                          request: Optional[dict], model: str = "",
                          pre_brief: str = "", pre_trigger: str = "",
-                         scope_id: str = "") -> None:
+                         scope_id: str = "", scope_source: str = "") -> None:
     """Fire the audit ASYNC (legacy path): marker set FIRST (once-per-task
     even across fx-retries), consult in a daemon thread, verdict stashed for
     next turn. Never raises, never blocks delivery."""
-    key = _fire_marker_key(session_id, ask, model, scope_id=scope_id)
+    key, _key_source = _fire_marker_key_ex(session_id, ask, model,
+                                           scope_id=scope_id)
     # R78U M45-25: the POST leg shares the PRE leg's task identity so both
     # legs land on ONE counter and ONE aggregated banner.
     # M47-09: the CLAIM id (`task_id`) stays ask-hashed and rides the rows as
@@ -2325,7 +2341,8 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
         target=_consult_meta, name="router-completion-audit",
         args=(session_id, ask, response_text, request, model, key, pre_brief,
               pre_trigger), daemon=True,
-        kwargs={"task_id": _task_id, "scope_id": key})
+        kwargs={"task_id": _task_id, "scope_id": key,
+                "scope_source": scope_source or _key_source})
     t.start()
 
 
@@ -2336,7 +2353,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               pre_trigger: str = "",
                               fold_revision: bool = True,
                               diag: Optional[Dict[str, Any]] = None,
-                              scope_id: str = "") -> Optional[Dict[str, Any]]:
+                              scope_id: str = "",
+                              scope_source: str = "") -> Optional[Dict[str, Any]]:
     """Sync POST audit (Goran 2026-09-10; R37-1 folded revision): frontier
     consult completes BEFORE delivery and returns BOTH halves in ONE call —
     the verdict and (when the defect is text-fixable) the corrected final
@@ -2354,7 +2372,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
     response delivers unaudited. Dedupe marker is written on COMPLETED
     consults only — a timed-out audit can re-fire on the task's next turn.
     """
-    key = _fire_marker_key(session_id, ask, model)
+    key, _key_source = _fire_marker_key_ex(session_id, ask, model,
+                                           scope_id=scope_id)
     # once-per-task marker set ONLY on completion (deep-consult fix: a
     # timeout must not consume the task's one audit).
     with _INFLIGHT_LOCK:
@@ -2372,7 +2391,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                              model, key, socket_timeout=max(10, int(timeout_s)),
                              pre_brief=pre_brief, pre_trigger=pre_trigger,
                              fold_revision=fold_revision, diag=diag,
-                             task_id=_task_id, scope_id=key)
+                             task_id=_task_id, scope_id=key,
+                             scope_source=scope_source or _key_source)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -2771,7 +2791,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                   fold_revision: bool = False,
                   diag: Optional[Dict[str, Any]] = None,
                   task_id: str = "",
-                  scope_id: str = "") -> Optional[Dict[str, Any]]:
+                  scope_id: str = "",
+                  scope_source: str = "") -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -2795,7 +2816,11 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     _banner_park = socket_timeout >= 120  # async path parks banner; sync injects inline
     # M47-09: `_scope_source` names WHERE this row's key came from — a reviewer
     # counts `text_fallback` residuals instead of guessing (ruling §3/§6).
-    if scope_id:
+    # M47-11 (F2): a caller that RESOLVED the id passes its provenance too, so
+    # a fire-time capture of a text id stops being labelled `fire_time`.
+    if scope_source:
+        _scope_source = str(scope_source)
+    elif scope_id:
         _scope_source = "fire_time"
     else:
         scope_id, _scope_source = _resolve_scope(session_id, ask, model)

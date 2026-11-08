@@ -383,7 +383,8 @@ def test_seam_and_gate_build_one_scope_and_the_floor_fires(budget, monkeypatch):
 
     # The seam wrote under the turn SCOPE the POST gate will read.
     scope = state.scope_for(sid)
-    assert scope == "s:%s|t:1" % sid, scope
+    assert (scope.startswith("s:%s|i:" % sid)
+            and scope.endswith("|t:1")), scope
     assert scope != tid  # two identities, joined by two fields on the row
     assert budget.model_turns(scope) == 3, budget.model_turns(scope)
 
@@ -627,7 +628,8 @@ def test_injected_seam_and_gate_build_one_ask_and_the_floor_fires(
     #    ask-hashed ids stay on the rows as the CLAIM identity and carry no
     #    counter, so the injected text cannot open a second bucket either.
     scope = state.scope_for(sid)
-    assert scope == "s:%s|t:1" % sid, scope
+    assert (scope.startswith("s:%s|i:" % sid)
+            and scope.endswith("|t:1")), scope
     assert budget.model_turns(scope) == 3, budget.model_turns(scope)
     assert budget.model_turns(tid) == 0, budget.model_turns(tid)
     assert budget.model_turns(injected_tid) == 0, budget.model_turns(injected_tid)
@@ -778,7 +780,8 @@ def test_prefixed_api_copy_yields_one_key_and_the_floor_fires(budget, monkeypatc
     assert stored == ask, stored[:120]
     # M47-09: one key on both edges — the TURN SCOPE, resolved from the stamp.
     scope = state.scope_for(sid)
-    assert scope == "s:%s|t:1" % sid, scope
+    assert (scope.startswith("s:%s|i:" % sid)
+            and scope.endswith("|t:1")), scope
     assert budget.model_turns(scope) == 3, budget.model_turns(scope)
     assert budget.model_turns(tid) == 0, budget.model_turns(tid)
     assert budget.model_turns(prefixed_tid) == 0, budget.model_turns(prefixed_tid)

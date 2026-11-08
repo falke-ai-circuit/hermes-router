@@ -130,6 +130,14 @@ def _post(diag_holder: dict, session_id: str, ask: str, model: str = "glm-5.3",
     return diag_holder.get("reason")
 
 
+def _scope_shape(scope, session_id: str, turn: int) -> None:
+    """M47-11: the scope is `s:<sid>|i:<inc>|t:<turn>` — one incarnation each."""
+    assert scope, scope
+    assert scope.startswith("s:%s|i:" % session_id), scope
+    assert scope.endswith("|t:%d" % turn), scope
+    assert scope.count("|i:") == 1, scope
+
+
 def _assert_floor(budget, plugin, monkeypatch, session_id: str, ask: str):
     """3 drives refuse 1..3, the 4th is allowed, and one scope held all four."""
     from hermes_router import state
@@ -139,7 +147,7 @@ def _assert_floor(budget, plugin, monkeypatch, session_id: str, ask: str):
     for i in (1, 2, 3):
         _seam(plugin, session_id, ask, api_request_id="t1:api:%d" % i)
     scope = _scope_for(session_id)
-    assert scope and scope.startswith("s:" + session_id + "|t:"), scope
+    _scope_shape(scope, session_id, 1)
     assert budget.model_turns(scope) == 3, budget.model_turns(scope)
 
     for attempt in (1, 2, 3):
@@ -158,7 +166,7 @@ def test_t1_plain_ask_one_scope(budget, monkeypatch):
     """Shape 1: plain ask — writer scope == reader scope, floor 1-3 / allow 4."""
     scope = _assert_floor(budget, None, monkeypatch, "s-m4709-t1",
                           "wire the post scope to the turn identity")
-    assert scope == "s:s-m4709-t1|t:1"
+    _scope_shape(scope, "s-m4709-t1", 1)
 
 
 def test_t2_trailing_memory_block(budget, monkeypatch):
@@ -203,9 +211,9 @@ def test_t5_user_quoted_marker_keeps_two_scopes(budget, monkeypatch):
     _seam(plugin, sid, ask2, model=model, api_request_id="t5:api:2")
     scope2 = state.scope_for(sid)
 
-    assert scope1 == "s:s-m4709-t5|t:1", scope1
-    assert scope2 == "s:s-m4709-t5|t:2", scope2
     assert scope1 != scope2
+    _scope_shape(scope1, sid, 1)
+    _scope_shape(scope2, sid, 2)
     assert budget.model_turns(scope1) == 1
     assert budget.model_turns(scope2) == 1
     # The classifier sees the user's bytes: no 120 -> 27 truncation.
@@ -224,13 +232,14 @@ def test_t6_turn_two_ignores_stale_last_seen(budget, monkeypatch):
     _seam(plugin, sid, ask1, model=model, api_request_id="t6:api:1")
     # The cache is deliberately left holding ask1 — the old reader started here.
     assert state.get_last_seen(sid) == ask1
+    scope1 = state.scope_for(sid)
 
     _seam(plugin, sid, ask2, model=model, api_request_id="t6:api:2")
     assert state.current_turn_id(sid) == 2
     scope2 = state.scope_for(sid)
-    assert scope2 == "s:s-m4709-t6|t:2", scope2
+    _scope_shape(scope2, sid, 2)
     assert budget.model_turns(scope2) == 1, budget.model_turns(scope2)
-    assert budget.model_turns("s:s-m4709-t6|t:1") == 1
+    assert budget.model_turns(scope1) == 1
     # The POST gate for turn two reads turn two's scope, not ask1's.
     assert _post({}, sid, ask2) in ("below_min_turns", "no_primary_endpoint")
 
@@ -264,7 +273,8 @@ def test_duplicate_send_inside_one_turn_stays_one_scope(budget, monkeypatch):
     scope1 = state.scope_for(sid)
     _seam(plugin, sid, ask, api_request_id="dup:api:2")
     scope2 = state.scope_for(sid)
-    assert scope1 == scope2 == "s:s-m4709-dup|t:1"
+    assert scope1 == scope2
+    _scope_shape(scope1, sid, 1)
     assert budget.model_turns(scope1) == 2
 
 
@@ -299,12 +309,13 @@ def test_async_thread_keeps_the_fire_time_scope(budget, monkeypatch):
         _seam(plugin, sid, ask1, model=model, api_request_id="a:api:%d" % i)
 
     captured, source = completion_audit._resolve_scope(sid, ask1, model)
-    assert source == "stamp" and captured == "s:s-m4709-async|t:1"
+    assert source == "stamp" and captured
+    _scope_shape(captured, sid, 1)
     assert budget.model_turns(captured) == 4
 
     # A NEW turn lands while the audit thread is still running; the stamp moves.
     _seam(plugin, sid, "ask two", model=model, api_request_id="a:api:5")
-    assert state.scope_for(sid) == "s:s-m4709-async|t:2"
+    assert state.scope_for(sid).endswith("|t:2")
 
     # With the fire-time capture the gate reads turn one's counter (allowed);
     # without it the stamp would send it to the fresh turn (floored).
@@ -322,8 +333,8 @@ def test_reader_and_writer_use_one_key_on_the_real_seam(budget, monkeypatch):
 
     scope = state.scope_for(sid)
     claim_id = router_core.task_id_for(sid, ask, model)
-    assert scope == "s:s-m4709-key|t:1"
     assert claim_id != scope  # two identities, joined by two fields on the row
+    _scope_shape(scope, sid, 1)
     assert budget.model_turns(scope) == 3
     assert budget.model_turns(budget.scope_key(sid, claim_id, ask=ask,
                                                model=model)) == 0
@@ -337,4 +348,50 @@ def test_t8_floor_1_to_3_refused_4_allowed_on_a_prefixed_copy(budget,
     ask = ("[System note: A new message has arrived while you were working.] "
            "close the post scope unit")
     scope = _assert_floor(budget, None, monkeypatch, "s-m4709-t8", ask)
-    assert scope == "s:s-m4709-t8|t:1"
+    _scope_shape(scope, "s-m4709-t8", 1)
+
+
+# ------------------------------------------------------ M47-11 (F1) pin -----
+
+def test_f1_evicted_session_gets_a_new_scope_not_a_reused_counter(
+        budget, monkeypatch):
+    """M47-11/F1: turn-id eviction must NOT re-mint a scope that owns a counter.
+
+    The reviewer's drive (M47-10 §F1): four model turns on a session, then 600
+    advances on OTHER sessions push its `_TURN_ID` entry out of the 512-entry
+    FIFO, then the session returns with a brand-new ask. Before the incarnation
+    the recreated entry minted the SAME `s:<sid>|t:1` while `_MODEL_TURNS`
+    (4096 scopes) still held it, so the new ask read `model_turns 5` and its
+    POST was ALLOWED at floor 4 having aged zero turns. Now the scope id carries
+    a process-monotonic incarnation: the new ask starts at 1 and its POST is
+    refused `below_min_turns`.
+    """
+    from hermes_router import state
+
+    plugin = _plugin(monkeypatch)          # consult_post_min_turns = 4
+    sid = "s-m4711-evict"
+    old_ask = "the original ask"
+
+    for i in (1, 2, 3, 4):
+        _seam(plugin, sid, old_ask, api_request_id="ev:api:%d" % i)
+    old_scope = state.scope_for(sid)
+    _scope_shape(old_scope, sid, 1)
+    assert budget.model_turns(old_scope) == 4, budget.model_turns(old_scope)
+
+    # FIFO eviction: 600 distinct sessions are enough to drop a 512-entry map.
+    for i in range(600):
+        state.advance_turn_identity("s-m4711-flood-%04d" % i, "h%d" % i,
+                                    False)
+    assert state.current_turn_id(sid) == 1   # entry gone; recreated at counter 1
+
+    new_ask = "a completely different new ask after the eviction"
+    _seam(plugin, sid, new_ask, api_request_id="ev:api:new")
+    new_scope = state.scope_for(sid)
+
+    _scope_shape(new_scope, sid, 1)
+    assert new_scope != old_scope, (old_scope, new_scope)
+    # The old counter is still resident — that is what made reuse dangerous.
+    assert budget.model_turns(old_scope) == 4
+    assert budget.model_turns(new_scope) == 1, budget.model_turns(new_scope)
+    # Floor 4: a new ask that aged ONE model turn must be refused.
+    assert _post({}, sid, new_ask) == "below_min_turns"
