@@ -36,12 +36,18 @@ def test_fence_is_idempotent():
     assert rl.fence(once) == once
 
 
-def test_injection_closes_the_tool_channel_on_the_fence():
-    msgs = [{"role": "user", "content": "do the task"},
-            {"role": "tool", "content": "tool output"}]
-    assert rl._inject_into_evidence(msgs, READING) is True
-    content = msgs[-1]["content"]
-    assert content.startswith("tool output")
+def test_injection_lands_in_system_and_the_tool_channel_is_untouched():
+    """M40-07 re-point: the reading used to be appended INTO the last tool result.
+    It now arrives as its own `system` message; the tool content keeps its bytes."""
+    from hermes_router import frames
+
+    request = {"messages": [{"role": "user", "content": "do the task"},
+                            {"role": "tool", "content": "tool output"}]}
+    assert frames.inject_platform_rule(
+        request, "reflex.1", rl.fence(READING), role="system") is True
+    assert request["messages"][1]["content"] == "tool output"
+    assert request["messages"][-1]["role"] == "system"
+    content = request["messages"][-1]["content"]
     last = [ln for ln in content.splitlines() if ln.strip()][-1]
     assert last == rl._FENCE_TAIL
     # no directive is left in the position the model completes from
@@ -56,7 +62,10 @@ def test_contracts_are_statements_not_orders(contract):
         "the contract must state what the block IS, not what to do about it"
 
 
-def test_tool_channel_is_untouched_without_a_block():
-    msgs = [{"role": "tool", "content": "tool output"}]
-    assert rl._inject_into_evidence(msgs, "") is False
-    assert msgs[-1]["content"] == "tool output"
+def test_an_empty_block_never_reaches_any_channel():
+    from hermes_router import frames
+
+    request = {"messages": [{"role": "tool", "content": "tool output"}]}
+    assert frames.inject_platform_rule(
+        request, "reflex.2", "", role="system") is False
+    assert request["messages"] == [{"role": "tool", "content": "tool output"}]

@@ -679,12 +679,25 @@ def higher_self_rule_enabled() -> bool:
         return False
 
 
-def _suppress_rule_delivery(rule_id: str, rule_text: Any, stampable: bool) -> None:
-    """Fail-loud log for a suppressed platform-rule append. Never raises."""
+def _suppress_rule_delivery(rule_id: str, rule_text: Any, stampable: bool,
+                            reason: str = "", role: str = "") -> None:
+    """Fail-loud log for a suppressed platform-rule append. Never raises.
+
+    `reason`/`role` are for the CHANNEL refusal (M40-07): the caller asked for a
+    speaking channel, so the suppression is a caller bug, not a stamping one —
+    the row has to name which one. Omitted, the row is byte-identical to the
+    pre-M40-07 shape, so existing log parsers keep working.
+    """
     try:
-        logging.getLogger("hermes_router.frames").error(
-            "rule_delivery_suppressed rule_id=%s rule_text=%r stampable=%s",
-            rule_id, str(rule_text)[:120], bool(stampable))
+        log = logging.getLogger("hermes_router.frames")
+        if reason:
+            log.error("rule_delivery_suppressed rule_id=%s reason=%s role=%s "
+                      "stampable=%s rule_text=%r",
+                      rule_id, reason, role, bool(stampable), str(rule_text)[:120])
+        else:
+            log.error(
+                "rule_delivery_suppressed rule_id=%s rule_text=%r stampable=%s",
+                rule_id, str(rule_text)[:120], bool(stampable))
     except Exception:  # noqa: BLE001 — logging must never raise
         pass
 
@@ -736,6 +749,17 @@ def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
     for the rule text, fail-loud in the log (rule_delivery_suppressed).
     Returns True when a message was appended. Never raises."""
     try:
+        # M40-07 CHANNEL RULE (normative). `system` is the ONLY role the router
+        # may write into. tool/assistant/user are the agent's own speaking
+        # channels: a platform block there is read as its own speech or its own
+        # evidence (a child agent's tool result is the worst case — the parent
+        # treats it as ground truth). `role` stays in the signature for call-site
+        # compatibility but is no longer honoured; coercion is deliberately
+        # rejected, because it would hide the caller bug this rule exists to name.
+        if str(role or "") != "system":
+            _suppress_rule_delivery(rule_id, rule_text, False,
+                                    reason="speaking_channel", role=str(role))
+            return False
         msgs = (request or {}).get("messages")
         if not isinstance(msgs, list):
             return False
@@ -777,21 +801,69 @@ def inject_platform_rule(request: dict, rule_id: str, rule_text: Any,
         return False
 
 
-def append_platform_rule(msgs: list, rule_id: str, text: Any,
-                         role: str = "user") -> bool:
-    """Marked, once-only append into a caller-owned message list (the
-    orchestration seam instruction path). Returns True when appended."""
+def strip_platform_rule_blocks(text: str) -> str:
+    """Remove every router-injected block from `text`, whole-block and inclusive.
+
+    The delivery boundary's residual scan (M35-04) is LINE-WISE, so a leaked
+    `[PLATFORM RULE: …]` line is dropped but the rule body underneath it — and
+    a fenced reading between its BEGIN/END lines — ships to the user. This is
+    the block-level strip that removal needs:
+
+      - any span from a line matching ``^\\[PLATFORM RULE: .*\\]$`` up to the
+        next marker line, a fence line, or the end of the text;
+      - any span from ``^----- BEGIN ROUTER READING`` through
+        ``^----- END ROUTER READING.*$`` (inclusive of both fences).
+
+    Idempotent, total, never raises: text with no marker is returned unchanged,
+    and the surrounding text keeps its bytes. A body that is nothing but a block
+    yields ``""`` so the caller's withhold path decides what ships.
+    """
     try:
-        if not isinstance(msgs, list) or platform_rule_present(msgs, rule_id):
-            return False
-        body = mark_platform_rule(rule_id, text)
-        if not body.strip():
-            _suppress_rule_delivery(rule_id, text, False)
-            return False
-        msgs.append({"role": role, "content": body})
-        return True
-    except Exception:  # noqa: BLE001 — delivery must never break the turn
-        return False
+        if not isinstance(text, str) or not text:
+            return text if isinstance(text, str) else ""
+        lines = text.splitlines(True)
+        out = []
+        removed = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            probe = line.lstrip()
+            if _READING_FENCE_HEAD_RE.match(probe):
+                # fenced reading: consume through the closing fence
+                removed = True
+                i += 1
+                while i < len(lines) and not _READING_FENCE_TAIL_RE.match(
+                        lines[i].lstrip()):
+                    i += 1
+                i += 1  # swallow the tail line itself (absent → end of text)
+                continue
+            if _PLATFORM_RULE_LINE_RE.match(probe):
+                # rule header: swallow its body up to the next block boundary
+                removed = True
+                i += 1
+                while i < len(lines):
+                    nxt = lines[i].lstrip()
+                    if (_PLATFORM_RULE_LINE_RE.match(nxt)
+                            or _READING_FENCE_HEAD_RE.match(nxt)):
+                        break
+                    i += 1
+                continue
+            out.append(line)
+            i += 1
+        body = "".join(out)
+        if removed:
+            # The block was separated from the answer by a blank line; removing
+            # it whole leaves that separator behind, so collapse the seam and
+            # drop trailing whitespace — `ANSWER + "\n\n" + block` yields ANSWER.
+            body = re.sub(r"\n{3,}", "\n\n", body).rstrip()
+        return body
+    except Exception:  # noqa: BLE001 — a strip failure must not break a turn
+        return text if isinstance(text, str) else ""
+
+
+_PLATFORM_RULE_LINE_RE = re.compile(r"^\[PLATFORM RULE: .*\]$")
+_READING_FENCE_HEAD_RE = re.compile(r"^----- BEGIN ROUTER READING")
+_READING_FENCE_TAIL_RE = re.compile(r"^----- END ROUTER READING.*$")
 
 
 def inject_higher_self_rule(request: dict, session_id: str = "") -> bool:

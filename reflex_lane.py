@@ -596,6 +596,9 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         block = take(session_id)
         if not block:
             return False
+        # M40-07: fenced, then delivered in `system` — the reading is data and
+        # its last line must not be a directive, whichever seam parks it.
+        block = fence(block)
         from . import frames as _fr
 
         msgs = request.get("messages")
@@ -605,7 +608,13 @@ def inject_pass(request: Any, session_id: str = "") -> bool:
         # block is by the time it reaches it, not after
         _DELIVERED_AT[session_id] = time.time()
         _ensure_rule(request, session_id, _cfg(None))
-        ok = _fr.append_platform_rule(msgs, next_rule_id(session_id), block, role="user")
+        # M40-07: one channel. The parked reading goes into `system`, the only
+        # role the router may write. dedupe="call": rule ids here are unique per
+        # delivery, and the lane owns the once-only guarantee (the block is taken
+        # once) — the history-wide latch is for STANDING rules only.
+        ok = _fr.inject_platform_rule(request, next_rule_id(session_id), block,
+                                      session_id=session_id, role="system",
+                                      dedupe="call")
         if ok:
             # M15: a delivered reading IS a PRE frame — journal it at the
             # moment it enters the request (never raises, never blocks).
@@ -1248,36 +1257,6 @@ def _receipt(session_id: str, parsed: Dict[str, Any], data: Any, seam: str) -> s
         return ""
 
 
-def _inject_into_evidence(msgs: Any, block: str) -> bool:
-    """Append the reading to the last tool result - the evidence channel.
-
-    The reading then arrives with the data it was derived from, in the channel the model
-    already treats as ground truth, rather than as a separate message it must reconcile
-    with its own plan. Content shape differs by carrier: str for text tool output, list
-    for multimodal parts.
-    """
-    try:
-        if not isinstance(msgs, list):
-            return False
-        block = fence(block)
-        if not block:
-            return False
-        for m in reversed(msgs):
-            if not isinstance(m, dict) or m.get("role") != "tool":
-                continue
-            content = m.get("content")
-            if isinstance(content, str):
-                m["content"] = content.rstrip() + "\n\n" + block
-                return True
-            if isinstance(content, list):
-                content.append({"type": "text", "text": block})
-                return True
-            return False
-    except Exception:  # noqa: BLE001
-        return False
-    return False
-
-
 def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
     """Every-call mode: read the live request, ask, inject. Returns True when injected."""
     try:
@@ -1382,6 +1361,10 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
                       basis=_dx.basis_line("", window), **_soft_kw)
         if not block:
             return bool(_held(sid, "empty_block", "every_call"))
+        # M40-07: the fence stays — the reading is still data, and its last line
+        # must not be a directive. It now wraps a `system` message instead of a
+        # tool result, so nothing enters a speaking channel fenced.
+        block = fence(block)
         from . import frames as _fr
 
         # Integration contract (R72). The reading is a reflex, not an advisory, and the
@@ -1391,17 +1374,26 @@ def run_on_request(request: Any, session_id: str = "", cfg: Any = None) -> bool:
         _DELIVERED_AT[sid] = time.time()
         _ensure_rule(request, sid, c)
 
-        # Delivery shape (R72). `user` = the old interlocutor append; `evidence` = ride the
-        # last tool result; `system` = standing instruction. Which one the model actually
-        # acts on is a question for the A/B, not for intuition.
-        shape = str(c.get("shape") or "user").lower()
-        ok = False
+        # Delivery shape (M40-07). ONE channel: `system`. The old `user` shape
+        # (interlocutor append) and `evidence` shape (ride the last tool result)
+        # are both refused at the code level — `tool`/`assistant`/`user` are the
+        # agent's speaking channels, and an agent's child answer arriving at its
+        # parent carrying router text is the case this rule exists for. `shape`
+        # stays in the config for deploy safety: `evidence` is REFUSED, not
+        # silently rewritten, so the refusal is observable in the route log (the
+        # eleven fleet configs that still say `evidence` are migrated separately).
+        shape = str(c.get("shape") or "system").lower()
         if shape == "evidence":
-            ok = _inject_into_evidence(msgs_now, block)
-        if not ok and shape == "system":
-            ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="system")
+            _log(sid, "reflex_shape_evidence_refused", shape="evidence",
+                 using="system", seam="every_call")
+        ok = _fr.inject_platform_rule(request, next_rule_id(sid), block,
+                                      session_id=sid, role="system",
+                                      dedupe="call")
         if not ok:
-            ok = _fr.append_platform_rule(msgs_now, next_rule_id(sid), block, role="user")
+            # No channel fallback exists any more: a reading that cannot be
+            # delivered in `system` is DROPPED, loudly. Silence beats evidence.
+            _log(sid, "reflex_reading_dropped", reason="delivery_refused",
+                 shape=shape, seam="every_call")
         if ok:
             # M15: the every-call PRE seam's frame — the exact block the model
             # will read this request, journaled as stage=PRE. Bounded: a

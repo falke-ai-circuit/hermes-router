@@ -117,6 +117,33 @@ def _sanitize_delivery(text, *, session_id: str = "") -> tuple:
         # not an empty body: sanitizing it to "" would blank the user's answer.
         if text is None:
             return None, "", ""
+        # M40-07: the whole-block strip runs BEFORE the cheap fast path. The
+        # fast path keys on the declaration tag alone, and a router reading
+        # block carries no `<turn`, so reading text shipped to the user
+        # un-scanned. Block-level is mandatory here: the line-wise drop below
+        # leaves the block's BODY behind once its header line is removed.
+        try:
+            from .. import frames as _frames
+
+            if isinstance(text, str) and text:
+                stripped = _frames.strip_platform_rule_blocks(text)
+                if stripped != text:
+                    if not stripped.strip():
+                        lg = _hub_log_route()
+                        if lg is not None:
+                            try:
+                                lg("POST", event_detail="marker_leak_withheld",
+                                   reason="body_was_only_platform_block",
+                                   marker="[PLATFORM RULE: "[:32],
+                                   severity="error",
+                                   session_id=str(session_id or ""))
+                            except Exception:  # noqa: BLE001 — telemetry never breaks delivery
+                                pass
+                        return (WITHHELD_BODY, "marker_leak_withheld",
+                                "[PLATFORM RULE: ")
+                    text = stripped
+        except Exception:  # noqa: BLE001 — the strip must never break a turn
+            pass
         # Cheap fast path: no candidate marker ⇒ nothing to strip. The scan
         # below is line-wise regex work on every delivered body, and the
         # boundary sits on the delivery path.

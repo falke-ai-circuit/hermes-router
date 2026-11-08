@@ -3670,12 +3670,14 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
             # after the advisory envelope, explicitly instruct the main model to
             # PROCEED with the task. Higher-self produced the data; the main model
             # must now do the work and answer the user.
-            # R41: marked with its own platform rule id and appended at most
-            # once per context — replay can attribute this user-role carrier
-            # to the platform instead of reading it as a genuine user turn.
-            _frames.append_platform_rule(
-                msgs, _frames.HS_SEAM_INSTRUCTION_RULE_ID,
-                _frames.HS_SEAM_INSTRUCTION, role="user")
+            # R41/M40-07: marked with its own platform rule id and appended at
+            # most once per context — replay can attribute this carrier to the
+            # platform. `system`, never `user`: a platform block in the user
+            # channel is read as a genuine user turn.
+            _frames.inject_platform_rule(
+                request, _frames.HS_SEAM_INSTRUCTION_RULE_ID,
+                _frames.HS_SEAM_INSTRUCTION, session_id=str(session_id or ""),
+                role="system")
         # R19.2: merge any midturn advisory envelopes into the anchored
         # path too (advisory data appended, never a rewrite).
         if _mt_advisories:

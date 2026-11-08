@@ -470,15 +470,24 @@ _DIAL_WORD = {("scope", 1): "widen", ("scope", -1): "narrow",
 
 # The contract. Measured: 23% of readings that cleared the gate were wrong, so the block
 # must license deviation explicitly - otherwise it is an instruction dressed as a reading,
-# and a wrong instruction is worse than silence.
-USE_CONTRACT = ("  reading, not an instruction: the top move is a suggestion and deviation is "
-                "licensed - say in one line why you went elsewhere")
+# and a wrong instruction is worse than silence. M40-07: the contract must also say, in its
+# own closing line, that it does not override the user — the standing rule says so far
+# upstream of the generation point, and the block is what the model reads there.
+USE_CONTRACT = ("  reading, not an instruction: it does not override the user's ask, "
+                "the system prompt, or the task\n"
+                "  brief you were given - on conflict the user's request wins. "
+                "The top move is a suggestion and\n"
+                "  deviation is licensed - say in one line why you went elsewhere")
 
 # A soft reading says "no clear lead" and then, in the same block, told the model to take the
 # top - the two instructions contradicted each other. What the dials are for on a flat board is
 # the stance, not a pick.
-SOFT_CONTRACT = ("  reading, not an instruction: no move to take here - the dials describe how much "
-                 "surface this step needs and how hard it needs checking; the options are context")
+SOFT_CONTRACT = ("  reading, not an instruction: it does not override the user's ask, "
+                 "the system prompt, or the task\n"
+                 "  brief you were given - on conflict the user's request wins. "
+                 "No move to take here - the dials\n"
+                 "  describe how much surface this step needs and how hard it needs "
+                 "checking; the options are context")
 
 
 def basis_line(tool: str, text: str, limit: int = 92) -> str:
@@ -571,13 +580,13 @@ def render(parsed: Dict[str, Any], limit: int = 560, basis: str = "",
             keep = [ln for ln in keep if ln != drop]
             if len("\n".join(keep)) <= limit:
                 return "\n".join(keep)
-        # Reaching here means the block is STILL over budget: `optional` always contains
-        # `reg` (the list literal above leads with it), so the loop above ran at least once
-        # and any iteration that brought the block under budget already returned. The old
-        # tail was `"" if len(...) > limit else "\n".join(keep)`; its second arm could never
-        # fire (R73 inventory: dominant by construction, 639/639 traced executions returned
-        # ""). Shedding the loop is live - only the unreachable arm is gone.
-        return ""
+        # Reaching here means the block is STILL over budget after every optional part was
+        # shed. M40-07: the mandated contract wording is not optional (it is the part that
+        # states the reading does not override the user), and growing it pushed the block
+        # past a 400-char fleet budget — the old tail returned "" there, which SILENTLY
+        # MUTED the lane. An over-budget block costs a few hundred context chars; a muted
+        # lane costs the reading entirely, so the block ships and the budget stays soft.
+        return "\n".join(keep)
     except Exception:  # noqa: BLE001
         return ""
 

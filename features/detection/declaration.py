@@ -234,7 +234,19 @@ def routes(declaration: object) -> bool:
 # are still the router's internal marker text and must never be user bytes —
 # so the delivery edge asks this predicate AFTER the strip and withholds the
 # body when it still matches.
-_MARKER_RESIDUAL_RE = re.compile(r"<turn[ \t]*declined", re.IGNORECASE)
+#
+# M40-07: the ROUTER READING families join the family list. A model can echo an
+# injected block into its own answer (echo_guard detects it, never rewrites), so
+# the delivery edge has to recognise the block's own text — rule header, fence
+# head/tail, the envelope marker, and the bare phrase — not just the tag.
+_MARKER_RESIDUAL_RE = re.compile(
+    r"<turn[ \t]*declined"
+    r"|\[PLATFORM RULE: "
+    r"|----- BEGIN ROUTER READING"
+    r"|----- END ROUTER READING"
+    r"|\[DECISION READING \| DECISION-LANE"
+    r"|ROUTER READING",
+    re.IGNORECASE)
 
 
 def residual_marker(text: object) -> str:

@@ -4,8 +4,9 @@ Two levers, each with a failure mode it exists to prevent:
 
 SHAPE. The reading used to arrive only as a trailing user-role message - the same shape that
 made the echo guard necessary, because a note in a user message reads as something to answer.
-`evidence` rides the last tool result instead, so the reading arrives with the data it was
-derived from, in the channel the model already treats as ground truth.
+An `evidence` shape then rode the last tool result, so a child agent's answer reached its parent
+carrying router text inside the channel the parent treats as ground truth. M40-07: ONE channel
+permitted (`system`) and `evidence`/`user` are refused by name, observable in the route log.
 
 AGREEMENT. A reflex that only ever contradicts trains the model to discount it, and silence
 then means two different things. When the model's own last move already targets what the
@@ -42,41 +43,53 @@ def _cfg(**kw):
     return {"hermes_router": {"reflex_weights": dict({"enabled": True}, **kw)}}
 
 
-def test_evidence_shape_rides_the_tool_result_instead_of_appending_a_message(monkeypatch):
+def test_evidence_shape_is_refused_and_the_reading_lands_in_system(monkeypatch):
+    """M40-07: `evidence` is refused at the code level, not rewritten silently.
+
+    The old shape appended the reading into the last tool result — the channel a
+    parent agent treats as its child's ground truth. The tool result must stay
+    byte-identical and the reading must arrive exactly once, as `system`."""
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
     rl.clear()
     req = _req()
     before = len(req["messages"])
     assert rl.run_on_request(req, session_id="s1", cfg=_cfg(shape="evidence")) is True
-    # one new message is the standing contract; the READING itself spends no message
-    assert len(req["messages"]) == before + 1
+    # two new messages: the standing contract + the reading, both `system`
+    new = req["messages"][before:]
+    assert len(new) == 2
+    assert all(m["role"] == "system" for m in new)
     tool_msg = [m for m in req["messages"] if m.get("role") == "tool"][-1]
-    assert dx.HEAD_FRAME in tool_msg["content"]
-    assert tool_msg["content"].startswith("Traceback"), "the evidence stays first"
+    assert tool_msg["content"] == BODY, "the evidence channel is never written"
+    # the fenced block is the READING; the standing rule quotes the same marker
+    reading = [m for m in new if rl._FENCE_HEAD in m["content"]]
+    assert len(reading) == 1
+    assert dx.HEAD_FRAME in reading[0]["content"]
 
 
-def test_user_shape_still_appends_a_message_so_the_arm_can_be_rolled_back(monkeypatch):
+def test_user_shape_is_refused_and_delivers_in_system(monkeypatch):
+    """The rollback arm is gone: a platform block in the user channel reads as a
+    genuine user turn, so `user` is refused like every other speaking channel."""
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
     rl.clear()
     req = _req()
-    before = len(req["messages"])
     assert rl.run_on_request(req, session_id="s2", cfg=_cfg(shape="user")) is True
-    assert len(req["messages"]) == before + 2, "contract + the reading, as a message"
-    assert req["messages"][-1]["role"] == "user"
+    assert req["messages"][-1]["role"] == "system"
+    assert not any(m.get("role") == "user" and rl._FENCE_HEAD in str(m.get("content") or "")
+                   for m in req["messages"][2:])
 
 
-def test_evidence_shape_falls_back_to_user_on_an_unsupported_carrier(monkeypatch):
-    """Some tool results arrive with no writable content carrier. The reading must still
-    arrive rather than vanish - delivery fails open, it never silently drops the block."""
+def test_there_is_no_channel_fallback_when_the_speaking_channel_is_unwritable(monkeypatch):
+    """A reading that cannot be delivered as `system` is dropped, never demoted
+    into `user`/`tool`. Silence beats evidence."""
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
     rl.clear()
-    # window comes from tool/assistant text, so an earlier result provides it; the LAST
-    # tool message has no writable carrier, which is the case that must fall back.
     req = {"messages": [{"role": "user", "content": "fix the renderer"},
                         {"role": "tool", "content": BODY},
                         {"role": "tool", "content": None}]}
-    assert rl.run_on_request(req, session_id="s3", cfg=_cfg(shape="evidence")) is True
-    assert req["messages"][-1]["role"] == "user"
+    rl.run_on_request(req, session_id="s3", cfg=_cfg(shape="evidence"))
+    assert req["messages"][-2]["role"] != "user", "no user-role demotion"
+    assert not any(rl._FENCE_HEAD in str(m.get("content") or "")
+                   for m in req["messages"] if m.get("role") in ("tool", "user"))
 
 
 def test_it_stays_silent_when_the_model_is_already_on_the_named_target(monkeypatch):
@@ -205,15 +218,23 @@ def test_register_and_shape_are_read_from_the_same_config_block():
     assert got["min_top"] == 0.5 and got["min_margin"] == 0.2
 
 
-def test_the_shape_is_recorded_so_the_arms_can_be_scored_from_the_log(monkeypatch):
-    seen = {}
+def test_the_refused_shape_is_recorded_so_the_config_migration_can_be_counted(monkeypatch):
+    """M40-07: `shape: evidence` is still in eleven fleet configs, so the refusal
+    has to be a log row — a silent rewrite would leave the next reader unable to
+    tell which channel the block actually took, and unmigrated configs invisible."""
+    delivered = {}
 
     def _spy(sid, event, **fields):
         if event == "reflex_weights_delivered":
-            seen.update(fields)
+            delivered.update(fields)
 
     monkeypatch.setattr(rl, "_log", _spy)
     monkeypatch.setattr(rl, "_transport", lambda *a, **k: _dist(0.8, 0.12, 0.05, 0.03))
     rl.clear()
     rl.run_on_request(_req(), session_id="s6", cfg=_cfg(shape="evidence"))
-    assert seen.get("shape") == "evidence"
+    assert delivered.get("shape") == "evidence", "the config value is still reported"
+    assert delivered.get("block"), "the reading still shipped"
+    # and the reading went to `system`
+    req = _req()
+    rl.run_on_request(req, session_id="s7", cfg=_cfg(shape="evidence"))
+    assert req["messages"][-1]["role"] == "system"

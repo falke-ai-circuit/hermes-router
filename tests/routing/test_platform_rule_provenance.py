@@ -99,18 +99,20 @@ def test_seam_instruction_is_marked_and_once():
     assert instruction.startswith(frames.HS_SEAM_MARKER)
     assert frames.platform_rule_marker(
         frames.HS_SEAM_INSTRUCTION_RULE_ID) in instruction
-    msgs = [{"role": "assistant", "content": "advisory"}]
-    assert frames.append_platform_rule(
-        msgs, frames.HS_SEAM_INSTRUCTION_RULE_ID, instruction,
-        role="user") is True
-    assert frames.append_platform_rule(
-        msgs, frames.HS_SEAM_INSTRUCTION_RULE_ID, instruction,
-        role="user") is False
-    carriers = [m for m in msgs
+    # M40-07: the seam instruction now rides the single injection point, in
+    # `system`. The old `append_platform_rule` user-role carrier is gone.
+    request = {"messages": [{"role": "assistant", "content": "advisory"}]}
+    assert frames.inject_platform_rule(
+        request, frames.HS_SEAM_INSTRUCTION_RULE_ID, instruction,
+        role="system") is True
+    assert frames.inject_platform_rule(
+        request, frames.HS_SEAM_INSTRUCTION_RULE_ID, instruction,
+        role="system") is False
+    carriers = [m for m in request["messages"]
                 if frames.platform_rule_marker(
                     frames.HS_SEAM_INSTRUCTION_RULE_ID) in m["content"]]
     assert len(carriers) == 1
-    assert carriers[0]["role"] == "user"
+    assert carriers[0]["role"] == "system"
     # the marker names the rule exactly once — no doubled provenance line
     assert carriers[0]["content"].count(
         frames.platform_rule_marker(
