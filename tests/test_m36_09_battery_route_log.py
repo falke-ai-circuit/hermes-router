@@ -10,6 +10,7 @@ These tests pin the resolution contract: config decides, an absent configured
 path is a loud error, and the /tmp sibling is never used as a silent fallback.
 """
 import importlib.util
+import json
 import os
 import sys
 
@@ -110,17 +111,28 @@ F2_CADENCE = (
 
 
 def test_class_drift_when_the_row_exists_in_a_log_not_graded():
-    """Row present elsewhere -> grader_path_drift, by its exact class string."""
+    """Row attributable to THIS run elsewhere -> grader_path_drift.
+
+    M36-17: the class needs the row to be this run's own — exact event token,
+    exact scenario sid, and a leading timestamp inside the run window. The
+    file merely containing the event name is not evidence (that was B1/F1).
+    """
     graded = F1_WINDOW
     configured = F1_WINDOW + (
-        "2026-11-06T10:57:35Z POST event_detail=completion_audit_gate ok=True "
-        "reason=ok turn=2 of=3 closure=True\n"
+        "%s POST event_detail=completion_audit_gate ok=True "
+        "reason=ok turn=2 of=3 closure=True session_id=SID-1\n" % _stamp(RUN_START + 30)
     )
     mod = _runner()
+    attributed = mod.attributable_event_rows(
+        "completion_audit_gate", [("coder/uncensored-router.log", configured)],
+        "SID-1", RUN_START, RUN_START + 60)
+    assert len(attributed) == 1
     cls, evidence = mod.classify_absent_event(
-        "completion_audit_gate", graded, [("coder/uncensored-router.log", configured)])
+        "completion_audit_gate", graded, attributed, sid="SID-1",
+        run_start=RUN_START)
     assert cls == "grader_path_drift"
     assert "coder/uncensored-router.log" in evidence
+    assert "this run's own row" in evidence
 
 
 def test_class_unreached_when_the_impact_gate_stood_down():
@@ -464,9 +476,14 @@ def test_relative_log_path_is_absolutised_by_the_shared_rule(tmp_path):
 # on a FAIL whose real cause was the failed turn. The signal is only valid when
 # the graded log is fresh; both directions are pinned here.
 
-def _main_with_sibling(tmp_path, monkeypatch, profile, log_text, sibling_text):
+def _main_with_sibling(tmp_path, monkeypatch, profile, log_text, sibling_text,
+                       now=None):
     """main() where the graded log is ``log_text`` and a sibling log holds
-    ``sibling_text``; returns (rc, doc, stdout)."""
+    ``sibling_text``; returns (rc, doc, stdout).
+
+    ``now`` freezes the runner's clock (M36-17 test-fixture hazard: a sibling
+    row stamped with the wall clock can land 0-1s BEFORE ``started`` and flake).
+    """
     import io
     import json
     from contextlib import redirect_stdout
@@ -477,6 +494,13 @@ def _main_with_sibling(tmp_path, monkeypatch, profile, log_text, sibling_text):
     sibdir = tmp_path / profile
     sibdir.mkdir()
     (sibdir / "uncensored-router.log").write_text(sibling_text)
+    if now is not None:
+        import time as _time
+        import types
+
+        monkeypatch.setattr(mod, "time", types.SimpleNamespace(
+            time=lambda: now, strftime=_time.strftime, gmtime=_time.gmtime,
+            strptime=_time.strptime))
     monkeypatch.setattr(mod, "PROFILES", str(tmp_path))
     monkeypatch.setattr(mod, "env_of",
                         lambda p: {"API_SERVER_KEY": "k", "API_SERVER_PORT": "1"})
@@ -533,17 +557,196 @@ def test_fresh_log_still_reports_grader_path_drift(tmp_path, monkeypatch):
     """Control: the class survives where it IS established — a fresh grade.
 
     The graded log has this run's rows (fresh), route_fired is genuinely
-    missing there, and the sibling log holds it. Blanket removal would delete
-    a real signal; this asserts it is still reported.
+    missing there, and a sibling log holds a row THIS run wrote (in-window ts,
+    matching session_id). Blanket removal would delete a real signal; the row
+    must be attributable, and M36-17 re-fixtured this test off the 2026-09-01
+    tombstone, which asserted the false cause the ruling forbids.
     """
-    import time
-
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    fresh = ("%s POST session_id=SID-1 event_detail=other_event lane=main\n" % now)
+    fresh = ("%s POST session_id=SID-1 event_detail=other_event lane=main\n"
+             % _stamp(RUN_START))
+    live = ("%s POST session_id=SID-1 event_detail=route_fired lane=lane\n"
+            % _stamp(RUN_START))
     rc, doc, _ = _main_with_sibling(
-        tmp_path, monkeypatch, "m3615fresh", log_text=fresh, sibling_text=TOMBSTONE)
+        tmp_path, monkeypatch, "m3615fresh", log_text=fresh, sibling_text=live,
+        now=RUN_START)
     entry = doc["scenarios"][0]
     assert doc["log_freshness"] == "fresh"
     assert rc == 1 and entry["verdict"] == "FAIL"
     assert entry["absent_class"] == "grader_path_drift"
-    assert "the grader read a file the router did not write" in entry["absent_evidence"]
+    assert "this run's own row was written to a file the grader did not read" \
+        in entry["absent_evidence"]
+
+
+# --- M36-17: the attribution predicate, driven through the REAL main() -----
+#
+# P(row) is a ROW-level fact: the same line must carry the exact event token,
+# the exact scenario sid, a parseable leading timestamp, and a timestamp inside
+# [run start, sibling read]. The file-level "event in text" test is retired —
+# it accused a tombstone (M36-14/B1) and it suppressed a provable drift
+# (M36-16/F1). Every shape below runs battery_run.main() end to end with the
+# runner's clock frozen at RUN_START.
+
+OLD_TOMB = RUN_START - 30 * 24 * 3600
+FRESH_GRADED = ("%s POST session_id=SID-1 event_detail=other_event lane=main\n"
+                % _stamp(RUN_START))
+
+
+def _attr_row(ts, sid="SID-1", ev="route_fired"):
+    """One route-log row: optional leading ts, exact event token, exact sid."""
+    head = ("%s " % _stamp(ts)) if ts is not None else ""
+    sidf = (" session_id=%s" % sid) if sid is not None else ""
+    return "%sPOST event_detail=%s lane=lane%s\n" % (head, ev, sidf)
+
+
+def _main_attr(tmp_path, monkeypatch, profile, log_text, sibling_text,
+               sid="SID-1", turns=None, rows=None, graded_mtime=None):
+    """main() with the clock frozen at RUN_START and one sibling log."""
+    import io
+    import json
+    import time as _time
+    import types
+    from contextlib import redirect_stdout
+
+    mod = _runner()
+    graded = tmp_path / "graded.log"
+    graded.write_text(log_text)
+    if graded_mtime is not None:
+        os.utime(graded, (graded_mtime, graded_mtime))
+    sibdir = tmp_path / profile
+    sibdir.mkdir()
+    if sibling_text is not None:
+        (sibdir / "uncensored-router.log").write_text(sibling_text)
+    stray = "/tmp/uncensored-router-%s.log" % profile
+    if os.path.exists(stray):
+        os.remove(stray)
+    monkeypatch.setattr(mod, "time", types.SimpleNamespace(
+        time=lambda: RUN_START,
+        strftime=_time.strftime, gmtime=_time.gmtime, strptime=_time.strptime))
+    monkeypatch.setattr(mod, "PROFILES", str(tmp_path))
+    monkeypatch.setattr(mod, "env_of",
+                        lambda p: {"API_SERVER_KEY": "k", "API_SERVER_PORT": "1"})
+    monkeypatch.setattr(mod, "probe", lambda base, key: (True, "ok"))
+    monkeypatch.setattr(mod, "router_log_path", lambda p: str(graded))
+    monkeypatch.setattr(mod, "head_sha", lambda: "deadbeef")
+    if turns is None:
+        turns = [{"ok": False, "detail": "missing_event:route_fired"}]
+    monkeypatch.setattr(mod, "parse_stdout",
+                        lambda raw: ({"s1": sid}, {"s1": turns}))
+    ledger = [_ledger_row(sid or "SID-1")] if rows is None else rows
+    monkeypatch.setattr(mod, "read_ledger",
+                        lambda p, start: (str(tmp_path / "decisions.jsonl"), ledger))
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda *a, **k: type("P", (), {"returncode": 0,
+                                                       "stdout": "", "stderr": ""})())
+    out = tmp_path / "out.json"
+    monkeypatch.setattr(sys, "argv",
+                        ["battery_run.py", "--profile", profile, "--out", str(out)])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = mod.main()
+    return rc, json.loads(out.read_text()), buf.getvalue()
+
+
+# (name, graded, sibling, kwargs, absent_class, verdict, overall, drift?, NOTE?)
+M3617_SHAPES = [
+    # stale: no sibling row names this run
+    ("stale_tombstone_only", "", _attr_row(OLD_TOMB), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    # stale + attributable row in-window: the F1 case that was suppressed
+    ("stale_inwindow_matching_sid", "", _attr_row(RUN_START), {},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    ("stale_inwindow_foreign_sid", "", _attr_row(RUN_START, sid="SID-9"), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("stale_inwindow_foreign_sid_note",
+     "", _attr_row(RUN_START, sid="SID-9") + _attr_row(RUN_START, ev="other_event"),
+     {}, "unattributable_stale_log", "FAIL", "FAIL", False, True),
+    ("stale_inwindow_no_sid", "", _attr_row(RUN_START, sid=None), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("stale_row_before_start", "", _attr_row(RUN_START - 600), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("stale_row_no_ts", "", _attr_row(None), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("stale_different_event_token", "",
+     _attr_row(RUN_START, ev="route_fired_no_stash"), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, True),
+    ("stale_own_standdown_row", "", _attr_row(RUN_START, ev="not_a_denial"), {},
+     "unattributable_stale_log", "FAIL", "FAIL", False, True),
+    ("stale_tombstone_plus_live_row",
+     "", _attr_row(OLD_TOMB) + _attr_row(RUN_START), {},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    ("stale_two_tokens_one_line", "",
+     "%s POST event_detail=other_event event_detail=route_fired session_id=SID-1\n"
+     % _stamp(RUN_START), {},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    # stale by AGE (rows + mtime old) — same live sibling as above
+    ("stale_aged_inwindow_matching_sid", _attr_row(RUN_START - 7200, ev="other_event"),
+     _attr_row(RUN_START), {"graded_mtime": RUN_START - 7200},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    # fresh: the file-level part is now provable too
+    ("fresh_inwindow_matching_sid", FRESH_GRADED, _attr_row(RUN_START), {},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    ("fresh_row_before_start", FRESH_GRADED, _attr_row(RUN_START - 600), {},
+     None, "FAIL", "FAIL", False, False),
+    ("fresh_foreign_sid", FRESH_GRADED, _attr_row(RUN_START, sid="SID-9"), {},
+     None, "FAIL", "FAIL", False, False),
+    ("fresh_row_no_ts", FRESH_GRADED, _attr_row(None), {},
+     None, "FAIL", "FAIL", False, False),
+    ("fresh_different_event_token", FRESH_GRADED,
+     _attr_row(RUN_START, ev="route_fired_no_stash"), {},
+     None, "FAIL", "FAIL", False, False),
+    # fresh: stand-down marker in this run's window (unchanged semantics)
+    ("fresh_standdown_marker", _attr_row(RUN_START, ev="not_a_denial"), None, {},
+     "not_instrumented_path_not_taken", "FAIL", "FAIL", False, False),
+    # attribution impossible without a sid
+    ("stale_sid_empty", "", _attr_row(RUN_START), {"sid": ""},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("fresh_sid_empty", FRESH_GRADED, _attr_row(RUN_START), {"sid": ""},
+     None, "FAIL", "FAIL", False, False),
+    # FAIL / PASS / F2 preservation
+    ("fail_survives_no_ledger", "", _attr_row(RUN_START), {"rows": []},
+     "grader_path_drift", "FAIL", "FAIL", True, False),
+    ("fail_stale_note_no_ledger", "", _attr_row(OLD_TOMB), {"rows": []},
+     "unattributable_stale_log", "FAIL", "FAIL", False, False),
+    ("pass_survives_stale_log", "", None,
+     {"turns": [{"ok": True, "detail": "ok"}]},
+     None, "PASS", "PASS", False, False),
+]
+
+
+@pytest.mark.parametrize(
+    "graded,sibling,kwargs,cls,verdict,overall,drift,note",
+    [s[1:] for s in M3617_SHAPES],
+    ids=[s[0] for s in M3617_SHAPES])
+def test_m36_17_attribution_matrix(tmp_path, monkeypatch, graded, sibling,
+                                   kwargs, cls, verdict, overall, drift, note):
+    rc, doc, stdout = _main_attr(tmp_path, monkeypatch, "m3618_" + str(id(kwargs)),
+                                 graded, sibling, **kwargs)
+    entry = doc["scenarios"][0]
+    assert entry.get("absent_class") == cls
+    assert entry["verdict"] == verdict
+    assert doc["overall"] == overall
+    assert ("this run's own row was written to a file the grader did not read"
+            in entry.get("absent_evidence", "")) is drift
+    assert ("grader_path_drift" in (doc_text := json.dumps(doc) + stdout)) is drift
+    assert doc["log_freshness"] != "fresh" or not note
+    # the stale NOTE rides the evidence string, never a second class
+    assert ("NOTE this run's own rows" in entry.get("absent_evidence", "")) is note
+    # F2: one stdout note on stale runs, zero on fresh ones
+    assert stdout.count("NOTE: graded log stale") == (
+        0 if doc["log_freshness"] == "fresh" else 1)
+
+
+def test_m36_17_predicate_needs_the_whole_line():
+    """P1-P4 hold on ONE line; a near-miss on any term is not attribution."""
+    mod = _runner()
+    other = [("sib.log", "".join([
+        _attr_row(RUN_START, ev="route_fired_no_stash"),   # P1 exact token
+        _attr_row(RUN_START, sid="SID-10"),                # P2 exact sid
+        _attr_row(None),                                   # P3 parseable ts
+        _attr_row(RUN_START - 600),                        # P4 window
+        _attr_row(RUN_START),                              # all four: counts
+    ]))]
+    rows = mod.attributable_event_rows("route_fired", other, "SID-1",
+                                       RUN_START, RUN_START)
+    assert len(rows) == 1
+    assert rows[0][1].endswith("session_id=SID-1")

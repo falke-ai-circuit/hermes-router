@@ -233,27 +233,112 @@ UNREACHED_MARKERS = {
 }
 
 
-def classify_absent_event(event, graded_text, other_texts=(), window_text=None):
+def _iso(epoch):
+    """ISO-8601 second stamp for evidence strings; 'unknown' when unset."""
+    if epoch is None:
+        return "unknown"
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _attributable_rows(other_texts, sid, run_start, read_epoch, event=None):
+    """Rows of a sibling log that are evidence THIS RUN wrote them (M36-17).
+
+    A row counts only when, ON THE SAME LINE:
+      P1 EVENT  ``event_detail=<event>`` is a whitespace-delimited token and its
+                value equals ``event`` exactly (no substring);
+      P2 SID    ``session_id=<sid>`` is a whitespace-delimited token whose value
+                equals the scenario sid exactly (no substring, no prefix);
+      P3 TS     the leading ``^YYYY-MM-DDTHH:MM:SSZ`` parses;
+      P4 WINDOW floor(run_start) <= ts <= read_epoch + 1 (second granularity).
+    ``event=None`` drops P1 (used for the stale NOTE: this run wrote *something*
+    here) and returns every in-window row of the session.
+    """
+    if not sid:
+        return []
+    lo = int(run_start) if run_start is not None else None
+    hi = None if read_epoch is None else int(read_epoch) + 1
+    event_tok = None if event is None else "event_detail=" + event
+    sid_tok = "session_id=" + sid
+    out = []
+    for label, text in other_texts or ():
+        for line in (text or "").splitlines():
+            tokens = set(line.split())
+            if event_tok is not None and event_tok not in tokens:
+                continue
+            if sid_tok not in tokens:
+                continue
+            ts = _row_epoch(line)
+            if ts is None:
+                continue
+            if lo is not None and ts < lo:
+                continue
+            if hi is not None and ts > hi:
+                continue
+            out.append((label, line, ts))
+    return out
+
+
+def attributable_event_rows(event, other_texts, sid, run_start, read_epoch):
+    """The P(row) predicate as a row list: siblings holding THIS run's event.
+
+    The single source of ABSENT_DRIFT. File-level ``event in text`` is retired:
+    a whole-file hit (a tombstone, another session's row) proves nothing about
+    where THIS run's row was written. Empty when no row is attributable.
+    """
+    return _attributable_rows(other_texts, sid, run_start, read_epoch, event=event)
+
+
+def attributable_session_rows(other_texts, sid, run_start, read_epoch):
+    """In-window sibling rows of this run's own session, any event kind.
+
+    Used only for the stale NOTE: it says this run did write somewhere the
+    grader did not read, without claiming the expected row exists there.
+    """
+    return _attributable_rows(other_texts, sid, run_start, read_epoch)
+
+
+def classify_absent_event(event, graded_text, attributed=(), window_text=None,
+                          stale_reason=None, sid=None, run_start=None,
+                          sibling_sid_rows=()):
     """Classify an expected event kind that has no row in the graded log.
 
-    ``graded_text`` is the log this run actually graded; ``other_texts`` is an
-    iterable of ``(label, text)`` for logs the router may write instead (the
-    per-profile file, the /tmp sibling). ``window_text`` narrows the stand-down
-    search — defaults to ``graded_text``.
+    ``graded_text`` is the log this run actually graded; ``attributed`` is the
+    output of :func:`attributable_event_rows` — already-proven rows, never raw
+    sibling text, so ``grader_path_drift`` cannot be produced from unattributed
+    text by any caller. ``window_text`` narrows the stand-down search — defaults
+    to ``graded_text``. ``stale_reason`` is the freshness NOTE, used only as the
+    fallback label; it never adds or removes a class.
 
-    Returns ``(cls, evidence)``. ``cls`` is ABSENT_DRIFT, ABSENT_UNREACHED, or
-    None when nothing on disk supports either claim.
+    Returns ``(cls, evidence)``. ``cls`` is ABSENT_DRIFT, ABSENT_STALE_UNATTRIB,
+    ABSENT_UNREACHED, or None when nothing on disk supports a claim.
     """
     window = graded_text if window_text is None else window_text
     if window_text is None and event in graded_text:
         return None, "event present in the graded log; not an absence"
     if event in window:
         return None, "event present in the window; not an absence"
-    for label, text in other_texts:
-        if text and event in text:
-            return ABSENT_DRIFT, (
-                "%s present in %s, absent from the graded log — the grader read "
-                "a file the router did not write" % (event, label))
+    if attributed:
+        label, _line, ts = attributed[0]
+        return ABSENT_DRIFT, (
+            "%s present in %s at %s with session_id=%s (run start %s) — this "
+            "run's own row was written to a file the grader did not read"
+            % (event, label, _iso(ts), sid or "", _iso(run_start)))
+    if stale_reason:
+        evidence = (
+            "%s absent, and no sibling row names this run (leading ts >= %s "
+            "and session_id=%s) — no path drift is claimed"
+            % (event, _iso(run_start), sid or ""))
+        if sibling_sid_rows:
+            counts = {}
+            for label, _line, _ts in sibling_sid_rows:
+                counts[label] = counts.get(label, 0) + 1
+            evidence += (
+                "; NOTE this run's own rows do appear in %s — the graded path "
+                "is not the file the writer used, but no row for %s exists "
+                "there either"
+                % (", ".join("%s (%d row(s))" % (l, n) for l, n in counts.items()),
+                   event))
+        return ABSENT_STALE_UNATTRIB, evidence
     hit = [m for m in UNREACHED_MARKERS.get(event, ()) if m in window]
     if hit:
         return ABSENT_UNREACHED, (
@@ -522,6 +607,9 @@ def main():
              "/tmp/uncensored-router-%s.log" % a.profile)):
         if os.path.abspath(path) != os.path.abspath(route_log):
             other_logs.append((label, _read_log_text(path, 400000)))
+    # M36-17/P4: the moment the siblings were read. The upper bound only
+    # excludes rows that did not exist when they were read.
+    read_epoch = time.time()
     ledger_path, rows = read_ledger(a.profile, started)
     by_sid = {}
     for r in rows:
@@ -566,24 +654,15 @@ def main():
                         absent.append(ev)
         if absent:
             entry["absent_event"] = absent[0]
-            if stale_reason:
-                # M36-15/B1: the graded log carries no row at/after run start,
-                # so every expected event is trivially "absent" and the first
-                # sibling that matches (usually the frozen /tmp tombstone) would
-                # claim the grader read a file the router did not write. That is
-                # false — the grader read exactly the configured log. Keep the
-                # FAIL, drop the accusation.
-                entry["absent_class"] = ABSENT_STALE_UNATTRIB
-                entry["absent_evidence"] = (
-                    "%s absent, and the graded log is stale (%s) — a row in a "
-                    "sibling log cannot establish where this run's row was "
-                    "written, so no path drift is claimed" % (absent[0], stale_reason))
-            else:
-                cls, ev = classify_absent_event(
-                    absent[0], graded_text, other_logs,
-                    window_text=session_window(graded_text, sid))
-                entry["absent_class"] = cls
-                entry["absent_evidence"] = ev
+            sid_rows = attributable_session_rows(other_logs, sid, started, read_epoch)
+            cls, ev = classify_absent_event(
+                absent[0], graded_text,
+                attributable_event_rows(absent[0], other_logs, sid, started, read_epoch),
+                window_text=session_window(graded_text, sid),
+                stale_reason=stale_reason, sid=sid, run_start=started,
+                sibling_sid_rows=sid_rows)
+            entry["absent_class"] = cls
+            entry["absent_evidence"] = ev
         if not trs:
             entry.update(verdict="INCONCLUSIVE", reason="NO_TURNS_RECORDED",
                          evidence="battery stdout has no graded turn for %s" % name)
