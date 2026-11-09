@@ -478,13 +478,20 @@ def _minimal_consult_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _simple_anchored_call(ep: anchor_chain.AnchorEndpoint,
-                          payload: Dict[str, Any], timeout: float
+                          payload: Dict[str, Any], timeout: float,
+                          *, keep_reasoning: bool = False
                           ) -> Tuple[str, Dict[str, Any]]:
     """One clean single-shot call against `ep`. (\"\", {}) on any failure.
 
-    Used ONLY by the R34-9b recovery arms (minimal retry / failover): the
-    main path keeps its diagnostics + reasoning-conflict handling untouched.
-    Never raises.
+    Used ONLY by the recovery arms (minimal retry / failover / the M50-02
+    finish=length budget retry): the main path keeps its diagnostics +
+    reasoning-conflict handling untouched.
+
+    `keep_reasoning=True` re-sends the call's reasoning setting instead of
+    stripping it. A BUDGET retry must change the allowance and nothing else —
+    dropping `reasoning_effort` would make the retry a different question
+    (the R34-9b minimal retry strips it deliberately; that is what made it
+    answer with the same tiny budget). Never raises.
     """
     try:
         import httpx
@@ -494,7 +501,8 @@ def _simple_anchored_call(ep: anchor_chain.AnchorEndpoint,
         if not api_key:
             return "", {}
         out_payload = dict(payload or {})
-        out_payload.pop("reasoning_effort", None)
+        if not keep_reasoning:
+            out_payload.pop("reasoning_effort", None)
         out_payload["model"] = ep.model
         client = OpenAI(base_url=ep.base_url, api_key=api_key,
                         timeout=float(timeout), max_retries=0)
@@ -565,9 +573,39 @@ def _failover_endpoints(primary: anchor_chain.AnchorEndpoint
     return out
 
 
+def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
+    """max_tokens for the ONE finish=length retry (M50-02 F1).
+
+    reasoning_effort=max is billed INSIDE `max_tokens`, so a long enough think
+    consumes the whole allowance and the visible answer never starts: HTTP 200,
+    finish=length, zero content. Live measurement: 17,510 completion tokens to
+    emit 3,052 chars against a 23,585 cap — ~6k of headroom, and the failures
+    are the calls that thought longer than that.
+
+    So the retry buys headroom above the OBSERVED thinking peak, not a small
+    increment: 2x the failed allowance, floored at failed + 16,384, clamped to
+    the model's advertised output limit. Returns <= `current` when the ceiling
+    is already reached — the caller then skips the retry rather than sending a
+    value the endpoint rejects (a 400 is not a budget).
+    """
+    try:
+        cur = int(current or 0)
+    except Exception:  # noqa: BLE001
+        cur = 0
+    if cur <= 0:
+        return 0
+    try:
+        ceiling = int(model_output_limit(model))
+    except Exception:  # noqa: BLE001
+        ceiling = DEFAULT_MODEL_OUTPUT_LIMIT
+    want = max(cur * 2, cur + 16384)
+    return max(cur, min(want, ceiling))
+
+
 def _recover_empty_consult(payload: Dict[str, Any],
                            endpoint: anchor_chain.AnchorEndpoint,
-                           timeout: float
+                           timeout: float,
+                           *, skip_minimal: bool = False
                            ) -> Tuple[str, Dict[str, Any],
                                       anchor_chain.AnchorEndpoint]:
     """R34-9b: two-stage recovery from a 200-with-empty-content response.
@@ -578,8 +616,15 @@ def _recover_empty_consult(payload: Dict[str, Any],
          -> `anchor_consult_failover model_from=... model_to=...`
     Both logged; fail-open. Returns ("", {}, endpoint) when nothing lands
     (the caller then keeps today's visible terminal failure).
+
+    `skip_minimal=True` is set by the M50-02 budget-retry path: a
+    finish=length call has ALREADY had one full-payload retry at a larger
+    allowance, and the minimal retry re-sends the same tiny budget with fewer
+    messages — measured to fail identically (n_msgs=2 changes nothing when
+    the thinking is what exhausted the cap). Paying for a known-dead call is
+    the loop, not the recovery.
     """
-    minimal = _minimal_consult_payload(payload)
+    minimal = None if skip_minimal else _minimal_consult_payload(payload)
     if minimal:
         try:
             logger.info("anchor_consult_minimal_retry model=%s n_msgs=%d",
@@ -794,13 +839,60 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             logger.error("anchor_route_failed reason=%s model=%s %s",
                          "content_filter" if _finish_reason == "content_filter"
                          else "empty_response", endpoint.model, _diag)
+            # M50-02 F1: finish=length + empty content is a BUDGET failure, not
+            # a provider failure. reasoning_effort=max spends the same
+            # max_tokens allowance as the answer, so a long think exhausts it
+            # and the body never starts. Retry ONCE (never a loop) with
+            # headroom above the observed thinking peak, same payload, same
+            # reasoning setting. Measurable: anchor_budget_retry /
+            # _recovered / _empty log lines carry both capacities.
+            _budget_retried = False
+            if _finish_reason == "length":
+                _budget_retried = True
+                try:
+                    _cur_mt = payload.get("max_tokens")
+                    _new_mt = _budget_retry_max_tokens(_cur_mt, endpoint.model)
+                    if _new_mt > int(_cur_mt or 0):
+                        logger.info(
+                            "anchor_budget_retry model=%s finish=length "
+                            "max_tokens %s->%s",
+                            endpoint.model, _cur_mt, _new_mt)
+                        _rp = copy.deepcopy(payload)
+                        _rp["max_tokens"] = _new_mt
+                        _rc_b, _rraw_b = _simple_anchored_call(
+                            endpoint, _rp, timeout, keep_reasoning=True)
+                        if str(_rc_b or "").strip():
+                            raw = _rraw_b
+                            content = _rc_b
+                            clear_last_failure()
+                            logger.info(
+                                "anchor_budget_retry_recovered model=%s "
+                                "chars=%d max_tokens=%s",
+                                endpoint.model, len(str(_rc_b)), _new_mt)
+                        else:
+                            logger.error(
+                                "anchor_budget_retry_empty model=%s "
+                                "max_tokens=%s", endpoint.model, _new_mt)
+                    else:
+                        logger.info(
+                            "anchor_budget_retry_skipped model=%s "
+                            "max_tokens=%s reason=ceiling",
+                            endpoint.model, _cur_mt)
+                except Exception:  # noqa: BLE001 — retry never breaks the lane
+                    pass
             # R34-9b: empty content from a 200 is not the end of the lane.
             # Stage (i) one minimal-payload retry, stage (ii) the optional
             # failover walk. Both logged; fail-open (R34-5 still owns the
-            # visible terminal failure when nothing lands).
+            # visible terminal failure when nothing lands). Skipped when the
+            # budget retry above already recovered the answer — one recovery
+            # arm per call, never a chain of them.
             try:
-                _rc, _rraw, _rep = _recover_empty_consult(
-                    payload, endpoint, timeout)
+                if str(content or "").strip():
+                    _rc, _rraw, _rep = content, raw, endpoint
+                else:
+                    _rc, _rraw, _rep = _recover_empty_consult(
+                        payload, endpoint, timeout,
+                        skip_minimal=bool(_budget_retried))
             except Exception:  # noqa: BLE001 — recovery never breaks the lane
                 _rc, _rraw, _rep = "", {}, endpoint
             if str(_rc or "").strip():

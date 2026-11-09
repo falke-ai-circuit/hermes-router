@@ -3779,6 +3779,16 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                    route_id=rec.get("route_id"), task_id=rec.get("task_id"),
                    anchor_chars=len(str(envelope.get("answer") or "")),
                    session_id=session_id)
+        # M50-02 F2: the "anchored" counter is an OUTCOME, counted here where a
+        # delivered envelope proves the consult produced something. It used to
+        # be incremented at PRE fire time (dispatcher_pre), before anyone knew
+        # whether the route returned content — so an empty finish=length route
+        # was counted as anchored AND as skipped. Success and failure are now
+        # exclusive: this line or the route_skipped count above, never both.
+        try:
+            _hub().router_tools.count("anchor_route_fired")
+        except Exception:  # noqa: BLE001
+            pass
         return next_call(modified)
     except Exception:  # noqa: BLE001 — must never break the provider call
         try:

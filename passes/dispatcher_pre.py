@@ -499,10 +499,13 @@ def _handle_complexity_lane(content: str, session_id: str, model: str,
                                              task_id=decision.task_id)
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            router_tools.count("anchor_route_fired")
-        except Exception:  # noqa: BLE001
-            pass
+        # M50-02 F2: NO counter increment here. The route-log event above is a
+        # FIRE (staging) record and stays; the "anchored" COUNTER means "a
+        # consult produced a result", and at fire time the outcome is unknown.
+        # It was incremented here, so every empty/failed route was counted as
+        # anchored while `skipped` also rose — the counter lied in the same
+        # direction as the failure. The increment now lives at the outcome
+        # seam (gate/orchestration.py, success + route_skipped on failure).
     if _staged is None:
             # v3.2.0 one-consult-per-turn: same (session, task) already
             # staged this turn — a re-fire of the same ask inside one
