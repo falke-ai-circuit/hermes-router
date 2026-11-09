@@ -215,7 +215,6 @@ def test_minors_ask_refuses_hard_with_no_route_and_no_render(monkeypatch):
     # (no transform, no banner parked this turn).
     assert out in (None, refusal)
     assert _row(sink, "route_fired") is None
-    assert _row(sink, "route_fired_no_stash") is None
     assert _row(sink, "compound_split_directive") is None
     # M35-15: the duplicate closed-line call sites are gone (§7 item 9 — one
     # read survives, in the facts builder), so the hold is named by the ONE
@@ -268,8 +267,10 @@ def test_compound_turn_routes_with_split_directive_and_grades_the_denial(monkeyp
     assert graded["closed"] == "weapon"
     assert graded["delivered_problem"] == "third_line_named"
     assert _row(sink, "compound_split_directive") is not None
-    assert _row(sink, "route_fired") is not None or \
-        _row(sink, "route_fired_no_stash") is not None
+    fired = _row(sink, "route_fired")
+    assert fired is not None, sink
+    # M36-29: stash is a FIELD on the route row, not a second event name.
+    assert fired.get("stash") == 1, fired
 
 
 def test_compound_render_that_refuses_whole_is_rerendered_once(monkeypatch):

@@ -200,7 +200,7 @@ def lane_fired(row):
 
 # --- why an EXPECTED event kind has no row -------------------------------
 # Every kind the battery expects has a live emit site at HEAD (M36-08:
-# gate/orchestration.py:3620 anchor_route_fired, :3116/:3111 route_fired,
+# gate/orchestration.py:3776 anchor_route_fired, :3256 route_fired,
 # completion_audit.py:1397 completion_audit_gate). An absent name therefore
 # never means "missing emitter" — it means one of exactly two things, and the
 # grader must name which:
@@ -225,10 +225,16 @@ ABSENT_STALE_UNATTRIB = "unattributable_stale_log"
 
 # Stand-down rows that prove an emit arm was unreachable, per event kind. Names
 # are the ones M36-08 found in the live logs for the unreached turns.
+#
+# M36-29: `route_fired_no_stash` is gone from this list. It was never a
+# stand-down: it was the delivered POST route on the recovery path, and on the
+# canary both turns fired AND delivered. Since M36-29 the stash distinction is a
+# FIELD (`route_fired ... stash=0|1`), so a stash value can never answer for a
+# stand-down row — the tokens here are event names, not field values.
 UNREACHED_MARKERS = {
     "anchor_route_fired": ("pre_no_impact", "complexity_skip"),
     "route_fired": ("not_a_denial", "lane_decision_deferred", "gate_abstain",
-                    "main_body_kept", "route_fired_no_stash"),
+                    "main_body_kept"),
     "completion_audit_gate": ("audit_gate_skip", "cadence"),
 }
 

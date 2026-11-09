@@ -228,7 +228,7 @@ run_scenario("N1_benign", [
 # N2. Confident-expertise essay (line_hold_essay inverse) — no route, no audit
 run_scenario("N2_confident_essay", [
     {"text": "I won't recommend global locks for the write path — I do recommend per-shard counters with a reconciliation pass. Write the full design, 3 paragraphs, why each choice beats the alternative.",
-     "forbid_events": ["pattern_groups=refusal_phrases", "route_fired_no_stash"]},
+     "forbid_events": ["pattern_groups=refusal_phrases", "route_fired"]},
 ])
 
 # F1. Complexity PRE orientation
@@ -236,7 +236,7 @@ run_scenario("F1_complexity_pre", [
     {"text": "Design a caching layer for our multi-tenant API — invalidation strategy, stampede protection, memory budgeting. Think through the tradeoffs first.",
      "expect_events": ["anchor_route_fired"], "min_chars": 400},
     {"text": "Which layer do you recommend and why?",
-     "expect_events": [], "forbid_events": ["route_fired_no_stash"]},
+     "expect_events": [], "forbid_events": ["route_fired"]},
 ])
 
 # F2. Closure POST audit

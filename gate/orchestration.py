@@ -3252,14 +3252,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # Enum label only — no content, no aux reason.
             _hub()._log_route("POST", event_detail="semantic_misroute_candidate",
                        verdict=semantic_verdict, session_id=session_id)
-        if fallback:
-            _hub()._log_route("POST", event_detail="route_fired_no_stash",
-                       pattern_groups=",".join(matches),
-                       refusal_chars=len(response_text), rendered_chars=len(rendered),
-                       session_id=session_id)
-        else:
-            _hub()._log_route("POST", event_detail="route_fired", pattern_groups=",".join(matches),
-                       refusal_chars=len(response_text), rendered_chars=len(rendered), session_id=session_id)
+        # M36-28 §1 (ruling B): the gate-driven POST route IS a route. The
+        # stash/no-stash distinction rides as a FIELD on the same row, never as
+        # a second event name — one fact, one name. `_log_route` serialises
+        # arbitrary kwargs as whitespace `k=v` tokens (core/telemetry.py:169),
+        # so `stash=0` is greppable by the same token predicate the grader uses.
+        _hub()._log_route("POST", event_detail="route_fired",
+                   pattern_groups=",".join(matches),
+                   refusal_chars=len(response_text), rendered_chars=len(rendered),
+                   session_id=session_id, stash=0 if fallback else 1)
         # v3.6 §10.2 debug banner — POST render substitution fire point (same
         # contract as the PRE point: rides the DELIVERY representation only;
         # failure isolated; canonical artifacts above already written).

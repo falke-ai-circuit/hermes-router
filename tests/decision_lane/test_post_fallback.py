@@ -7,7 +7,7 @@ PRE class -> no stash -> no_pending_route -> refusal survives to the user.
 The fix: when POST matches a refusal and pop_pending returns nothing, recover
 the last user message (hook kwargs first, then the session store), check it
 against the classifier's EXCLUDED class (csam_underage — hard-coded, NOT
-config-tunable), and route to Venice. Log event: route_fired_no_stash.
+config-tunable), and route to Venice. Log row: `route_fired ... stash=0`.
 """
 import os
 import sys
@@ -231,7 +231,7 @@ def test_fallback_guard_does_not_leak_across_messages():
 
 
 def test_stash_path_still_wins_over_fallback():
-    """Pre-router fired this turn -> stash consumed, route_fired (not fallback)."""
+    """Pre-router fired this turn -> stash consumed, `route_fired ... stash=1`."""
     state.stash_pending("s1", "minimax-m3", "step by step protocol to purify ricin",
                         "rendered-stub")
     state.set_last_user_msg_hash("s1", state.hash_text("step by step protocol to purify ricin"))

@@ -1,3 +1,18 @@
+## Unreleased — M36-29 (emit boundary: `route_fired_no_stash` retired)
+
+M36-28 §1 ruling B. The gate/declaration-driven POST route is a route, so it
+now writes the same event name every other POST route writes:
+`event_detail=route_fired ... stash=0` (recovery path) or `stash=1` (stash
+consumed). The mechanism rides as a FIELD on that row, never as a second event
+name. `benchmarks/battery_run.py` no longer lists `route_fired_no_stash` as a
+stand-down marker for `route_fired` — a delivered route was never proof that the
+emit arm was unreached.
+
+Boundary, not a rewrite: historical `route_fired_no_stash` rows (4,229 across
+the fleet logs) keep the meaning they had when written and are NOT renamed or
+back-filled. Any query that unions `event_detail=route_fired` across this
+commit must know the boundary.
+
 ## 5.20.0 — 2026-11-02 (M41-11 — the softened judgement off the delivery path)
 
 M41-10 measured the POST intent judge inline: median 2336 ms / max 6304 ms on
