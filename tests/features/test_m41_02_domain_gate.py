@@ -255,16 +255,13 @@ def test_c2_gate_module_never_names_the_suppressor():
 # (d) abstain falls back to the body path and is never "safe"
 # ---------------------------------------------------------------------------
 def test_d_abstain_falls_back_and_is_not_safe(monkeypatch):
-    """Abstain is never read as "safe", and the gate is never frozen forever.
+    """Three ways to abstain — aux None on a cue-free ask, pending, no record at
+    all — and every one must read as `abstain` with the contract's
+    fallback_shape action, never as not_flagged/deliver.
 
-    M36-33 SUPERSESSION: an aux failure used to be one of the abstain paths
-    (`reason=aux_none`), and on architect it abstained on EVERY turn, so rule 3
-    deferred forever and the route arm was unreachable. A dead aux lane now
-    resolves deterministically from the ask's own cue table — for "produce it"
-    (no act cue) that is `not_flagged`, the body path, NAMED
-    `aux_none_deterministic_clear`. The abstain paths that remain are the ones
-    that are genuinely "not answered yet": pending and no-record — and both are
-    still proved below to be abstain, never `not_flagged`/`deliver`.
+    M36-33 note: only the CUE-BEARING aux failure now resolves deterministically
+    (a dead aux lane could not otherwise ever route). "produce it" carries no
+    act cue, so this path is unchanged and stays abstain.
     """
     _stub_aux(monkeypatch, None)
     state.reset_turn_identity(SID)
@@ -272,9 +269,9 @@ def test_d_abstain_falls_back_and_is_not_safe(monkeypatch):
     _wait_landed([SID])
     row = dg.read(SID)
     assert row is not None
-    assert row["gate"] == dg.GATE_NOT_FLAGGED
-    assert row["reason"] == "aux_none_deterministic_clear"
-    assert dg.verdict(row) == dg.GATE_NOT_FLAGGED
+    assert row["gate"] == dg.GATE_ABSTAIN
+    assert row["reason"] == "aux_none"
+    assert dg.verdict(row) == dg.GATE_ABSTAIN
 
     semantics = dict(row.get("gate_semantics") or ())
     print(f"\n(d) aux failure: gate={row['gate']} verdict={dg.verdict(row)} "

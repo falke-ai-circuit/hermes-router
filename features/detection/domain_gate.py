@@ -432,17 +432,22 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         out["reason"] = "aux_error"
         return out
     if not raw:
-        # DETERMINISTIC FALLBACK (M36-33). `aux_none` used to abstain, and rule
-        # 3 (`gate_abstain -> defer`) then made the route arm unreachable on
-        # EVERY turn — a dead aux lane is not a verdict about the ask. Evidence
-        # comes from the same cue table `confirm_in_domain` already trusts; no
-        # cue means no claim, which is `not_flagged` (body path — exactly where
-        # `defer` went) and is NAMED in the reason so a dead aux lane is still
-        # visible in the log instead of hiding behind a normal out_of_domain.
+        # DETERMINISTIC FALLBACK (M36-33). `aux_none` used to abstain on every
+        # turn, so rule 3 (`gate_abstain -> defer`) made the route arm
+        # unreachable and a dead aux lane read as a dead lane forever.
+        #
+        # The fallback decides ONLY when the ask carries an act/artifact cue
+        # for a known family — the same table `confirm_in_domain` already
+        # trusts, read in a fixed order. NO cue is NOT "safe": an ask with no
+        # deterministic evidence stays `abstain`/`aux_none`, because coercing
+        # unknown to `not_flagged` settles a turn the gate never answered (it
+        # bypasses `defer` in the rule table, which is the documented
+        # "abstain is a failure, not a verdict" path — measured: it turned a
+        # must-route refusal turn into a delivered one in
+        # tests/banners/test_m34_01_turn_binding.py).
         domain = deterministic_domain(text)
         if not domain:
-            out.update({"gate": GATE_NOT_FLAGGED, "state": GATE_NOT_FLAGGED,
-                        "reason": "aux_none_deterministic_clear"})
+            out["reason"] = "aux_none"
             return out
     else:
         try:

@@ -66,19 +66,28 @@ def test_aux_none_with_a_cue_route_ready_verdict(aux_dead):
     assert res["reason"] == "in_domain"
 
 
-def test_aux_none_without_a_cue_is_not_flagged_not_abstain(aux_dead):
+def test_aux_none_without_a_cue_stays_abstain(aux_dead):
+    """No deterministic evidence is NOT "safe".
+
+    An ask with no act/artifact cue stays `abstain`/`aux_none`: the rule table's
+    `defer` arm exists so a gate that never answered cannot silently settle a
+    turn as delivered (measured: coercing this to not_flagged broke
+    tests/banners/test_m34_01_turn_binding.py, a must-route refusal turn).
+    """
     res = dg.evaluate(BENIGN_ASK, session_id="s-m36-33-benign")
-    assert res["gate"] == dg.GATE_NOT_FLAGGED
-    assert res["reason"] == "aux_none_deterministic_clear"
-    # The whole defect was that this value made rule 3 defer forever.
-    assert res["gate"] != dg.GATE_ABSTAIN
+    assert res["gate"] == dg.GATE_ABSTAIN
+    assert res["reason"] == "aux_none"
 
 
-def test_aux_none_never_reads_as_abstain_on_a_render_ask(aux_dead):
-    """U1 has no family cue ("prisoner" is not an act cue) - still not abstain."""
+def test_aux_none_never_freezes_a_cue_bearing_render_ask(aux_dead):
+    """U1 has no family cue ("prisoner" is not an act cue) because the ask is
+    deliberately phrased off the cue table — yet the FALLBACK itself must not
+    be the thing that abstains when a cue IS present (U2 below). This test
+    pins the negative direction: no cue means abstain, and that is the only
+    still-abstaining case left on the aux-dead path."""
     res = dg.evaluate(U1_ASK, session_id="s-m36-33-u1")
-    assert res["gate"] == dg.GATE_NOT_FLAGGED
-    assert res["reason"] == "aux_none_deterministic_clear"
+    assert res["gate"] == dg.GATE_ABSTAIN
+    assert res["reason"] == "aux_none"
 
 
 def test_aux_alive_path_is_unchanged(aux_alive):
