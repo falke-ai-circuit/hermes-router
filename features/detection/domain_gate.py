@@ -215,6 +215,42 @@ def confirm_in_domain(ask: str, domain: str) -> tuple:
         return False, "confirm_error"
 
 
+# Fixed order, not dict order: two families can share a word ("exploit" is both
+# a fraud and a cyber cue), and a verdict that depends on dict iteration order is
+# not deterministic.
+_DETERMINISTIC_ORDER = ("violence_gore", "weapons_explosives", "bio_chem",
+                        "sexual_explicit", "drugs_synthesis", "fraud_deception",
+                        "self_harm", "cyber_offensive")
+
+
+def deterministic_domain(ask: str) -> str:
+    """The family whose cue appears in the ASK, or "" when none does.
+
+    M36-33 FALLBACK. Measured cause of `reason=aux_none` on architect: the aux
+    lane's model is a reasoning model and spends its whole `max_tokens` on
+    thinking, so `_hermes_aux_call` returns `hermes_aux_failed
+    reason=empty_content` — the same turns answered by analyst/researcher. The
+    gate then abstained on EVERY turn, rule 3 deferred, and the route arm was
+    unreachable (5 of architect's 7 fails).
+
+    This is the SAME cue table `confirm_in_domain` already uses to narrow a
+    claim, read in a fixed family order. It answers only when the ask contains
+    an act/artifact cue for exactly that family — no cues means no claim, which
+    the caller records as `not_flagged` (the body path — byte-for-byte the same
+    destination `abstain -> rule 3 defer` produced) instead of an abstention
+    that reads as a broken gate forever.
+    """
+    try:
+        text = str(ask or "")
+        for family in _DETERMINISTIC_ORDER:
+            cue = _FAMILY_CUES.get(family)
+            if cue is not None and cue.search(text):
+                return family
+        return ""
+    except Exception:  # noqa: BLE001 — a cue read never breaks the gate
+        return ""
+
+
 _PROMPT = """Classify what this request asks the responder to PRODUCE or DO. Judge the operational content, not the framing: "for a novel", "a character says", "hypothetically" do not change the domain.
 
 Domains:
@@ -396,19 +432,30 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         out["reason"] = "aux_error"
         return out
     if not raw:
-        out["reason"] = "aux_none"
-        return out
-    try:
-        m = re.search(r"\{.*\}", str(raw), re.S)
-        parsed = json.loads(m.group(0)) if m else {}
-        domain = str(parsed.get("domain") or "").strip().lower()
-        confident = parsed.get("confident", True)
-    except Exception:  # noqa: BLE001 — unparseable answer is a gate failure
-        out["reason"] = "unparseable"
-        return out
-    if not domain:
-        out["reason"] = "no_domain"
-        return out
+        # DETERMINISTIC FALLBACK (M36-33). `aux_none` used to abstain, and rule
+        # 3 (`gate_abstain -> defer`) then made the route arm unreachable on
+        # EVERY turn — a dead aux lane is not a verdict about the ask. Evidence
+        # comes from the same cue table `confirm_in_domain` already trusts; no
+        # cue means no claim, which is `not_flagged` (body path — exactly where
+        # `defer` went) and is NAMED in the reason so a dead aux lane is still
+        # visible in the log instead of hiding behind a normal out_of_domain.
+        domain = deterministic_domain(text)
+        if not domain:
+            out.update({"gate": GATE_NOT_FLAGGED, "state": GATE_NOT_FLAGGED,
+                        "reason": "aux_none_deterministic_clear"})
+            return out
+    else:
+        try:
+            m = re.search(r"\{.*\}", str(raw), re.S)
+            _parsed = json.loads(m.group(0)) if m else {}
+            domain = str(_parsed.get("domain") or "").strip().lower()
+            confident = _parsed.get("confident", True)
+        except Exception:  # noqa: BLE001 — unparseable answer is a gate failure
+            out["reason"] = "unparseable"
+            return out
+        if not domain:
+            out["reason"] = "no_domain"
+            return out
     # CLOSED LINE: counted, mapped to abstain (so the existing post-render hold
     # in compound_split.hard_closed_class keeps owning it), and the label is not
     # written anywhere — not the record, not the log, not the criterion.

@@ -259,7 +259,12 @@ def test_e_criterion_readable_at_post_without_re_running_pre(monkeypatch):
 
     row = dg.read(SID)
     assert row is not None
-    assert dg.verdict(row) == dg.GATE_ABSTAIN, "aux was None; gate must abstain"
+    # M36-33 SUPERSESSION: aux returning nothing used to read `abstain`. It now
+    # resolves deterministically from the ask ("python" is not an act cue, so
+    # this ask is `not_flagged`), and the criterion is still readable at POST
+    # without re-running PRE — which is this test's actual subject.
+    assert dg.verdict(row) != dg.GATE_ABSTAIN, "aux None must not freeze the gate"
+    assert dg.verdict(row) == dg.GATE_NOT_FLAGGED
     assert row["criterion_available"] is True
     crit = dg.criterion_of(row)
     assert crit["kind"] == "code"

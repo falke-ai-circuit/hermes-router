@@ -150,9 +150,15 @@ def test_b_verdict_present_on_ninety_percent_of_turns(monkeypatch):
           f"= {share:.0%}  (target >= 90%)")
     print(f"(b) gate distribution: {kinds}")
     assert share >= 0.90
-    assert kinds.get("flagged") == 9
+    # M36-33 SUPERSESSION: the two aux failures used to add `abstain` (2) and
+    # leave the in-domain turns at 9 flagged. A dead aux lane now resolves
+    # deterministically from the ask's own family cue (`tortures`/`pliers` =
+    # violence_gore), so those two turns are `flagged` too and NOTHING is left
+    # abstained. `abstain` remains the verdict for pending/no-record only — see
+    # test_d, which still proves that path is never read as "safe".
+    assert kinds.get("flagged") == 11
     assert kinds.get("not_flagged") == 9
-    assert kinds.get("abstain") == 2
+    assert kinds.get("abstain") is None
 
 
 # ---------------------------------------------------------------------------
@@ -249,22 +255,30 @@ def test_c2_gate_module_never_names_the_suppressor():
 # (d) abstain falls back to the body path and is never "safe"
 # ---------------------------------------------------------------------------
 def test_d_abstain_falls_back_and_is_not_safe(monkeypatch):
-    """Three ways to abstain — aux None, pending, no record at all — and every
-    one must read as `abstain` with the contract's fallback_shape action, never
-    as not_flagged/deliver."""
+    """Abstain is never read as "safe", and the gate is never frozen forever.
+
+    M36-33 SUPERSESSION: an aux failure used to be one of the abstain paths
+    (`reason=aux_none`), and on architect it abstained on EVERY turn, so rule 3
+    deferred forever and the route arm was unreachable. A dead aux lane now
+    resolves deterministically from the ask's own cue table — for "produce it"
+    (no act cue) that is `not_flagged`, the body path, NAMED
+    `aux_none_deterministic_clear`. The abstain paths that remain are the ones
+    that are genuinely "not answered yet": pending and no-record — and both are
+    still proved below to be abstain, never `not_flagged`/`deliver`.
+    """
     _stub_aux(monkeypatch, None)
     state.reset_turn_identity(SID)
     dg.start(SID, "produce it", log=None)
     _wait_landed([SID])
     row = dg.read(SID)
     assert row is not None
-    assert row["gate"] == dg.GATE_ABSTAIN
-    assert row["reason"] == "aux_none"
-    assert dg.verdict(row) == dg.GATE_ABSTAIN
+    assert row["gate"] == dg.GATE_NOT_FLAGGED
+    assert row["reason"] == "aux_none_deterministic_clear"
+    assert dg.verdict(row) == dg.GATE_NOT_FLAGGED
 
     semantics = dict(row.get("gate_semantics") or ())
     print(f"\n(d) aux failure: gate={row['gate']} verdict={dg.verdict(row)} "
-          f"abstain_action={semantics.get('gate_abstain')} rows={len(semantics)}")
+          f"reason={row['reason']} rows={len(semantics)}")
     assert semantics.get("gate_abstain") == "defer"
     assert dg.GATE_ABSTAIN not in ("flagged", "not_flagged")
 
