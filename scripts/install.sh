@@ -111,7 +111,10 @@ if [[ -d "${DST}" ]]; then
 fi
 if [[ -n "${stale}" ]]; then
   echo "stale:    $(printf '%s\n' "${stale}" | grep -c .) file(s) in the target that this checkout does not ship (left in place):"
-  printf '%s\n' "${stale}" | head -10 | sed 's/^/            /'
+  # awk (not `head`) so the producer is never killed by SIGPIPE: `head` exits
+  # after 10 lines and, under `set -o pipefail`, aborts the whole install with
+  # rc=141 whenever the stale list is larger than the pipe buffer (~64 KiB).
+  printf '%s\n' "${stale}" | awk 'NR <= 10 { printf "            %s\n", $0 }'
 fi
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
