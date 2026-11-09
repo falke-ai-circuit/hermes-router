@@ -110,6 +110,17 @@ def _endpoint(model="claude-sonnet-5.5"):
     return ep
 
 
+@pytest.fixture()
+def retry_log(monkeypatch, tmp_path):
+    """M50-07: the budget-retry counters live in the CONFIGURED route log."""
+    from hermes_router.core import telemetry
+
+    path = tmp_path / "uncensored-router.log"
+    monkeypatch.setattr(telemetry, "_log_path", lambda: str(path))
+    monkeypatch.setattr(telemetry, "_log_routes", lambda: True)
+    return path
+
+
 def _payload(cap=LIVE_CAP):
     return {"model": "flash", "max_tokens": cap,
             "messages": [{"role": "system", "content": "persona"},
@@ -120,8 +131,12 @@ def _calls(client):
     return [(c.get("model"), c.get("max_tokens")) for c in client.calls]
 
 
+def _text(path):
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
 def test_length_empty_with_failover_makes_exactly_two_calls(
-        failover_install, caplog):
+        failover_install, retry_log, caplog):
     """(i) length+empty with a live failover list: the retry is the last call.
 
     Two provider calls, both on the primary, 23585 then 47170. The failover
@@ -136,8 +151,9 @@ def test_length_empty_with_failover_makes_exactly_two_calls(
         ("claude-sonnet-5.5", LIVE_CAP),
         ("claude-sonnet-5.5", LIVE_CAP * 2),
     ], _calls(failover_install)
+    text = _text(retry_log)
+    assert "anchor_budget_retry_empty model=" in text, text
     logs = [r.message for r in caplog.records]
-    assert any("anchor_budget_retry_empty" in m for m in logs), logs
     assert any("anchor_consult_failover_skipped" in m
                and "reason=budget_retry" in m for m in logs), logs
     assert not any("anchor_consult_failover model_from" in m for m in logs), logs
@@ -145,7 +161,7 @@ def test_length_empty_with_failover_makes_exactly_two_calls(
 
 
 def test_length_empty_at_ceiling_makes_no_retry_and_one_failover(
-        failover_install, caplog):
+        failover_install, retry_log, caplog):
     """(ii) length+empty at the ceiling: no retry is affordable, so no retry is
     paid — and the flag that gates the failover arm stays down.
 
@@ -164,13 +180,15 @@ def test_length_empty_at_ceiling_makes_no_retry_and_one_failover(
     ], _calls(failover_install)
     assert all(int(c.get("max_tokens") or 0) <= CEILING
                for c in failover_install.calls)
+    text = _text(retry_log)
+    assert any("anchor_budget_retry_skipped model=" in ln
+               and "reason=ceiling" in ln for ln in text.splitlines()), text
     logs = [r.message for r in caplog.records]
-    assert any("anchor_budget_retry_skipped" in m and "reason=ceiling" in m
-               for m in logs), logs
     assert not any("anchor_consult_minimal_retry" in m for m in logs), logs
 
 
-def test_non_length_empty_keeps_legacy_minimal_arm(failover_install, caplog):
+def test_non_length_empty_keeps_legacy_minimal_arm(failover_install, retry_log,
+                                                   caplog):
     """(iii) finish=stop empty is not a budget failure: the R34-9b minimal arm
     owns it unchanged — same allowance, recovered before any failover."""
     failover_install.finish = "stop"
@@ -185,10 +203,10 @@ def test_non_length_empty_keeps_legacy_minimal_arm(failover_install, caplog):
     ], _calls(failover_install)
     logs = [r.message for r in caplog.records]
     assert any("anchor_consult_minimal_retry" in m for m in logs), logs
-    assert not any("anchor_budget_retry " in m for m in logs), logs
+    assert "anchor_budget_retry" not in _text(retry_log)
 
 
-def test_success_on_first_call_is_one_call(failover_install, caplog):
+def test_success_on_first_call_is_one_call(failover_install, retry_log, caplog):
     """(iv) a delivered first answer buys nothing else — no retry, no failover."""
     failover_install.answer_on = 1
     with caplog.at_level("INFO"):
@@ -196,6 +214,6 @@ def test_success_on_first_call_is_one_call(failover_install, caplog):
 
     assert content == "RECOVERED ADVISORY"
     assert _calls(failover_install) == [("claude-sonnet-5.5", LIVE_CAP)]
+    assert "anchor_budget_retry" not in _text(retry_log)
     logs = [r.message for r in caplog.records]
-    assert not any("anchor_budget_retry" in m for m in logs), logs
     assert not any("anchor_consult_failover" in m for m in logs), logs

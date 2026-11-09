@@ -45,6 +45,11 @@ are configured AND the profile's doctrine authorizes it.
 - Route decisions log to `/tmp/uncensored-router-<profile>.log`, one
   event per line:
   - `anchor_route_fired lane=… reason=…` (PRE consult dispatched)
+  - `anchor_budget_retry model=… finish=length max_tokens_from=… max_tokens_to=…`
+    then `anchor_budget_retry_recovered` / `_empty` / `_skipped reason=ceiling`
+    (an emptied finish=length consult bought one larger-allowance retry). These
+    four rows are in THIS file — the same sink as the route events; they are
+    not in `logs/agent.log`.
   - `completion_audit_gate ok=True closure=True` (POST audit dispatched)
   - `route_fired_no_stash pattern_groups=…` (uncensored render delivered)
   - `audit_gate_skip reason=…` (gate considered and skipped — normal)

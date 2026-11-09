@@ -602,6 +602,30 @@ def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
     return max(cur, min(want, ceiling))
 
 
+def _budget_retry_log(event: str, **fields: Any) -> None:
+    """Emit one M50 budget-retry counter into the CONFIGURED route log.
+
+    M50-07: these four lines (anchor_budget_retry, _recovered, _empty,
+    _skipped) used to go to the module logger, i.e. into `logs/agent.log`,
+    while every audit greps the `hermes_router.log_path` configured in the
+    profile. `grep -c anchor_budget_retry <log_path>` therefore returned 0 on
+    turns where the retry ran and recovered — one reviewer read "0 across 74
+    profile logs" as "never executed".
+
+    Single sink, never both: the module-logger emission is gone, so the same
+    event cannot appear in agent.log and the route log for one call. The shape
+    matches the other route rows (`<ts> PRE event_detail=... k=v`); the retry
+    is a PRE-lane event, same as anchor_route_fired / route_skipped.
+    Never raises: telemetry only, the retry itself owns the caller's lane.
+    """
+    try:
+        from .core.telemetry import log_route as _lr
+
+        _lr("PRE", event_detail=event, **fields)
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
+
+
 def _recover_empty_consult(payload: Dict[str, Any],
                            endpoint: anchor_chain.AnchorEndpoint,
                            timeout: float,
@@ -869,10 +893,10 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     _cur_mt = payload.get("max_tokens")
                     _new_mt = _budget_retry_max_tokens(_cur_mt, endpoint.model)
                     if _new_mt > int(_cur_mt or 0):
-                        logger.info(
-                            "anchor_budget_retry model=%s finish=length "
-                            "max_tokens %s->%s",
-                            endpoint.model, _cur_mt, _new_mt)
+                        _budget_retry_log(
+                            "anchor_budget_retry", model=endpoint.model,
+                            finish="length", max_tokens_from=_cur_mt,
+                            max_tokens_to=_new_mt)
                         _rp = copy.deepcopy(payload)
                         _rp["max_tokens"] = _new_mt
                         _budget_retry_paid = True
@@ -882,19 +906,18 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             raw = _rraw_b
                             content = _rc_b
                             clear_last_failure()
-                            logger.info(
-                                "anchor_budget_retry_recovered model=%s "
-                                "chars=%d max_tokens=%s",
-                                endpoint.model, len(str(_rc_b)), _new_mt)
+                            _budget_retry_log(
+                                "anchor_budget_retry_recovered",
+                                model=endpoint.model, chars=len(str(_rc_b)),
+                                max_tokens=_new_mt)
                         else:
-                            logger.error(
-                                "anchor_budget_retry_empty model=%s "
-                                "max_tokens=%s", endpoint.model, _new_mt)
+                            _budget_retry_log(
+                                "anchor_budget_retry_empty",
+                                model=endpoint.model, max_tokens=_new_mt)
                     else:
-                        logger.info(
-                            "anchor_budget_retry_skipped model=%s "
-                            "max_tokens=%s reason=ceiling",
-                            endpoint.model, _cur_mt)
+                        _budget_retry_log(
+                            "anchor_budget_retry_skipped", model=endpoint.model,
+                            max_tokens=_cur_mt, reason="ceiling")
                 except Exception:  # noqa: BLE001 — retry never breaks the lane
                     pass
             # R34-9b: empty content from a 200 is not the end of the lane.

@@ -39,6 +39,18 @@ SID = "s-m50-02"
 LIVE_CAP = 23585
 
 
+@pytest.fixture()
+def retry_log(monkeypatch, tmp_path):
+    """M50-07: the retry counters live in the CONFIGURED route log, not the
+    module logger. Point the route-log writer at a temp file and read it back."""
+    from hermes_router.core import telemetry
+
+    path = tmp_path / "uncensored-router.log"
+    monkeypatch.setattr(telemetry, "_log_path", lambda: str(path))
+    monkeypatch.setattr(telemetry, "_log_routes", lambda: True)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # F1 — mock transport
 # ---------------------------------------------------------------------------
@@ -123,7 +135,7 @@ def _consult_payload(cap=LIVE_CAP):
                          {"role": "user", "content": "THE CONSULT ASK"}]}
 
 
-def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, caplog):
+def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, retry_log, caplog):
     """F1a: one empty finish=length response -> exactly ONE retry, larger cap,
     recovered content, and the retry keeps the same reasoning setting."""
     with caplog.at_level("INFO"):
@@ -142,13 +154,18 @@ def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, caplog):
     assert retry["messages"] == first["messages"]
     assert retry.get("reasoning_effort") == first.get("reasoning_effort") == "max"
 
-    logs = [r.message for r in caplog.records]
-    assert any("anchor_budget_retry " in m and "%s" not in m
-               and str(retry["max_tokens"]) in m for m in logs), logs
-    assert any("anchor_budget_retry_recovered" in m for m in logs), logs
+    # M50-07: one sink — the configured route log, not the module logger.
+    lines = retry_log.read_text(encoding="utf-8").splitlines()
+    assert any("anchor_budget_retry model=" in ln
+               and str(retry["max_tokens"]) in ln for ln in lines), lines
+    assert any("anchor_budget_retry_recovered model=" in ln
+               for ln in lines), lines
+    assert not any("anchor_budget_retry" in r.message
+                   for r in caplog.records), [r.message for r in caplog.records]
 
 
-def test_f1b_second_empty_does_not_trigger_a_third_attempt(f1_install, caplog):
+def test_f1b_second_empty_does_not_trigger_a_third_attempt(f1_install, retry_log,
+                                                           caplog):
     """F1b: bounded. The retry itself comes back finish=length+empty -> no
     third budget attempt and no re-sent minimal retry (it was measured to fail
     identically); the call ends as the same visible terminal failure."""
@@ -164,25 +181,28 @@ def test_f1b_second_empty_does_not_trigger_a_third_attempt(f1_install, caplog):
         "claude-sonnet-5.5", "claude-sonnet-5.5"], f1_install.calls
     assert [c["max_tokens"] for c in f1_install.calls] == [
         LIVE_CAP, LIVE_CAP * 2], f1_install.calls
+    assert "anchor_budget_retry_empty model=" in retry_log.read_text(
+        encoding="utf-8")
     logs = [r.message for r in caplog.records]
-    assert any("anchor_budget_retry_empty" in m for m in logs), logs
     # the minimal-payload arm is not paid for after a budget retry
     assert not any("anchor_consult_minimal_retry" in m for m in logs), logs
 
 
-def test_f1b_ceiling_reached_skips_retry(monkeypatch, f1_install, caplog):
+def test_f1b_ceiling_reached_skips_retry(monkeypatch, f1_install, retry_log,
+                                         caplog):
     """An allowance already at the model ceiling cannot be raised: the retry is
     skipped and logged rather than sending a value the endpoint rejects."""
     assert anchor_exec._budget_retry_max_tokens(64000, "claude-sonnet-5.5") == 64000
     f1_install.always_empty = True
     with caplog.at_level("INFO"):
         anchor_exec.anchored_call(_endpoint(), _consult_payload(cap=64000))
-    logs = [r.message for r in caplog.records]
-    assert any("anchor_budget_retry_skipped" in m and "reason=ceiling" in m
-               for m in logs), logs
+    text = retry_log.read_text(encoding="utf-8")
+    assert any("anchor_budget_retry_skipped model=" in ln
+               and "reason=ceiling" in ln for ln in text.splitlines()), text
 
 
-def test_f1_non_length_empty_still_uses_legacy_recovery(f1_install, caplog):
+def test_f1_non_length_empty_still_uses_legacy_recovery(f1_install, retry_log,
+                                                        caplog):
     """A finish=stop empty is NOT a budget failure — the R34-9b minimal retry
     arm must still own it, byte-for-byte as before."""
     class _StopEmpty(_FakeClient):
@@ -205,7 +225,8 @@ def test_f1_non_length_empty_still_uses_legacy_recovery(f1_install, caplog):
     assert content == "LEGACY RECOVERED"
     logs = [r.message for r in caplog.records]
     assert any("anchor_consult_minimal_retry" in m for m in logs), logs
-    assert not any("anchor_budget_retry " in m for m in logs), logs
+    text = retry_log.read_text(encoding="utf-8") if retry_log.exists() else ""
+    assert "anchor_budget_retry" not in text, text
 
 
 # ---------------------------------------------------------------------------
