@@ -605,7 +605,8 @@ def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
 def _recover_empty_consult(payload: Dict[str, Any],
                            endpoint: anchor_chain.AnchorEndpoint,
                            timeout: float,
-                           *, skip_minimal: bool = False
+                           *, skip_minimal: bool = False,
+                           skip_failover: bool = False
                            ) -> Tuple[str, Dict[str, Any],
                                       anchor_chain.AnchorEndpoint]:
     """R34-9b: two-stage recovery from a 200-with-empty-content response.
@@ -617,13 +618,28 @@ def _recover_empty_consult(payload: Dict[str, Any],
     Both logged; fail-open. Returns ("", {}, endpoint) when nothing lands
     (the caller then keeps today's visible terminal failure).
 
-    `skip_minimal=True` is set by the M50-02 budget-retry path: a
-    finish=length call has ALREADY had one full-payload retry at a larger
-    allowance, and the minimal retry re-sends the same tiny budget with fewer
-    messages — measured to fail identically (n_msgs=2 changes nothing when
-    the thinking is what exhausted the cap). Paying for a known-dead call is
-    the loop, not the recovery.
+    `skip_minimal=True` is set on the finish=length path: a length-empty call
+    has had (or could not afford) a full-payload allowance retry, and the
+    minimal retry re-sends the same budget with fewer messages — measured to
+    fail identically (n_msgs=2 changes nothing when the thinking is what
+    exhausted the cap). Paying for a known-dead call is the loop, not the
+    recovery. Set on the length path EVEN at the ceiling, where no retry was
+    paid: the minimal arm at an at-ceiling allowance is the same dead call.
+
+    `skip_failover=True` is M50-04: set only when the budget retry was ACTUALLY
+    paid. The failover walk re-sends the payload via
+    `sanitize_consult_payload(payload)`, i.e. the ORIGINAL allowance that just
+    came back length-empty — a second model on the proven-insufficient budget
+    is spend without a budget, and it made C1's "no path to a third call"
+    false on the deployed config (`anchor_chain.failover: [z-ai/glm-5.3]`).
     """
+    if skip_failover:
+        try:
+            logger.info("anchor_consult_failover_skipped reason=budget_retry "
+                        "model=%s", endpoint.model)
+        except Exception:  # noqa: BLE001
+            pass
+        return "", {}, endpoint
     minimal = None if skip_minimal else _minimal_consult_payload(payload)
     if minimal:
         try:
@@ -846,9 +862,9 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             # headroom above the observed thinking peak, same payload, same
             # reasoning setting. Measurable: anchor_budget_retry /
             # _recovered / _empty log lines carry both capacities.
-            _budget_retried = False
-            if _finish_reason == "length":
-                _budget_retried = True
+            _budget_retry_paid = False
+            _length_exhausted = (_finish_reason == "length")
+            if _length_exhausted:
                 try:
                     _cur_mt = payload.get("max_tokens")
                     _new_mt = _budget_retry_max_tokens(_cur_mt, endpoint.model)
@@ -859,6 +875,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             endpoint.model, _cur_mt, _new_mt)
                         _rp = copy.deepcopy(payload)
                         _rp["max_tokens"] = _new_mt
+                        _budget_retry_paid = True
                         _rc_b, _rraw_b = _simple_anchored_call(
                             endpoint, _rp, timeout, keep_reasoning=True)
                         if str(_rc_b or "").strip():
@@ -886,13 +903,18 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             # visible terminal failure when nothing lands). Skipped when the
             # budget retry above already recovered the answer — one recovery
             # arm per call, never a chain of them.
+            # M50-04: the minimal arm is skipped on the whole length path (the
+            # retry paid, or the ceiling made one impossible — same dead call
+            # either way); the FAILOVER arm is skipped only when the retry was
+            # actually paid, because that walk re-sends the original allowance.
             try:
                 if str(content or "").strip():
                     _rc, _rraw, _rep = content, raw, endpoint
                 else:
                     _rc, _rraw, _rep = _recover_empty_consult(
                         payload, endpoint, timeout,
-                        skip_minimal=bool(_budget_retried))
+                        skip_minimal=bool(_length_exhausted),
+                        skip_failover=bool(_budget_retry_paid))
             except Exception:  # noqa: BLE001 — recovery never breaks the lane
                 _rc, _rraw, _rep = "", {}, endpoint
             if str(_rc or "").strip():

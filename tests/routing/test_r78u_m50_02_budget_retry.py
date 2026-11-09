@@ -108,9 +108,12 @@ def f1_install(monkeypatch):
     monkeypatch.setattr(_openai, "OpenAI", _FakeClient)
     monkeypatch.setattr(anchor_exec, "_anchor_chain_block", lambda: {})
     # reasoning is ON for this lane: the retry must keep it, not strip it.
+    # M50-04: the failover list is NON-EMPTY on purpose. A fixture with no
+    # failover cannot see the third-call path that shipped in bb2cc0f.
     monkeypatch.setattr(
         anchor_exec, "_anchor_chain_block",
-        lambda: {"max_history_turns": 12, "reasoning_effort": "max"})
+        lambda: {"max_history_turns": 12, "reasoning_effort": "max",
+                 "failover": [{"model": "z-ai/glm-5.3"}]})
     return _FakeClient
 
 
@@ -155,6 +158,12 @@ def test_f1b_second_empty_does_not_trigger_a_third_attempt(f1_install, caplog):
 
     assert out == (None, None, None, None)
     assert len(f1_install.calls) == 2, [c["max_tokens"] for c in f1_install.calls]
+    # M50-04: with a live failover list, both calls are still the primary —
+    # the pre-existing failover arm must not buy a third call.
+    assert [c["model"] for c in f1_install.calls] == [
+        "claude-sonnet-5.5", "claude-sonnet-5.5"], f1_install.calls
+    assert [c["max_tokens"] for c in f1_install.calls] == [
+        LIVE_CAP, LIVE_CAP * 2], f1_install.calls
     logs = [r.message for r in caplog.records]
     assert any("anchor_budget_retry_empty" in m for m in logs), logs
     # the minimal-payload arm is not paid for after a budget retry
