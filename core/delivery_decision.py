@@ -160,13 +160,121 @@ def strip_markers(text: str) -> "tuple[str, int]":
         return original, 0
 
 
-def carries_marker(text: str) -> str:
-    """The first marker found in `text`, or "" — the containment check."""
-    haystack = str(text or "").lower()
+#: A quoted passage: paired quotes of the SAME kind, not glued to a word
+#: character on the outside (so `don't` is not a span). Curly and straight forms
+#: are both accepted; the inner text is what matters, never the quote glyph.
+_QUOTE_PAIRS = (("'", "'"), ('"', '"'), ("\u2018", "\u2019"), ("\u201c", "\u201d"))
+
+
+def quoted_spans(text: str) -> "tuple[str, ...]":
+    """The NORMALISED inner text of every quoted passage in `text`.
+
+    Used to recognise an echo of the user's own words: a marker that appears
+    inside a quoted passage copied from the ask is the user's string, not a
+    router leak. Normalisation (lowercase, whitespace collapsed, straight and
+    curly quotes alike) is what makes an echo match across the two surfaces;
+    the quote glyph itself is never compared.
+    """
+    spans = []
+    try:
+        raw = str(text or "")
+        for opener, closer in _QUOTE_PAIRS:
+            i = 0
+            while True:
+                a = raw.find(opener, i)
+                if a < 0:
+                    break
+                # An apostrophe inside a word ("don't") opens nothing.
+                if opener in ("'", "\u2019") and a > 0 and raw[a - 1].isalnum():
+                    i = a + 1
+                    continue
+                b = raw.find(closer, a + 1)
+                if b < 0:
+                    break
+                inner = raw[a + 1:b]
+                if "\n" not in inner and 1 <= len(inner.strip()) <= 400 \
+                        and not (closer in ("'", "\u2019") and b + 1 < len(raw)
+                                 and raw[b + 1].isalnum()):
+                    spans.append(_norm_quote(inner))
+                i = b + 1
+    except Exception:  # noqa: BLE001 — a quote scan never breaks a decision
+        return tuple(spans)
+    return tuple(spans)
+
+
+def _norm_quote(text: str) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def _quote_ranges(text: str) -> "list[tuple[int, int, str]]":
+    """(start, end, normalised inner) for every quoted passage, WITH offsets.
+
+    `end` is exclusive and covers the marker text only inside the quotes.
+    """
+    out = []
+    raw = str(text or "")
+    for opener, closer in _QUOTE_PAIRS:
+        i = 0
+        while True:
+            a = raw.find(opener, i)
+            if a < 0:
+                break
+            if opener in ("'", "\u2019") and a > 0 and raw[a - 1].isalnum():
+                i = a + 1
+                continue
+            b = raw.find(closer, a + 1)
+            if b < 0:
+                break
+            inner = raw[a + 1:b]
+            if "\n" not in inner and 1 <= len(inner.strip()) <= 400 \
+                    and not (closer in ("'", "\u2019") and b + 1 < len(raw)
+                             and raw[b + 1].isalnum()):
+                out.append((a + 1, b, _norm_quote(inner)))
+            i = b + 1
+    return out
+
+
+def marker_is_echo(text: str, marker: str, exempt_spans: "tuple[str, ...]" = ()) -> bool:
+    """True when EVERY occurrence of `marker` in `text` sits in a copied quote.
+
+    One marker, one answer — the battery's marker list and the router's are not
+    the same tuple, so a caller that owns its own list must ask per marker
+    rather than read `carries_marker`'s first-hit ordering.
+    """
+    hay = str(text or "")
+    low = hay.lower()
+    needle = str(marker or "").lower()
+    exempt = tuple(exempt_spans or ())
+    if not needle:
+        return False
+    ranges = _quote_ranges(hay) if exempt else []
+    found = False
+    start = low.find(needle)
+    while start >= 0:
+        found = True
+        end = start + len(needle)
+        if not any(a <= start and end <= b and inner in exempt
+                   for a, b, inner in ranges):
+            return False
+        start = low.find(needle, start + 1)
+    return found
+
+
+def carries_marker(text: str, exempt_spans: "tuple[str, ...]" = ()) -> str:
+    """The first marker found in `text`, or "" — the containment check.
+
+    `exempt_spans` are quoted passages taken from the USER turn. A marker
+    occurrence that sits inside a quoted passage of the body whose inner text
+    matches one of them is an ECHO of the user's own words, not a leak, and is
+    skipped. Every other occurrence still fails: a marker the model invents is
+    not inside a copied quote, so the real detection is unchanged.
+    """
     for marker in MARKERS:
-        if marker.lower() in haystack:
+        if marker.lower() in str(text or "").lower() \
+                and not marker_is_echo(text, marker, exempt_spans):
             return marker
     return ""
+
 
 
 def is_router_prose(text: str) -> bool:
@@ -204,6 +312,10 @@ class DeliveryFacts:
     #: A failure the SEAM ITSELF declared (delivery integrity). Not a body
     #: classification: no case may deliver an answer over it.
     seam_failure: str = ""
+    #: The turn's ASK. Only the marker gate reads it: a marker inside a quoted
+    #: passage copied from the user's own words is an echo, not a leak. Absent
+    #: (every pre-existing caller) means no exemption — the strict scan.
+    ask_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -328,7 +440,8 @@ def decide(facts: DeliveryFacts) -> Decision:
             reason = (REASON_COMPLIANCE_OUTRANKS_RULE
                       if rule_id in TARGETED_RULES else REASON_MAIN_COMPLIED)
             chosen = entered_clean
-            hit = carries_marker(chosen)
+            hit = carries_marker(chosen, quoted_spans(
+                getattr(facts, "ask_text", "") or ""))
             if hit:
                 diag["marker_violation"] = True
                 diag["marker"] = hit
@@ -338,7 +451,8 @@ def decide(facts: DeliveryFacts) -> Decision:
                             entered_strip, diag, chosen)
 
         # ---- P4 D5: a non-compliant body is replaced when anything is ----
-        if lane_ok and not carries_marker(lane_clean):
+        if lane_ok and not carries_marker(
+                lane_clean, quoted_spans(getattr(facts, "ask_text", "") or "")):
             return Decision(DELIVER_LANE, D5, REASON_LANE_DELIVERED, SOURCE_LANE,
                             lane_strip, diag, lane_clean)
 

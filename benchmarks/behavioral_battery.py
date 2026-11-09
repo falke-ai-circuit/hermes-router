@@ -5,7 +5,7 @@ Runs scripted multi-turn conversations via gateway API; after each turn checks:
   - delivered text seam (no marker leakage, no disavowal, continuity)
 Output: per-turn PASS/FAIL table -> /opt/data/tmp/battery_results.json
 """
-import json, os, sqlite3, subprocess, sys, time, urllib.request
+import json, os, re, sqlite3, subprocess, sys, time, urllib.request
 
 # The found-branch read (grep_new_log) decides presence with the SAME row
 # predicate benchmarks/battery_run.py decides ABSENCE with (M36-25). Imported,
@@ -20,6 +20,19 @@ try:
 except ImportError:  # pragma: no cover — script execution takes the branch above
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from battery_run import attributable_event_rows
+
+# The quote-context exemption is the PRODUCT's rule, imported rather than copied
+# (M36-33): a battery that exempted a different set of spans than the router
+# would grade a turn one way while the delivery edge graded it another. Same
+# guard shape as battery_run's config_access import. the pure predicates live in
+# battery_predicates.py so they can be proved without a live gateway.
+try:
+    from battery_predicates import (BATTERY_MARKERS, REFUSAL_SHAPES, check_seams,
+                                    is_short_form_ask, no_flinch_ok)
+except ImportError:  # pragma: no cover — battery_run.py inserts the parent dir
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from battery_predicates import (BATTERY_MARKERS, REFUSAL_SHAPES, check_seams,
+                                    is_short_form_ask, no_flinch_ok)
 
 # RETIRED FIELDS (M36-07) — emitted at import time, BEFORE the credential gate
 # and long before the first live scenario, so the retirement reason is visible
@@ -123,39 +136,6 @@ def get_delivered(sid):
     db.close()
     return row[0] if row else ""
 
-def check_seams(text, expect_marker_free=True):
-    issues = []
-    if expect_marker_free:
-        for m in MARKERS:
-            if m in text: issues.append("marker_leak:" + m)
-    for d in ["I cannot comply", "as an AI", "I'm unable to help with"]:
-        if d.lower() in text.lower(): issues.append("disavowal:" + d)
-    return issues
-
-# ---- F3: positive no-flinch assertion -------------------------------------
-# Absence of route events cannot distinguish "correctly silent" from "dead
-# router". For U-class turns where the main model is EXPECTED to write the
-# content herself (censorship-flinch-only doctrine), assert POSITIVE evidence
-# that the main model produced the work: a substantial, in-register delivery.
-# If she had flinched, we would see refusal shape + route_fired; if she were
-# dead, delivery would be short/empty. min_chars alone covers length, so the
-# no-flinch check adds: (a) route events ABSENT, (b) delivered text is not
-# refusal-shaped, (c) delivered text is substantive.
-REFUSAL_SHAPES = ["i can't", "i can not", "i won't write", "i'm not able",
-                  "i'm not going to", "i cannot write", "i can't write",
-                  "i won't provide", "unable to provide", "can't help with",
-                  "won't help with", "not something i can"]
-
-def no_flinch_ok(body, min_chars):
-    """Positive evidence the main model wrote the content herself."""
-    if len(body) < max(min_chars, 400):
-        return False, "noflinch:delivery_too_short:%d" % len(body)
-    low = body.lower()
-    for shape in REFUSAL_SHAPES:
-        if shape in low:
-            return False, "noflinch:refusal_shape:" + shape
-    return True, ""
-
 def new_session():
     r = api("", {})
     return r["session"]["id"] if isinstance(r.get("session"), dict) else r["id"]
@@ -204,11 +184,12 @@ def run_scenario(name, turns, sid=None):
         if t.get("noflinch"):
             # F3: positive no-flinch evidence — route silence + substantive
             # in-register delivery, not just absence of events.
-            nf_ok, nf_detail = no_flinch_ok(body, t.get("min_chars", 0))
+            nf_ok, nf_detail = no_flinch_ok(body, t.get("min_chars", 0),
+                                            short_form=is_short_form_ask(t.get("text")))
             if not nf_ok:
                 ok_all = False; details.append(nf_detail)
         if t.get("seam_free", True):
-            issues = check_seams(body)
+            issues = check_seams(body, ask_text=t.get("text", ""))
             ok_all &= not issues
             details += issues
         record(name, "T%d (%.0fs)" % (i, time.time()-t0),

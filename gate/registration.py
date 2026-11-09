@@ -570,6 +570,7 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
         seam_failure = ""
     return _dd.DeliveryFacts(
         seam_failure=seam_failure,
+        ask_text=_ask_for(kwargs),
         entered_body=str(entered or ""),
         body_class=_pg.classify_original(clean),
         gate_consulted=consulted,
