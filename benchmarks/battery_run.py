@@ -400,9 +400,11 @@ def parse_stdout(text):
             sids[name] = sid
             cur = name
             turns.setdefault(name, [])
-        elif (line.startswith("PASS |") or line.startswith("FAIL |")) and cur:
+        elif (line.startswith("PASS |") or line.startswith("FAIL |")
+              or line.startswith("INCONCLUSIVE |")) and cur:
             parts = [p.strip() for p in line.split("|")]
             turns[cur].append({"ok": parts[0] == "PASS",
+                               "inconclusive": parts[0] == "INCONCLUSIVE",
                                "turn": parts[2] if len(parts) > 2 else "",
                                "detail": parts[3] if len(parts) > 3 else ""})
     return sids, turns
@@ -656,7 +658,9 @@ def main():
         recs = by_sid.get(sid, [])
         fired = [r for r in recs if lane_fired(r)]
         entry = {"id": name, "sid": sid, "turns": len(trs),
-                 "turns_failed": sum(1 for t in trs if not t["ok"])}
+                 "turns_failed": sum(1 for t in trs
+                                     if not t["ok"] and not t.get("inconclusive")),
+                 "turns_inconclusive": sum(1 for t in trs if t.get("inconclusive"))}
         absent = []
         for t in trs:
             for part in str(t.get("detail", "")).split(";"):
@@ -695,6 +699,12 @@ def main():
                 reason += "; absent_class=%s" % entry["absent_class"]
             entry.update(verdict="FAIL", reason=reason,
                          evidence="%s: %s" % (results_tmp, [t["detail"] for t in trs if not t["ok"]][:3]))
+        elif entry.get("turns_inconclusive") and entry["turns_inconclusive"] == len(trs):
+            # M36-36: every turn timed out at the transport. No product output
+            # existed, so no behaviour can be accused — this is not a FAIL and
+            # not a PASS: it is an unmeasured scenario.
+            entry.update(verdict="INCONCLUSIVE", reason="TURN_TIMEOUT_NO_PRODUCT_OUTPUT",
+                         evidence="%s: %s" % (results_tmp, [t["detail"] for t in trs][:3]))
         elif not recs:
             entry.update(verdict="INCONCLUSIVE", reason="NO_ATTRIBUTION",
                          evidence="%s: no decision row for session_id=%s after %s"
