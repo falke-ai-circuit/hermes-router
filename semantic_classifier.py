@@ -35,6 +35,8 @@ Never raise — the hook wraps stage-2 in its own try/except regardless.
 """
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -246,6 +248,7 @@ def reset_limits() -> None:
         _CALL_TIMES.clear()
         _CONSECUTIVE_FAILURES = 0
         _BREAKER_OPENED_AT = None
+        _TURN_MEMO.clear()
 
 
 # Backward-compatible alias (older call sites named it this way).
@@ -364,6 +367,114 @@ def _usage_from_response(data: Dict[str, Any]) -> "tuple[Optional[int], Optional
 HERMES_AUX_TIMEOUT_SECONDS = 45
 
 
+# ---------------------------------------------------------------------------
+# M49-02: a falsy aux return must NAME its cause, and one turn must not pay
+# twice for the same question.
+#
+# Before this, `aux_raw_call` returned bare None, so a budget suppression, an
+# open breaker, a missing client and a genuine empty answer were the same
+# observable `reason=aux_none` on the gate row (M49-01: 3741/7163 rows, 52.2%,
+# returned in <=10 ms — the call was never made, and nothing said why).
+# `aux_failure_cause()` is read by the caller immediately after the falsy
+# return; the token space is closed: cap | breaker | no_client | empty_content
+# | timeout | http_<status> | invalid_json | unparseable | transport |
+# exception. It is a CONTEXT var, so two threads (gate worker, POST judge)
+# never read each other's cause.
+_AUX_CAUSE: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "hermes_aux_cause", default="")
+
+AUX_CAUSE_TOKENS = ("cap", "breaker", "no_client", "empty_content", "timeout",
+                    "invalid_json", "unparseable", "transport", "exception")
+
+
+def aux_failure_cause() -> str:
+    """Why the last `aux_raw_call` on THIS thread returned None; '' on success."""
+    try:
+        return str(_AUX_CAUSE.get() or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _note_cause(cause: str) -> None:
+    try:
+        _AUX_CAUSE.set(str(cause or ""))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# One answer per turn: identical prompt in the same session+turn is ONE paid
+# call. The gate arms its worker at PRE and re-consults the same ask at POST,
+# and the judge can be asked the same question twice; each repeat used to draw
+# the shared hourly budget again, which is what made the cap reachable at all.
+_TURN_MEMO: Dict[tuple, tuple] = {}
+_TURN_MEMO_TTL = 120.0
+_MISS = object()
+
+
+def _turn_key(session_id: str, prompt: str) -> Optional[tuple]:
+    """(session, turn, prompt-hash), or None when the turn cannot be named.
+
+    A turn-less caller (session_id absent) is never memoised: an answer with no
+    turn identity cannot be proved to belong to the same question.
+    """
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    try:
+        from .core.state import current_turn_id
+
+        turn = int(current_turn_id(sid))
+    except Exception:  # noqa: BLE001 — no turn identity, no reuse
+        return None
+    return (sid, turn, hashlib.sha256(str(prompt or "").encode("utf-8")).hexdigest())
+
+
+def _memo_get(key: Optional[tuple]):
+    if key is None:
+        return _MISS
+    try:
+        hit = _TURN_MEMO.get(key)
+        if not hit:
+            return _MISS
+        ts, raw, cause = hit
+        if time.time() - float(ts) > _TURN_MEMO_TTL:
+            _TURN_MEMO.pop(key, None)
+            return _MISS
+        _note_cause(cause)
+        return raw
+    except Exception:  # noqa: BLE001
+        return _MISS
+
+
+def _memo_put(key: Optional[tuple], raw: Optional[str], cause: str) -> None:
+    if key is None:
+        return
+    try:
+        if len(_TURN_MEMO) > 512:
+            _TURN_MEMO.clear()
+        _TURN_MEMO[key] = (time.time(), raw, str(cause or ""))
+    except Exception:  # noqa: BLE001 — the memo never breaks the lane
+        pass
+
+
+def _http_cause(exc: Exception) -> str:
+    """`http_<status>` / `timeout` / `exception` from a transport exception."""
+    try:
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            resp = getattr(exc, "response", None)
+            status = getattr(resp, "status_code", None)
+        if isinstance(status, int):
+            return "http_%d" % status
+    except Exception:  # noqa: BLE001
+        pass
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if "timeout" in name or "timed out" in text or "timeout" in text:
+        return "timeout"
+    return "exception"
+
+
 def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
     """Resolve the aux call through Hermes-core auxiliary machinery (the
     profile's `auxiliary:` config — provider/model/key/fallbacks all live
@@ -371,6 +482,7 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
     contract downstream parse expects) or None on failure. Never raises."""
     try:
         _set_dispatched_aux_model("")  # never inherit the previous call's model
+        _note_cause("")               # M49-02: a success clears the cause
         from agent.auxiliary_client import get_text_auxiliary_client
 
         client, model = get_text_auxiliary_client("router")
@@ -379,6 +491,7 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
         # cannot price a different model, and '' when the client reports none.
         _set_dispatched_aux_model(model)
         if client is None:
+            _note_cause("no_client")
             logger.error("hermes_aux_failed reason=no_client")
             return None
         payload = json.loads(payload_json)
@@ -406,6 +519,7 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
         if resp and getattr(resp, "choices", None):
             content = getattr(resp.choices[0].message, "content", None)
         if not content or not str(content).strip():
+            _note_cause("empty_content")
             logger.error("hermes_aux_failed reason=empty_content")
             return None
         body: Dict[str, Any] = {"choices": [{"message": {"content": content}}]}
@@ -416,6 +530,7 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
         return json.dumps(body)
     except Exception as exc:  # noqa: BLE001
         _set_dispatched_aux_model("")
+        _note_cause(_http_cause(exc))
         logger.error("hermes_aux_failed reason=exception detail=%s", str(exc)[:160])
         return None
 
@@ -446,7 +561,33 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
     the intent judge instead of folding both into `stage2_classify`. Default
     preserves every pre-existing caller byte-for-byte — one tap, never two
     rows for the same tokens.
+
+    M49-02: on a None return the cause is readable through
+    `aux_failure_cause()` (`cap | breaker | no_client | empty_content |
+    timeout | http_<status> | invalid_json | unparseable | transport |
+    exception`). The token itself is unchanged — None — so every existing
+    falsy-reader keeps its behaviour; only the cause becomes visible.
+
+    M49-02 memo: an identical prompt in the same session+turn is answered
+    from the turn memo instead of drawing the shared hourly budget again. A
+    turn-less caller (empty session_id) is never memoised.
     """
+    key = _turn_key(session_id, prompt)
+    hit = _memo_get(key)
+    if hit is not _MISS:
+        return None if hit is None else str(hit)
+    raw = _aux_raw_call_uncached(
+        prompt, cfg=cfg, record_success=record_success,
+        session_id=session_id, record_failure=record_failure, detail=detail)
+    _memo_put(key, raw, aux_failure_cause())
+    return raw
+
+
+def _aux_raw_call_uncached(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
+                           record_success: bool = True, session_id: str = "",
+                           record_failure: bool = True,
+                           detail: str = "stage2_classify") -> Optional[str]:
+    """The one paid dispatch behind `aux_raw_call` (no memo)."""
     try:
         cls = _classification_cfg(cfg)
         max_tokens = DEFAULT_MAX_TOKENS
@@ -454,12 +595,14 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
 
         now = time.time()
         if breaker_is_open():
+            _note_cause("breaker")
             return None
         with _LOCK:
             while _CALL_TIMES and now - _CALL_TIMES[0] >= 3600.0:
                 _CALL_TIMES.popleft()
             if len(_CALL_TIMES) >= max(1, _as_int(cls.get("aux_calls_per_hour"),
                                                   DEFAULT_CALLS_PER_HOUR)):
+                _note_cause("cap")
                 return None
             _CALL_TIMES.append(now)
 
@@ -473,22 +616,27 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
         while body is None and _attempt < max(0, _as_int(cls.get("aux_retries"), 1)):
             _attempt += 1
             if breaker_is_open():
+                _note_cause("breaker")
                 break
             time.sleep(min(2 * _attempt, 5))
             body = _hermes_aux_call(json.dumps(payload), timeout)
         if body is None:
+            if not aux_failure_cause():
+                _note_cause("transport")
             if record_failure:
                 _record_failure(cls)
             return None
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
+            _note_cause("invalid_json")
             logger.error("semantic_aux_failed reason=invalid_json body_bytes=%d", len(body))
             if record_failure:
                 _record_failure(cls)
             return None
         content = _extract_content(data)
         if not content or not str(content).strip():
+            _note_cause("unparseable")
             logger.error("semantic_aux_failed reason=unparseable")
             if record_failure:
                 _record_failure(cls)
@@ -517,8 +665,10 @@ def aux_raw_call(prompt: str, *, cfg: Optional[Dict[str, Any]] = None,
             pass
         if record_success:
             _record_success()
+        _note_cause("")
         return str(content)
     except Exception:  # noqa: BLE001
+        _note_cause("exception")
         logger.debug("aux_raw_call error", exc_info=True)
         return None
 def classify(user_ask: str, response_text: str, *, cfg: Optional[Dict[str, Any]] = None,

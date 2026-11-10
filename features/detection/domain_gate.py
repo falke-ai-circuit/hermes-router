@@ -412,7 +412,7 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     crit = extract_criterion(ask)
     out: Dict[str, Any] = {"domain": "", "gate": GATE_ABSTAIN,
                           "criterion": crit, "state": GATE_ABSTAIN,
-                          "reason": "", "closed": False}
+                          "reason": "", "cause": "", "closed": False}
     text = str(ask or "").strip()
     if not text:
         out["reason"] = "empty_ask"
@@ -432,6 +432,14 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         out["reason"] = "aux_error"
         return out
     if not raw:
+        # M49-02: `aux_none` is the OUTCOME token (existing readers keep it);
+        # `cause` is the separate field that says WHY the call returned
+        # nothing — cap | breaker | no_client | empty_content | timeout |
+        # http_<status> | unparseable | ... — read from the aux lane's own
+        # context var immediately after the falsy return. Never a new outcome
+        # name: a suppressed call and an empty answer are still both
+        # `abstain`/`aux_none`; they are now distinguishable.
+        out["cause"] = str(getattr(_sc, "aux_failure_cause", lambda: "")() or "unknown")[:40]
         # DETERMINISTIC FALLBACK (M36-33). `aux_none` used to abstain on every
         # turn, so rule 3 (`gate_abstain -> defer`) made the route arm
         # unreachable and a dead aux lane read as a dead lane forever.
@@ -527,6 +535,7 @@ def _emit(log: Optional[Callable[..., Any]], row: Dict[str, Any],
             gate=row.get("gate"),
             domain=str(row.get("domain") or ""),
             reason=str(row.get("reason") or ""),
+            cause=str(row.get("cause") or ""),
             closed=1 if row.get("closed") else 0,
             criterion_kind=str(crit.get("kind") or ""),
             criterion_units=int(crit.get("units") or 0),
@@ -551,6 +560,7 @@ def _worker(session_id: str, ask: str, log: Optional[Callable[..., Any]]) -> Non
             domain=str(res.get("domain") or ""),
             criterion=res.get("criterion") or {},
             reason=str(res.get("reason") or ""),
+            cause=str(res.get("cause") or ""),
             latency_ms=res.get("latency_ms") or 0,
             state=res.get("state") or GATE_ABSTAIN)
     except Exception:  # noqa: BLE001 — the record never breaks the worker

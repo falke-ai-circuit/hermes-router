@@ -435,7 +435,8 @@ _PRE_DOMAIN_TTL = 900.0     # one turn; a gateway-killed turn expires, never lin
 def mark_pre_domain(session_id: str, ask: str = "", *, lane: str = "",
                     question: str = "", gate: str = "", domain: str = "",
                     criterion: Optional[dict] = None, reason: str = "",
-                    latency_ms: int = 0, state: str = "") -> Optional[dict]:
+                    cause: str = "", latency_ms: int = 0,
+                    state: str = "") -> Optional[dict]:
     """Record the PRE domain-gate verdict for this turn. Never raises; returns
     the stored record, or None when there is no turn identity to bind it to."""
     try:
@@ -455,6 +456,11 @@ def mark_pre_domain(session_id: str, ask: str = "", *, lane: str = "",
             "state": str(state or gate or "")[:20],
             "domain": str(domain or "")[:40],
             "reason": str(reason or "")[:60],
+            # M49-02: WHY the aux call returned nothing (cap | breaker |
+            # no_client | empty_content | http_<status> | ...). Empty when the
+            # gate answered. Separation from `reason` keeps the outcome token
+            # (`aux_none`) stable for every existing reader.
+            "cause": str(cause or "")[:40],
             "criterion": dict(criterion) if isinstance(criterion, dict) else {},
             "latency_ms": int(latency_ms or 0),
         }
