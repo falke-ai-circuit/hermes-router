@@ -1,0 +1,80 @@
+[
+ {
+  "cell": "K_top_thinking_budget_int",
+  "max_tokens": 800,
+  "http": 400,
+  "finish": null,
+  "content_chars": 0,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "over_max_tokens": false,
+  "cost": null,
+  "latency_s": 1.8,
+  "error": "This request is not valid. Check the request parameters. Additional info: invalid request body: json: unknown field \"thinking_budget\""
+ },
+ {
+  "cell": "L_top_reasoning_budget_int",
+  "max_tokens": 800,
+  "http": 400,
+  "finish": null,
+  "content_chars": 0,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "over_max_tokens": false,
+  "cost": null,
+  "latency_s": 0.97,
+  "error": "This request is not valid. Check the request parameters. Additional info: invalid request body: json: unknown field \"reasoning_budget\""
+ },
+ {
+  "cell": "M_max_completion_tokens",
+  "max_tokens": null,
+  "http": 200,
+  "finish": "length",
+  "content_chars": 0,
+  "completion_tokens": 800,
+  "reasoning_tokens": 800,
+  "over_max_tokens": false,
+  "cost": 0.008108,
+  "latency_s": 9.35,
+  "error": null
+ },
+ {
+  "cell": "N_effort_minimal",
+  "max_tokens": 800,
+  "http": 200,
+  "finish": "length",
+  "content_chars": 2413,
+  "completion_tokens": 800,
+  "reasoning_tokens": 0,
+  "over_max_tokens": false,
+  "cost": 0.008108,
+  "latency_s": 8.69,
+  "error": null
+ },
+ {
+  "cell": "O_effort_xhigh",
+  "max_tokens": 800,
+  "http": 200,
+  "finish": "length",
+  "content_chars": 0,
+  "completion_tokens": 800,
+  "reasoning_tokens": 799,
+  "over_max_tokens": false,
+  "cost": 0.008108,
+  "latency_s": 11.8,
+  "error": null
+ },
+ {
+  "cell": "P_64k_acceptance",
+  "max_tokens": 64000,
+  "http": 200,
+  "finish": "stop",
+  "content_chars": 2,
+  "completion_tokens": 4,
+  "reasoning_tokens": 0,
+  "over_max_tokens": false,
+  "cost": 7.4e-05,
+  "latency_s": 1.96,
+  "error": null
+ }
+]

@@ -1,0 +1,88 @@
+[
+ {
+  "cell": "G_messages_path",
+  "path": "/messages",
+  "max_tokens": 64,
+  "extra_keys": [],
+  "http": 404,
+  "finish": null,
+  "content_chars": 0,
+  "completion_tokens": null,
+  "reasoning_tokens": null,
+  "over_max_tokens": false,
+  "cost": null,
+  "latency_s": 0.01,
+  "error": {
+   "message": "Path /v1/messages not handled by shim",
+   "type": "path_not_allowed"
+  }
+ },
+ {
+  "cell": "H_thinking_gt_max",
+  "path": "/chat/completions",
+  "max_tokens": 4000,
+  "extra_keys": [
+   "thinking"
+  ],
+  "http": 200,
+  "finish": "stop",
+  "content_chars": 2898,
+  "completion_tokens": 2282,
+  "reasoning_tokens": 1057,
+  "over_max_tokens": false,
+  "cost": 0.023038,
+  "latency_s": 21.19,
+  "error": null
+ },
+ {
+  "cell": "I_thinking_budget_too_small",
+  "path": "/chat/completions",
+  "max_tokens": 800,
+  "extra_keys": [
+   "thinking"
+  ],
+  "http": 200,
+  "finish": "stop",
+  "content_chars": 43,
+  "completion_tokens": 23,
+  "reasoning_tokens": 0,
+  "over_max_tokens": false,
+  "cost": 0.00025,
+  "latency_s": 4.57,
+  "error": null
+ },
+ {
+  "cell": "J1_peak_at_24000",
+  "path": "/chat/completions",
+  "max_tokens": 24000,
+  "extra_keys": [
+   "reasoning_effort"
+  ],
+  "http": 200,
+  "finish": "length",
+  "content_chars": 0,
+  "completion_tokens": 24000,
+  "reasoning_tokens": 23999,
+  "over_max_tokens": false,
+  "cost": 0.24024,
+  "latency_s": 157.73,
+  "error": null
+ },
+ {
+  "cell": "J2_peak_at_24000",
+  "path": "/chat/completions",
+  "max_tokens": 24000,
+  "extra_keys": [
+   "reasoning_effort"
+  ],
+  "http": 200,
+  "finish": "length",
+  "content_chars": 0,
+  "completion_tokens": 24000,
+  "reasoning_tokens": 24000,
+  "over_max_tokens": false,
+  "cost": 0.240268,
+  "latency_s": 179.27,
+  "error": null
+ }
+]

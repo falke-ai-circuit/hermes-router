@@ -1,0 +1,256 @@
+[
+ {
+  "cell": "A_control_effort_max",
+  "sent_extra": {
+   "reasoning_effort": "max"
+  },
+  "max_tokens": 800,
+  "http": 200,
+  "latency_s": 13.37,
+  "finish_reason": "length",
+  "content_chars": 0,
+  "content_head": "",
+  "usage": {
+   "completion_tokens": 800,
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 0,
+    "audio_tokens": 0,
+    "reasoning_tokens": 800,
+    "rejected_prediction_tokens": 0
+   },
+   "prompt_tokens": 81,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "total_tokens": 881,
+   "cost": 0.008162,
+   "cost_details": {
+    "source": "gateway_computed_spend",
+    "floor_applied": false
+   }
+  },
+  "error": null,
+  "reasoning_field_present": true,
+  "raw_keys": [
+   "choices",
+   "created",
+   "id",
+   "model",
+   "object",
+   "service_tier",
+   "system_fingerprint",
+   "usage"
+  ]
+ },
+ {
+  "cell": "B_thinking_block",
+  "sent_extra": {
+   "thinking": {
+    "type": "enabled",
+    "budget_tokens": 6000
+   }
+  },
+  "max_tokens": 800,
+  "http": 200,
+  "latency_s": 7.58,
+  "finish_reason": "length",
+  "content_chars": 305,
+  "content_head": "**Components** 1. **Budget Allocator**: reserves ~10% of tokens (R) for fallback before the primary call. Primary gets B",
+  "usage": {
+   "completion_tokens": 800,
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 0,
+    "audio_tokens": 0,
+    "reasoning_tokens": 673,
+    "rejected_prediction_tokens": 0
+   },
+   "prompt_tokens": 81,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "total_tokens": 881,
+   "cost": 0.008162,
+   "cost_details": {
+    "source": "gateway_computed_spend",
+    "floor_applied": false
+   }
+  },
+  "error": null,
+  "reasoning_field_present": false,
+  "raw_keys": [
+   "choices",
+   "created",
+   "id",
+   "model",
+   "object",
+   "service_tier",
+   "system_fingerprint",
+   "usage"
+  ]
+ },
+ {
+  "cell": "C_reasoning_object",
+  "sent_extra": {
+   "reasoning": {
+    "effort": "max",
+    "max_tokens": 6000
+   }
+  },
+  "max_tokens": 800,
+  "http": 200,
+  "latency_s": 14.19,
+  "finish_reason": "length",
+  "content_chars": 0,
+  "content_head": "",
+  "usage": {
+   "completion_tokens": 800,
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 0,
+    "audio_tokens": 0,
+    "reasoning_tokens": 800,
+    "rejected_prediction_tokens": 0
+   },
+   "prompt_tokens": 81,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "total_tokens": 881,
+   "cost": 0.008162,
+   "cost_details": {
+    "source": "gateway_computed_spend",
+    "floor_applied": false
+   }
+  },
+  "error": null,
+  "reasoning_field_present": true,
+  "raw_keys": [
+   "choices",
+   "created",
+   "id",
+   "model",
+   "object",
+   "service_tier",
+   "system_fingerprint",
+   "usage"
+  ]
+ },
+ {
+  "cell": "D_effort_low",
+  "sent_extra": {
+   "reasoning_effort": "low"
+  },
+  "max_tokens": 800,
+  "http": 200,
+  "latency_s": 6.96,
+  "finish_reason": "stop",
+  "content_chars": 1763,
+  "content_head": "**Components** 1. **BudgetManager**: reserves tokens (prompt + max_output), tracks spend, and exposes remaining budget. ",
+  "usage": {
+   "completion_tokens": 671,
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 0,
+    "audio_tokens": 0,
+    "reasoning_tokens": 0,
+    "rejected_prediction_tokens": 0
+   },
+   "prompt_tokens": 81,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "total_tokens": 752,
+   "cost": 0.006872,
+   "cost_details": {
+    "source": "gateway_computed_spend",
+    "floor_applied": false
+   }
+  },
+  "error": null,
+  "reasoning_field_present": false,
+  "raw_keys": [
+   "choices",
+   "created",
+   "id",
+   "model",
+   "object",
+   "service_tier",
+   "system_fingerprint",
+   "usage"
+  ]
+ },
+ {
+  "cell": "E_thinking_plus_effort",
+  "sent_extra": {
+   "reasoning_effort": "max",
+   "thinking": {
+    "type": "enabled",
+    "budget_tokens": 6000
+   }
+  },
+  "max_tokens": 800,
+  "http": 200,
+  "latency_s": 12.2,
+  "finish_reason": "length",
+  "content_chars": 0,
+  "content_head": "",
+  "usage": {
+   "completion_tokens": 800,
+   "completion_tokens_details": {
+    "accepted_prediction_tokens": 0,
+    "audio_tokens": 0,
+    "reasoning_tokens": 800,
+    "rejected_prediction_tokens": 0
+   },
+   "prompt_tokens": 81,
+   "prompt_tokens_details": {
+    "audio_tokens": 0,
+    "cache_write_tokens": 0,
+    "cached_tokens": 0
+   },
+   "total_tokens": 881,
+   "cost": 0.008162,
+   "cost_details": {
+    "source": "gateway_computed_spend",
+    "floor_applied": false
+   }
+  },
+  "error": null,
+  "reasoning_field_present": true,
+  "raw_keys": [
+   "choices",
+   "created",
+   "id",
+   "model",
+   "object",
+   "service_tier",
+   "system_fingerprint",
+   "usage"
+  ]
+ },
+ {
+  "cell": "F_unknown_field_sentinel",
+  "sent_extra": {
+   "zzz_bogus_field_xyz": 1
+  },
+  "max_tokens": 800,
+  "http": 400,
+  "latency_s": 1.82,
+  "finish_reason": null,
+  "content_chars": 0,
+  "content_head": "",
+  "usage": null,
+  "error": null,
+  "reasoning_field_present": false,
+  "raw_keys": [
+   "message",
+   "status"
+  ]
+ }
+]
