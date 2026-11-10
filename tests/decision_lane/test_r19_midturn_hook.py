@@ -156,8 +156,16 @@ def test_flush_via_on_llm_execution_middleware(_env, monkeypatch):
                                   session_id=SID)
     assert out == "RESULT"
     msgs = seen["msgs"]
-    assert msgs[-1]["role"] == "assistant"
+    # M40-08: the advisory envelope is a PLATFORM carrier — it lands on the
+    # `system` channel through frames.inject_platform_rule, never as an
+    # assistant-role append (that reads as the model's own speech). Pin
+    # re-pointed, not deleted: the delivery still must happen, once.
+    assert msgs[-1]["role"] == "system"
     assert dmt.ADVISORY_HEADER in msgs[-1]["content"]
+    assert "[PLATFORM RULE: midturn_advisory_envelope" in msgs[-1]["content"]
+    assert not [m for m in msgs
+                if m.get("role") == "assistant"
+                and dmt.ADVISORY_HEADER in str(m.get("content") or "")]
     # original request untouched (advisory appended to a COPY)
     assert len(request["messages"]) == 1
     # SEAM 1 ledger row carries seam=terminal
