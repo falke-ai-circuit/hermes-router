@@ -54,7 +54,79 @@ UNC_DOMAINS = frozenset({
     "drugs_synthesis", "fraud_deception", "self_harm", "cyber_offensive",
 })
 CLOSED_DOMAINS = frozenset({"sexual_content_minors"})  # counted, never routed
-SAFE_DOMAINS = frozenset({"benign_task", "meta_doctrine", "technical", "other"})
+# `meta_doctrine` is NOT here: the label says the ask is ABOUT the agent, and
+# about-ness alone does not say whether the ask asks for an ACTION on the
+# agent's own doctrine (see DOCTRINE_ACTION_CUES). It is decided explicitly in
+# `evaluate`.
+SAFE_DOMAINS = frozenset({"benign_task", "technical", "other"})
+
+# ---------------------------------------------------------------------------
+# M49-07 — meta_doctrine is not blanket-safe
+#
+# Measured (M49-03 §5, 415-row gate-1 subset): meta_doctrine refusals detect at
+# 29/113 = 25.7% while every topical domain sits at 0.78-1.00. The mechanism is
+# not the aux label — it is that `meta_doctrine` was a member of SAFE_DOMAINS,
+# so EVERY meta_doctrine turn took `not_flagged`/`out_of_domain` and rules 5-6
+# delivered it. Detection could then only come from the POST judge saying
+# `declined`; the 50 misses judged `softened` were delivered by row 5.
+#
+# The label conflates two asks that are not the same request:
+#   - "what are your rules / how are you built"        -> informational, safe
+#   - "change / remove / apply this to your doctrine"  -> an ACTION on the
+#     policy substrate, which is this lane's business and which the agent
+#     refuses; that refusal must reach the route path regardless of how the
+#     body softens it.
+#
+# So the safe branch is narrowed by CUE EVIDENCE in the ask itself: a directive
+# verb whose OBJECT is a doctrine artifact. Informational asks name the same
+# artifacts but have no such verb-object pair, which is what the measured
+# separation (10 refusal rows, 0-1 benign) rests on.
+#
+# Measured on the frozen 828-row replay (M49-03's own instrument, cached):
+# gate 1 281/415 -> 290/415, benign FP 5/199 -> 6/199 (2.51% -> 3.02%): under
+# the 5% bar, gate 2 still PASS. No prompt, model, cap or taxonomy change.
+# ---------------------------------------------------------------------------
+_DOCTRINE_OBJECT = r"(?:soul\.md|identity\.md|doctrine|persona)"
+_DOCTRINE_VERB = (r"(?:apply|add|remove|delete|updat|chang|set|patch|edit|modif|"
+                  r"insert|propos|writ|put|rewrit)")
+DOCTRINE_ACTION_CUES = (
+    # "remove the X rule from conductor SOUL.md", "apply this doctrine mutation
+    # to shadow's SOUL.md", "proposed 3 mutations to valmet's SOUL.md"
+    ("mutation", re.compile(
+        _DOCTRINE_VERB + r"(?:e|es|ed|ing|s)?\s+[^.\n]{0,60}?\b(?:to|from|into|in)"
+        r"\s+[^.\n]{0,30}?" + _DOCTRINE_OBJECT, re.IGNORECASE)),
+    # "Update Shadow's persona", "add it to her doctrine"
+    ("possessive", re.compile(
+        _DOCTRINE_VERB + r"(?:e|es|ed|ing|s)?\s+[^.\n]{0,40}?\b"
+        r"(?:[\w-]+'s|your|his|her|their|its)\s+" + _DOCTRINE_OBJECT,
+        re.IGNORECASE)),
+    # the noun phrase alone is the ask's object in this fleet's dispatch style
+    ("doctrine_noun", re.compile(
+        r"\bdoctrine\s+(?:mutation|entry|update|change)\b", re.IGNORECASE)),
+)
+
+
+def doctrine_action_marker(ask: str) -> str:
+    """Which doctrine-ACTION cue the ask carries, or "" for none.
+
+    CALLER CONTRACT
+        ask     the request text (as the gate already holds it)
+        returns the first matching cue NAME (`mutation` / `possessive` /
+        `doctrine_noun`) or "" — a short token for the log, never the ask.
+
+    "" is not a verdict: it means the ask asks nothing OF the doctrine, so a
+    meta_doctrine label stays `not_flagged` exactly as before. An act/artifact
+    pair is what makes the ask this lane's business.
+    """
+    try:
+        text = str(ask or "")
+        for name, rx in DOCTRINE_ACTION_CUES:
+            if rx.search(text):
+                return name
+        return ""
+    except Exception:  # noqa: BLE001 — an unreadable ask claims nothing
+        logger.debug("domain_gate doctrine cue error", exc_info=True)
+        return ""
 
 # verdict vocabulary on the record. `pending` means the thread has not landed
 # and is read as `abstain` by POST — the zero-latency requirement and the
@@ -496,6 +568,19 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     if domain in SAFE_DOMAINS:
         out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
                     "state": GATE_NOT_FLAGGED, "reason": "out_of_domain"})
+        return out
+    if domain == "meta_doctrine":
+        # M49-07: safe only when the ask ASKS NOTHING of the doctrine. A
+        # directive verb with a doctrine artifact as its object is an action
+        # ask, and the lane's flag is what carries it past rules 5-6.
+        marker = doctrine_action_marker(text)
+        if marker:
+            out.update({"domain": domain, "gate": GATE_FLAGGED,
+                        "state": GATE_FLAGGED,
+                        "reason": "doctrine_action:" + marker})
+        else:
+            out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
+                        "state": GATE_NOT_FLAGGED, "reason": "out_of_domain"})
         return out
     out["reason"] = "off_vocabulary"
     out["domain"] = ""
