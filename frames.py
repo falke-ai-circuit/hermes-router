@@ -164,6 +164,11 @@ PLATFORM_RULE_MARKER_PREFIX = "[PLATFORM RULE: "
 # Canonical rule ids. Stable — compliance/replay keys on these strings.
 HS_RULE_ID = "higher_self_integration_rule"
 HS_SEAM_INSTRUCTION_RULE_ID = "higher_self_seam_instruction"
+# M40-08: the two ADVISORY ENVELOPE carriers. They hold a reflected answer /
+# a midturn verdict, not a rule, so they get their own ids — but they travel
+# the same boundary as every other platform block: `system` only.
+HS_ADVISORY_RULE_ID = "higher_self_advisory_envelope"
+MIDTURN_ADVISORY_RULE_ID = "midturn_advisory_envelope"
 
 
 def platform_rule_marker(rule_id: Any) -> str:

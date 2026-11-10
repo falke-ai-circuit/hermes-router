@@ -3464,12 +3464,21 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 modified = _hub().copy.deepcopy(request)
                 msgs = modified.get("messages")
                 if isinstance(msgs, list):
+                    from .. import frames as _frames_mt
+
+                    # M40-08: the advisory envelope is a PLATFORM block, so it
+                    # lands on the `system` channel through the one boundary —
+                    # never an assistant-role append (that reads as the model's
+                    # own speech). Several advisories in one turn are joined
+                    # into ONE envelope: one envelope per turn, one channel.
+                    _envs = [str(a) for a in _mt_advisories if a]
                     _n = 0
-                    for _adv in _mt_advisories:
-                        if _adv:
-                            msgs.append({"role": "assistant",
-                                         "content": str(_adv)})
-                            _n += 1
+                    if _envs and _frames_mt.inject_platform_rule(
+                            modified, _frames_mt.MIDTURN_ADVISORY_RULE_ID,
+                            "\n\n".join(_envs),
+                            session_id=str(session_id or ""),
+                            dedupe="call"):
+                        _n = len(_envs)
                     # Delivery was previously invisible: flush() had already
                     # cleared the queue, so an advisory that never got appended
                     # left no trace anywhere and the lane looked like it had
@@ -3666,7 +3675,13 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 # Orphaned post-close: drop the envelope and hand the turn
                 # back untouched (the original request, no advisory).
                 return next_call(request)
-            msgs.append({"role": "assistant", "content": advisory})
+            # M40-08: the higher-self envelope is a PLATFORM carrier, not the
+            # model's own turn. It goes through the one boundary on `system`;
+            # the envelope text (frame + body) is preserved — the fix moves the
+            # emission, it does not silence it.
+            _frames.inject_platform_rule(
+                modified, _frames.HS_ADVISORY_RULE_ID, advisory,
+                session_id=str(session_id or ""), dedupe="call")
             # (2026-09-09) Seam instruction - mirror of the uncensored render seam:
             # after the advisory envelope, explicitly instruct the main model to
             # PROCEED with the task. Higher-self produced the data; the main model
@@ -3681,10 +3696,17 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                 role="system")
         # R19.2: merge any midturn advisory envelopes into the anchored
         # path too (advisory data appended, never a rewrite).
+        # M40-08 (anchored path): same boundary as the non-anchored flush above
+        # — one joined envelope, `system`, never an assistant-role append.
         if _mt_advisories:
-            for _adv in _mt_advisories:
-                if _adv:
-                    msgs.append({"role": "assistant", "content": str(_adv)})
+            _envs_a = [str(a) for a in _mt_advisories if a]
+            if _envs_a:
+                from .. import frames as _frames_am
+
+                _frames_am.inject_platform_rule(
+                    modified, _frames_am.MIDTURN_ADVISORY_RULE_ID,
+                    "\n\n".join(_envs_a), session_id=str(session_id or ""),
+                    dedupe="call")
         # v3.3.1: anchored SUCCESS clears the failure-backoff entry for this
         # (session, task) — after envelope delivery, before next_call.
         _hub().router_core.clear_anchor_backoff(session_id, str(rec.get("task_id") or ""))
