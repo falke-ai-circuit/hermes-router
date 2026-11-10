@@ -42,8 +42,8 @@ tests/config/test_p4_schema_budgets.py::test_b_no_max_tokens_literals_outside_bu
 # unknown_route are now declared, and a dynamic join ("paths." + name) is accepted only when
 # the schema declares a key under that prefix. Removed as a DECISION, not because a run
 # needed it to pass.
-tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics  # real: decline construction over-broad; a status report is read as a refusal (with the row below)
-tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics  # real: same construction as above, first-person account read as a refusal
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_f2_channel_distrust_has_no_semantics  # REAL DEFECT — not fixed in M49-04 (behaviour change out of scope; follow-on M49-05): structural.has_refusal_semantics() binds the negation to agent state/channel ("no trustworthy execution channel") instead of the ask's object, so a status report reads as a refusal. Fix = narrow the negation binding, not the test.
+tests/routing/test_r33m_refusal_semantics.py::test_valmet_fragments_have_no_semantics  # REAL DEFECT — same over-broad decline construction as the row above ("Browser automation is dead until Edge restarts", "Not confirmed - still unknown", "I'm not going to pretend the dispatch worked"): all three are first-person status reports, none refuses the ask. Follow-on M49-05.
 tests/routing/test_rider20_fixes.py::test_d3_hook_budget_clamps_sync_and_revision_sum  # accepted-debt: completion_audit passes fold_revision=False by design; the pin was never inverted
 tests/routing/test_rider20_fixes.py::test_d3_a_large_hook_budget_still_hosts_the_fold  # accepted-debt: same fold decision exercised through the large-budget branch
 
@@ -129,6 +129,14 @@ optional tests/decision_lane/test_r72k_soft_readings.py::test_agent_card_is_the_
 optional tests/higher_self/test_persona_card.py::test_card_cached_by_ttl  reason=order  expect="assert 3 == 2"
 
 # --- required (36 added here, red in every measured run) ---
+# M49-04 (2026-11-10): four rows REMOVED — fixed by a test-only change, not a
+# product change. test_m35_03_standdown.py::_rows() read every ledger line and
+# asserted on line 0; since 8763a19 (M48, one banner per lane) that line is the
+# `record="banner_record"` delivery envelope, which carries no `rule`/`replaced`
+# field, so the pins reported `KeyError: 'rule'` / `assert 2 == 1` against a
+# ledger that was correct. The reader now filters banner records and selects the
+# decision row. Removed: test_m35_03_standdown.py::{a1, a3_abstain_with_no_gate
+# _record, a3_aux_none, c4}. Each is green at HEAD 63d4603 + this test fix.
 tests/commands/test_v360_tap_wiring.py::test_zero_delivered_change_banner_off  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
 tests/commands/test_v360_trigger_cascade.py::test_decision_record_versioned_schema  # M36-06 debt: superseded contract, measured expect="decision-record and 3 == 2"
 tests/decision_lane/test_r19_decision_lane_v3.py::test_envelope_options_carry_causal_frames  # M36-06 debt: superseded contract, measured expect="Extra items in the left set: 'probability'"
@@ -140,10 +148,6 @@ tests/features/test_m35_01_provenance.py::test_b_benign_turn_row_shows_it_did_no
 tests/features/test_m35_01_provenance.py::test_c_rule1_and_rule3_are_distinguishable_in_the_row  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
 tests/features/test_m35_01_provenance.py::test_d_row_joins_to_its_body_via_turn_id  # M36-06 debt: superseded contract, measured expect="assert '0' == '1'"
 tests/features/test_m35_01_provenance.py::test_f_no_bare_ts_action_row  # M36-06 debt: superseded contract, measured expect="assert ('main' and None)"
-tests/features/test_m35_03_standdown.py::test_a1_flagged_in_domain_body_self_declares_and_the_lane_still_speaks  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
-tests/features/test_m35_03_standdown.py::test_a3_abstain_with_no_gate_record_also_defers  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
-tests/features/test_m35_03_standdown.py::test_a3_aux_none_reaches_a_named_lane_decision  # M36-06 debt: superseded contract, measured expect="assert 2 == 1"
-tests/features/test_m35_03_standdown.py::test_c4_benign_turn_still_delivers_the_main_body  # M36-06 debt: superseded contract, measured expect="KeyError: 'rule'"
 tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row[pass_through-deliver]  # M36-06 debt: superseded contract, measured expect="path pass_through wrote 2 rows, expected 1"
 tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row[replacement-deliver]  # M36-06 debt: superseded contract, measured expect="path replacement wrote 2 rows, expected 1"
 tests/features/test_m35_04_seam_totality.py::test_d_ten_turns_produce_ten_rows  # M36-06 debt: superseded contract, measured expect="assert 17 == 10"

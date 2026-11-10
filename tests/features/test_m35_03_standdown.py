@@ -105,14 +105,28 @@ def _row(sink, name):
 
 
 def _rows(ledger):
+    """Decision rows only.
+
+    The same ledger file also receives `record="banner_record"` rows (M48: one
+    banner per lane, written through `decisions.record_banner`).  They carry no
+    `rule`/`replaced` fields — they are the delivery envelope, not the routing
+    decision — so a reader that indexes the first line of the file sees the
+    banner envelope and reports `KeyError: 'rule'` instead of the decision.
+    Filter by record kind; the decision row stays the only row this file
+    asserts on.
+    """
     decisions.flush_for_tests()
     if not os.path.exists(str(ledger)):
         return []
     out = []
     for line in open(str(ledger), encoding="utf-8"):
         line = line.strip()
-        if line:
-            out.append(json.loads(line))
+        if not line:
+            continue
+        row = json.loads(line)
+        if row.get("record") == "banner_record":
+            continue
+        out.append(row)
     return out
 
 
