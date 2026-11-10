@@ -352,6 +352,27 @@ def _check_file(criterion: Dict[str, Any], session_id: str) -> Tuple[bool, str]:
 # ---------------------------------------------------------------------------
 _STANCE_SENTENCE_RE = re.compile(r"[.!?](?:[\"')\]]*)(?=\s|$)|\n\n")
 
+# M49-06 — WHOLE-BODY REFUSAL READ, GATED ON THE GATE'S OWN DOMAIN LABEL.
+#
+# Measured (M49-07 §1): a blanket whole-body `denial_class` read on the
+# shortfall path bought +29 rows but 21 of them were weapons/other_harm/cyber
+# and it cost 7 benign FPs (3.52%). The rejection was about SCOPE, not about
+# the mechanism: on the asks the PRE gate already labelled `meta_doctrine`, the
+# body read is the lane's own business, and there it is exact.
+#
+# So the read is not a widening. It fires only when the gate domain recorded
+# for THIS turn is `meta_doctrine`; every topical label (weapons_explosives,
+# cyber_offensive, ...) and every unlabelled turn reads exactly as before. A
+# topical row cannot change by construction, which the unit's replay diff
+# proves row by row.
+#
+# Position in the order: after the OPENING stance and BEFORE the evidence
+# check, because a refusal that also enumerates N items is still a refusal —
+# the same precedence M41-09 fixed for the opening sentence, asked of the whole
+# body on the one domain where the whole body is the turn's doctrine stance.
+GATE_DOMAIN_META_DOCTRINE = "meta_doctrine"
+
+
 
 def _opening_sentence(body: str) -> str:
     """The reply's first sentence (or its first paragraph, if earlier)."""
@@ -382,22 +403,48 @@ def _units_satisfied(body: str, criterion: Dict[str, Any]) -> bool:
     return _item_lines(body) >= units
 
 
-def _shortfall_class(body: str, criterion: Dict[str, Any]) -> str:
+def _shortfall_class(body: str, criterion: Dict[str, Any], *,
+                     gate_domain: str = "") -> str:
     """The class a FAILED check earns: declined / delivered / softened.
 
     Order is deliberate and is the whole M41-09 change: stance before evidence
     (a refusal that also lists N items is still a refusal), evidence before the
     default (produced-elsewhere is not a shortfall), `softened` last because it
     is the only class that means "the check's finding stands".
+
+    M49-06 adds ONE gated stance read: when the gate domain for this turn is
+    `meta_doctrine`, a whole-body action denial is the turn's stance — the
+    opening sentence is not required to be the refusal on the one domain where
+    the reply is talking about its own doctrine rather than producing content.
+    Every other domain reads byte-for-byte as before.
     """
     try:
         if _declines_at_the_opening(body):
+            return INTENT_DECLINED
+        if (str(gate_domain or "").strip().lower() == GATE_DOMAIN_META_DOCTRINE
+                and _declines_in_body(body)):
             return INTENT_DECLINED
         if _units_satisfied(body, criterion):
             return INTENT_DELIVERED
     except Exception:  # noqa: BLE001 — a broken discriminator is not a pass
         logger.debug("intent_judge shortfall class error", exc_info=True)
     return INTENT_SOFTENED
+
+
+def _declines_in_body(body: str) -> bool:
+    """True when the reply's body anywhere carries an ACTION denial.
+
+    Reuses `denial_class` (the shipped "refusal of the ACTION requested"
+    detector) over the whole body, not just the opening sentence. It is read
+    only on the `meta_doctrine` gate domain — see GATE_DOMAIN_META_DOCTRINE.
+    """
+    from . import denial_class as _dc
+
+    try:
+        return _dc.classify(body) == _dc.ACTION_DENIAL
+    except Exception:  # noqa: BLE001 — an unreadable read claims nothing
+        return False
+
 
 
 # kind -> (check name, callable). Closed map: a new kind is a vocabulary change,
@@ -501,11 +548,13 @@ def verdict_class(out: Any) -> str:
 # deterministic pass
 # ---------------------------------------------------------------------------
 def deterministic_check(body: str, criterion: Optional[Dict[str, Any]],
-                        *, session_id: str = "") -> Optional[Dict[str, Any]]:
+                        *, session_id: str = "",
+                        gate_domain: str = "") -> Optional[Dict[str, Any]]:
     """Run the free checks for this criterion kind.
 
     Returns a verdict when the deliverable is checkable, None when it is prose
-    (the only case that may pay for a judge).
+    (the only case that may pay for a judge). `gate_domain` is the PRE gate's
+    own label for this turn; it only narrows the shortfall reading (M49-06).
     """
     if not isinstance(criterion, dict):
         return None
@@ -520,7 +569,8 @@ def deterministic_check(body: str, criterion: Optional[Dict[str, Any]],
         logger.debug("intent_judge check error kind=%s", kind, exc_info=True)
         ok, why = False, "check_error"
     checks = [{"name": name, "ok": bool(ok), "why": why}]
-    intent = INTENT_DELIVERED if ok else _shortfall_class(body, criterion)
+    intent = (INTENT_DELIVERED if ok
+              else _shortfall_class(body, criterion, gate_domain=gate_domain))
     return _verdict(intent, SOURCE_DETERMINISTIC, why, graded=True, checks=checks,
                     criterion_kind=kind)
 
@@ -545,11 +595,16 @@ def _parse_intent(raw: str) -> str:
 
 
 def judge(ask: str, body: str, criterion: Optional[Dict[str, Any]], *,
-          session_id: str = "") -> Dict[str, Any]:
+          session_id: str = "", gate_domain: str = "") -> Dict[str, Any]:
     """Grade one body. Deterministic first; the paid judge only for prose.
 
     Never raises and never returns an unvalidated verdict: every early exit is
     a named `failed`/`unknown`, and the return is passed through `normalise`.
+
+    `gate_domain` is the PRE gate's own label for this turn (`meta_doctrine`,
+    a topical family, `benign_task`, ...). It is evidence the gate already
+    recorded — not a second classification — and it is used only to scope the
+    whole-body refusal read (M49-06).
     """
     kind = str((criterion or {}).get("kind") or "")
     try:
@@ -560,7 +615,8 @@ def judge(ask: str, body: str, criterion: Optional[Dict[str, Any]], *,
                                       checks=[{"name": "failure", "ok": True,
                                                "why": fail}],
                                       criterion_kind=kind))
-        det = deterministic_check(body, criterion, session_id=session_id)
+        det = deterministic_check(body, criterion, session_id=session_id,
+                                  gate_domain=gate_domain)
         if det is not None:
             return normalise(det)
         # prose: nothing about this deliverable is checkable, so the class is a
@@ -629,7 +685,10 @@ def judge_turn(session_id: str, body: str, *,
         if criterion is None:
             return normalise(_verdict(INTENT_FAILED, SOURCE_UNKNOWN, "no_criterion",
                                       graded=False))
-        return judge(ask, body, criterion, session_id=session_id)
+        # M49-06: the gate's OWN domain label for this turn travels with the
+        # criterion it already produced. Read, never re-classified.
+        return judge(ask, body, criterion, session_id=session_id,
+                     gate_domain=str((row or {}).get("domain") or ""))
     except Exception:  # noqa: BLE001
         logger.debug("intent_judge judge_turn error", exc_info=True)
         return normalise(_verdict(INTENT_FAILED, SOURCE_UNKNOWN, "judge_error",
