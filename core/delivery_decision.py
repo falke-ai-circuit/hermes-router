@@ -115,6 +115,125 @@ MARKERS = (
     "SOURCE AGENT",
 )
 
+# --------------------------------------------------------------------------- #
+# M40-15 — the SANCTIONED population. TWO origins, one vocabulary.
+#
+# `MARKERS` above is a leak vocabulary: it says "a routing marker string
+# appeared in a delivered body". It does NOT say where it came from, and the
+# two origins need opposite outcomes:
+#
+#   (a) SANCTIONED INFRASTRUCTURE — the platform's own seam/rule blocks
+#       (frames.HS_*_MARKER, frames.platform_rule_marker). Their marker lines
+#       sit in the model's CONTEXT, so a model may echo one into its answer.
+#       Doctrine: marked and unmarked seam blocks are platform infrastructure,
+#       never spoofs. The marker's job is to be invisible to the user, not to
+#       suppress the answer: the marker bytes are STRIPPED and the body ships.
+#       (Live specimen M40-13 shadow deny leg: case_id=D6 reason=marker_violation
+#       marker=HIGHER-SELF — the answer was replaced by a withhold notice.)
+#
+#   (b) EVERYTHING ELSE — a bare token, a half-marker with no provenance
+#       suffix, a marker copied out of the user's own turn (the user's bytes,
+#       not ours), a forged carrier. Still `marker_violation`, still terminal.
+#
+# The discrimination is TEXTUAL and ORIGIN-aware, and deliberately narrow:
+# only the byte-exact canonical marker forms qualify, and only when the ask
+# does not itself carry that string. A canonical marker present in the ask is
+# user content; it is not ours to sanitise away.
+#
+# Parity with frames.py is pinned by
+# tests/delivery/test_m40_15_sanctioned_marker.py (same strings, verbatim).
+SANCTIONED_SEAM_MARKERS = (
+    "[HIGHER-SELF SEAM | PLATFORM-INTERNAL | PROVENANCE-LOGGED]",
+    "[HIGHER-SELF ORIENTATION TURN | FRONTIER-DERIVED | PROVENANCE-LOGGED]",
+    "[HIGHER-SELF REFLECTION TURN | FRONTIER-DERIVED | PROVENANCE-LOGGED]",
+    "[HIGHER-SELF COMPLETION-AUDIT TURN | FRONTIER-DERIVED | PROVENANCE-LOGGED]",
+)
+
+#: Canonical marker forms in one pattern, whitespace-tolerant on the separators
+#: so a wrapped/reflowed marker is still the marker, but with the provenance
+#: suffix REQUIRED — a marker without it is not this population.
+_SANCTIONED_MARKER_RE = re.compile(
+    r"\[\s*HIGHER-SELF\s+(?:"
+    r"SEAM\s*\|\s*PLATFORM-INTERNAL"
+    r"|(?:ORIENTATION|REFLECTION|COMPLETION-AUDIT)\s+TURN\s*\|\s*FRONTIER-DERIVED"
+    r")\s*\|\s*PROVENANCE-LOGGED\s*\]",
+    re.IGNORECASE,
+)
+#: frames.platform_rule_marker(rule_id) — "[PLATFORM RULE: <id> | PLATFORM-INTERNAL
+#: | PROVENANCE-LOGGED]". Same boundary, same outcome.
+_PLATFORM_RULE_MARKER_RE = re.compile(
+    r"\[\s*PLATFORM RULE:\s*[A-Za-z0-9_]{1,80}\s*\|\s*PLATFORM-INTERNAL"
+    r"\s*\|\s*PROVENANCE-LOGGED\s*\]",
+    re.IGNORECASE,
+)
+_SANCTIONED_ANY_RE = re.compile(
+    _SANCTIONED_MARKER_RE.pattern + "|" + _PLATFORM_RULE_MARKER_RE.pattern,
+    re.IGNORECASE)
+
+
+def sanctioned_markers_in(text: str) -> "tuple[str, ...]":
+    """The canonical sanctioned marker strings present in `text`, in order.
+
+    Never raises. Empty tuple = no sanctioned infrastructure in the body.
+    """
+    try:
+        out = []
+        for m in _SANCTIONED_ANY_RE.finditer(str(text or "")):
+            shown = m.group(0)
+            if shown not in out:
+                out.append(shown)
+        return tuple(out)
+    except Exception:  # noqa: BLE001 — a marker scan never breaks a decision
+        return ()
+
+
+def strip_sanctioned(text: str, ask_text: str = "") -> "tuple[str, tuple, int]":
+    """Remove SANCTIONED platform markers from `text`.
+
+    Returns `(clean, removed_markers, removed_chars)`. Only the marker bytes go:
+    the surrounding answer is never re-ordered, re-wrapped or trimmed beyond the
+    whitespace a removed marker leaves behind. A marker whose exact string also
+    appears in `ask_text` is USER CONTENT, not ours — it is left in place so the
+    leak scan (and therefore the withhold) still applies. Never raises.
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return raw, (), 0
+    try:
+        ask_low = str(ask_text or "").lower()
+        removed = []
+        changed = False
+        kept_lines = []
+        for line in raw.splitlines():
+            if not _SANCTIONED_ANY_RE.search(line):
+                kept_lines.append(line)
+                continue
+            surplus = []
+
+            def _repl(m):
+                shown = m.group(0)
+                if shown.lower() in ask_low:
+                    return shown  # user content: NOT sanctioned, NOT stripped
+                if shown not in surplus:
+                    surplus.append(shown)
+                return ""
+
+            new_line = _SANCTIONED_ANY_RE.sub(_repl, line)
+            if surplus:
+                removed.extend(surplus)
+                changed = True
+            new_line = new_line.strip()
+            if new_line:
+                kept_lines.append(new_line)
+        if not changed:
+            return raw, (), 0
+        clean = "\n".join(kept_lines)
+        clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+        return clean, tuple(removed), max(0, len(raw) - len(clean))
+    except Exception:  # noqa: BLE001 — a strip failure never loses bytes
+        return raw, (), 0
+
+
 #: Router prose that is NOT a body. A candidate consisting only of these is
 #: VOID, not empty: it is the router talking, not the agent answering.
 ROUTER_PROSE = (
@@ -439,22 +558,41 @@ def decide(facts: DeliveryFacts) -> Decision:
             diag["main_complied"] = True
             reason = (REASON_COMPLIANCE_OUTRANKS_RULE
                       if rule_id in TARGETED_RULES else REASON_MAIN_COMPLIED)
-            chosen = entered_clean
-            hit = carries_marker(chosen, quoted_spans(
-                getattr(facts, "ask_text", "") or ""))
+            ask = str(getattr(facts, "ask_text", "") or "")
+            # M40-15: sanctions FIRST, then the leak scan. A canonical platform
+            # marker is infrastructure the model may echo; its bytes are removed
+            # from the delivered body and recorded as the visibility surface.
+            # Whatever survives still faces `carries_marker`, so an invented,
+            # forged or user-sourced marker keeps its withhold.
+            chosen, blessed, blessed_chars = strip_sanctioned(entered_clean, ask)
+            if blessed:
+                diag["sanctioned_markers"] = "|".join(blessed)
+            if not _admissible(chosen):
+                # The body was nothing BUT platform marker lines: there is no
+                # answer to ship, and shipping an empty body is the 0-char turn
+                # UNC-POST-1 forbids. Same terminal case as any no-lane body.
+                diag["sanctioned_only_body"] = True
+                diag["_strip"] = entered_strip + blessed_chars
+                return _terminal(D6, REASON_NO_LANE, diag)
+            hit = carries_marker(chosen, quoted_spans(ask))
             if hit:
                 diag["marker_violation"] = True
                 diag["marker"] = hit
-                diag["_strip"] = entered_strip
+                diag["_strip"] = entered_strip + blessed_chars
                 return _terminal(D6, REASON_MARKER_VIOLATION, diag)
             return Decision(DELIVER_ENTERED, D4, reason, SOURCE_MAIN,
-                            entered_strip, diag, chosen)
+                            entered_strip + blessed_chars, diag, chosen)
 
         # ---- P4 D5: a non-compliant body is replaced when anything is ----
-        if lane_ok and not carries_marker(
-                lane_clean, quoted_spans(getattr(facts, "ask_text", "") or "")):
+        ask = str(getattr(facts, "ask_text", "") or "")
+        lane_chosen, lane_blessed, lane_blessed_chars = strip_sanctioned(
+            lane_clean, ask)
+        if lane_blessed:
+            diag["sanctioned_markers"] = "|".join(lane_blessed)
+        if lane_ok and _admissible(lane_chosen) and not carries_marker(
+                lane_chosen, quoted_spans(ask)):
             return Decision(DELIVER_LANE, D5, REASON_LANE_DELIVERED, SOURCE_LANE,
-                            lane_strip, diag, lane_clean)
+                            lane_strip + lane_blessed_chars, diag, lane_chosen)
 
         # ---- P5 D6: the else. No router prose is ever substituted. -------
         diag["_strip"] = entered_strip
