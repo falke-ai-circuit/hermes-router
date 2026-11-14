@@ -39,7 +39,7 @@ def fixture_post_lane():
         id=LANE_ID,
         marker_strings=("M37-04 FIXTURE TURN",),
         seams=("POST",),
-        contract=LaneContract(post_question=LANE_TOKEN),
+        contract=LaneContract(kind="gate", post_question=LANE_TOKEN),
     )
     lane_registry.register_lane(spec)
     try:

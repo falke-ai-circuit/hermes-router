@@ -26,7 +26,20 @@ _IDS: Dict[str, "LaneSpec"] = {}
 
 @dataclass(frozen=True)
 class LaneContract:
-    """The four things a lane IS (M41-02 §B; design "Generalisation").
+    """What a lane IS, as data (M41-02 §B; design "Generalisation").
+
+    M40-16: `kind` is the first field because it is the field that makes the
+    other four answerable. Before it, a lane with no gate semantics had to
+    either stay contract-less (indistinguishable from "nobody declared one") or
+    name a token that resolves to no consumer (an invented token). `kind` says
+    which of those two a lane is, in a closed vocabulary, so `contract is None`
+    means exactly one thing: a lane that never declared its contract at all.
+
+      gate      — owns a question token, evaluates ordered rows, may replace.
+      consult   — frontier/envelope consult; asks no gate question, routes
+                  nothing, replaces nothing.
+      audit     — fires a completion-audit seam; same shape as consult.
+      advisory  — midturn advisory sweep; same shape as consult.
 
     `pre_question` / `post_question` are vocabulary tokens, not lane checks:
     the PRE and POST seams resolve them engine-side (PRE_QUESTIONS /
@@ -39,8 +52,14 @@ class LaneContract:
 
     `replacement` names the render chain a route-and-replace action enters; it
     resolves by token the same way.
+
+    A non-`gate` lane must leave all four of these EMPTY, enforced at
+    registration: naming a question token is a claim on a seam the lane does
+    not own, and a duplicate question token would silently shadow the lane that
+    does (first match wins in `lane_for_pre_question`).
     """
 
+    kind: str = ""
     pre_question: str = ""
     post_question: str = ""
     gate_semantics: tuple = ()
@@ -100,6 +119,76 @@ class LaneSpec:
 # a seam id must fail at import, never silently drop a lane out of a seam.
 SEAM_IDS: tuple = ("PRE", "MID", "POST")
 
+# The closed contract-kind vocabulary (M40-16). Empty is NOT a legal kind: a
+# contract that does not say what it is cannot be checked, and defaulting it
+# would make "declared" and "forgotten" the same row.
+CONTRACT_KINDS: tuple = ("gate", "consult", "audit", "advisory")
+
+# What a `gate` contract must carry, and what every other kind must not.
+_GATE_FIELDS = ("pre_question", "post_question", "replacement")
+
+
+def _validate_contract(spec: LaneSpec) -> None:
+    """Fail-loud contract shape check, at registration (M40-16).
+
+    Only invariants this module owns are enforced here — `lanes/` imports
+    nothing, so the PREDICATE/ACTION vocabularies and table totality are
+    cross-checked in `tests/routing/test_m40_16_lane_contracts.py`, where both
+    sides are importable. The split is deliberate: a `gate` lane may legitimately
+    declare ONE field (M37-04's fifth-lane fixture declares only a POST question
+    token), so registration must not demand all four — it must only refuse a
+    contract that is unearned:
+      * kind is a member of CONTRACT_KINDS (empty/typo => ValueError);
+      * a non-`gate` contract names NO gate field (a consult lane claiming a
+        question token shadows the lane that owns it, since
+        `lane_for_pre_question` returns the first match);
+      * a `gate` contract names AT LEAST one field (an all-empty gate contract
+        is the "forgot to fill it in" typo this field exists to make loud);
+      * every row it does declare is a (predicate, action) pair of non-empty
+        tokens — a malformed row is silently skipped by the evaluator, so it
+        must not survive registration.
+    Table totality (a terminal `else` row) is a property of the ONE table the
+    engine walks, asserted against the resolved lane in the test — not a shape
+    rule every gate literal must satisfy.
+    """
+    contract = spec.contract
+    if contract is None:
+        return
+    kind = str(contract.kind or "").strip()
+    if kind not in CONTRACT_KINDS:
+        raise ValueError(
+            f"lane {spec.id!r}: unknown contract kind {contract.kind!r} "
+            f"(allowed: {', '.join(CONTRACT_KINDS)}; empty is not a kind)")
+    declared = [f for f in _GATE_FIELDS if str(getattr(contract, f) or "").strip()]
+    rows = tuple(contract.gate_semantics or ())
+    if kind != "gate":
+        if declared or rows:
+            raise ValueError(
+                f"lane {spec.id!r}: contract kind {kind!r} must declare no "
+                f"gate surface; it names "
+                f"{declared + (['gate_semantics'] if rows else [])}"
+                f" (a non-gate lane claiming a question token shadows the lane "
+                f"that owns it)")
+        return
+    if not declared and not rows:
+        raise ValueError(
+            f"lane {spec.id!r}: kind 'gate' contract declares no field at all "
+            f"— state the question token, the rows or the replacement; an empty "
+            f"gate contract is a forgotten one")
+    for index, row in enumerate(rows, 1):
+        try:
+            pred, action = str(row[0]).strip(), str(row[1]).strip()
+        except Exception:  # noqa: BLE001 — malformed row is a contract defect
+            raise ValueError(
+                f"lane {spec.id!r}: gate_semantics row {index} is not a "
+                f"(predicate_token, action_token) pair: {row!r}") from None
+        if not pred or not action:
+            raise ValueError(
+                f"lane {spec.id!r}: gate_semantics row {index} has an empty "
+                f"token: {row!r}")
+
+
+
 
 def _normalise_seams(spec: LaneSpec) -> tuple:
     """Canonical (uppercase, stripped) seam tuple, or ValueError.
@@ -119,10 +208,11 @@ def _normalise_seams(spec: LaneSpec) -> tuple:
 
 
 def register_lane(spec: LaneSpec) -> None:
-    """Idempotent; duplicate id or unknown seam raises (fail-loud)."""
+    """Idempotent; duplicate id, unknown seam or bad contract raises (fail-loud)."""
     seams = _normalise_seams(spec)
     if seams != tuple(spec.seams or ()):
         spec = replace(spec, seams=seams)
+    _validate_contract(spec)
     existing = _IDS.get(spec.id)
     if existing is not None:
         if existing is spec or existing == spec:

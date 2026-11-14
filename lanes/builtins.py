@@ -88,6 +88,7 @@ _SHADOW = LaneSpec(
     # otherwise: the routing lane id is "shadow", the envelope lane key is
     # "uncensored", the log field is lane=shadow — the contract goes HERE.
     contract=LaneContract(
+        kind="gate",  # M40-16: owns a question token AND an ordered row table
         pre_question="uncensored_domain",
         post_question="uncensored_intent",
         # Ordered (predicate_token, action_token), first match wins.
@@ -114,6 +115,24 @@ _HIGHER_PRE = LaneSpec(
     commands_switch=_SWITCH_FRONTIER,
     # M37-02: PRE classifies + stages the swap, MID executes it.
     seams=("PRE", "MID"),
+    # M40-16: a CONSULT contract, and every empty field below is earned in the
+    # same way — this lane genuinely owns none of the gate surface:
+    #   pre_question  — its PRE work is classify + stage the envelope for
+    #                   on_llm_execution (`gate/orchestration.py:977-1000`),
+    #                   not a question; the only PRE question token the engine
+    #                   resolves is "uncensored_domain" (domain_gate.py:139),
+    #                   and naming it here would shadow the shadow lane in
+    #                   `lane_for_pre_question` (first match wins).
+    #   post_question — the only POST token is "uncensored_intent"
+    #                   (intent_judge.py:94); same shadowing argument.
+    #   gate_semantics— it issues no route/defer/deliver action: its verdict is
+    #                   an ANCHOR CONSULT whose output becomes the turn body
+    #                   through the staged swap, so a row table here would be
+    #                   an invented second delivery authority.
+    #   replacement   — `REPLACEMENTS` has exactly one entry
+    #                   (`uncensored_render` -> `post_render_chain`), the POST
+    #                   route chain; the frontier lane enters no such chain.
+    contract=LaneContract(kind="consult"),
 )
 _HIGHER_POST = LaneSpec(
     id=LANE_HIGHER_POST,
@@ -121,11 +140,25 @@ _HIGHER_POST = LaneSpec(
     commands_switch=_SWITCH_FRONTIER,
     # M37-02: POST fires the audit, PRE delivers the verdict next turn.
     seams=("POST", "PRE"),
+    # M40-16: an AUDIT contract. Its POST seam FILES a completion-audit turn
+    # (`completion_audit.py:54` resolves this lane from the registry by id, not
+    # by comparison) and its PRE seam reads that verdict next turn — neither is
+    # a gate question. No rows and no replacement for the same reason as
+    # _HIGHER_PRE: `deliver`/`route` here would mint a second authority over
+    # the body, and the audit already has one (its own frame marker).
+    contract=LaneContract(kind="audit"),
 )
 _DECISION = LaneSpec(
     id=LANE_DECISION,
     # M37-02: PRE routes it, MID runs the advisory sweep.
     seams=("PRE", "MID"),
+    # M40-16: an ADVISORY contract — the midturn sweep (router_core.py:1023,
+    # `_lane_enabled(LANE_DECISION)`) emits advice and options; it neither asks
+    # the gate question nor names a replacement chain. Its PRE seam routes a
+    # DECLARED target (route_gate.py:2204) and its MID seam runs the sweep;
+    # both are lane mechanics owned by those handlers, not gate semantics, so
+    # the four gate fields stay empty by construction, not by omission.
+    contract=LaneContract(kind="advisory"),
 )
 
 # Registration order = the original VALID_ROUTE_LANES order (byte-identical
