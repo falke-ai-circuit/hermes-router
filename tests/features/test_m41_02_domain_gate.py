@@ -372,5 +372,12 @@ def test_e2_contract_is_data_and_resolves_by_token():
     assert tokens.index("gate_abstain") < tokens.index("intent_softened")
     assert lane_registry.lane_for_pre_question("uncensored_domain") == "shadow"
     assert lane_registry.lane_for_pre_question("nope") is None
-    # pre-existing lanes carry no contract and are unchanged
-    assert lane_registry.resolve_contract("decision") is None
+    # M40-16: this used to assert `resolve_contract("decision") is None` — that
+    # assertion ENCODED the gap (a lane with no contract was indistinguishable
+    # from a lane whose contract nobody wrote). All four lanes now declare, so
+    # the honest assertion is that decision carries its own kind and owns none
+    # of the gate surface. The shadow rows above are unchanged.
+    assert lane_registry.resolve_contract("decision") == lane_registry.LaneContract(
+        kind="advisory")
+    assert lane_registry.resolve_contract("higher-pre").kind == "consult"
+    assert lane_registry.resolve_contract("higher-post").kind == "audit"
