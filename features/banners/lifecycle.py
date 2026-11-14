@@ -340,7 +340,23 @@ class BannerLifecycle:
         # is visible in the delivered bytes. The line is rendered FROM the
         # record, so the body and the record cannot disagree.
         out = self._compose_delivered(session_id, str(base or ""), mode)
-        landed = bool(parked.strip())
+        # 2026-11-14: `landed` must be about the BYTES. It used to be
+        # `bool(parked.strip())` — the compose was switched off (M44-02 opt-in
+        # knob), so every turn logged `delivered=True` while the reader got no
+        # line at all, and the owner could not tell a fired lane from a silent
+        # one. A field may not outrun the thing it names: the banner counts as
+        # delivered only if the returned body actually carries it.
+        _head_txt = ""
+        try:
+            landed = bool(parked.strip()) and bool(str(out or "").strip()) and (
+                str(out) != str(base or ""))
+            if landed:
+                from ...features.banners import turn_record as _turn_c
+
+                _head_txt = (_turn_c.compose_line(session_id) or "").strip()
+                landed = bool(_head_txt) and _head_txt in str(out)
+        except Exception:  # noqa: BLE001 — the assertion never breaks delivery
+            landed = False
         if log_consume:
             # R34-17 item 3: `parked` reports the PARK (there is a semaphore
             # record for this turn — the thing a park event emits); `delivered`

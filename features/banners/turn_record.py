@@ -301,20 +301,30 @@ _TRIG_ALIASES = {"consult": "pre-check", "orientation": "pre-check",
 
 
 def deliver_in_body_enabled() -> bool:
-    """Is the delivered-body banner line switched on? Default OFF (M44-02). Never raises."""
+    """Is the delivered-body banner line switched on? Default ON (2026-11-14).
+
+    M44-02 had made this opt-in so a denial body could not ship router banner
+    grammar. That silenced the line on EVERY turn, including ordinary ones, and
+    the owner lost all visibility: "I dont see neither decision nor frontier so
+    i have zero idea if they fire or not." Visibility is the point of the line,
+    so the default is back ON — with the thing M44-02 actually objected to
+    closed at the source: `compose_onto` refuses to render onto a body produced
+    by the uncensored lane (`_body_is_lane_render`). An explicit false in config
+    still turns it off per profile. Never raises.
+    """
     try:
         from ... import config_access as _ca
 
-        raw = (_ca.router_section() or {}).get(_KNOB, False)
+        raw = (_ca.router_section() or {}).get(_KNOB, True)
     except Exception:  # noqa: BLE001 — a missing config read is not a silence
-        return False
+        return True
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, (int, float)):
         return bool(int(raw))
     s = str(raw).strip().lower()
     if s in ("", "default", "none"):
-        return False
+        return True
     return s not in ("0", "false", "off", "no", "disabled")
 
 
@@ -551,6 +561,33 @@ def compose_line(session_id: str) -> str:
         return ""
 
 
+def _body_is_lane_render(session_id: str, body: Any) -> bool:
+    """Is this turn's DELIVERED body a lane render (denial / uncensored)?
+
+    M44-02's objection was concrete: a denial shipped router banner grammar
+    inside the body the reader sees. That is real and stays closed — but it was
+    implemented as "no line anywhere", which cost all visibility on ordinary
+    turns. Suppression is now scoped to the lane render it was about.
+
+    True when the body already carries the uncensored lane's own label, or when
+    this turn's record holds an uncensored/shadow segment. Never raises.
+    """
+    try:
+        txt = str(body or "")
+        if "shadow-self" in txt or "(uncensored)" in txt:
+            return True
+        rec = _RECORDS.get(str(session_id or ""))
+        for seg in ((rec or {}).get("segments") or []):
+            lane = str(seg.get("lane") or "").lower()
+            kind = str(seg.get("kind") or "").lower()
+            if ("uncensored" in lane or "uncensored" in kind
+                    or lane.startswith("shadow")):
+                return True
+    except Exception:  # noqa: BLE001 — a guard never breaks delivery
+        return False
+    return False
+
+
 def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
     """Append the record's ONE banner line to the DELIVERED body.
 
@@ -563,6 +600,8 @@ def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
     """
     try:
         if not deliver_in_body_enabled():
+            return body
+        if _body_is_lane_render(session_id, body):
             return body
         line = compose_line(session_id)
         if not line:
