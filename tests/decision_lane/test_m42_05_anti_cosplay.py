@@ -154,7 +154,14 @@ def test_goal_guard_healthy_path_records_the_served_objective(tmp_path):
 
 
 def test_goal_guard_advance_write_refusal_is_not_persisted(tmp_path, monkeypatch):
-    """Second turn advances rolling text; a refused ADVANCE write is not persisted."""
+    """Second turn advances the ask; a refused ADVANCE write is not persisted.
+
+    2026-11-14: the goal is extracted from the ASK, so a follow-up ("and write
+    the migration notes") is a CHANGED objective, not merely advancing rolling
+    text — the guard takes the drift path. Its intent is unchanged and still
+    pinned: a refused write may never be reported as "persisted", and the
+    refusal is named (`goal_guard_action == "unverified"`).
+    """
     db = str(tmp_path / "ledger.db")
     objective = "rebuild the parser"
     first = {"final_objective": objective}
@@ -166,4 +173,6 @@ def test_goal_guard_advance_write_refusal_is_not_persisted(tmp_path, monkeypatch
     second = {"final_objective": objective}
     d._goal_guard(second, SID, db, "and write the migration notes")
     assert second["rolling_task"] == "and write the migration notes"
-    assert second["goal_guard"] == "unverified"
+    assert second["goal_guard"] != "persisted"
+    assert second["goal_guard"] == "drift"
+    assert second["goal_guard_action"] == "unverified"

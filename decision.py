@@ -2505,6 +2505,27 @@ _GOAL_SUPERSEDE = ("ignore the rest", "scratch that", "never mind", "instead",
                    "change of plan", "new objective", "replace the objective",
                    "forget the")
 
+# A MACHINE turn is not the human asking, so it states no OBJECTIVE. Cron wakes,
+# dispatch briefs and startup self-descriptions were being recorded as session
+# goals — measured 2026-11-14: 115 of 859 rows fleet-wide (orch 34, coder 35,
+# operative 21, reviewer 13) — which told the lane a session was FOR a watchdog
+# tick or an artefact path instead of for what the user asked.
+_GOAL_NON_HUMAN = re.compile(
+    r"scheduled cron job|WATCHDOG WAKE|artefact_path:"
+    r"|^\s*owner:\s*\w+\s*="
+    r"|AXON-META"
+    r"|profile \w+, gateway \d+\)"
+    r"|^\s*\[\s*IMPORTANT:",
+    re.IGNORECASE | re.MULTILINE)
+
+
+def _goal_non_human(text: Any) -> bool:
+    """True when a row is a machine turn rather than a human ask."""
+    try:
+        return bool(_GOAL_NON_HUMAN.search(str(text or "")))
+    except Exception:  # noqa: BLE001 — the guard must never break a consult
+        return False
+
 
 def _goal_sha(text: str) -> str:
     """16-char fingerprint of the stored objective (drift check at next turn)."""
@@ -2621,6 +2642,27 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
         derived_task = str(derived_task or row or out.get("final_objective", ""))
         out["rolling_task"] = derived_task[:SESSION_TASK_CHARS]   # ONE writer
         stored = _goal_read(session_id, db_path)
+
+        # A turn that is NOT the human asking states no OBJECTIVE. Cron wake-ups,
+        # dispatch briefs and startup self-descriptions were recorded as the
+        # session's goal, so the lane was told a session was FOR a watchdog tick.
+        # Measured 2026-11-14: 115 of 859 goal_ledger rows fleet-wide (orch 34,
+        # coder 35, operative 21, reviewer 13). Refuse the write and keep the real
+        # baseline when one exists; never serve machine text as a goal.
+        if _goal_non_human(row or full_text):
+            out["goal_guard"] = "skipped_non_human"
+            out["goal_guard_tokens"] = []
+            if stored is not None:
+                out["final_objective"] = (stored["objective"]
+                                          or out.get("final_objective", ""))
+                out["rolling_task"] = (stored["rolling_text"]
+                                       or stored["objective"]
+                                       or "")[:SESSION_TASK_CHARS]
+            else:
+                out["final_objective"] = ""
+                out["rolling_task"] = ""
+            return
+
         if stored is None:
             # M42-05 (fail closed): the label reports what the STORE did. The
             # write's return used to be discarded and the turn was labelled
@@ -2654,6 +2696,12 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
 
         # the CURRENT derivation, captured before any stored baseline lands.
         derived_objective = str(out.get("final_objective", "") or "")
+        # THE GOAL COMES FROM THE ASK (Goran, 2026-11-14): the decision model must
+        # be given the objective the user is asking about NOW. `derived_task` is
+        # session_anchor's current derivation (the newest real user ask), so it —
+        # not the session's founding ask — is what a changed goal is measured and
+        # served from. A goal that still points at turn one is a stale goal.
+        current_ask = str(derived_task or row or derived_objective or "").strip()
 
         # An ACK states no new task: retain what the session is FOR. Decided
         # BEFORE the drift check — "ok" differs from the stored objective by
@@ -2685,26 +2733,37 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
         # now REBASES: the current derivation becomes the objective, the ledger
         # takes the new baseline, and the lost-token audit stays on the row.
         # Retaining an older objective is the ACK path above, never this one.
-        if stored["objective_sha"] != _goal_sha(derived_objective):
-            if derived_objective.strip():
-                q = _goal_quantifiers(full_text or derived_objective)
-                lost = _goal_named([t for t in stored["quantifiers"]
-                                    if t not in set(q)])
-                out["final_objective"] = derived_objective
-                out["rolling_task"] = derived_objective[:SESSION_TASK_CHARS]
-                wrote = _goal_write(session_id, derived_objective,
-                                    out["rolling_task"], q, db_path,
-                                    baseline_ts=stored["baseline_ts"] or None)
-                out["goal_guard"] = "drift"
-                out["goal_guard_action"] = ("rebased" if wrote is True
-                                            else "unverified")
-                out["goal_guard_tokens"] = lost
-                return
+        if current_ask and stored["objective_sha"] != _goal_sha(current_ask):
+            # Q() of THIS turn's ask. `full_text` is the uncapped text used by
+            # M42-07 to catch a quantifier sitting past the objective cap, but it
+            # is not always this turn's ask — the founding ask shares that slot on
+            # some callers, and reading it here made a vanished quantifier look
+            # retained (any token still present in the OLD ask counted as kept).
+            # Use it only when it actually carries this ask.
+            qtext = full_text or current_ask
+            if current_ask[:60] not in str(qtext):
+                qtext = current_ask
+            q = _goal_quantifiers(qtext)
+            lost = _goal_named([t for t in stored["quantifiers"]
+                                if t not in set(q)])
+            baseline = current_ask[:SESSION_OBJECTIVE_CHARS]
+            out["final_objective"] = baseline
+            out["rolling_task"] = current_ask[:SESSION_TASK_CHARS]
+            wrote = _goal_write(session_id, baseline, out["rolling_task"], q,
+                                db_path,
+                                baseline_ts=stored["baseline_ts"] or None)
+            out["goal_guard"] = "drift"
+            out["goal_guard_action"] = ("rebased" if wrote is True
+                                        else "unverified")
+            out["goal_guard_tokens"] = lost
+            return
+        if not current_ask:
             # Nothing derivable this turn: keep the stored objective rather than
             # serving an empty goal.
             out["final_objective"] = stored["objective"]
             out["rolling_task"] = (stored["rolling_text"]
-                                   or stored["objective"])[:SESSION_TASK_CHARS]
+                                   or stored["objective"]
+                                   or "")[:SESSION_TASK_CHARS]
             out["goal_guard"] = "persisted"
             out["goal_guard_tokens"] = []
             return

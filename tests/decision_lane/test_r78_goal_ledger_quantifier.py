@@ -59,10 +59,13 @@ def test_goal_persists_across_a_non_intent_turn_and_quantifier_loss_is_flagged(t
 
     _add(db, "user", "and do the docs too", 3.0)         # scope widened, "only" lost
     third = decision.session_anchor(SID, db_path=db)
-    assert third["final_objective"] == OBJ               # immutable absent supersede
+    # 2026-11-14 (Goran): the goal comes from the ASK and adapts when the ask
+    # changes, so the lane is served what is being asked NOW — the baseline
+    # moves with it. The RECORD of what was lost is still named.
+    assert third["final_objective"] == "and do the docs too"
     assert third["rolling_task"] == "and do the docs too"
     assert third["goal_guard"] == "drift"
-    assert third["goal_guard_tokens"] == ["only"]        # FAILS TODAY: keys absent
+    assert third["goal_guard_tokens"] == ["only"]        # lost quantifier named
 
     _add(db, "user", "actually scratch that - new objective: ship the docs only", 4.0)
     fourth = decision.session_anchor(SID, db_path=db)
@@ -103,7 +106,11 @@ def test_objective_drift_fires_when_the_current_derivation_no_longer_matches(tmp
     drifted = decision.session_anchor(SID, db_path=db)
     assert drifted["goal_guard"] == "drift"
     assert drifted["goal_guard_tokens"] == []        # nothing lost, honest []
-    assert drifted["final_objective"] == OBJ        # the RECORD is what is served
+    # the ask is what gets served (goal-from-ask), so the new derivation is the
+    # objective — not the older record.
+    assert drifted["final_objective"] == ("Rebuild the parser (v2). Keep ALL "
+                                          "existing behaviour, and only touch "
+                                          "the escapes.")
 
     # phase B: a stale recorded sha AND a lost binding token -> named drift.
     db2 = tmp_path / "b"
