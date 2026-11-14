@@ -282,9 +282,17 @@ def reset(session_id: str = "") -> None:
 # The line is rendered FROM this record (`segments()`), never from the parked
 # text, so the record and the body cannot disagree: one source, one string.
 #
-# KNOB: `banner_in_body` in the hermes_router config section. Default ON
-# (absent key = True) because visibility is the owner's requirement; an
-# explicit false/0/off silences the body line without a code change.
+# KNOB: `banner_in_body` in the hermes_router config section.
+#
+# M44-02 (2026-11-14, owner framing correction) SUPERSEDES the 2026-11-07
+# M46-03 visibility ruling for the DELIVERED BODY: a denial/refusal on the
+# uncensored lane was shipping router banner grammar inside the body
+# (`test_m35_17_banner_record.py::test_no_banner_grammar_any_lane[shadow]`).
+# The record is the visibility surface; the body is the author's bytes. The
+# knob is now OPT-IN (absent key = False): a profile that still wants the
+# legacy body line must set `banner_in_body: true` explicitly. This keeps the
+# M46-03 escape hatch (no code change to silence) and restores M35-17/M38-07
+# (the chokepoint never composes record text onto a body).
 _KNOB = "banner_in_body"
 _TOK_CELL_RE = re.compile(r"^tok\s+(\d+)\s*/\s*(\d+)$")
 _COST_CELL_RE = re.compile(r"^\$([0-9]*\.?[0-9]+)(\*?)$")
@@ -293,20 +301,20 @@ _TRIG_ALIASES = {"consult": "pre-check", "orientation": "pre-check",
 
 
 def deliver_in_body_enabled() -> bool:
-    """Is the delivered-body banner line switched on? Default ON. Never raises."""
+    """Is the delivered-body banner line switched on? Default OFF (M44-02). Never raises."""
     try:
         from ... import config_access as _ca
 
-        raw = (_ca.router_section() or {}).get(_KNOB, True)
+        raw = (_ca.router_section() or {}).get(_KNOB, False)
     except Exception:  # noqa: BLE001 — a missing config read is not a silence
-        return True
+        return False
     if isinstance(raw, bool):
         return raw
     if isinstance(raw, (int, float)):
         return bool(int(raw))
     s = str(raw).strip().lower()
     if s in ("", "default", "none"):
-        return True
+        return False
     return s not in ("0", "false", "off", "no", "disabled")
 
 
