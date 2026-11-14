@@ -152,12 +152,14 @@ tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row
 tests/features/test_m35_04_seam_totality.py::test_a_every_exit_path_writes_a_row[replacement-deliver]  # M36-06 debt: superseded contract, measured expect="path replacement wrote 2 rows, expected 1"
 tests/features/test_m35_04_seam_totality.py::test_d_ten_turns_produce_ten_rows  # M36-06 debt: superseded contract, measured expect="assert 17 == 10"
 tests/features/test_m35_04_seam_totality.py::test_c3_the_boundary_preserves_pass_through_none  # M36-06 debt: superseded contract, measured expect="KeyError: 'delivered'"
-tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_holds_branch_says_holds  # M36-06 debt: superseded contract, measured expect="assert 'nothing to correct' in"
-tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_flagged_branch_says_flagged_not_silent  # M36-06 debt: superseded contract, measured expect="assert 'flagged' in"
-tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_a_bare_confirmed_answer_is_a_hold_not_a_flag  # M36-06 debt: superseded contract, measured expect="assert 'nothing to correct' in"
-tests/higher_self/test_r34_19f_confirmation_outcomes.py::test_adjusted_branch_says_adjusted  # M36-06 debt: superseded contract, measured expect="assert 'adjusted before delivery' in"
-tests/higher_self/test_r34_19g_higher_self_acts.py::test_flagged_confirmation_names_the_finding  # M36-06 debt: superseded contract, measured expect="assert 'flagged:' in"
-tests/higher_self/test_r34_19g_higher_self_acts.py::test_null_revision_delivers_the_original_and_stashes_the_verdict  # M36-06 debt: superseded contract, measured expect="assert 'flagged:' in"
+# --- M40-12 RE-PIN 2026-11-14 (decision, not a convenience): the SIX required r34_19{f,g}
+# rows that stood here are REMOVED because they are GREEN, measured twice at HEAD c7df93f:
+#   tests/higher_self alone -> 5 failed / 243 passed (the 5 are the r37_1 rows below),
+#   the 612-test M40-12 subset -> 9 failed / 603 passed, no r34_19 row among them.
+# A required row means "red in EVERY run"; a row that cannot fail makes the gate red for a
+# reason that is not about the slice. OPEN, stated rather than hidden: their colour in a FULL
+# tests/ run is unmeasured this unit (the full-suite run was killed at 24%). If a full run
+# shows any of them red, re-pin with the recorded signature - they are one git revert away.
 tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_folded_response_is_delivered  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
 tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_null_revision_delivers_original_and_stashes  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
 tests/higher_self/test_r37_1_folded_revision.py::test_r37_1_malformed_json_delivers_original_without_raising  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
@@ -169,3 +171,22 @@ tests/routing/test_r26_post_render_banner.py::test_declared_path_delivery_edge_s
 tests/routing/test_resilience.py::TestFailOpenUnderFault::test_banner_failure_does_not_kill_delivery  # M36-06 debt: superseded contract, measured expect="append_banner raised under fault"
 tests/routing/test_rider10_fixes.py::test_r10_5_benign_capture_miss_is_loud_and_reparked  # M36-06 debt: superseded contract, measured expect="has no attribute 'append_banner'"
 tests/shadow/test_shadow_banner.py::test_banner_consumed_at_delivery_edge  # M36-06 debt: superseded contract, measured expect="assert '· router ·' in ((None or ''))"
+
+# --- M40-12 RE-PIN 2026-11-14: three previously UNRECORDED reds, measured at HEAD c7df93f ---
+# Measurement provenance, so the next reader does not have to re-derive it:
+#   HEAD c7df93f, subset = routing/test_m40_08_envelope_channel + routing/test_m40_07_channel +
+#   envelope + higher_self + delivery + classification -> 612 collected,
+#   9 failed / 603 passed / 0 skipped (/opt/data/tmp/r78u/m40_12_reds_head.txt).
+#   The same command in a clean worktree at 8056bf4 also gives 9 failed / 603 passed
+#   (worktree /opt/data/tmp/r78u/wt_m40_12b, rootdir verified in the log header), so the
+#   auditor's "26 failed / 585 passed / 1 skipped" is NOT reproducible in this environment at
+#   either commit. 15 of the 17-red delta are tests/delivery/test_m35_17_banner_record.py ids,
+#   measured red only when that file runs ALONE at 8056bf4 (15 failed / 9 passed) and green in
+#   isolation at HEAD (tests/delivery alone: 89 passed) after c7df93f flipped the
+#   `banner_in_body` default to opt-in. Those 15 are therefore correctly NOT pinned - they do
+#   not fail at HEAD. 2 of the 17 remain unexplained and are green at HEAD; they are not pinned
+#   either, because a row that cannot fail is drift (see the file's own rule).
+# Dispositions are per-id, not per-family. Full reasoning: /opt/data/tmp/r78u/M40-12_BASELINE.md
+tests/classification/test_doctrine_verdict.py::test_doctrine_toggle_off_skips_verdict  # M40-12: TEST-SCOPE, not a product red. The test fails the turn on ANY sc.aux_raw_call, but since M41-02 the PRE domain gate (features/detection/domain_gate.py:500, reached via gate/registration.py:610) is a second legitimate aux consumer that runs on every routed turn; the toggle exercised here - classification.doctrine_verdict=False - governs the doctrine verdict only and never governed the domain gate. Measured expect="Failed: verdict must not fire". Owner of the rewrite: the classification suite (scope the mock to the verdict seam, or let the domain-gate prompt through).
+tests/classification/test_semantic_stage.py::test_matrix1_undeclared_real_refusal_is_unrouted_by_design  # M40-12: TEST-SCOPE. `assert not aux.called` ("strip #2: the denial path makes no aux call") is falsified by the same M41-02 PRE domain gate aux call over the ASK; the stripped stage-2 POST call over the RESPONSE is still absent, and the contract this test exists for (out is None, router.call never invoked) still holds in the same run. Measured expect="assert not True". Owner: classification suite (assert that no aux call reads the response body).
+tests/classification/test_semantic_stage.py::test_matrix1_declared_real_refusal_routes_even_when_deterministic_misses  # M40-12: REAL DEFECT, pinned not silenced. A DECLARED refusal still reaches the render lane (venice.called is True) but the delivered body is the author's bytes ("No.\n\nThis is the clearest one yet...") instead of the render lane's output (VENICE RENDERED CONTENT MARKER), so the route is cosmetic for this path: either the delivered body is deliberately the author's bytes (M44 framing) and this assertion is superseded, or the render lane's correction is being discarded. Measured expect="assert 'No." Owner: the declared-refusal / denial delivery line (M44-02 follow-on, alongside M49-05 refusal-semantics). Do not close by re-baselining alone - one of the two readings must be ruled.
