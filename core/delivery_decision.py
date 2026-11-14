@@ -534,8 +534,18 @@ def decide(facts: DeliveryFacts) -> Decision:
         # and the turn "passed through" as if it had been answered.
         if str(getattr(facts, "seam_failure", "") or ""):
             diag["seam_failure"] = str(facts.seam_failure)
+            # 2026-11-14 (Goran): a divergence is an AUDIT finding, never this
+            # turn's answer. The recovered body is PRIOR transcript text, so
+            # shipping it names an older thematic as the current reply — the
+            # live symptom was a 3,579-char previous answer replacing a 4,768
+            # char current one (conductor DM). The failure still stands and
+            # still logs at error severity; what changes is that the decision
+            # names NO bytes, so `_delivered_bytes` falls to its D6
+            # pass-through branch and the host keeps the model's OWN text.
+            # Marker violations keep their notice: they have no answer to keep.
+            diag["seam_failure_recovered_chars"] = len(str(lane_clean or ""))
             return Decision(FAIL_TERMINAL, D6, REASON_SEAM_FAILURE, SOURCE_SEAM,
-                            0, diag, (lane_clean or None))
+                            0, diag, None)
 
         # ---- P2 D3: the decision must not exist before the gate was asked -
         replaceable = (body_class != COMPLIANCE

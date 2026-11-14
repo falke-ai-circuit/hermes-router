@@ -2652,24 +2652,17 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             out["goal_guard_tokens"] = []
             return
 
-        # the CURRENT derivation, captured before the stored baseline lands.
+        # the CURRENT derivation, captured before any stored baseline lands.
         derived_objective = str(out.get("final_objective", "") or "")
-        out["final_objective"] = stored["objective"] or derived_objective
 
-        # SPEC.md:87 — recompute the objective fingerprint EVERY turn and
-        # compare it to the recorded one. A mismatch with no supersede marker is
-        # drift on the OBJECTIVE itself (M2/M3: the baseline text moved), and the
-        # lost tokens are named rather than reported as an empty finding.
-        if stored["objective_sha"] != _goal_sha(derived_objective):
-            current_q = set(_goal_quantifiers(full_text or derived_objective))
-            out["goal_guard"] = "drift"
-            out["goal_guard_tokens"] = _goal_named(
-                [t for t in stored["quantifiers"] if t not in current_q])
-            return
-
+        # An ACK states no new task: retain what the session is FOR. Decided
+        # BEFORE the drift check — "ok" differs from the stored objective by
+        # construction, so the old order labelled every acknowledgement as drift
+        # and then served the ack text as the objective.
         non_intent = bool(row) and len(row) <= 24 and bool(
             _GOAL_NON_INTENT.match(row))
         if non_intent:
+            out["final_objective"] = stored["objective"] or derived_objective
             # "ok" states no new task: retain what the session is FOR.
             out["rolling_task"] = (stored["rolling_text"]
                                    or stored["objective"])[:SESSION_TASK_CHARS]
@@ -2680,6 +2673,43 @@ def _goal_guard(out: Dict[str, Any], session_id: str, db_path: str,
             out["goal_guard"] = "persisted"
             out["goal_guard_tokens"] = []
             return
+
+        # SPEC.md:87 — recompute the objective fingerprint EVERY turn.
+        #
+        # 2026-11-14 (Goran): THE TURN'S OWN ASK IS AUTHORITATIVE. The guard used
+        # to install the stored objective over the current derivation and then
+        # merely LABEL the mismatch "drift" — so the agent worked the new topic
+        # while its goal framing (`final_objective`, which reaches the lane
+        # through the consult context at decision.py:2950) still pointed at the
+        # old one, and the turn closed on the previous thematic. A genuine change
+        # now REBASES: the current derivation becomes the objective, the ledger
+        # takes the new baseline, and the lost-token audit stays on the row.
+        # Retaining an older objective is the ACK path above, never this one.
+        if stored["objective_sha"] != _goal_sha(derived_objective):
+            if derived_objective.strip():
+                q = _goal_quantifiers(full_text or derived_objective)
+                lost = _goal_named([t for t in stored["quantifiers"]
+                                    if t not in set(q)])
+                out["final_objective"] = derived_objective
+                out["rolling_task"] = derived_objective[:SESSION_TASK_CHARS]
+                wrote = _goal_write(session_id, derived_objective,
+                                    out["rolling_task"], q, db_path,
+                                    baseline_ts=stored["baseline_ts"] or None)
+                out["goal_guard"] = "drift"
+                out["goal_guard_action"] = ("rebased" if wrote is True
+                                            else "unverified")
+                out["goal_guard_tokens"] = lost
+                return
+            # Nothing derivable this turn: keep the stored objective rather than
+            # serving an empty goal.
+            out["final_objective"] = stored["objective"]
+            out["rolling_task"] = (stored["rolling_text"]
+                                   or stored["objective"])[:SESSION_TASK_CHARS]
+            out["goal_guard"] = "persisted"
+            out["goal_guard_tokens"] = []
+            return
+
+        out["final_objective"] = stored["objective"] or derived_objective
 
         current_q = set(_goal_quantifiers(row))
         lost = [t for t in stored["quantifiers"] if t not in current_q]
