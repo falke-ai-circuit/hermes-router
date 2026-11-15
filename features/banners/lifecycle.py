@@ -313,6 +313,24 @@ class BannerLifecycle:
         _seq = ({"park_event_seq": int(_rec_pre["event_seq"])}
                 if _rec_pre.get("event_seq") else {})
         if not parked:
+            # M47-23 (owner ruling 2026-11-15): FINAL-MILE GUARANTEE. A lane that
+            # FIRED must be visible in the response the reader actually receives,
+            # even when the park never landed (park raised, or a delivery edge
+            # consumed before the PRE leg). orchestration stashes the same rendered
+            # segment; promote it here so the FINAL body carries the banner.
+            try:
+                from ...features.banners import turn_record as _turn_p
+
+                _promoted = _turn_p.take_pending(session_id)
+                if _promoted:
+                    _turn_p.register(session_id, _promoted, kind="anchor", edge=_e)
+                    parked = _promoted
+                    _log_route("POST", event_detail="anchor_banner_promoted",
+                               edge=_e, reason="promoted_from_stash",
+                               session_id=str(session_id or ""))
+            except Exception:  # noqa: BLE001 — promotion never breaks delivery
+                pass
+        if not parked:
             if log_consume:
                 # Truth: nothing was parked for this turn (anchor lane skipped)
                 # vs a slot that existed but no longer had a banner to give.

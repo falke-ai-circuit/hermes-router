@@ -3769,9 +3769,18 @@ def on_llm_execution(*, request, next_call, **context) -> Any:
                         _banner = _banner[:-1].rstrip()
                     _banner = "%s | %s ·" % (_banner, _row_marker)
                 if _banner:
-                    # §10.4 delivery: the envelope is model-context only —
-                    # park the banner for the POST transform to append to the
-                    # DELIVERED turn (one-shot, this session's next delivery).
+                    # M47-23 (owner ruling 2026-11-15): "make 100% sure that banner
+                    # is sent in last and final response if router lane was
+                    # triggered". Parking is best-effort — it can raise, or a
+                    # delivery edge can consume before this PRE leg lands — so the
+                    # rendered segment is ALSO stashed for the turn's final
+                    # delivery, which promotes it if the park never lands.
+                    try:
+                        from ..features.banners import turn_record as _turn_st
+
+                        _turn_st.stash_pending(session_id, _banner)
+                    except Exception:  # noqa: BLE001 — stash never breaks a lane
+                        pass
                     try:
                         _db.park_task_banner(
                             session_id, str(rec.get("task_id") or ""),

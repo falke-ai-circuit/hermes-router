@@ -515,6 +515,49 @@ def _render_cells(m: Dict[str, Any]) -> str:
     return " | ".join(cells)
 
 
+_PENDING_ATTACH: Dict[str, Any] = {}
+
+
+def stash_pending(session_id: str, segment: Any) -> bool:
+    """Hold a fired lane's banner text for this turn's FINAL delivery.
+
+    M47-23 (owner ruling 2026-11-15): "make 100% sure that banner is sent in last
+    and final response if router lane was triggered". The park→consume path can
+    miss — a delivery edge consumes before the PRE leg parks, or the park raises
+    and is swallowed — and the reader then gets a turn with NO banner even though
+    a paid lane ran and spent tokens.
+
+    The text stashed here is the SAME rendered segment the park used, so the final
+    body and the record can never carry different numbers. Never raises.
+    """
+    try:
+        text = str(segment or "").strip()
+        if not text:
+            return False
+        with _LOCK:
+            _PENDING_ATTACH[str(session_id or "")] = (text, time.time())
+            while len(_PENDING_ATTACH) > _MAX_RECORDS:
+                _PENDING_ATTACH.pop(next(iter(_PENDING_ATTACH)))
+        return True
+    except Exception:  # noqa: BLE001 — a stash never breaks a lane
+        return False
+
+
+def take_pending(session_id: str, ttl_s: float = 300.0) -> str:
+    """Pop a stashed banner for the final delivery. "" when none or expired."""
+    try:
+        with _LOCK:
+            rec = _PENDING_ATTACH.pop(str(session_id or ""), None)
+        if not rec:
+            return ""
+        text, ts = rec
+        if time.time() - float(ts) > float(ttl_s):
+            return ""
+        return str(text)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def compose_line(session_id: str) -> str:
     """The ONE banner line for this turn, or "" when no lane fired. Never raises.
 
