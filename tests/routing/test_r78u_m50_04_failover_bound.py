@@ -135,13 +135,17 @@ def _text(path):
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def test_length_empty_with_failover_makes_exactly_two_calls(
+def test_length_empty_with_failover_walks_at_the_raised_allowance(
         failover_install, retry_log, caplog):
-    """(i) length+empty with a live failover list: the retry is the last call.
+    """(i) length+empty with a live failover list: the retry runs, then the
+    failover walk — because the retry was EXHAUSTED, not because it succeeded.
 
-    Two provider calls, both on the primary, 23585 then 47170. The failover
-    walk is not entered — that is the C1 bound, and it is asserted on the call
-    list, not on a log line.
+    M50-10 supersedes M50-04's choice (b). Live evidence for the reversal
+    (19:36:02 `anchor_consult_failover_skipped reason=budget_retry` ->
+    19:41:02 `anchor_route_failed`): skipping the walk turned one bad budget
+    into a dead lane. M50-04's real bound — never re-send the proven-
+    insufficient allowance — is kept: the failover call carries the raised
+    allowance (48,000), asserted numerically on the call list.
     """
     with caplog.at_level("INFO"):
         out = anchor_exec.anchored_call(_endpoint(), _payload())
@@ -149,15 +153,17 @@ def test_length_empty_with_failover_makes_exactly_two_calls(
     assert out == (None, None, None, None)
     assert _calls(failover_install) == [
         ("claude-sonnet-5.5", LIVE_CAP),
-        ("claude-sonnet-5.5", LIVE_CAP * 2),
+        ("claude-sonnet-5.5", anchor_exec.ADVISORY_TOKEN_FLOOR),
+        (FAILOVER_MODEL, anchor_exec.ADVISORY_TOKEN_FLOOR),
     ], _calls(failover_install)
     text = _text(retry_log)
     assert "anchor_budget_retry_empty model=" in text, text
     logs = [r.message for r in caplog.records]
-    assert any("anchor_consult_failover_skipped" in m
-               and "reason=budget_retry" in m for m in logs), logs
-    assert not any("anchor_consult_failover model_from" in m for m in logs), logs
-    assert not any(FAILOVER_MODEL in c.get("model", "") for c in failover_install.calls)
+    assert not any("anchor_consult_failover_skipped" in m for m in logs), logs
+    assert any("anchor_consult_failover model_from" in m for m in logs), logs
+    # the third call is not the budget the primary just died on
+    assert all(int(c.get("max_tokens") or 0) >= anchor_exec.ADVISORY_TOKEN_FLOOR
+               for c in failover_install.calls[1:]), failover_install.calls
 
 
 def test_length_empty_at_ceiling_makes_no_retry_and_one_failover(

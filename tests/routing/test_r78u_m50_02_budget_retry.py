@@ -166,26 +166,35 @@ def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, retry_log, c
 
 def test_f1b_second_empty_does_not_trigger_a_third_attempt(f1_install, retry_log,
                                                            caplog):
-    """F1b: bounded. The retry itself comes back finish=length+empty -> no
-    third budget attempt and no re-sent minimal retry (it was measured to fail
-    identically); the call ends as the same visible terminal failure."""
+    """F1b: bounded on BUDGET attempts. The retry itself comes back
+    finish=length+empty -> no third budget attempt and no re-sent minimal retry
+    (it was measured to fail identically).
+
+    M50-10 supersedes the M50-04 arm count here: an exhausted retry no longer
+    kills the failover walk — that skip is what left the lane dead. Three calls
+    remain bounded, and the third one is a DIFFERENT model carrying the RAISED
+    allowance (48,000), never the 23,585 the primary just died on.
+    """
     f1_install.always_empty = True
     with caplog.at_level("INFO"):
         out = anchor_exec.anchored_call(_endpoint(), _consult_payload())
 
     assert out == (None, None, None, None)
-    assert len(f1_install.calls) == 2, [c["max_tokens"] for c in f1_install.calls]
-    # M50-04: with a live failover list, both calls are still the primary —
-    # the pre-existing failover arm must not buy a third call.
+    # one budget allowance, one budget retry, then the failover walk
+    assert len(f1_install.calls) == 3, [c["max_tokens"] for c in f1_install.calls]
     assert [c["model"] for c in f1_install.calls] == [
-        "claude-sonnet-5.5", "claude-sonnet-5.5"], f1_install.calls
+        "claude-sonnet-5.5", "claude-sonnet-5.5", "z-ai/glm-5.3"], f1_install.calls
     assert [c["max_tokens"] for c in f1_install.calls] == [
-        LIVE_CAP, LIVE_CAP * 2], f1_install.calls
+        LIVE_CAP, anchor_exec.ADVISORY_TOKEN_FLOOR,
+        anchor_exec.ADVISORY_TOKEN_FLOOR], f1_install.calls
     assert "anchor_budget_retry_empty model=" in retry_log.read_text(
         encoding="utf-8")
     logs = [r.message for r in caplog.records]
     # the minimal-payload arm is not paid for after a budget retry
     assert not any("anchor_consult_minimal_retry" in m for m in logs), logs
+    # M50-10: the budget retry is still the LAST budget attempt — one, never a loop
+    assert sum("anchor_budget_retry model=" in ln for ln in
+               retry_log.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_f1b_ceiling_reached_skips_retry(monkeypatch, f1_install, retry_log,

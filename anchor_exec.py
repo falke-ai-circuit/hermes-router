@@ -583,7 +583,9 @@ def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
     are the calls that thought longer than that.
 
     So the retry buys headroom above the OBSERVED thinking peak, not a small
-    increment: 2x the failed allowance, floored at failed + 16,384, clamped to
+    increment: 2x the failed allowance, floored at failed + 16,384, AND never
+    below `ADVISORY_TOKEN_FLOOR` (M50-10 — the ruling's 48,000; doubling 23,585
+    gave 47,170, i.e. still under the floor the same ruling named), clamped to
     the model's advertised output limit. Returns <= `current` when the ceiling
     is already reached — the caller then skips the retry rather than sending a
     value the endpoint rejects (a 400 is not a budget).
@@ -598,7 +600,7 @@ def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
         ceiling = int(model_output_limit(model))
     except Exception:  # noqa: BLE001
         ceiling = DEFAULT_MODEL_OUTPUT_LIMIT
-    want = max(cur * 2, cur + 16384)
+    want = max(cur * 2, cur + 16384, ADVISORY_TOKEN_FLOOR)
     return max(cur, min(want, ceiling))
 
 
@@ -630,7 +632,8 @@ def _recover_empty_consult(payload: Dict[str, Any],
                            endpoint: anchor_chain.AnchorEndpoint,
                            timeout: float,
                            *, skip_minimal: bool = False,
-                           skip_failover: bool = False
+                           skip_failover: bool = False,
+                           failover_max_tokens: Optional[int] = None
                            ) -> Tuple[str, Dict[str, Any],
                                       anchor_chain.AnchorEndpoint]:
     """R34-9b: two-stage recovery from a 200-with-empty-content response.
@@ -656,6 +659,16 @@ def _recover_empty_consult(payload: Dict[str, Any],
     came back length-empty — a second model on the proven-insufficient budget
     is spend without a budget, and it made C1's "no path to a third call"
     false on the deployed config (`anchor_chain.failover: [z-ai/glm-5.3]`).
+
+    M50-10 SUPERSEDES that choice: skipping the failover is what turned one bad
+    budget into a dead lane (live 19:36:02 `anchor_consult_failover_skipped
+    reason=budget_retry` -> 19:41:02 `anchor_route_failed`). An exhausted retry
+    means the PRIMARY cannot answer, not that every other model should be
+    forbidden to. The bound M50-04 was defending is kept a different way: when
+    `failover_max_tokens` is supplied the walk sends the RAISED allowance, so
+    the third call carries a budget instead of the proven-insufficient one.
+    `skip_failover` stays in the signature for callers that have a real reason
+    to refuse the walk; no caller in this module sets it True any more.
     """
     if skip_failover:
         try:
@@ -676,12 +689,16 @@ def _recover_empty_consult(payload: Dict[str, Any],
             return content, raw, endpoint
     for ep in _failover_endpoints(endpoint):
         try:
-            logger.info("anchor_consult_failover model_from=%s model_to=%s",
-                        endpoint.model, ep.model)
+            logger.info("anchor_consult_failover model_from=%s model_to=%s "
+                        "max_tokens=%s",
+                        endpoint.model, ep.model, failover_max_tokens)
         except Exception:  # noqa: BLE001
             pass
-        content, raw = _simple_anchored_call(
-            ep, sanitize_consult_payload(payload), timeout)
+        _fp = sanitize_consult_payload(payload)
+        # M50-10: the walk never repeats the allowance the primary just died on.
+        if isinstance(failover_max_tokens, int) and failover_max_tokens > 0:
+            _fp["max_tokens"] = failover_max_tokens
+        content, raw = _simple_anchored_call(ep, _fp, timeout)
         if content.strip():
             return content, raw, ep
     return "", {}, endpoint
@@ -855,14 +872,18 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         if not str(content).strip():
             _diag = ""
             _finish_reason = ""
+            _rt_in = 0
             try:
                 _ch = (raw.get("choices") or [{}])[0] or {}
                 _m = _ch.get("message") or {}
                 _finish_reason = str(_ch.get("finish_reason") or "")
-                _diag = ("finish=%s tool_calls=%s reasoning_chars=%d payload_keys=%s "
+                _rt_in = _reasoning_tokens(raw)
+                _diag = ("finish=%s tool_calls=%s reasoning_chars=%d "
+                         "reasoning_tokens=%d payload_keys=%s "
                          "max_tokens=%s n_msgs=%d") % (
                     _ch.get("finish_reason"), bool(_m.get("tool_calls")),
                     len(str(_m.get("reasoning") or "")),
+                    _rt_in,
                     sorted(k for k in payload if k != "messages"),
                     payload.get("max_tokens"), len(payload.get("messages") or []))
             except Exception:  # noqa: BLE001
@@ -887,6 +908,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             # reasoning setting. Measurable: anchor_budget_retry /
             # _recovered / _empty log lines carry both capacities.
             _budget_retry_paid = False
+            _retry_mt = 0
             _length_exhausted = (_finish_reason == "length")
             if _length_exhausted:
                 try:
@@ -896,10 +918,12 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
-                            max_tokens_to=_new_mt)
+                            max_tokens_to=_new_mt,
+                            reasoning_tokens=_rt_in)
                         _rp = copy.deepcopy(payload)
                         _rp["max_tokens"] = _new_mt
                         _budget_retry_paid = True
+                        _retry_mt = _new_mt
                         _rc_b, _rraw_b = _simple_anchored_call(
                             endpoint, _rp, timeout, keep_reasoning=True)
                         if str(_rc_b or "").strip():
@@ -909,15 +933,18 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             _budget_retry_log(
                                 "anchor_budget_retry_recovered",
                                 model=endpoint.model, chars=len(str(_rc_b)),
-                                max_tokens=_new_mt)
+                                max_tokens=_new_mt,
+                                reasoning_tokens=_reasoning_tokens(_rraw_b))
                         else:
                             _budget_retry_log(
                                 "anchor_budget_retry_empty",
-                                model=endpoint.model, max_tokens=_new_mt)
+                                model=endpoint.model, max_tokens=_new_mt,
+                                reasoning_tokens=_reasoning_tokens(_rraw_b))
                     else:
                         _budget_retry_log(
                             "anchor_budget_retry_skipped", model=endpoint.model,
-                            max_tokens=_cur_mt, reason="ceiling")
+                            max_tokens=_cur_mt, reason="ceiling",
+                            reasoning_tokens=_rt_in)
                 except Exception:  # noqa: BLE001 — retry never breaks the lane
                     pass
             # R34-9b: empty content from a 200 is not the end of the lane.
@@ -928,8 +955,10 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
             # arm per call, never a chain of them.
             # M50-04: the minimal arm is skipped on the whole length path (the
             # retry paid, or the ceiling made one impossible — same dead call
-            # either way); the FAILOVER arm is skipped only when the retry was
-            # actually paid, because that walk re-sends the original allowance.
+            # either way). M50-10: the FAILOVER arm is NEVER skipped because a
+            # retry was paid — an exhausted retry means the primary could not
+            # answer, so the walk runs, and it runs at the RAISED allowance
+            # (`_retry_mt`) instead of the proven-insufficient original.
             try:
                 if str(content or "").strip():
                     _rc, _rraw, _rep = content, raw, endpoint
@@ -937,7 +966,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     _rc, _rraw, _rep = _recover_empty_consult(
                         payload, endpoint, timeout,
                         skip_minimal=bool(_length_exhausted),
-                        skip_failover=bool(_budget_retry_paid))
+                        failover_max_tokens=_retry_mt)
             except Exception:  # noqa: BLE001 — recovery never breaks the lane
                 _rc, _rraw, _rep = "", {}, endpoint
             if str(_rc or "").strip():
@@ -967,6 +996,17 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         # v3.5.0: pass real usage tokens back with the cost tuple (blueprint
         # 5.2 tap 2) — tokens were previously extracted then discarded.
         pt, ct = usage_tokens_from_response(raw)
+        # M50-10: reasoning_tokens on the SUCCESS path too. The empty-body
+        # failure was inferred from finish=length + 0 chars; with the billed
+        # split on both paths the next measurement reads the cause instead of
+        # deducing it. One line per delivered consult.
+        try:
+            logger.info("anchor_consult_ok model=%s reasoning_tokens=%d "
+                        "completion_tokens=%s max_tokens=%s chars=%d",
+                        endpoint.model, _reasoning_tokens(raw), ct,
+                        payload.get("max_tokens"), len(str(content)))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         return str(content), cost, pt, ct
     except Exception as exc:  # noqa: BLE001 — anchored lane must never raise
         logger.error("anchor_route_failed reason=exception detail=%.300s", str(exc))
@@ -1022,6 +1062,21 @@ EFFORT_HEADROOM_FLOOR: Dict[str, int] = {
     "xhigh": 6000,
     "max": 8000,
 }
+# M50-10 (coding M50-08's ruling): the CAP FLOOR.
+#
+# M50-08 ruled "ceiling raised to 64000 single-shot + cap floor gate 48000".
+# The 64000 landed in MODEL_OUTPUT_LIMIT — a CLAMP, which can only lower a
+# request — so on HEAD bc0ebb4 the advisory path still sized a max-effort
+# reasoning consult at 23,585, BELOW the measured thinking peak (M50-01/M50-06:
+# 17,510 completion tokens to produce 3,052 visible chars) plus the visible
+# need. Every long think therefore returned HTTP 200 + finish=length + empty
+# body, the retry doubled to 47,170 (still short of the floor), and the
+# failover was skipped. This constant is the FLOOR the ruling named: the
+# advisory path may never ASK for less than this when reasoning is on, and the
+# length retry may never buy less than this when it can afford it. It is
+# clamped per model by model_output_limit(), so a 32k endpoint still gets its
+# own ceiling rather than a value it would 400 on.
+ADVISORY_TOKEN_FLOOR = 48000
 # Conservative advertised output ceilings per model family. Conservative on
 # purpose: sending a number the endpoint rejects is worse than under-buying,
 # and every anchor in this fleet is well above the 32768 default. Override the
@@ -1038,6 +1093,49 @@ MODEL_OUTPUT_LIMIT: Dict[str, int] = {
     "qwen": 32768,
 }
 DEFAULT_MODEL_OUTPUT_LIMIT = 32768
+
+
+def advisory_floor(effort: Any) -> int:
+    """Lowest acceptable total allowance on a REASONING advisory call.
+
+    0 when the call carries no reasoning setting (no floor, legacy formula).
+    Scaled per ladder rung from `ADVISORY_TOKEN_FLOOR` (the max-effort floor)
+    so the ladder stays monotone: low < medium < high < xhigh < max. Never
+    raises.
+    """
+    try:
+        key = _effort_key(effort)
+        if key is None:
+            return 0
+        ratio = EFFORT_HEADROOM_RATIO.get(key, 1.0)
+        return int(round(ADVISORY_TOKEN_FLOOR * ratio
+                         / EFFORT_HEADROOM_RATIO["max"]))
+    except Exception:  # noqa: BLE001 — sizing must never break the lane
+        return 0
+
+
+def _reasoning_tokens(raw: Dict[str, Any]) -> int:
+    """reasoning tokens the provider billed for this call, 0 when absent.
+
+    M50-10: the next measurement must be OBSERVED. The live failure was
+    inferred from a finish=length + 0-char coincidence; the usage block already
+    carries the number that names the cause (prompt_tokens_details /
+    completion_tokens_details.reasoning_tokens). Never raises.
+    """
+    try:
+        usage = (raw or {}).get("usage") or {}
+        for key in ("completion_tokens_details", "output_tokens_details"):
+            det = usage.get(key) or {}
+            if isinstance(det, dict):
+                v = det.get("reasoning_tokens")
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    return int(v)
+        v = usage.get("reasoning_tokens")
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return int(v)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
 
 
 def _effort_key(effort: Any) -> Optional[str]:
@@ -1097,6 +1195,21 @@ def model_output_limit(model: Any = None) -> int:
             if family in name:
                 return limit
     return DEFAULT_MODEL_OUTPUT_LIMIT
+
+
+def advisory_token_floor(model: Any = None) -> int:
+    """The M50-08 cap floor as this model can actually accept it.
+
+    ADVISORY_TOKEN_FLOOR (48,000) is the ruling's number: it clears the measured
+    17,510-token thinking peak with room for the visible answer. A model whose
+    advertised ceiling is lower (glm/kimi/deepseek/qwen default 32,768) gets its
+    own ceiling instead — asking for 48,000 there is a 400, not a budget.
+    Never raises, never returns <= 0.
+    """
+    try:
+        return max(1, min(ADVISORY_TOKEN_FLOOR, int(model_output_limit(model))))
+    except Exception:  # noqa: BLE001
+        return ADVISORY_TOKEN_FLOOR
 
 
 def _payload_model(payload: Dict[str, Any]) -> str:
@@ -1165,7 +1278,13 @@ def advisory_max_tokens(char_budget: Optional[int] = None,
     tokens, which are billed inside max_tokens — so the reasoning headroom is
     added explicitly instead of leaning on the flat blended ratio. The total is
     clamped to what the model accepts: an impossible value is a 400, not a
-    budget."""
+    budget.
+
+    M50-10: on a reasoning lane the total is also RAISED to advisory_floor()
+    (48,000 at effort=max). Headroom alone landed at 23,585 — above the
+    17,510-token peak by only 6k, which is the headroom that runs out. The
+    floor is the M50-08 number, coded where the request is SIZED, not only
+    where it is clamped. A call with no reasoning setting never sees it."""
     try:
         n = int(char_budget if char_budget is not None else advisory_char_budget())
     except Exception:  # noqa: BLE001
@@ -1180,7 +1299,12 @@ def advisory_max_tokens(char_budget: Optional[int] = None,
     head = reasoning_headroom(base, effort)
     if head <= 0:
         return base
-    return max(1, min(base + head, model_output_limit(model)))
+    # M50-10: the FLOOR, not just headroom. Applied here (where the request is
+    # sized) so the allowance the provider receives clears the measured peak;
+    # model_output_limit() still clamps, so a 32k endpoint gets 32768 rather
+    # than a value it would reject.
+    want = max(base + head, advisory_floor(effort))
+    return max(1, min(want, model_output_limit(model)))
 
 
 def apply_advisory_budget(payload: Dict[str, Any]) -> Dict[str, Any]:
