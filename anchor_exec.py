@@ -638,6 +638,34 @@ def _budget_retry_effort(cur_effort: Any) -> str:
         return str(cur_effort or "")
 
 
+def _retry_is_worth_paying(cur_mt: Any, new_mt: Any,
+                           cur_effort: Any, new_effort: Any) -> bool:
+    """M50-14b: is a starved-consult retry worth paying for at all?
+
+    The ladder used to retry ONLY when the ceiling could rise:
+        if _new_mt > int(_cur_mt or 0):  ... else: skipped reason=ceiling
+    So once max_tokens was already at the model ceiling, a length-exhausted
+    consult got no retry — even though the measured cure is descending EFFORT,
+    which needs no extra headroom (effort=high produced 3,424 chars at the SAME
+    ceiing where effort=max produced zero). Fleet evidence of the hole: architect
+    hit 30 retries in 7 days, all against ceilings of 17,584/47,170.
+
+    A retry is worth paying for when EITHER the budget can grow OR the
+    deliberation setting actually changes. When neither moves, repeating the call
+    only re-buys the same empty answer.
+    """
+    try:
+        # Effort first: a string comparison cannot fail, and a descending
+        # deliberation setting on its own justifies the retry (that is the whole
+        # point — it needs no extra headroom). Casting the budgets first let a
+        # junk max_tokens raise and suppress a legitimate descent.
+        if str(cur_effort or "") != str(new_effort or ""):
+            return True
+        return int(new_mt or 0) > int(cur_mt or 0)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _budget_retry_log(event: str, **fields: Any) -> None:
     """Emit one M50 budget-retry counter into the CONFIGURED route log.
 
@@ -948,29 +976,31 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                 try:
                     _cur_mt = payload.get("max_tokens")
                     _new_mt = _budget_retry_max_tokens(_cur_mt, endpoint.model)
-                    if _new_mt > int(_cur_mt or 0):
-                        # M50-14: raising the ceiling alone re-buys the same
-                        # failure at a higher price (48,000 reasoning tokens ->
-                        # zero content, measured). Descend deliberation too, so
-                        # the retry can actually WRITE something.
-                        _eff_from = str(payload.get("reasoning_effort") or "")
-                        _eff_to = _budget_retry_effort(_eff_from)
+                    _eff_from = str(payload.get("reasoning_effort") or "")
+                    _eff_to = _budget_retry_effort(_eff_from)
+                    _can_raise = _new_mt > int(_cur_mt or 0)
+                    # M50-14b: retry when the budget can grow OR the deliberation
+                    # setting changes. The old test was `_can_raise` alone, which
+                    # left every at-ceiling starved consult unrescued.
+                    if _retry_is_worth_paying(_cur_mt, _new_mt, _eff_from, _eff_to):
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
-                            max_tokens_to=_new_mt,
+                            max_tokens_to=_new_mt if _can_raise else _cur_mt,
                             effort_from=_eff_from or "-",
                             effort_to=_eff_to or "-",
+                            at_ceiling=(not _can_raise),
                             reasoning_tokens=_rt_in)
                         _rp = copy.deepcopy(payload)
-                        _rp["max_tokens"] = _new_mt
+                        if _can_raise:
+                            _rp["max_tokens"] = _new_mt
                         if _eff_to != _eff_from:
                             if _eff_to:
                                 _rp["reasoning_effort"] = _eff_to
                             else:
                                 _rp.pop("reasoning_effort", None)
                         _budget_retry_paid = True
-                        _retry_mt = _new_mt
+                        _retry_mt = _new_mt if _can_raise else int(_cur_mt or 0)
                         _rc_b, _rraw_b = _simple_anchored_call(
                             endpoint, _rp, timeout, keep_reasoning=True)
                         if str(_rc_b or "").strip():

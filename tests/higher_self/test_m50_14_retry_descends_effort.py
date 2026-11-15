@@ -16,7 +16,7 @@ raising max_tokens alone, which by construction re-buys the same empty answer.
 These pins lock the correction: on a length-exhausted consult, effort descends one
 notch (max -> high) so the retry can emit content.
 """
-from hermes_router.anchor_exec import _budget_retry_effort
+from hermes_router.anchor_exec import _budget_retry_effort, _retry_is_worth_paying
 
 
 def test_max_descends_to_high():
@@ -51,3 +51,31 @@ def test_absent_effort_stays_absent():
 def test_never_raises_on_junk():
     assert _budget_retry_effort(123) == "123"
     assert _budget_retry_effort(object()) != ""  # str() of it, never an exception
+
+
+# --- M50-14b: the at-ceiling hole -----------------------------------------
+# The ladder used to retry only when the ceiling could rise, so a consult already
+# at the model ceiling got NO retry even though descending effort is the cure.
+
+def test_retry_paid_when_ceiling_can_rise():
+    assert _retry_is_worth_paying(12000, 48000, "max", "high") is True
+
+
+def test_retry_paid_at_ceiling_if_effort_descends():
+    """The case that was silently skipped: no headroom left, but effort moves."""
+    assert _retry_is_worth_paying(47170, 47170, "max", "high") is True
+
+
+def test_retry_not_paid_when_nothing_changes():
+    """At ceiling with effort already descended, a repeat buys the same empty answer."""
+    assert _retry_is_worth_paying(47170, 47170, "high", "high") is False
+
+
+def test_a_shrinking_budget_alone_is_not_worth_paying():
+    assert _retry_is_worth_paying(48000, 12000, "low", "low") is False
+
+
+def test_worth_paying_never_raises_on_junk():
+    assert _retry_is_worth_paying(None, None, None, None) is False
+    assert _retry_is_worth_paying("bad", "worse", "max", "high") is True
+
