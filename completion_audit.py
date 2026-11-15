@@ -2530,7 +2530,7 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         # headroom. The earlier "empty" was token starvation (thinking
         # burned the 4k budget → content=null), not a model problem —
         # fixed with budget, not by lobotomizing the pass.
-        model = str(sec.get("model") or "") or "z-ai/glm-5.3"
+        model = str(sec.get("model") or "") or _REVISION_MODEL_FALLBACK
         base = (str(_cac.get("providers.nous.base_url", "")) or "").strip() \
             or "https://inference-api.nousresearch.com/v1"
         # R34-19j: the revision IS the frontier lane — it must follow the
@@ -2544,6 +2544,7 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         # below is only the DEFAULT (same rule as the M24-01/M24-02 provider URL).
         key_envs = [_cac.provider_key_env("nous", "NOUS_API_KEY")]
         _eff_override: Optional[str] = "max"   # legacy default: no anchor
+        _rev_anchor_reason = ""
         try:
             from . import anchor_chain as _acr
             _epr = _acr.load_anchor_chain().primary
@@ -2556,7 +2557,21 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
                 # blank in config = the family takes NO effort knob (Claude-class)
                 _eff_override = (_effc.strip()
                                  if isinstance(_effc, str) and _effc.strip() else "")
-        except Exception:  # noqa: BLE001 — config read must never break the pass
+            else:
+                _rev_anchor_reason = "no_anchor_primary"
+        except Exception as _rev_exc:  # noqa: BLE001 — config read must never break the pass
+            _rev_anchor_reason = "anchor_load_raised:%s" % type(_rev_exc).__name__
+        # M50-18: a model fallback must never be SILENT. The owner's ruling is that
+        # this lane should not fall back at all (PRE and POST on the same model);
+        # until that is decided, the least it can do is say so, so a divergence is
+        # found in the log rather than inferred from behaviour.
+        try:
+            _rev_fb = _revision_fallback_reason(_rev_anchor_reason, model)
+            if _rev_fb:
+                _log("completion_audit_model_fallback", model=model,
+                     effort=_eff_override or "-", reason=_rev_fb,
+                     session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — telemetry never breaks the pass
             pass
         api_key = ""
         for env_name in key_envs:
@@ -3432,6 +3447,33 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(key)
+
+
+_REVISION_MODEL_FALLBACK = "z-ai/glm-5.3"
+
+
+def _revision_fallback_reason(anchor_reason: str, model: str) -> str:
+    """M50-18: when does the POST revision sit on the FALLBACK model?
+
+    Owner ruling: this lane should not fall back at all — PRE and POST must be the
+    same model. Until that is decided, the divergence must never be SILENT: a log
+    line is the minimum, so it can be found later instead of inferred from
+    behaviour.
+
+    Returns "" when no fallback applies, else a short reason:
+      anchor_load_raised:<Exc>  the anchor chain read threw (swallowed by design)
+      no_anchor_primary         the chain loaded but had no primary endpoint
+      unset_model_key           no anchor contribution and no configured model,
+                                so the hard-coded default survives
+    """
+    try:
+        if str(anchor_reason or "").strip():
+            return str(anchor_reason)
+        if str(model or "") == _REVISION_MODEL_FALLBACK:
+            return "unset_model_key"
+        return ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _log(msg: str, **kw: Any) -> None:
