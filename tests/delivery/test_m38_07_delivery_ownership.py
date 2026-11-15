@@ -89,8 +89,16 @@ def test_registration_owns_delivered_bytes(monkeypatch):
                         lambda **kw: None)
     out = plugin.on_transform_llm_output(response_text=entered,
                                          session_id=sid, model="m1")
-    assert out is None or str(out) == entered, \
-        "a pass-through decision ships the entered body unmodified, got %r" % (out,)
+    delivered = entered if out is None else str(out)
+    # M48 (owner ruling, reverses M35-17): the registered lane is VISIBLE in
+    # the delivered bytes, appended after a blank line. What the delivery owner
+    # must still guarantee is the part that protects the answer: the answer is
+    # the model's own text, unmodified, with no router prose inside it.
+    assert delivered.startswith(entered), \
+        "the answer region must be the entered body, got %r" % (delivered,)
+    _tail = delivered[len(entered):]
+    assert _tail in ("", "\n\n" + _tail.lstrip("\n")), \
+        "only a blank-line-separated block may follow the answer, got %r" % (_tail,)
     rec = TR.record(sid)
     assert rec.get("segments"), "the banner must survive as a turn record"
     assert rec.get("emitted") is True, "the turn record must be written"

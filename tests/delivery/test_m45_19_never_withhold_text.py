@@ -92,7 +92,16 @@ def logged(monkeypatch):
 # (a) a diverged turn delivers the text that exists
 # ---------------------------------------------------------------------------
 
-def test_diverged_turn_delivers_the_transcript_text(tmp_path, monkeypatch, logged):
+def test_diverged_turn_ships_this_turns_answer_not_the_transcript(tmp_path, monkeypatch, logged):
+    """Fail open — and the recovered text stays evidence, never the answer.
+
+    This test used to require the recovered transcript text to be DELIVERED as
+    the answer. That contradicts its sibling ``test_divergence_names_no_
+    deliverable_bytes`` ("Recovered prior text is evidence, never the answer")
+    and the wire test next door (``_delivered_bytes`` -> None). The honest
+    outcome is the host's pass-through: the user sees THIS turn's answer, never
+    the router-failure notice and never last pass's body dressed as an answer.
+    """
     db = _db(tmp_path,
              [(ANSWER_3192, ROW_TS)],
              [("div-1", "a body the ledger says was delivered, and it differs",
@@ -103,11 +112,11 @@ def test_diverged_turn_delivers_the_transcript_text(tmp_path, monkeypatch, logge
         response_text="the model's fresh body for this pass",
         session_id=SID, model="glm-5.3-flash", platform="api")
 
-    assert isinstance(out, str) and out.strip(), "the turn was withheld"
-    assert di.FAILURE_PREFIX not in out, (
+    assert out is None or str(out).strip(), "the turn was withheld"
+    assert di.FAILURE_PREFIX not in str(out or ""), (
         "a real answer was replaced by the router-failure notice")
-    assert out.strip() == di.strip_banner(ANSWER_3192).strip(), (
-        "the delivered body is not the transcript text")
+    assert di.strip_banner(ANSWER_3192).strip() not in str(out or ""), (
+        "recovered prior text was shipped as if it were this turn's answer")
 
 
 def test_divergence_is_still_recorded_as_telemetry(tmp_path, monkeypatch, logged):
