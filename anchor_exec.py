@@ -706,6 +706,37 @@ def _retry_raises_ceiling(can_raise: bool, cur_effort: Any, new_effort: Any) -> 
         return False
 
 
+def _empty_consult_spend(raws: Any, pricing: Any, model: str) -> float:
+    """Price the responses of a consult that produced NO content.
+
+    R78U/M50-17: the empty path returns at the `if not content` guard, which sits
+    ABOVE the single `record_spend` call site (anchor_exec.py:2621). So a call that
+    was billed by the provider and came back with zero characters was never
+    recorded — not in the spend ledger, not in the per-agent cap counter, not in
+    any economics instrument. The exact spend the owner asked us to stop was the
+    spend we could not see.
+
+    Pure and never-raise: it only prices what the provider already charged.
+    """
+    total = 0.0
+    try:
+        for r in (raws or []):
+            if not r:
+                continue
+            try:
+                c = usage_cost_from_response(r, pricing, model)
+            except Exception:  # noqa: BLE001
+                c = 0.0
+            try:
+                if c and float(c) > 0:
+                    total += float(c)
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return total
+
+
 def _budget_retry_log(event: str, **fields: Any) -> None:
     """Emit one M50 budget-retry counter into the CONFIGURED route log.
 
@@ -1113,6 +1144,27 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         content = _c2
                         clear_last_failure()
             if not str(content or "").strip():
+                # M50-17: the provider charged us for these tokens; record it.
+                # This guard sits ABOVE the only record_spend call site, so an
+                # empty consult used to leave no trace in the ledger, the
+                # per-agent cap, or any spend instrument.
+                try:
+                    _pricing_e = anchor_chain.load_anchor_chain().pricing
+                    _rawlist = [raw]
+                    _rb = locals().get("_rraw_b")
+                    if _rb:
+                        _rawlist.append(_rb)
+                    _spend_e = _empty_consult_spend(
+                        _rawlist, _pricing_e, endpoint.model)
+                    if _spend_e > 0:
+                        anchor_chain.record_spend(_spend_e)
+                        _budget_retry_log(
+                            "anchor_consult_spend_recorded_empty",
+                            model=endpoint.model,
+                            est_cost=round(_spend_e, 6),
+                            calls=len([r for r in _rawlist if r]))
+                except Exception:  # noqa: BLE001 — never breaks the lane
+                    pass
                 return None, None, None, None
 
         pricing = anchor_chain.load_anchor_chain().pricing

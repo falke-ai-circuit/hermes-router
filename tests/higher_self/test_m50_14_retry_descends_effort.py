@@ -19,6 +19,7 @@ notch (max -> high) so the retry can emit content.
 from hermes_router.anchor_exec import (
     _budget_can_raise,
     _budget_retry_effort,
+    _empty_consult_spend,
     _retry_is_worth_paying,
     _retry_raises_ceiling,
 )
@@ -139,6 +140,42 @@ def test_can_raise_never_throws():
 def test_worth_paying_rejects_zero_allowance_rise():
     """The exact architect finding: junk current budget must not buy a retry."""
     assert _retry_is_worth_paying(-5, 0, "high", "high") is False
+
+
+# --- M50-17: price the empty consult, which returns above record_spend -------
+
+def test_empty_consult_spend_sums_every_billed_call(monkeypatch):
+    """A starved consult can cost TWO billed calls (original + retry). Both count."""
+    import hermes_router.anchor_exec as ax
+
+    monkeypatch.setattr(ax, "usage_cost_from_response",
+                        lambda raw, pricing, model: 0.5)
+    assert ax._empty_consult_spend([{"a": 1}, {"b": 2}], {}, "m") == 1.0
+
+
+def test_empty_consult_spend_ignores_missing_responses(monkeypatch):
+    import hermes_router.anchor_exec as ax
+
+    monkeypatch.setattr(ax, "usage_cost_from_response",
+                        lambda raw, pricing, model: 0.5)
+    assert ax._empty_consult_spend([None, {}, {"a": 1}], {}, "m") == 0.5
+
+
+def test_empty_consult_spend_is_zero_when_nothing_billed():
+    assert _empty_consult_spend([], {}, "m") == 0.0
+    assert _empty_consult_spend(None, {}, "m") == 0.0
+
+
+def test_empty_consult_spend_never_throws(monkeypatch):
+    """A pricing blow-up must never break the lane."""
+    import hermes_router.anchor_exec as ax
+
+    def _boom(*a, **k):
+        raise ValueError("pricing down")
+
+    monkeypatch.setattr(ax, "usage_cost_from_response", _boom)
+    assert ax._empty_consult_spend([{"a": 1}], {}, "m") == 0.0
+
 
 
 
