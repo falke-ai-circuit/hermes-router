@@ -33,6 +33,39 @@ def _entry_line(rec: Dict[str, Any], seg: Dict[str, Any]) -> str:
     return str(seg.get("text") or "").strip()
 
 
+def _spend_line(rec: Dict[str, Any], segs: Any) -> str:
+    """One compact spend row for a lane that actually paid for tokens.
+
+    M47-22: the banner's job is telling the reader what the turn did. A consult that
+    billed a paid API is part of that, so it renders at the DEFAULT level — not only
+    at level 3, where nobody looked (fleet config leaves the level unset).
+
+    Renders only when the record carries real token counts; an unpriced or token-less
+    record renders nothing rather than "tok 0→0", which would be a field outrunning
+    the thing it names. Never raises.
+    """
+    try:
+        segs = segs if isinstance(segs, list) else []
+        first = segs[0] if segs and isinstance(segs[0], dict) else {}
+        tin = int(first.get("tokens_in") or 0)
+        tout = int(first.get("tokens_out") or 0)
+        if not tin and not tout:
+            return ""
+        cost = first.get("est_cost")
+        lane = str(rec.get("lane") or "")
+        parts = [f"tok {tin:,}→{tout:,}"]
+        try:
+            if cost is not None and float(cost) > 0:
+                parts.append(f"${float(cost):.4f}")
+        except (TypeError, ValueError):
+            pass
+        if lane:
+            parts.append(lane)
+        return " · ".join(parts)
+    except Exception:  # noqa: BLE001 — extraction never raises
+        return ""
+
+
 def render(record: Any, level: int = 1) -> str:
     """Render a banner record at `level`. Never raises; never touches a body."""
     try:
@@ -51,6 +84,15 @@ def render(record: Any, level: int = 1) -> str:
                    str(rec.get("session_id") or "-")[:32],
                    str(rec.get("decision") or "-")[:6],
                    int((segs[0] or {}).get("retries") or 0)))
+        # M47-22 (owner ruling, 2026-11-15): a consult that spent tokens on a paid
+        # API is NOT a level-3 detail. Whenever a lane fired and the record carries
+        # token counts, the spend is part of the level-1 banner — otherwise the
+        # reader sees that a lane fired but not that it cost money, and the whole
+        # point of the banner is knowing what the turn actually did.
+        if int(level) < 3:
+            _spend = _spend_line(rec, segs)
+            if _spend:
+                lines.append(_spend)
         if int(level) >= 3:
             first = segs[0] if segs else {}
             lines.append(
