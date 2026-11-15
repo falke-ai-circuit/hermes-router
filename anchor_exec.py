@@ -661,7 +661,28 @@ def _retry_is_worth_paying(cur_mt: Any, new_mt: Any,
         # junk max_tokens raise and suppress a legitimate descent.
         if str(cur_effort or "") != str(new_effort or ""):
             return True
-        return int(new_mt or 0) > int(cur_mt or 0)
+        # M50-16: a "rise" to a non-positive allowance is not a budget, it is a
+        # guaranteed empty call. Never pay for it.
+        return _budget_can_raise(cur_mt, new_mt)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _budget_can_raise(cur_mt: Any, new_mt: Any) -> bool:
+    """M50-16: a retry may only raise to a POSITIVE allowance above the current one.
+
+    Found in architect's review of the M50-15 ladder (line-cited, reproduced here):
+    with a junk/negative current `max_tokens` the comparison `_new_mt > int(cur)`
+    is `0 > -5` -> True, so the retry would be dispatched with `max_tokens=0`. A
+    zero allowance cannot produce content by construction, so that retry is a
+    guaranteed billed-and-empty call — exactly the spend the owner asked us to
+    eliminate.
+
+    Rule: raising requires a real budget on both sides of the comparison.
+    """
+    try:
+        new_i = int(new_mt or 0)
+        return new_i > 0 and new_i > int(cur_mt or 0)
     except Exception:  # noqa: BLE001
         return False
 

@@ -17,6 +17,7 @@ These pins lock the correction: on a length-exhausted consult, effort descends o
 notch (max -> high) so the retry can emit content.
 """
 from hermes_router.anchor_exec import (
+    _budget_can_raise,
     _budget_retry_effort,
     _retry_is_worth_paying,
     _retry_raises_ceiling,
@@ -106,5 +107,38 @@ def test_no_ceiling_raise_when_there_is_no_headroom():
 def test_raises_ceiling_never_throws():
     assert _retry_raises_ceiling(True, None, None) is True
     assert _retry_raises_ceiling(None, "max", "high") is False
+
+
+# --- M50-16: a rise to a non-positive allowance is not a budget -------------
+# Found by architect's review: cur=-5, new=0 satisfied `new > cur`, and the retry
+# would be dispatched with max_tokens=0 — a guaranteed billed-and-empty call.
+
+def test_zero_allowance_is_not_a_raise():
+    assert _budget_can_raise(-5, 0) is False
+
+
+def test_negative_allowance_is_not_a_raise():
+    assert _budget_can_raise(-100, -5) is False
+
+
+def test_real_rise_is_allowed():
+    assert _budget_can_raise(12000, 47170) is True
+
+
+def test_equal_or_smaller_is_not_a_raise():
+    assert _budget_can_raise(47170, 47170) is False
+    assert _budget_can_raise(48000, 12000) is False
+
+
+def test_can_raise_never_throws():
+    assert _budget_can_raise(None, None) is False
+    assert _budget_can_raise("junk", "junk") is False
+    assert _budget_can_raise(None, 12000) is True
+
+
+def test_worth_paying_rejects_zero_allowance_rise():
+    """The exact architect finding: junk current budget must not buy a retry."""
+    assert _retry_is_worth_paying(-5, 0, "high", "high") is False
+
 
 
