@@ -604,6 +604,40 @@ def _budget_retry_max_tokens(current: Any, model: Any = None) -> int:
     return max(cur, min(want, ceiling))
 
 
+def _budget_retry_effort(cur_effort: Any) -> str:
+    """M50-14: the retry must descend DELIBERATION, not raise the ceiling.
+
+    Measured 2026-11-15 on anthropic/claude-sonnet-5.5, one fixed long-form ask,
+    effort x budget crossed (effort_probe.json):
+
+        effort=max   mt=12,000   out=12,000  reasoning=12,000  finish=length  chars=0
+        effort=max   mt=48,000   out=48,000  reasoning=48,000  finish=length  chars=0
+        effort=high  mt=12,000   out= 3,658  reasoning= 2,015  finish=stop    chars=3,424
+        effort=high  mt=48,000   out= 3,352  reasoning= 1,648  finish=stop    chars=3,417
+        effort=low   mt=12,000   out= 1,759  reasoning=     0  finish=stop    chars=3,423
+        effort=none  mt=12,000   out= 1,464  reasoning=     0  finish=stop    chars=2,997
+
+    At effort=max the model spends the ENTIRE allowance thinking and never writes a
+    character — and quadrupling the ceiling from 12,000 to 48,000 bought exactly
+    nothing: 48,000 reasoning tokens, zero content, 340.9s, billed in full. That is
+    the worst possible outcome: we pay and receive no advisory.
+
+    So a retry that raises `max_tokens` while leaving effort at max cannot recover
+    by construction. It re-buys the same failure at a higher price. Descending one
+    notch to `high` is what actually produces content (3,424 chars, marker complete,
+    21-24s) and costs a fraction of the starved call.
+
+    Returns the effort to use on the retry; unchanged for anything below max.
+    """
+    try:
+        eff = str(cur_effort or "").strip().lower()
+        if eff in ("max", "xhigh", "maximum"):
+            return "high"
+        return str(cur_effort or "")
+    except Exception:  # noqa: BLE001
+        return str(cur_effort or "")
+
+
 def _budget_retry_log(event: str, **fields: Any) -> None:
     """Emit one M50 budget-retry counter into the CONFIGURED route log.
 
@@ -915,13 +949,26 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     _cur_mt = payload.get("max_tokens")
                     _new_mt = _budget_retry_max_tokens(_cur_mt, endpoint.model)
                     if _new_mt > int(_cur_mt or 0):
+                        # M50-14: raising the ceiling alone re-buys the same
+                        # failure at a higher price (48,000 reasoning tokens ->
+                        # zero content, measured). Descend deliberation too, so
+                        # the retry can actually WRITE something.
+                        _eff_from = str(payload.get("reasoning_effort") or "")
+                        _eff_to = _budget_retry_effort(_eff_from)
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
                             max_tokens_to=_new_mt,
+                            effort_from=_eff_from or "-",
+                            effort_to=_eff_to or "-",
                             reasoning_tokens=_rt_in)
                         _rp = copy.deepcopy(payload)
                         _rp["max_tokens"] = _new_mt
+                        if _eff_to != _eff_from:
+                            if _eff_to:
+                                _rp["reasoning_effort"] = _eff_to
+                            else:
+                                _rp.pop("reasoning_effort", None)
                         _budget_retry_paid = True
                         _retry_mt = _new_mt
                         _rc_b, _rraw_b = _simple_anchored_call(
