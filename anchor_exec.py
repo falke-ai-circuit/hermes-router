@@ -1385,7 +1385,16 @@ def _bounded_replay_cfg() -> Dict[str, Any]:
                 "tool_trim_head": 1200, "tool_trim_tail": 600}
 
 
-def _condense_tool_body(content: Any, head: int, tail: int) -> Any:
+_STATE_CHANGE = re.compile(
+    r"(?i)\b(WARN|ERROR|FAIL|FAILED|ROOTCAUSE|ACTION|PASS|PASSED|mismatch|moved|"
+    r"changed|verdict|decided|expected=|reported=|affected=|BUDGET|cap=|rollback|"
+    r"deployed|removed|added|timeout|refused|traceback|exception)\b")
+_NO_CHANGE = re.compile(
+    r"(?i)(heartbeat|note=no_change|no_change|rss_mb=|queue=\d+\s*$|\bIDLE\b)")
+
+
+def _condense_tool_body(content: Any, head: int, tail: int,
+                        middle_chars: int = 4000) -> Any:
     """R34-19O: keep the shape of a tool result, drop the bulk.
 
     Measured across 507 consulted sessions: tool output is 71% of consult input
@@ -1395,6 +1404,18 @@ def _condense_tool_body(content: Any, head: int, tail: int) -> Any:
     file dumps, diffs, logs). Condensing the bodies keeps every turn's structure
     — who asked, what the agent concluded, what was inspected — and cuts only
     the dumps. Never touches non-tool content, never splits a short message.
+
+    M47-21 (measured, 3 reps, deterministic rubric): head+tail elision LOSES
+    EVIDENCE. Against a 26KB log with facts at head/middle/tail it cut input 92%
+    and dropped the mid-context fact in EVERY rep (rubric 3/4 vs 4/4 for the full
+    body) — evidence does not live at the edges. A line-aware selection that keeps
+    state-changing lines and drops no-change noise instead kept 4/4 while cutting
+    input 95% (10,871 -> 568 tokens) with reasoning_effort left at max.
+
+    So: line-structured bodies get relevance selection; anything else (diffs,
+    JSON blobs, single long lines) keeps the positional trim, which cannot
+    misidentify a line it never had. `tool_trim_mode: positional` restores the
+    old behaviour per profile.
     """
     try:
         if not isinstance(content, str):
@@ -1403,12 +1424,84 @@ def _condense_tool_body(content: Any, head: int, tail: int) -> Any:
             return content
         if len(content) <= head + tail + 200:
             return content
+        if _tool_trim_mode() == "relevant":
+            picked = _select_evidence_lines(content, head, tail, middle_chars)
+            if picked is not None:
+                return picked
         elided = len(content) - head - tail
         return (content[:head]
                 + f"\n…[{elided} chars elided from tool result]…\n"
                 + content[-tail:])
     except Exception:  # noqa: BLE001
         return content
+
+
+def _tool_trim_mode() -> str:
+    """`relevant` (default) = line-aware evidence selection; `positional` = legacy."""
+    try:
+        from . import router_core
+
+        cfg = router_core._complexity_cfg().get("bounded_replay")
+        mode = str((cfg or {}).get("tool_trim_mode", "relevant")).strip().lower()
+        return mode if mode in ("relevant", "positional") else "relevant"
+    except Exception:  # noqa: BLE001
+        return "relevant"
+
+
+def _select_evidence_lines(content: str, head: int, tail: int,
+                           middle_chars: int) -> Any:
+    """Keep framing + evidence, drop no-change noise. None = not line-structured.
+
+    Returns None so the caller can fall back to positional trimming when the body
+    has too few lines for "line" to mean anything (a diff or a JSON blob would be
+    shredded by line selection).
+    """
+    lines = [ln for ln in content.splitlines() if ln.strip()]
+    if len(lines) < 8:
+        return None
+    # Head anchoring is by CHARS (the caller's contract), converted to whole lines
+    # so a kept line is never cut mid-token.
+    keep: set = set()
+    used = 0
+    for i, ln in enumerate(lines):
+        if used + len(ln) + 1 > head:
+            break
+        keep.add(i)
+        used += len(ln) + 1
+    used = 0
+    for i in range(len(lines) - 1, -1, -1):
+        if used + len(lines[i]) + 1 > tail:
+            break
+        keep.add(i)
+        used += len(lines[i]) + 1
+    seen_shapes: set = set()
+    candidates: list = []
+    for i, ln in enumerate(lines):
+        if i in keep:
+            continue
+        shape = re.sub(r"\d+", "#", ln)
+        if shape in seen_shapes:
+            continue                       # repeat of a shape already represented
+        seen_shapes.add(shape)
+        is_change = bool(_STATE_CHANGE.search(ln))
+        if not is_change and _NO_CHANGE.search(ln):
+            continue                       # describes no state change: pure noise
+        candidates.append((2 if is_change else 1, i))
+    candidates.sort(key=lambda t: (-t[0], -t[1]))
+    budget = middle_chars
+    for _score, i in candidates:
+        cost = len(lines[i]) + 1
+        if cost > budget:
+            continue                       # skip a fat line, keep filling
+        keep.add(i)
+        budget -= cost
+    dropped = len(lines) - len(keep)
+    out = [ln for i, ln in enumerate(lines) if i in keep]
+    if dropped:
+        marker = f"…[{dropped} no-change lines dropped from tool result]…"
+        out.insert(min(len(out), max(1, sum(1 for i in keep if i < len(lines) // 2))),
+                   marker)
+    return "\n".join(out)
 
 
 def _is_tool_message(msg: Dict[str, Any]) -> bool:
