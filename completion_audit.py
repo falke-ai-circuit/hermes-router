@@ -188,6 +188,27 @@ _AUDIT_ARTIFACT_MARKERS = (
 _ON_DEMAND_TRIGGERS = ("request_routing_declared", "declared_user")
 
 
+def _one_consult_per_ask() -> bool:
+    """M47-20 (Goran 2026-11-14): ONE frontier consult per ask — PRE or POST.
+
+    "limit frontier consults to max post or pre for an ask ... it should either
+    trigger post or pre consult not both". Default ON: a paired POST stands down
+    when a PRE consult already staged for this turn. `false` restores R34-19
+    pairing (POST becomes the PRE's confirmation) per profile. Never raises.
+    """
+    try:
+        from . import config_access as _ca
+
+        raw = (_ca.router_section() or {}).get("one_consult_per_ask", True)
+    except Exception:  # noqa: BLE001 — a missing config read is not a disable
+        return True
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(int(raw))
+    return str(raw).strip().lower() not in ("0", "false", "off", "no", "disabled")
+
+
 def post_pair_mode() -> str:
     """DEPRECATED (R42) — pairing is no longer a fire gate.
 
@@ -912,18 +933,26 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
         return False, "response_quotes_audit"
     # deep-consult fix (PRE+POST mutual exclusion), AMENDED by R34-19: a PRE
     # consult that produced an ADVISORY for this turn → the POST no longer
-    # stands down, it BECOMES that PRE's confirmation (paired=True bypasses
-    # this branch). Only an UNPAIRED POST — i.e. a PRE that was staged but
-    # produced nothing (cap-blocked/failed) — stands down here.
+    # stands down, it BECOMES that PRE's confirmation (paired=True bypassed the
+    # branch below). Only an UNPAIRED POST — i.e. a PRE that was staged but
+    # produced nothing (cap-blocked/failed) — stood down here.
+    #
+    # M47-20 (2026-11-14, Goran): "limit frontier consults to max post or pre for
+    # an ask ... it should either trigger post or pre consult not both". R34-19's
+    # pairing was paying for TWO frontier calls per ask: measured 39 PRE + 28 POST
+    # fires in one day, 7 sessions carrying both legs, one session 7 PRE + 6 POST.
+    # The exclusion is now unconditional for the same ask (`one_consult_per_ask`,
+    # default ON). `false` restores R34-19 pairing behaviour per profile.
     # Turn-scoped (09-10 battery fix): a PRE flag from an EARLIER turn does
     # NOT exclude — its exclusion right expired with that turn; otherwise a
     # turn-1 PRE suppresses the turn-2 closure audit forever.
-    if not paired:
+    if (not paired) or _one_consult_per_ask():
         try:
             from . import state as _st
 
             if _st.pre_fired_this_turn(session_id, current_turn=turn_n):
-                return False, "pre_consult_this_turn"
+                return False, ("pre_consult_this_turn" if not paired
+                               else "pre_consult_same_ask")
         except Exception:  # noqa: BLE001
             pass
     return True, "ok"
