@@ -49,6 +49,13 @@ from .registry import (  # noqa: E402 — data-only module, no cycle
     required_keys,
 )
 
+try:  # plugin-root import (hermes_router.features.banners.*)
+    from ...lanes.registry import contract_kind as _contract_kind
+    from ...lanes.registry import lane_id_for_value as _lane_id_for_value
+except ImportError:  # bare-root import (tests import `features.*` directly)
+    from lanes.registry import contract_kind as _contract_kind
+    from lanes.registry import lane_id_for_value as _lane_id_for_value
+
 LANES = LANE_NAMES  # live sequence of lane names (both directions declared)
 
 TRIGGERS = ("pre", "midturn", "post", "manual", "declared_user")
@@ -166,7 +173,8 @@ def validate_extras(lane: Any, extras: Any, direction: str = "request") -> List[
                     errors.append(
                         "unknown extras.%s key: %r (%s direction)"
                         % (lane, inner, direction))
-            if lane == "decision" and direction == "request":
+            if (_contract_kind(_lane_id_for_value(lane)) == "advisory"
+                    and direction == "request"):
                 errors.extend(_option_errors(value.get("options")))
     except Exception:  # noqa: BLE001
         return ["extras validation failed"]

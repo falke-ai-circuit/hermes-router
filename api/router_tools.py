@@ -33,6 +33,8 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
+from ..lanes.registry import commands_config_key as _commands_config_key
+
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
@@ -223,13 +225,20 @@ def router_control(action: str = "", lane: str = "", level: Any = None,
             want_enabled = action == "enable_lane"
 
             def mut(section: Dict[str, Any], _lane: str = lane, _want: bool = want_enabled):
-                if _lane == "uncensored":
+                # §5.1: the config path is the lane registry's
+                # `commands_switch` value, not a lane spelling. A label no lane
+                # binds keeps the pre-existing nested fall-through.
+                _key = str(_commands_config_key(_lane) or "")
+                if _key == "enabled":
                     section["enabled"] = _want
                 else:
-                    cx = section.get("complexity")
+                    _head, _, _leaf = _key.rpartition(".")
+                    _head = _head or "complexity"
+                    _leaf = _leaf or "enabled"
+                    cx = section.get(_head)
                     cx = dict(cx) if isinstance(cx, dict) else {}
-                    cx["enabled"] = _want
-                    section["complexity"] = cx
+                    cx[_leaf] = _want
+                    section[_head] = cx
             ok, detail = config_writer.write_plugin_section(mut)
             return json.dumps({"ok": ok, "action": action, "lane": lane, "detail": detail})
 

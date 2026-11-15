@@ -127,6 +127,54 @@ CONTRACT_KINDS: tuple = ("gate", "consult", "audit", "advisory")
 # What a `gate` contract must carry, and what every other kind must not.
 _GATE_FIELDS = ("pre_question", "post_question", "replacement")
 
+# ---------------------------------------------------------------------------
+# the handler vocabularies, bridged ONCE (M40-18 §5.1/§5.2)
+# ---------------------------------------------------------------------------
+# Handlers do not speak registry ids. `router_core` says "complexity" and
+# "uncensored", the envelope says "frontier", banners say "frontier-anchor",
+# the /router switch labels say "uncensored"/"complexity", and the aux verdict
+# says "shadow"/"higher"/"none". Each is a DIFFERENT vocabulary, and
+# `'decision'` is the single coincidental shared spelling (see LaneSpec's
+# docstring) — so no handler may join on a lane-id literal. This map is the one
+# bridge; every value is asserted to be a registered lane id by the parity
+# suite (`test_k1_bridge_values_are_registered_lane_ids`).
+LANE_VALUE_TO_ID: Dict[str, str] = {
+    "complexity": "higher-pre",       # router_core.LANE_COMPLEXITY
+    "frontier": "higher-pre",         # envelope / banner / route-log value
+    "frontier-anchor": "higher-pre",  # banner lane value
+    "uncensored": "shadow",           # router_core.LANE_UNCENSORED, envelope key
+    "uncensored-render": "shadow",    # banner lane value
+}
+
+# The banner lane value is a PREFIX FAMILY ("frontier", "frontier-anchor", and
+# whatever a later edge appends). Resolved by prefix so an unseen `frontier-*`
+# value keeps the behaviour the `startswith("frontier")` test gave it.
+LANE_VALUE_PREFIX_TO_ID: Dict[str, str] = {
+    "frontier": "higher-pre",
+}
+
+# The aux verdict vocabulary (intent_classifier.py). CLOSED, and NOT registry
+# ids — `route_gate.py` used to compare these labels directly.
+AUX_SHADOW = "shadow"
+AUX_HIGHER = "higher"
+AUX_NONE = "none"
+AUX_LABELS: tuple = (AUX_SHADOW, AUX_HIGHER, AUX_NONE)
+AUX_SUBTYPES: tuple = ("pre", "post")
+
+# One join: (aux label, subtype) -> registry lane id. A vocabulary entry, never
+# a contract field: one lane may legitimately be reachable from two aux labels
+# (M40-16 §5.2). The shadow entries carry every subtype spelling because the
+# classifier may attach a subtype to ANY label, and the pre-migration handler
+# resolved "shadow" the same way whatever the subtype was.
+AUX_LANE_MAP: Dict[tuple, str] = {
+    (AUX_SHADOW, ""): "shadow",
+    (AUX_SHADOW, "pre"): "shadow",
+    (AUX_SHADOW, "post"): "shadow",
+    (AUX_HIGHER, ""): "higher-pre",   # ambiguous higher defaults to PRE (H7)
+    (AUX_HIGHER, "pre"): "higher-pre",
+    (AUX_HIGHER, "post"): "higher-post",
+}
+
 
 def _validate_contract(spec: LaneSpec) -> None:
     """Fail-loud contract shape check, at registration (M40-16).
@@ -317,6 +365,77 @@ def resolve_contract(lane_id: str) -> Optional[LaneContract]:
     """
     spec = _IDS.get(str(lane_id or ""))
     return spec.contract if spec is not None else None
+
+
+def lane_id_for_value(value: Any) -> str:
+    """Registry lane id for an engine-side lane VALUE ("" when unmapped).
+
+    Pass-through when the value is already a registered id, so a caller may
+    hand this function either vocabulary. The handler vocabularies and their
+    bridge live in LANE_VALUE_TO_ID / LANE_VALUE_PREFIX_TO_ID above. Never
+    raises: an unknown value returns "" and the caller's contract read fails
+    OPEN, which is what the literal comparison it replaced did.
+    """
+    raw = str(value or "")
+    if raw in _IDS:
+        return raw
+    mapped = LANE_VALUE_TO_ID.get(raw)
+    if mapped is not None:
+        return mapped
+    for prefix, lane_id in LANE_VALUE_PREFIX_TO_ID.items():
+        if raw.startswith(prefix):
+            return lane_id
+    return ""
+
+
+def contract_kind(lane_id: Any) -> str:
+    """The lane's declared `kind`, "" when it declares no contract.
+
+    `resolve_contract(...).kind` with the None case folded in, so a dispatch
+    site that must not raise on an unknown id reads the registry and gets a
+    value that takes the fail-open branch. "" is not a CONTRACT_KIND — it means
+    "this is not a lane I know", never "a lane of some kind".
+    """
+    contract = resolve_contract(lane_id)
+    return str(contract.kind or "") if contract is not None else ""
+
+
+def contract_replacement(lane_id: Any) -> str:
+    """The lane's declared `replacement` token, "" when it declares none."""
+    contract = resolve_contract(lane_id)
+    return str(contract.replacement or "") if contract is not None else ""
+
+
+def aux_lane_id(label: str, subtype: str = "") -> Optional[str]:
+    """Registry lane id an AUX verdict names, or None when it names no lane.
+
+    The aux vocabulary is the classifier's, not the registry's: the join goes
+    through AUX_LANE_MAP, never through string equality (M40-16 §5.2). `None`
+    is the caller's "no route" — the aux label "none", and an unknown label,
+    are the same answer to a dispatch site.
+    """
+    return AUX_LANE_MAP.get((str(label or ""), str(subtype or "")))
+
+
+def commands_config_key(label: str) -> Optional[str]:
+    """Config key a lane's `commands_switch` binds to a /router switch label.
+
+    Resolves by switch LABEL first (`"uncensored"` -> `"enabled"`), then by
+    lane VALUE (`"complexity"` -> higher-pre, whose single key is
+    `"complexity.enabled"`). None when no lane binds the label: the caller
+    keeps its pre-existing fall-through rather than inventing a key.
+    """
+    raw = str(label or "")
+    for spec in _IDS.values():
+        key = (spec.commands_switch or {}).get(raw)
+        if key:
+            return key
+    spec = _IDS.get(lane_id_for_value(raw))
+    if spec is not None and spec.commands_switch:
+        keys = list(spec.commands_switch.values())
+        if len(keys) == 1:
+            return keys[0]
+    return None
 
 
 def lane_for_post_question(question: str) -> Optional[str]:

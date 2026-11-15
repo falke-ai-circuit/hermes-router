@@ -37,6 +37,8 @@ from .. import router
 from .. import router_core
 from ..api import router_tools
 from .. import state
+from ..lanes.registry import contract_kind as _contract_kind
+from ..lanes.registry import lane_id_for_value as _lane_id_for_value
 
 logger = logging.getLogger(__name__)
 
@@ -600,7 +602,7 @@ def _dispatch_pass(content: str, session_id: str, model: str) -> bool:
     )
     if _pre_lane_dispatch(content, session_id, model, _decision):
         return True
-    if _decision.lane == router_core.LANE_DECISION:
+    if _contract_kind(_lane_id_for_value(_decision.lane)) == "advisory":
         # R19 Lane 3 (v0 dark): advisory-only — the turn proceeds unchanged
         # (flash direct); the scorer runs off the turn path (async default)
         # and delivers via the parked-banner path. Fail-open: any error here

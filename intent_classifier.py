@@ -48,9 +48,13 @@ from __future__ import annotations
 
 import json
 import logging
+
 import re
 import threading
 from typing import Any, Dict, Optional
+
+from .lanes.registry import AUX_LABELS as _AUX_LABELS
+from .lanes.registry import AUX_SHADOW as _AUX_SHADOW
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +372,7 @@ def _parse_verdict(content: str) -> Optional[Dict[str, Any]]:
             return None
         data = json.loads(text[start:end + 1])
         lane = data.get("lane")
-        if lane not in ("shadow", "higher", "none"):
+        if lane not in _AUX_LABELS:
             return None
         subtype = data.get("subtype")
         if subtype not in ("pre", "post", None):
@@ -501,10 +505,10 @@ def classify_intent(content: str, session_id: str,
 
     # SHADOW two-vote guard (mild independence at temp 0.35): both votes
     # must agree on a shadow route; disagreement -> inert (FP guard).
-    if verdict.get("lane") == "shadow" and \
+    if verdict.get("lane") == _AUX_SHADOW and \
             float(verdict.get("confidence") or 0.0) >= CONFIDENCE_THRESHOLD:
         vote2 = _aux_once(payload, AUX_TEMP_SECOND_VOTE)
-        if vote2 is None or vote2.get("lane") != "shadow":
+        if vote2 is None or vote2.get("lane") != _AUX_SHADOW:
             verdict = {"lane": "none", "subtype": None,
                        "confidence": verdict.get("confidence", 0.0)}
 

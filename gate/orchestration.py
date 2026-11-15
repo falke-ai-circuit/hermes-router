@@ -14,6 +14,19 @@ import importlib
 import sys
 from typing import Any, Dict, List, Optional
 
+try:  # normal engine load (a package child)
+    from ..lanes.registry import contract_kind as _contract_kind
+    from ..lanes.registry import contract_replacement as _contract_replacement
+except ImportError:  # orphan load: this FILE imported with no parent package
+    # (tests/test_gateway_ctx_contract.py does exactly that). No registry is
+    # resolvable, so contract reads fail OPEN to the legacy branch rather
+    # than making the module unimportable.
+    def _contract_kind(lane_id: Any) -> str:
+        return ""
+
+    def _contract_replacement(lane_id: Any) -> str:
+        return ""
+
 
 def _hub() -> Any:
     """Late-bound package hub (call time — no import cycle).
@@ -811,7 +824,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             # lands in uncensored-router-renders.jsonl. Declared HIGHER
             # lanes keep the frontier anchor envelope (handled at
             # on_llm_execution via the staged swap).
-            if (_claim_decision.lane == _hub()._route_gate.LANE_SHADOW
+            # M40-18 §5.1: the contract names the render lane — only a lane
+            # that declares a replacement token can enter a render chain.
+            if (_contract_replacement(_claim_decision.lane) != ""
                     and _claim_decision.source in (
                         _hub()._route_gate.SOURCE_DECLARED_USER,
                         _hub()._route_gate.SOURCE_DECLARED_AGENT,
@@ -973,15 +988,17 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             _turn_claim = _hub()._route_gate.claim_state(session_id)
         except Exception:  # noqa: BLE001 — fail-open
             _turn_claim = None
-        if _turn_claim is not None and _turn_claim.get("lane") not in (
-                _hub()._route_gate.LANE_HIGHER_PRE, _hub()._route_gate.LANE_HIGHER_POST):
+        # M40-18 §5.1: the exempt lanes are the contract's non-gate kinds —
+        # a fifth consult/audit lane is exempt without a handler edit.
+        if _turn_claim is not None and _contract_kind(
+                _turn_claim.get("lane")) not in ("consult", "audit"):
             # R9-3 (rider 9): a consumed SHADOW claim with NO render row is
             # route_failed (rider 7 provenance contract), never a silent
             # stand-down. The render branch annotates the claim via
             # mark_shadow_rendered; absence here = the claim was eaten
             # without a render (source-allowlist miss, exception, kill-switch
             # stand-down) — fail loud.
-            if (_turn_claim.get("lane") == _hub()._route_gate.LANE_SHADOW
+            if (_contract_replacement(_turn_claim.get("lane")) != ""
                     and not _turn_claim.get("rendered")
                     and not _turn_claim.get("produced")):
                 _hub()._log_route("PRE", event_detail="route_failed",

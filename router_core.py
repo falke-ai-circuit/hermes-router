@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import anchor_chain
 from . import complexity
 from . import state
+from .lanes.registry import contract_kind as _contract_kind
+from .lanes.registry import lane_id_for_value as _lane_id_for_value
 
 logger = logging.getLogger(__name__)
 
@@ -1020,14 +1022,14 @@ def _lane_enabled(lane: str) -> bool:
     Uncensored lane keeps its own _enabled() in __init__. Never raises.
     Reads via _complexity_cfg() (profile-co-located fallback, fix 2026-09-07)."""
     try:
-        if lane == LANE_DECISION:
+        if _contract_kind(_lane_id_for_value(lane)) == "advisory":
             # R19 Lane 3: decision.enabled is the ONLY switch and defaults
             # FALSE (v0 ships dark) — without this explicit branch the
             # legacy `lane != LANE_COMPLEXITY → True` fall-through silently
             # enabled the lane for anyone setting any complexity knob.
             block = _decision_cfg()
             return bool(isinstance(block, dict) and block.get("enabled") is True)
-        if lane != LANE_COMPLEXITY:
+        if _contract_kind(_lane_id_for_value(lane)) != "consult":
             return True
         block = _complexity_cfg()
         if isinstance(block, dict) and block.get("enabled") is False:

@@ -21,10 +21,13 @@ Pinned here, against the RUNNING registry (not a literal copy):
       returns exactly the contract's rows (the reader and the data agree);
   (f) the gate table is TOTAL: every (declaration, gate, intent) cell gets a
       row >= 1 and an action in the closed set — the else row is what makes it
-      total, and registration refuses a table that does not end with it;
-  (g) fail-loud: empty/unknown kind, a gate contract missing surface, a
-      non-gate contract naming a token, and a table without a terminal else row
-      all raise at REGISTRATION, and the bad spec is never registered;
+      total. Totality is asserted of the ONE table the engine walks, NOT of
+      every gate literal: a partial table is legal data and falls to row 0
+      (`fallback_shape`), which test g5 proves;
+  (g) fail-loud: empty/unknown kind, a gate contract missing surface, and a
+      non-gate contract naming a token all raise at REGISTRATION, and the bad
+      spec is never registered. A table without a terminal else row does NOT
+      raise — it is accepted data (g5);
   (h) a typo'd predicate token in the data does not route — the evaluator skips
       the malformed row and the table still lands on a real action (fail-loud
       by behaviour, not by crash).
@@ -262,3 +265,78 @@ def test_i_an_id_is_not_a_token():
     """The whole point: lookups are by TOKEN, never by lane id."""
     assert R.lane_for_pre_question("shadow") is None
     assert R.lane_for_post_question("shadow") is None
+
+
+# --------------------------------------------------------------------------- #
+# (k) M40-18 — the contract GOVERNS a handler dispatch outcome
+# --------------------------------------------------------------------------- #
+
+def test_k1_every_bridge_value_is_a_registered_lane_id():
+    """The vocabulary bridges can only name lanes that exist.
+
+    A renamed or removed lane fails HERE, at the join, instead of making a
+    dispatch site fall open in production.
+    """
+    ids = set(R.all_ids())
+    bad = {value: value for value in R.LANE_VALUE_TO_ID.values()
+           if value not in ids}
+    assert not bad, f"LANE_VALUE_TO_ID values not registered: {bad}"
+    bad_aux = {key: value for key, value in R.AUX_LANE_MAP.items()
+               if value not in ids}
+    assert not bad_aux, f"AUX_LANE_MAP values not registered: {bad_aux}"
+    bad_prefix = {key: value for key, value in R.LANE_VALUE_PREFIX_TO_ID.items()
+                  if value not in ids}
+    assert not bad_prefix, f"prefix values not registered: {bad_prefix}"
+
+
+def test_k2_bridge_resolves_by_data_not_by_spelling():
+    """Each handler vocabulary value resolves to the lane that OWNS it."""
+    assert R.lane_id_for_value("complexity") == "higher-pre"
+    assert R.lane_id_for_value("uncensored") == "shadow"
+    assert R.lane_id_for_value("frontier-anchor") == "higher-pre"
+    assert R.lane_id_for_value("decision") == "decision"   # id passes through
+    assert R.lane_id_for_value("no-such-lane") == ""
+    assert R.aux_lane_id("higher", "post") == "higher-post"
+    assert R.aux_lane_id("higher", "pre") == "higher-pre"
+    assert R.aux_lane_id("higher") == "higher-pre"        # H7 default
+    assert R.aux_lane_id("none") is None
+    assert R.aux_lane_id("a-fourth-label") is None
+
+
+def test_k3_handler_dispatch_outcome_follows_the_contract_kind(monkeypatch):
+    """A contract row edit CHANGES dispatch — the handler reads the registry.
+
+    `router_core._lane_enabled` is a real dispatch site. Its pre-M40-18 body
+    compared `lane == LANE_DECISION`, so a contract edit was invisible there:
+    any contract test could stay green while the handler ignored the data.
+    Here the outcome is driven by `kind` alone — the id and the handler body
+    are untouched, and only the registry row changes.
+    """
+    import hermes_router.router_core as RC
+    from dataclasses import replace
+
+    spec = R.lane("decision")
+    assert spec.contract.kind == "advisory"
+
+    # advisory -> the lane's OWN switch decides (deterministic: switch OFF)
+    monkeypatch.setattr(RC, "_decision_cfg", lambda: {"enabled": False})
+    assert RC._lane_enabled("decision") is False, "advisory read the wrong switch"
+
+    # flip ONLY the contract row -> the generic branch now answers
+    monkeypatch.setitem(
+        R._IDS, "decision",
+        replace(spec, contract=replace(spec.contract, kind="consult")))
+    assert RC._lane_enabled("decision") is True, (
+        "handler ignored the contract: kind flipped to consult and the "
+        "decision switch still governed the lane")
+
+    # the mirror: consult -> its own (complexity) switch; any other kind -> true
+    pre = R.lane("higher-pre")
+    monkeypatch.setattr(RC, "_complexity_cfg", lambda: {"enabled": False})
+    assert RC._lane_enabled("complexity") is False
+    monkeypatch.setitem(
+        R._IDS, "higher-pre",
+        replace(pre, contract=replace(pre.contract, kind="gate")))
+    assert RC._lane_enabled("complexity") is True, (
+        "handler ignored the contract: kind flipped to gate and the complexity "
+        "switch still governed the lane")

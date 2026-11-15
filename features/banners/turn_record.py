@@ -26,6 +26,13 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+try:  # plugin-root import (hermes_router.features.banners.*)
+    from ...lanes.registry import contract_kind as _contract_kind
+    from ...lanes.registry import lane_id_for_value as _lane_id_for_value
+except ImportError:  # bare-root import (tests import `features.*` directly)
+    from lanes.registry import contract_kind as _contract_kind
+    from lanes.registry import lane_id_for_value as _lane_id_for_value
+
 logger = logging.getLogger(__name__)
 
 _RECORDS: Dict[str, Dict[str, Any]] = {}
@@ -120,7 +127,11 @@ def register(session_id: str, segment: str, *, lane: str = "",
         _lane = str(lane or "") or _lane_of(text)
         _kind = str(kind or "")
         _row = _row_of(text)
-        _aggregating = _lane.startswith("frontier") or _lane == "decision"
+        # §5.1: the banner lane vocabulary is bridged by the registry's one
+        # value map, and "stacks as a separate measurement" is the CONTRACT's
+        # non-gate kinds — not a spelling.
+        _aggregating = _contract_kind(_lane_id_for_value(_lane)) in (
+            "consult", "audit", "advisory")
         segs: List[Dict[str, Any]] = rec["segments"]
         for i, seg in enumerate(segs):
             if seg["text"] == text:

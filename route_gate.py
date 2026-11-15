@@ -70,7 +70,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from .lanes import builtins as _lane_builtins
 from .lanes.registry import all_lanes as _all_lanes
+from .lanes.registry import aux_lane_id as _aux_lane_id
+from .lanes.registry import contract_kind as _contract_kind
+from .lanes.registry import contract_replacement as _contract_replacement
 from .lanes.registry import lane as _lane_spec
+from .lanes.registry import AUX_NONE
 
 
 def _lane_builtins_valid_lanes() -> tuple:
@@ -1142,11 +1146,13 @@ def mark_shadow_rendered(session_id: str) -> None:
         with _CLAIM_LOCK:
             _gc_claims_locked(now)
             rec = _DECLARED_CLAIMS.get(str(session_id or ""))
-            if rec is not None and rec.get("lane") == LANE_SHADOW:
+            # §5.1: the render lane is the lane whose contract names a
+            # replacement — same accessor as the claim branches above.
+            if rec is not None and _contract_replacement(rec.get("lane")) != "":
                 rec["rendered"] = True
             key = _turn_claim_key(str(session_id or ""))
             trec = _TURN_CLAIMED.get(key)
-            if trec is not None and trec.get("lane") == LANE_SHADOW:
+            if trec is not None and _contract_replacement(trec.get("lane")) != "":
                 trec["rendered"] = True
     except Exception:  # noqa: BLE001 — observability never breaks routing
         pass
@@ -1643,7 +1649,7 @@ def _aux_intent_decision(content: str, session_id: str,
             return None
         lane = verdict.get("lane")
         confidence = float(verdict.get("confidence") or 0.0)
-        if lane == "shadow" and confidence >= 0.75 and \
+        if _aux_lane_id(lane) == LANE_SHADOW and confidence >= 0.75 and \
                 not _ic._shadow_directive_shape(content):
             # R26-2a (live battery session ...273cddf0): a shadow verdict on
             # a turn with NO directive shape is a content-descriptor read
@@ -1658,7 +1664,7 @@ def _aux_intent_decision(content: str, session_id: str,
             except Exception:  # noqa: BLE001 — observability only
                 pass
             return None
-        if lane == "none" or confidence < 0.75:
+        if lane == AUX_NONE or confidence < 0.75:
             # R11: closest-class hint — the routing vocabulary that made
             # the turn a near-miss suspect, so intent_none misses stay
             # auditable ('ask frontier her consult' -> hint=frontier).
@@ -1677,13 +1683,10 @@ def _aux_intent_decision(content: str, session_id: str,
             except Exception:  # noqa: BLE001 — observability only
                 pass
             return None
-        if lane == "shadow":
-            aux_lane = LANE_SHADOW
-        elif lane == "higher":
-            aux_lane = (LANE_HIGHER_POST
-                        if verdict.get("subtype") == "post"
-                        else LANE_HIGHER_PRE)
-        else:
+        # §5.2: ONE join from the CLOSED aux vocabulary to registry ids. A
+        # fourth aux label resolves to None instead of silently mis-mapping.
+        aux_lane = _aux_lane_id(lane, verdict.get("subtype"))
+        if aux_lane is None:
             return None
 
         # H5: per-agent daily cap — machine-detected, so the cap binds
@@ -1793,7 +1796,7 @@ def declared_frontier_hit(content: str) -> bool:
         # line of a multi-line turn (after any other directive) was never
         # detected and never fired (D1 specimen class).
         frontier_phrases = [p for p, lane in DECLARED_USER_VARIANTS.items()
-                            if lane == LANE_HIGHER_PRE]
+                            if _contract_kind(lane) == "consult"]
         for raw in _directive_lines(content):
             norm = _normalize_directive_line(raw)
             if not norm:
@@ -2261,7 +2264,7 @@ def claim_pass(content: str, session_id: str, model: str,
                             "context": context or {}, "session_id": session_id,
                             "model": str(model or ""),
                             "auto_shape": _auto_shape, "claim": True})
-    if decision.route and decision.lane == LANE_DECISION:
+    if decision.route and _contract_kind(decision.lane) == "advisory":
         # R19 v3: on-demand midturn decision claim — explicit claims win
         # (§5.3). The lane runs as a parked advisory; the turn itself
         # proceeds (NO_ROUTE) — one lane per turn via the turn claim.
@@ -2285,8 +2288,8 @@ def claim_pass(content: str, session_id: str, model: str,
             # decision+frontier turn was gated OUT of the stacking path and
             # lane precedence dropped it. Both lanes must deliver.
             _also_frontier = (bool(declared_frontier_hit(content))
-                              or detect_declared_user(content)
-                              == LANE_HIGHER_PRE)
+                              or _contract_kind(
+                                  detect_declared_user(content)) == "consult")
         except Exception:  # noqa: BLE001 — fail-open False
             _also_frontier = False
         if _also_frontier:
@@ -2334,10 +2337,10 @@ def claim_pass(content: str, session_id: str, model: str,
                         gated=True, session_id=session_id)
             except Exception:  # noqa: BLE001 — never break the claim path
                 logger.debug("decision+frontier stack error", exc_info=True)
-        if decision.route is False or decision.lane != LANE_HIGHER_PRE:
+        if decision.route is False or _contract_kind(decision.lane) != "consult":
             _decision_lane_claim(content, session_id, model)
             return NO_ROUTE
-    if (decision.route and decision.lane == LANE_HIGHER_PRE
+    if (decision.route and _contract_kind(decision.lane) == "consult"
             and str(decision.source or "") in (SOURCE_DECLARED_USER,
                                                SOURCE_AUX_INTENT)):
         # R10-1 (rider 10, T1R3 P1a/P1b): the MIRROR co-fire direction —
@@ -2433,7 +2436,7 @@ def claim_pass(content: str, session_id: str, model: str,
         # refusal-shaped/contested PRE renders. The middleware (on_llm_request)
         # sees lane==LANE_SHADOW on the returned decision and runs the render
         # ladder + render_inbox delivery; NO tokens.jsonl anchor consult row.
-        if decision.lane != LANE_SHADOW:
+        if _contract_replacement(decision.lane) == "":
             try:
                 from . import router_core as _rc
 
@@ -2448,7 +2451,7 @@ def claim_pass(content: str, session_id: str, model: str,
                     model_target=None, reason="request_routing_declared",
                     ts=time.time(), override_used=None,
                     route_id=_task[:12] + "-" + str(int(time.time())),
-                    orientation=(decision.lane == LANE_HIGHER_PRE))
+                    orientation=(_contract_kind(decision.lane) == "consult"))
                 _override = getattr(decision, "model_override", None)
                 if _override:
                     _staged = _rc.stage_model_swap(
