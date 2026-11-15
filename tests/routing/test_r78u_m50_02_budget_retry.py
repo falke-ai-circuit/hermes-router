@@ -7,14 +7,17 @@ the cap the call returns HTTP 200, finish=length, EMPTY content, and the router
 logged `anchor_route_failed reason=empty_response` — five dead sessions, one
 budget bug.
 
-F1  a finish=length + empty-content response retries ONCE with headroom above
-    the observed thinking peak, same payload, same reasoning setting. One
-    retry, never a loop: a second empty response does not buy a third call.
+F1  a finish=length + empty-content response retries ONCE, same messages. Which
+    lever it pulls depends on effort (M50-14/M50-15): at max/xhigh it descends
+    deliberation one notch and keeps the SAME allowance; when effort cannot
+    descend it raises the allowance instead. One retry, never a loop: a second
+    empty response does not buy a third call.
 F2  the "anchored" counter increments at OUTCOME time, not fire time — a route
     that produced nothing is `skipped`, never also `anchored`.
 
-No policy change here: reasoning_effort is untouched, no cap is lowered, no
-provider config is read or written.
+No cap is lowered and no provider config is written. reasoning_effort is read
+(M50-14 may descend it on the retry arm) but the first attempt always runs at the
+configured effort.
 """
 import os
 import sys
@@ -109,6 +112,26 @@ class _FakeClient:
         pass
 
 
+def _pin_chain(monkeypatch, effort):
+    """Pin BOTH anchor-chain seams the consult reads, with a known effort.
+
+    `_anchor_chain_block()` owns the failover list, but the `reasoning_effort`
+    that actually reaches the provider payload is injected by anchored_call from
+    `config_access.sub_block("anchor_chain")` (anchor_exec.py:897) — a DIFFERENT
+    seam. Pinning only the former left the effort under test to the ACTIVE
+    PROFILE config: coder's carries `anchor_chain.reasoning_effort: high`, so a
+    test expecting "max" was reading ambient config, not the code under test.
+    """
+    block = {"max_history_turns": 12, "reasoning_effort": effort,
+             "failover": [{"model": "z-ai/glm-5.3"}]}
+    monkeypatch.setattr(anchor_exec, "_anchor_chain_block", lambda: dict(block))
+    from hermes_router.core import config_access
+    real_sub_block = config_access.sub_block
+    monkeypatch.setattr(
+        config_access, "sub_block",
+        lambda name: dict(block) if name == "anchor_chain" else real_sub_block(name))
+
+
 @pytest.fixture()
 def f1_install(monkeypatch):
     import openai as _openai
@@ -116,16 +139,13 @@ def f1_install(monkeypatch):
     _FakeClient.calls = []
     _FakeClient.always_empty = False
     _FakeClient.answer = "RECOVERED ADVISORY"
+    _FakeClient.threshold = LIVE_CAP + 1
     monkeypatch.setattr(anchor_exec, "_resolve_key", lambda ep, **kw: "test-key")
     monkeypatch.setattr(_openai, "OpenAI", _FakeClient)
-    monkeypatch.setattr(anchor_exec, "_anchor_chain_block", lambda: {})
-    # reasoning is ON for this lane: the retry must keep it, not strip it.
-    # M50-04: the failover list is NON-EMPTY on purpose. A fixture with no
-    # failover cannot see the third-call path that shipped in bb2cc0f.
-    monkeypatch.setattr(
-        anchor_exec, "_anchor_chain_block",
-        lambda: {"max_history_turns": 12, "reasoning_effort": "max",
-                 "failover": [{"model": "z-ai/glm-5.3"}]})
+    # effort=high is BELOW the M50-14 descent rung, so the retry has only the
+    # allowance lever (M50-15). The failover list is NON-EMPTY on purpose:
+    # M50-04, a fixture with no failover cannot see the third-call path.
+    _pin_chain(monkeypatch, "high")
     return _FakeClient
 
 
@@ -135,9 +155,94 @@ def _consult_payload(cap=LIVE_CAP):
                          {"role": "user", "content": "THE CONSULT ASK"}]}
 
 
-def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, retry_log, caplog):
-    """F1a: one empty finish=length response -> exactly ONE retry, larger cap,
-    recovered content, and the retry keeps the same reasoning setting."""
+def test_f1a_finish_length_retries_once_with_descended_effort(
+        f1_install, retry_log, caplog, monkeypatch):
+    """F1a: one empty finish=length response -> exactly ONE retry, same question,
+    and the retry descends effort instead of buying a bigger ceiling.
+
+    M50-14/M50-15 supersede the F1a contract this test was written against
+    ("larger cap, same reasoning setting"). Measured at effort=max on
+    anthropic/claude-sonnet-5.5: 48,000 reasoning tokens, zero content, billed in
+    full — raising the ceiling buys the same empty answer at a higher price,
+    while effort=high returns a complete answer in ~3.4k tokens at the ORIGINAL
+    allowance. So the retry arm pulls the cheap lever (anchor_exec.py:607
+    `_budget_retry_effort`, applied at :1077) and, when that lever moves, does
+    NOT also raise max_tokens (anchor_exec.py:690 `_retry_raises_ceiling`).
+
+    The fixture's `_anchor_chain_block` patch does not feed the payload: the
+    effort actually injected is read through `config_access.sub_block`
+    (anchor_exec.py:897). That is why this test now patches THAT call, and why
+    the pre-M50-14 assertion below was silently comparing the configured value
+    to itself. The raise-the-ceiling contract is exercised by F1b, where effort
+    cannot descend.
+    """
+    from hermes_router.core import config_access
+
+    import openai as _openai
+
+    _real_sub_block = config_access.sub_block
+    monkeypatch.setattr(
+        config_access, "sub_block",
+        lambda name: ({"reasoning_effort": "max"} if name == "anchor_chain"
+                      else _real_sub_block(name)))
+
+    class _MaxStarved(_FakeClient):
+        """Measured shape: at max/xhigh the whole allowance goes to thinking and
+        content never starts, regardless of the ceiling. Below max it writes."""
+
+        def create(self, **payload):
+            _FakeClient.calls.append(dict(payload))
+            eff = str(payload.get("reasoning_effort") or "").strip().lower()
+            if eff in ("max", "xhigh", "maximum"):
+                return _Completion("", "length")
+            return _Completion(_FakeClient.answer, "stop")
+
+    monkeypatch.setattr(_openai, "OpenAI", _MaxStarved)
+
+    with caplog.at_level("INFO"):
+        content, cost, pt, ct = anchor_exec.anchored_call(
+            _endpoint(), _consult_payload())
+
+    assert content == "RECOVERED ADVISORY"
+    assert len(f1_install.calls) == 2, f1_install.calls
+
+    first, retry = f1_install.calls
+    # the FIRST attempt runs at the configured effort, untouched
+    assert first["max_tokens"] == LIVE_CAP
+    assert first["reasoning_effort"] == "max"
+    # same question — the retry is not a different ask
+    assert retry["messages"] == first["messages"]
+    # M50-14: exactly one notch down, pinned literally so a silent revert to
+    # "same effort" (the pre-M50-14 contract) fails here.
+    assert retry["reasoning_effort"] == "high"
+    assert anchor_exec._budget_retry_effort("max") == "high"
+    assert anchor_exec._budget_retry_effort("high") == "high"
+    # M50-15: descending effort is the cheap lever — the ceiling is NOT raised
+    # alongside it (a double-buy is what the measurement refuted).
+    assert retry["max_tokens"] == LIVE_CAP
+    assert not anchor_exec._retry_raises_ceiling(True, "max", "high")
+
+    # M50-07: one sink — the configured route log, not the module logger.
+    lines = retry_log.read_text(encoding="utf-8").splitlines()
+    assert any("anchor_budget_retry model=" in ln
+               and "effort_from=max" in ln and "effort_to=high" in ln
+               and "max_tokens_to=%d" % LIVE_CAP in ln for ln in lines), lines
+    assert any("anchor_budget_retry_recovered model=" in ln
+               for ln in lines), lines
+    assert not any("anchor_budget_retry" in r.message
+                   for r in caplog.records), [r.message for r in caplog.records]
+
+
+def test_f1a_ceiling_arm_raises_the_allowance(f1_install, retry_log, caplog):
+    """F1a (ceiling arm): effort=high sits BELOW the M50-14 descent rung, so
+    deliberation cannot move and the allowance is the only lever left (M50-15).
+    The retry must then buy headroom above the observed 17.5k thinking peak,
+    leave effort alone, and re-send the SAME question — never a token bump.
+
+    The two F1a arms are separate on purpose: M50-10's ceiling raise and
+    M50-14's descent are exclusive, and pinning only one of them is how the
+    pre-M50-14 assertion kept passing on a call it no longer described.
+    """
     with caplog.at_level("INFO"):
         content, cost, pt, ct = anchor_exec.anchored_call(
             _endpoint(), _consult_payload())
@@ -147,12 +252,13 @@ def test_f1a_finish_length_retries_once_with_larger_cap(f1_install, retry_log, c
 
     first, retry = f1_install.calls
     assert first["max_tokens"] == LIVE_CAP
+    assert first["reasoning_effort"] == "high"
+    # the allowance is the lever that moved
     assert retry["max_tokens"] > LIVE_CAP
-    # headroom above the observed 17.5k thinking peak, not a token bump
     assert retry["max_tokens"] >= LIVE_CAP + 16384
-    # same question, same reasoning setting — only the allowance changed
     assert retry["messages"] == first["messages"]
-    assert retry.get("reasoning_effort") == first.get("reasoning_effort") == "max"
+    # nothing to descend from: the setting is carried unchanged
+    assert retry["reasoning_effort"] == "high"
 
     # M50-07: one sink — the configured route log, not the module logger.
     lines = retry_log.read_text(encoding="utf-8").splitlines()

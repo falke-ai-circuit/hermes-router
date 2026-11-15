@@ -1050,6 +1050,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     _eff_from = str(payload.get("reasoning_effort") or "")
                     _eff_to = _budget_retry_effort(_eff_from)
                     _can_raise = _new_mt > int(_cur_mt or 0)
+                    # M50-15 decides the lever BEFORE the event is recorded: the
+                    # log must carry the allowance the retry actually sends, not
+                    # the one the ladder could have sent. On the descent arm
+                    # (effort max -> high) the ceiling stays put, so reporting
+                    # `_can_raise` here printed a 48,000 ceiling on a 23,585 call
+                    # — the field evidence for "why did the retry not grow?"
+                    # was unreadable.
+                    _raise_ceiling = _retry_raises_ceiling(_can_raise, _eff_from, _eff_to)
                     # M50-14b: retry when the budget can grow OR the deliberation
                     # setting changes. The old test was `_can_raise` alone, which
                     # left every at-ceiling starved consult unrescued.
@@ -1057,7 +1065,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
-                            max_tokens_to=_new_mt if _can_raise else _cur_mt,
+                            max_tokens_to=_new_mt if _raise_ceiling else _cur_mt,
                             effort_from=_eff_from or "-",
                             effort_to=_eff_to or "-",
                             at_ceiling=(not _can_raise),
@@ -1069,7 +1077,6 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         # 48,000 — identical content). Raising the ceiling after
                         # the descent buys nothing and widens the exposure to
                         # 47,170-64,000 on a call that needs ~3.4K.
-                        _raise_ceiling = _retry_raises_ceiling(_can_raise, _eff_from, _eff_to)
                         if _raise_ceiling:
                             _rp["max_tokens"] = _new_mt
                         if _eff_to != _eff_from:
@@ -1088,12 +1095,12 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             _budget_retry_log(
                                 "anchor_budget_retry_recovered",
                                 model=endpoint.model, chars=len(str(_rc_b)),
-                                max_tokens=_new_mt,
+                                max_tokens=_retry_mt,
                                 reasoning_tokens=_reasoning_tokens(_rraw_b))
                         else:
                             _budget_retry_log(
                                 "anchor_budget_retry_empty",
-                                model=endpoint.model, max_tokens=_new_mt,
+                                model=endpoint.model, max_tokens=_retry_mt,
                                 reasoning_tokens=_reasoning_tokens(_rraw_b))
                     else:
                         _budget_retry_log(
