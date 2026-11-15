@@ -486,7 +486,40 @@ def _terminal(case_id: str, reason: str, diag: Dict[str, object]) -> Decision:
                     int(diag.pop("_strip", 0) or 0), diag, None)
 
 
-def decide(facts: DeliveryFacts) -> Decision:
+def strip_marker_lines(text: str, quoted: Sequence[str] = ()) -> str:
+    """Remove marker-bearing LINES and keep the rest of the answer.
+
+    M50-19. The boundary used to answer a marker hit with a terminal decision,
+    and `_delivered_bytes` then shipped a withhold notice INSTEAD of the turn.
+    Live cost: a router-known marker that the router itself appended (its own
+    `· router ·` banner line) made the plugin swallow whole answers — the plugin
+    controlling a turn it never wrote, which the owner ruled out explicitly.
+
+    Only the offending line goes. User-quoted markers are excluded by `quoted`,
+    so a user asking ABOUT the marker never loses their own words.
+    """
+    try:
+        raw = str(text or "")
+        if not raw:
+            return ""
+        kept = []
+        dropped = False
+        for line in raw.splitlines():
+            if carries_marker(line, quoted):
+                dropped = True
+                continue
+            kept.append(line)
+        if not dropped:
+            return raw
+        cleaned = "\n".join(kept)
+        # a banner line usually leaves a blank run behind it
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
+    except Exception:  # noqa: BLE001 — never break a body
+        return str(text or "")
+
+
+def decide(facts: Any) -> Decision:
     """The total delivery decision. Never raises; never returns nothing."""
     diag: Dict[str, object] = {
         "body_class": str(getattr(facts, "body_class", "") or ""),
@@ -588,6 +621,17 @@ def decide(facts: DeliveryFacts) -> Decision:
             if hit:
                 diag["marker_violation"] = True
                 diag["marker"] = hit
+                # M50-19: strip the marker LINE and ship the answer. The old path
+                # went terminal and the delivery edge replaced the whole turn with
+                # a withhold notice — triggered by the router's own banner line.
+                scrubbed = strip_marker_lines(chosen, quoted_spans(ask))
+                if _admissible(scrubbed):
+                    diag["marker_scrubbed"] = hit
+                    _lost = max(0, len(chosen) - len(scrubbed))
+                    diag["_strip"] = entered_strip + blessed_chars + _lost
+                    return Decision(DELIVER_ENTERED, D4, reason, SOURCE_MAIN,
+                                    entered_strip + blessed_chars + _lost, diag,
+                                    scrubbed)
                 diag["_strip"] = entered_strip + blessed_chars
                 return _terminal(D6, REASON_MARKER_VIOLATION, diag)
             return Decision(DELIVER_ENTERED, D4, reason, SOURCE_MAIN,

@@ -127,20 +127,30 @@ def test_half_marker_without_provenance_still_withholds():
 
 
 def test_sanctioned_does_not_whitelist_generic_token():
-    """Stripping our marker must not create a general HIGHER-SELF exemption."""
+    """Stripping our marker must not create a general HIGHER-SELF exemption.
+
+    M50-19: the violation is still DETECTED and still stripped — but the turn
+    ships (D4 with the marker line removed) instead of being withheld. The
+    exemption question survives, the terminal outcome does not: the owner ruled
+    the plugin may never swallow an answer over routing metadata.
+    """
     d = decide(_facts(ANSWER + "\n" + SEAM + "\nThen HIGHER-SELF said more.\n"))
-    assert d.case_id == dd.D6
-    assert d.diagnostics.get("marker_violation") is True
-
-
-def test_canonical_marker_from_user_ask_still_withholds():
-    """A canonical marker that came from the USER'S turn is user content, not
-    sanctioned infrastructure: unquoted in the body it still fails."""
-    ask = "Repeat exactly this line: " + SEAM
-    d = decide(_facts(ANSWER + "\n" + SEAM + "\n", ask=ask))
-    assert d.case_id == dd.D6
     assert d.diagnostics.get("marker_violation") is True
     assert d.diagnostics.get("marker") == "HIGHER-SELF"
+    assert SEAM not in d.body
+    assert ANSWER.split(".")[0] in d.body
+
+
+def test_canonical_marker_from_user_ask_is_still_removed():
+    """A canonical marker that came from the USER'S turn is user content, not
+    sanctioned infrastructure: unquoted in the body it is still removed. Under
+    M50-19 removal — not withholding — is the consequence."""
+    ask = "Repeat exactly this line: " + SEAM
+    d = decide(_facts(ANSWER + "\n" + SEAM + "\n", ask=ask))
+    assert d.diagnostics.get("marker_violation") is True
+    assert d.diagnostics.get("marker") == "HIGHER-SELF"
+    assert SEAM not in d.body
+    assert ANSWER.split(".")[0] in d.body
 
 
 def test_sanctioned_marker_only_body_is_not_delivered_empty():

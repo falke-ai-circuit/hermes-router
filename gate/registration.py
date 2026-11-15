@@ -662,6 +662,21 @@ def _delivered_bytes(decision, entered: str = "") -> str:
         if (decision.case_id == _dd.D6
                 and decision.reason != _dd.REASON_MARKER_VIOLATION):
             return None
+        if decision.reason == _dd.REASON_MARKER_VIOLATION:
+            # M50-19: NEVER swallow the turn. Owner ruling: the router cannot
+            # decide a user's answer was not delivered because the router found
+            # routing metadata in it. Prefer the model's own bytes with the
+            # marker LINES removed; if nothing at all survives, hand the host
+            # its own body (None = documented pass-through) rather than a
+            # withhold notice. The withhold notice is the one outcome this
+            # branch no longer produces.
+            try:
+                _scrubbed = _dd.strip_marker_lines(entered or "")
+            except Exception:  # noqa: BLE001
+                _scrubbed = ""
+            if str(_scrubbed or "").strip():
+                return _scrubbed
+            return None
         return WITHHELD_BODY
     if decision.body is None:
         return ""

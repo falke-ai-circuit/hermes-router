@@ -73,10 +73,23 @@ def test_wire_passes_through_so_the_current_answer_ships():
     assert reg._delivered_bytes(d, CURRENT) is None
 
 
-def test_marker_violation_still_ships_its_notice():
-    """Regression guard: no answer exists to keep, so the notice must ship."""
+def test_marker_violation_ships_the_scrubbed_answer_never_a_notice():
+    """M50-19 (owner ruling): the withhold notice is gone from this branch.
+
+    A marker violation no longer means "there is no answer to keep" — the
+    router cannot decide the user's answer was undelivered because the router
+    found routing metadata in it. The marker LINES go, the answer ships.
+    """
     d = dd.Decision(dd.FAIL_TERMINAL, dd.D6, dd.REASON_MARKER_VIOLATION, dd.SOURCE_SEAM)
-    assert reg._delivered_bytes(d, CURRENT) == reg.WITHHELD_BODY
+    out = reg._delivered_bytes(d, CURRENT)
+    assert out != reg.WITHHELD_BODY
+    assert CURRENT.strip()[:20] in out
+
+
+def test_marker_only_body_passes_the_host_its_own_bytes():
+    """Nothing shippable survives the strip -> None (pass-through), not a notice."""
+    d = dd.Decision(dd.FAIL_TERMINAL, dd.D6, dd.REASON_MARKER_VIOLATION, dd.SOURCE_SEAM)
+    assert reg._delivered_bytes(d, "· router · decision | row=1 ·") is None
 
 
 def test_divergence_outranks_a_compliant_body():

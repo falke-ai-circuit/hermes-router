@@ -1552,6 +1552,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                 # costs nothing and makes the boundary structural instead of
                 # statistical.
                 _diag: Dict[str, Any] = {}
+                _t_post0 = _now_monotonic()
                 _meta = run_completion_audit_sync(
                     session_id, ask, response_text, _req, model,
                     timeout_s=_sync_budget, fold_revision=False,
@@ -1572,6 +1573,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                                 detail=str(_diag.get("detail") or ""))
                 _log("completion_audit_consult_empty", cause=_cause,
                      detail=str(_diag.get("detail") or "")[:200],
+                     latency_s=_latency_since(locals().get("_t_post0")),
+                     budget_s=_sync_budget,
                      session_id=session_id)
                 if _pair:
                     try:
@@ -1649,6 +1652,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     pass
             _log("completion_audit_sync_applied",
                        chars=len(_note), budget_s=_sync_budget,
+                       latency_s=_latency_since(locals().get("_t_post0")),
                        revised=(_delivered != response_text),
                        revised_source=_revised_source,
                        reason=_revised_reason,
@@ -3447,6 +3451,34 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
     finally:
         with _INFLIGHT_LOCK:
             _INFLIGHT.discard(key)
+
+
+def _now_monotonic() -> Any:
+    """Monotonic start marker for POST latency, or None. Never raises."""
+    try:
+        import time as _t
+
+        return _t.monotonic()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _latency_since(t0: Any, default: float = -1.0) -> float:
+    """Seconds since `t0`, or `default` when the clock or marker is unavailable.
+
+    M50-20: POST recorded budget_s (what it was ALLOWED) but never latency (what
+    it TOOK), so the window could not be sized from data — the only way to learn
+    the real distribution was to guess and re-deploy. -1.0 means "not measured",
+    distinct from a fast zero.
+    """
+    try:
+        if t0 is None:
+            return default
+        import time as _t
+
+        return round(max(0.0, _t.monotonic() - t0), 2)
+    except Exception:  # noqa: BLE001
+        return default
 
 
 _REVISION_MODEL_FALLBACK = "z-ai/glm-5.3"
