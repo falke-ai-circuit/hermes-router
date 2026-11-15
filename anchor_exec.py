@@ -666,6 +666,25 @@ def _retry_is_worth_paying(cur_mt: Any, new_mt: Any,
         return False
 
 
+def _retry_raises_ceiling(can_raise: bool, cur_effort: Any, new_effort: Any) -> bool:
+    """M50-15: raise the allowance on a retry ONLY when effort is NOT descending.
+
+    The two levers are not additive. Descending effort already produces content at
+    a small budget (effort=high: complete answer in 3,658 tokens at a 12,000 cap,
+    and 3,352 at 48,000 — the same content either way). Raising the ceiling in the
+    same retry adds no answer and widens the exposure to 47,170–64,000 on a call
+    that needs ~3.4K.
+
+    So: effort descends -> keep the current allowance (cheap retry, proven to
+    work). Effort cannot descend -> the ceiling is the only lever left, and it does
+    sometimes recover (11 of 51 paid retries fleet-wide), so allow it.
+    """
+    try:
+        return bool(can_raise) and str(cur_effort or "") == str(new_effort or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _budget_retry_log(event: str, **fields: Any) -> None:
     """Emit one M50 budget-retry counter into the CONFIGURED route log.
 
@@ -992,7 +1011,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             at_ceiling=(not _can_raise),
                             reasoning_tokens=_rt_in)
                         _rp = copy.deepcopy(payload)
-                        if _can_raise:
+                        # M50-15: when effort descends, do NOT also raise the
+                        # ceiling. Measured: effort=high returned a COMPLETE
+                        # answer in 3,658 tokens at a 12,000 budget (and 3,352 at
+                        # 48,000 — identical content). Raising the ceiling after
+                        # the descent buys nothing and widens the exposure to
+                        # 47,170-64,000 on a call that needs ~3.4K.
+                        _raise_ceiling = _retry_raises_ceiling(_can_raise, _eff_from, _eff_to)
+                        if _raise_ceiling:
                             _rp["max_tokens"] = _new_mt
                         if _eff_to != _eff_from:
                             if _eff_to:
@@ -1000,7 +1026,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             else:
                                 _rp.pop("reasoning_effort", None)
                         _budget_retry_paid = True
-                        _retry_mt = _new_mt if _can_raise else int(_cur_mt or 0)
+                        _retry_mt = _new_mt if _raise_ceiling else int(_cur_mt or 0)
                         _rc_b, _rraw_b = _simple_anchored_call(
                             endpoint, _rp, timeout, keep_reasoning=True)
                         if str(_rc_b or "").strip():

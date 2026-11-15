@@ -16,7 +16,11 @@ raising max_tokens alone, which by construction re-buys the same empty answer.
 These pins lock the correction: on a length-exhausted consult, effort descends one
 notch (max -> high) so the retry can emit content.
 """
-from hermes_router.anchor_exec import _budget_retry_effort, _retry_is_worth_paying
+from hermes_router.anchor_exec import (
+    _budget_retry_effort,
+    _retry_is_worth_paying,
+    _retry_raises_ceiling,
+)
 
 
 def test_max_descends_to_high():
@@ -78,4 +82,29 @@ def test_a_shrinking_budget_alone_is_not_worth_paying():
 def test_worth_paying_never_raises_on_junk():
     assert _retry_is_worth_paying(None, None, None, None) is False
     assert _retry_is_worth_paying("bad", "worse", "max", "high") is True
+
+
+# --- M50-15: do not raise the ceiling when effort already descended ---------
+
+def test_no_ceiling_raise_when_effort_descends():
+    """high produced a complete answer in 3,658 tokens at a 12,000 cap — the
+    bigger allowance adds no answer and widens exposure to 47,170-64,000."""
+    assert _retry_raises_ceiling(True, "max", "high") is False
+
+
+def test_ceiling_raise_allowed_when_effort_is_unchanged():
+    """At high already, the allowance is the only lever left and it does recover
+    (11 of 51 paid retries fleet-wide)."""
+    assert _retry_raises_ceiling(True, "high", "high") is True
+
+
+def test_no_ceiling_raise_when_there_is_no_headroom():
+    assert _retry_raises_ceiling(False, "high", "high") is False
+    assert _retry_raises_ceiling(False, "max", "high") is False
+
+
+def test_raises_ceiling_never_throws():
+    assert _retry_raises_ceiling(True, None, None) is True
+    assert _retry_raises_ceiling(None, "max", "high") is False
+
 
