@@ -878,10 +878,16 @@ def audit_sync_seconds() -> float:
     previous timeout or while still running", live 06:04:00Z session
     api_1791266587_749f80ab) — a billed consult's parked banner then has NO
     consume edge at all (park-without-capture, ledger rows 148+149 billed,
-    0 delivered). The default 45s guarantee tripped that whenever the
+    0 delivered). An uncapped 45 s consult budget tripped that whenever the
     frontier consult out-ran 30s. Cap below the runner budget so the sync
     consult can never orphan the hook; on timeout the unaudited response
     ALWAYS delivers (fail-open).
+
+    Effective budget: the knob is clamped to HOOK_SYNC_CAP (25 s), so with the
+    knob UNSET the budget that runs is 25 s — the 45 s figure is only the
+    pre-clamp default and never takes effect. (M51-09: the previous wording
+    read as "the default is 45 s", which sent one investigation after a 45 s
+    budget that this function cannot return.)
     0 disables sync (legacy async path).
     toggleable: audit_mode = sync | async (sync default when knob set/absent).
     On timeout/error the unaudited response ALWAYS delivers (fail-open).
@@ -889,10 +895,11 @@ def audit_sync_seconds() -> float:
     try:
         from .router_core import _complexity_cfg
 
-        v = float((_complexity_cfg() or {}).get("audit_sync_seconds") or 45)
+        v = float((_complexity_cfg() or {}).get("audit_sync_seconds")
+                  or HOOK_SYNC_CAP)
         return max(0.0, min(HOOK_SYNC_CAP, v))
     except Exception:  # noqa: BLE001
-        return min(HOOK_SYNC_CAP, 45.0)
+        return HOOK_SYNC_CAP
 
 
 def audit_topology() -> str:

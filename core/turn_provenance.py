@@ -94,11 +94,26 @@ SKIP_REASON_POST_SEAM_NOT_REACHED = "post_seam_not_reached"
 SKIP_REASON_NO_DELIVERY_EDGE = "no_delivery_edge_within_deadline"
 SKIP_REASON_SUPERSEDED = "superseded_by_next_turn"
 
-#: Longest a turn may sit armed before the sweeper closes it. The previous
-#: hook invocation is abandoned at HOST_HOOK_KILL_S, so a turn whose POST pass
-#: has not arrived well after that is not coming: 15 s of margin covers the
-#: finalizer writing the transcript and the platform emitting the body.
-SKIP_DEADLINE_S = HOST_HOOK_KILL_S + 15.0
+#: Longest a turn may sit armed, measured from its LAST observed activity
+#: (the PRE arm, refreshed by every tool-loop pass on the same turn), before
+#: the sweeper closes it as a lost turn.
+#:
+#: M51-09: this clock was 45 s (HOST_HOOK_KILL_S + 15) — a value derived from
+#: the host's transform-hook kill, i.e. from a clock that starts when the POST
+#: pass ENTERS. The arm clock starts at the PRE edge, before generation, so the
+#: 45 s deadline was expiring while the turn was still producing its answer.
+#: Live ledger: 3,085 rows with skip_reason=no_delivery_edge_within_deadline,
+#: latency_ms in [45000, 46029] — every one lands in the 1 s sweeper tick just
+#: past 45 s, none of them at a real end-of-turn. The same PRE->POST spans
+#: measured on the route logs (656 sessions) have p50 = 71 s; a 45 s deadline
+#: therefore closed the MEDIAN long turn before its delivery edge existed.
+#: 90 s (HOST_HOOK_KILL_S + 60 — the brief's "HOST_HOOK_KILL_S + 45 = 90"
+#: arithmetic assumed a 45 s kill; HOST_HOOK_KILL_S is 30) clears that median
+#: with 19 s of margin. Longer buys nothing: the tool-loop class — the ones
+#: that run for minutes — is covered by the re-arm heartbeat below, so only a
+#: single generation with no pass for 90 s is closed as lost, and that turn is
+#: not coming back.
+SKIP_DEADLINE_S = HOST_HOOK_KILL_S + 60.0
 _PENDING_MAX = 1024
 _SWEEP_INTERVAL_S = 1.0
 
@@ -674,11 +689,22 @@ def arm(session_id: str, *, body_chars: int = 0, model: str = "") -> bool:
                 if str(prev.get("turn_id") or "") == turn_id:
                     prev["body_chars"] = max(int(prev.get("body_chars") or 0),
                                              int(body_chars or 0))
+                    # M51-09: a re-arm is PROOF OF LIFE for this turn — a new
+                    # pass is entering the seam, so the deadline must run from
+                    # HERE, not from the turn's first PRE. Without this the
+                    # docstring's promise ("a long turn must not look like a
+                    # lost one") was false: the original deadline was kept, so
+                    # a tool-loop turn was swept as lost while it was running.
+                    # `started` is untouched, so latency_ms still measures the
+                    # turn's whole lifetime.
+                    prev["beat"] = time.monotonic()
                     return True
                 superseded = _PENDING.pop(sid)
+            _now = time.monotonic()
             _PENDING[sid] = {"session_id": sid, "turn_id": turn_id,
                              "model": str(model or ""),
-                             "started": time.monotonic(),
+                             "started": _now,
+                             "beat": _now,
                              "body_chars": int(body_chars or 0)}
             while len(_PENDING) > _PENDING_MAX:
                 _PENDING.pop(next(iter(_PENDING)))
@@ -745,14 +771,22 @@ def close_skipped(session_id: str, *, reason: str,
 
 
 def sweep_once(now: Optional[float] = None) -> int:
-    """Close every armed turn older than SKIP_DEADLINE_S. Returns rows written."""
+    """Close every armed turn whose LAST observed activity is older than
+    SKIP_DEADLINE_S. Returns rows written.
+
+    M51-09: the reference point is the freshest stamp the turn has — the PRE
+    arm or the latest same-turn re-arm — not the arm alone. A turn still
+    producing tool-loop passes is alive, and closing it as lost is the defect
+    that produced 3,085 `no_delivery_edge_within_deadline` rows.
+    """
     try:
         stamp = time.monotonic() if now is None else float(now)
         stale = []
         with _PENDING_LOCK:
             for sid, entry in list(_PENDING.items()):
                 started = float(entry.get("started") or stamp)
-                if stamp - started >= SKIP_DEADLINE_S:
+                beat = float(entry.get("beat") or started)
+                if stamp - max(started, beat) >= SKIP_DEADLINE_S:
                     stale.append(_PENDING.pop(sid))
     except Exception:  # noqa: BLE001
         return 0
