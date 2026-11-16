@@ -256,6 +256,37 @@ def _fetch(url: str, key_file: str, key_env: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _price_from_entry(m: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Normalized per-1M prices from ONE catalog entry. Never raises.
+
+    Three provider-published shapes:
+      venice        model_spec.pricing.{input,output}.usd  (already per 1M)
+      abliteration  pricing.{prompt,completion}            (per token)
+      nous          pricing.{prompt,completion}            (per token, strings)
+    """
+    try:
+        spec = m.get("model_spec") or {}
+        vp = spec.get("pricing") if isinstance(spec, dict) else None
+        if isinstance(vp, dict):
+            pin = vp.get("input") or {}
+            pout = vp.get("output") or {}
+            if isinstance(pin, dict) and isinstance(pout, dict):
+                i = pin.get("usd")
+                o = pout.get("usd")
+                if isinstance(i, (int, float)) and isinstance(o, (int, float)):
+                    return {"input_per_1m": float(i), "output_per_1m": float(o)}
+        ap = m.get("pricing")
+        if isinstance(ap, dict):
+            ip = ap.get("prompt")
+            cp = ap.get("completion")
+            if isinstance(ip, (int, float, str)) and isinstance(cp, (int, float, str)):
+                return {"input_per_1m": float(ip) * 1_000_000.0,
+                        "output_per_1m": float(cp) * 1_000_000.0}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _normalize(model: str, data: Dict[str, Any]) -> Optional[Dict[str, float]]:
     try:
         want = str(model or "")
@@ -272,48 +303,146 @@ def _normalize(model: str, data: Dict[str, Any]) -> Optional[Dict[str, float]]:
                 and (len(mid) == len(want) or mid[-(len(want) + 1)] in "-/:")
             ):
                 continue
-            # venice shape
-            spec = m.get("model_spec") or {}
-            vp = spec.get("pricing") if isinstance(spec, dict) else None
-            if isinstance(vp, dict):
-                pin = vp.get("input") or {}
-                pout = vp.get("output") or {}
-                if isinstance(pin, dict) and isinstance(pout, dict):
-                    i = pin.get("usd")
-                    o = pout.get("usd")
-                    if isinstance(i, (int, float)) and isinstance(o, (int, float)):
-                        return {"input_per_1m": float(i), "output_per_1m": float(o)}
-            # abliteration shape (per-token USD)
-            ap = m.get("pricing")
-            if isinstance(ap, dict):
-                ip = ap.get("prompt")
-                cp = ap.get("completion")
-                if isinstance(ip, (int, float, str)) and isinstance(cp, (int, float, str)):
-                    return {"input_per_1m": float(ip) * 1_000_000.0,
-                            "output_per_1m": float(cp) * 1_000_000.0}
-            # nous shape (per-token USD strings, e.g. "0.0000002000")
-            if isinstance(ap, dict) and ("prompt" in ap or "completion" in ap):
-                try:
-                    ip2 = ap.get("prompt", 0)
-                    cp2 = ap.get("completion", 0)
-                    return {"input_per_1m": float(ip2) * 1_000_000.0,
-                            "output_per_1m": float(cp2) * 1_000_000.0}
-                except (TypeError, ValueError):
-                    pass
+            return _price_from_entry(m)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _catalog_price_sources() -> list:
+    """Every /models url that prices models, paired with its credential.
+
+    M50-30 (owner 11-16: "find pricing on the api endpoint or portal and use
+    that for calculation on all lanes"): the nous catalog prices EVERY model it
+    serves, but lookup was gated on `_chain_models_urls()` — a map built from
+    `.chain` entries plus three hardcoded ids. The frontier anchor
+    (anthropic/claude-sonnet-5.5) is in neither, so `provider_price_for`
+    returned None and `usage_ledger._price_row` priced the flagship lane from
+    the CONFIG table. The 11-07 ruling ("the PROVIDER is the price authority")
+    was inert for the most expensive lane in the fleet.
+
+    nous catalog first (its provider key env), then each chain entry's own
+    /models url with that entry's key. Deduped by url. Never raises.
+    """
+    out: list = []
+    try:
+        key_env = provider_key_env("nous", "NOUS_API_KEY")
+    except Exception:  # noqa: BLE001
+        key_env = "NOUS_API_KEY"
+    out.append((_nous_models_url(), "", key_env))
+    try:
+        from .config_access import router_section
+
+        chain = router_section().get("chain") or []
+    except Exception:  # noqa: BLE001
+        chain = []
+    if isinstance(chain, list):
+        for e in chain:
+            if not isinstance(e, dict):
+                continue
+            url = str(e.get("url") or "")
+            if not url:
+                continue
+            out.append((_models_url_from_chat(url),
+                        str(e.get("key_file") or ""),
+                        str(e.get("key_env") or "")))
+    seen: set = set()
+    res: list = []
+    for t in out:
+        if t[0] in seen:
+            continue
+        seen.add(t[0])
+        res.append(t)
+    return res
+
+
+def _refresh_catalog_prices(force: bool = False) -> Dict[str, Any]:
+    """Cache {model_id: prices} for EVERY id every pricing source publishes.
+
+    M50-30: whole-catalog index, NOT chain-gated — so a model no `.chain` entry
+    names (the frontier anchor) is still priced from the provider. Merged into
+    the same disk cache `provider_price_for()` already reads, so a resolved
+    price is a cache hit on the next call. Exact ids only: a ':batch' variant
+    keeps its own row and is never substituted for the sync id, and '~'-prefixed
+    hidden entries are skipped. Fresh values OVERWRITE cached ones inside the
+    TTL window so a provider price change actually propagates (the whole point
+    of PRICING_TTL_S). Fail-open: a failed fetch leaves the cache untouched.
+    Never raises.
+    """
+    try:
+        cached = _load_cache()
+        if cached and not force:
+            return cached
+        # M50-30: when force is set the cached rows must NOT seed the index,
+        # otherwise a forced refresh can never pick up a changed price.
+        idx: Dict[str, Any] = {} if force else {
+            k: v for k, v in (cached or {}).items() if isinstance(v, dict)}
+        for url, kf, ke in _catalog_price_sources():
+            data = _fetch(url, kf, ke)
+            if not isinstance(data, dict):
+                continue
+            for m in data.get("data") or []:
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id") or "").strip()
+                if not mid or mid.startswith("~"):
+                    continue
+                price = _price_from_entry(m)
+                if price:
+                    # FIRST source wins: sources are ordered nous-first, and
+                    # nous is the provider that bills the fleet's main lanes.
+                    # Last-wins let a secondary catalog overwrite a nous price
+                    # for the same id — a silent mispricing, not a fetch error.
+                    idx.setdefault(mid, price)
+        if idx:
+            _write_cache(idx)
+        return idx
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _lookup_in_index(model: str, idx: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Exact id first, then the guarded provider-prefix suffix rule. Never raises."""
+    try:
+        want = str(model or "")
+        if not want:
+            return None
+        p = idx.get(want)
+        if isinstance(p, dict):
+            return p
+        for mid, price in idx.items():
+            if not isinstance(price, dict) or not isinstance(mid, str):
+                continue
+            if mid.endswith(want) and (
+                    len(mid) == len(want) or mid[-(len(want) + 1)] in "-/:"):
+                return price
     except Exception:  # noqa: BLE001
         pass
     return None
 
 
 def provider_price_for(model: str) -> Optional[Dict[str, float]]:
-    """Public: prices for a chain model, fetched from its provider (cached).
-    None when unknown/fetch-failed — caller records no price."""
+    """Public: prices for a model, fetched from its provider (cached).
+
+    M50-30: resolution order is (1) disk cache, (2) WHOLE-CATALOG index from the
+    provider's /models — no `.chain` membership required, (3) the legacy
+    per-chain-entry fetch. None when unknown/fetch-failed — the caller records
+    tokens but no fabricated price.
+    """
     try:
         cached = _load_cache()
         if model in cached:
             p = cached[model]
             if isinstance(p, dict):
                 return p
+        # ---- M50-30: provider catalog covers every lane, not just .chain ----
+        try:
+            idx = _refresh_catalog_prices()
+            hit = _lookup_in_index(model, idx)
+            if hit:
+                return hit
+        except Exception:  # noqa: BLE001
+            pass
         urls = _chain_models_urls()
         if model not in urls:
             return None

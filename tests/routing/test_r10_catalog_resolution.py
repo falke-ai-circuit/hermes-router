@@ -381,4 +381,12 @@ def test_version_bumped():
     import yaml
     with open(os.path.join(PLUGIN_DIR, "plugin.yaml")) as fh:
         manifest = yaml.safe_load(fh)
-    assert manifest["version"] == "6.17.2"
+    # M50-30: this was an exact-equality pin (`== "6.17.2"`) that went stale the
+    # moment the release reached 6.17.20 — ten bumps later it was red and
+    # telling nobody anything. A pin requiring a hand-edit on every release
+    # tests the editor's memory, not the manifest. Assert a parseable semver
+    # and the FLOOR the pin was protecting.
+    ver = str(manifest.get("version") or "")
+    parts = ver.split(".")
+    assert len(parts) == 3 and all(p.isdigit() for p in parts), ver
+    assert tuple(int(p) for p in parts) >= (6, 17, 2), ver
