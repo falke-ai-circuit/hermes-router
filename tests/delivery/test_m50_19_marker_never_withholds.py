@@ -23,12 +23,19 @@ BANNER = "· router · impulse (decision) | 1 verdict | row=14857 | tok 1740/83"
 ANSWER = "Yes — fix POST, but not by raising the 25s cap.\n\nThe cap exists because the host kills the callback."
 
 
-def test_banner_line_is_stripped_and_answer_survives():
+def test_router_banner_line_is_preserved_and_answer_survives():
+    """M50-23: the router's OWN banner is a record, not a leak.
+
+    M48 requires a fired lane to be VISIBLE in the delivered bytes. M50-19 made
+    the boundary strip marker lines instead of withholding the turn, but
+    `MARKERS` contains the banner prefix — so every frontier consult banner was
+    silently erased, which is the fleet losing sight of its own lane record.
+    """
     body = ANSWER + "\n\n" + BANNER
     out = _dd.strip_marker_lines(body)
     assert "fix POST" in out
-    assert "· router ·" not in out
-    assert "row=14857" not in out
+    assert BANNER in out
+    assert "row=14857" in out
 
 
 def test_body_without_markers_is_untouched():
@@ -40,12 +47,16 @@ def test_user_quoted_marker_is_not_removed():
 
     The exemption is textual and narrow: the occurrence must sit inside quote
     glyphs in the body whose inner text matches a span quoted from the ask.
+    Uses a NON-banner marker so this test measures the quoted exemption and not
+    the M50-23 banner rule.
     """
-    quoted = ("· router ·",)
-    body = ('You asked about the "· router ·" banner line.\n' + BANNER)
+    quoted = ("HIGHER-SELF",)
+    body = ('You asked about the "HIGHER-SELF" seam marker.\n'
+            'HIGHER-SELF injected line\n\n' + BANNER)
     out = _dd.strip_marker_lines(body, quoted)
-    assert "You asked about the" in out
-    assert "row=14857" not in out
+    assert 'You asked about the "HIGHER-SELF" seam marker.' in out
+    assert "HIGHER-SELF injected line" not in out
+    assert BANNER in out
 
 
 def test_empty_input_is_empty():

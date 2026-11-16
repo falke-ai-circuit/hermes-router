@@ -43,6 +43,12 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Dict, Optional
 
+# M50-23: ONE source for the banner grammar. `delivery_integrity` owns
+# BANNER_HEAD and its block-stripper; the delivery boundary only needs the head
+# to know "this line is ours, keep it". Importing the constant rather than
+# re-typing the string means the two can never drift apart.
+from .delivery_integrity import BANNER_HEAD as _BANNER_HEAD
+
 # --------------------------------------------------------------------------- #
 # actions, cases, sources — closed vocabularies
 # --------------------------------------------------------------------------- #
@@ -366,13 +372,19 @@ def marker_is_echo(text: str, marker: str, exempt_spans: "tuple[str, ...]" = ())
     exempt = tuple(exempt_spans or ())
     if not needle:
         return False
+    # M50-23: `_quote_ranges` yields the quote's inner text LOWERED, so a
+    # case-sensitive `inner in exempt` silently refused every span the user
+    # copied in original casing — a quoted "HIGHER-SELF" was treated as the
+    # model's leak while a quoted "· router ·" passed only because it is
+    # already lowercase. Compare both sides folded.
+    exempt_low = frozenset(str(e).lower() for e in exempt)
     ranges = _quote_ranges(hay) if exempt else []
     found = False
     start = low.find(needle)
     while start >= 0:
         found = True
         end = start + len(needle)
-        if not any(a <= start and end <= b and inner in exempt
+        if not any(a <= start and end <= b and inner.lower() in exempt_low
                    for a, b, inner in ranges):
             return False
         start = low.find(needle, start + 1)
@@ -486,6 +498,25 @@ def _terminal(case_id: str, reason: str, diag: Dict[str, object]) -> Decision:
                     int(diag.pop("_strip", 0) or 0), diag, None)
 
 
+def _is_own_banner_line(line: str) -> bool:
+    """True for the router's OWN delivered banner line (M50-23).
+
+    M48 requires a fired lane to be VISIBLE in the delivered bytes, so the
+    banner line that carries `· router ·` must never be treated as a leak and
+    removed. Before this, a marker violation stripped the banner and left the
+    answer: the turn survived but the lane became invisible, silently.
+
+    Grammar comes from `delivery_integrity` (one source, pinned by its own
+    BANNER_HEAD) — a banner is a line whose first token is that head. A banner
+    in the MIDDLE of a body is left to the normal marker rules, matching
+    `delivery_integrity.strip_banner`, which only treats lead/tail as banner.
+    """
+    try:
+        return str(line or "").lstrip().startswith(_BANNER_HEAD)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def strip_marker_lines(text: str, quoted: Sequence[str] = ()) -> str:
     """Remove marker-bearing LINES and keep the rest of the answer.
 
@@ -497,21 +528,36 @@ def strip_marker_lines(text: str, quoted: Sequence[str] = ()) -> str:
 
     Only the offending line goes. User-quoted markers are excluded by `quoted`,
     so a user asking ABOUT the marker never loses their own words.
+
+    M50-23: the router's OWN banner line is preserved, never stripped. M48
+    requires a fired lane to be visible in the delivered bytes; stripping the
+    banner left the answer but erased the lane record, which is how the fleet
+    lost sight of every frontier consult. A body made of NOTHING but banners and
+    markers still returns "" — router prose is never shippable as an answer.
     """
     try:
         raw = str(text or "")
         if not raw:
             return ""
-        kept = []
+        kept: list = []
+        banners: list = []
         dropped = False
         for line in raw.splitlines():
+            if _is_own_banner_line(line):
+                banners.append(line)
+                continue
             if carries_marker(line, quoted):
                 dropped = True
                 continue
             kept.append(line)
-        if not dropped:
+        core_text = "\n".join(kept).strip()
+        if not core_text:
+            # nothing but router banner/markers: void, never an answer
+            return ""
+        if not dropped and not banners:
             return raw
-        cleaned = "\n".join(kept)
+        out = kept + banners
+        cleaned = "\n".join(out)
         # a banner line usually leaves a blank run behind it
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned
