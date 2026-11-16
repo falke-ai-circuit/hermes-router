@@ -1122,7 +1122,16 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     # M50-14b: retry when the budget can grow OR the deliberation
                     # setting changes. The old test was `_can_raise` alone, which
                     # left every at-ceiling starved consult unrescued.
-                    if _retry_is_worth_paying(_cur_mt, _new_mt, _eff_from, _eff_to):
+                    # M50-28: the DECISION and its four inputs are logged on the
+                    # row, not just the shape it produced. `max_tokens_from/to`
+                    # carry what the retry SENT (_cur_mt -> _send_mt, after M50-15
+                    # and M50-25 re-decide the allowance); `worth_new_mt` carries
+                    # the CANDIDATE ceiling the predicate was asked about. The two
+                    # are different numbers on the descent arm, and only the pair
+                    # together answers "why was this retry paid for?".
+                    _worth = _retry_is_worth_paying(
+                        _cur_mt, _new_mt, _eff_from, _eff_to)
+                    if _worth:
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
@@ -1130,7 +1139,12 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                             effort_from=_eff_from or "-",
                             effort_to=_eff_to or "-",
                             at_ceiling=(not _can_raise),
-                            reasoning_tokens=_rt_in)
+                            reasoning_tokens=_rt_in,
+                            worth_paying=_worth,
+                            worth_cur_mt=_cur_mt,
+                            worth_new_mt=_new_mt,
+                            worth_cur_effort=_eff_from or "-",
+                            worth_new_effort=_eff_to or "-")
                         _rp = copy.deepcopy(payload)
                         # M50-15: when effort descends, do NOT also raise the
                         # ceiling. Measured: effort=high returned a COMPLETE
@@ -1164,10 +1178,20 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                                 model=endpoint.model, max_tokens=_retry_mt,
                                 reasoning_tokens=_reasoning_tokens(_rraw_b))
                     else:
+                        # M50-28: the negative case carries the same five fields.
+                        # Without it "no retry" rows say only `reason=ceiling`,
+                        # which is the OLD predicate's language — it cannot
+                        # distinguish "ceiling cannot rise AND effort cannot
+                        # descend" from "predicate never asked".
                         _budget_retry_log(
                             "anchor_budget_retry_skipped", model=endpoint.model,
                             max_tokens=_cur_mt, reason="ceiling",
-                            reasoning_tokens=_rt_in)
+                            reasoning_tokens=_rt_in,
+                            worth_paying=_worth,
+                            worth_cur_mt=_cur_mt,
+                            worth_new_mt=_new_mt,
+                            worth_cur_effort=_eff_from or "-",
+                            worth_new_effort=_eff_to or "-")
                 except Exception:  # noqa: BLE001 — retry never breaks the lane
                     pass
             # R34-9b: empty content from a 200 is not the end of the lane.
