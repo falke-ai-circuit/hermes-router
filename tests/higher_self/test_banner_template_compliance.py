@@ -66,13 +66,21 @@ def test_frontier_is_compliant_with_the_same_standard_as_the_other_two():
 
 
 def test_one_head_per_body_across_lanes():
-    """All lanes share ONE head; a second head would be a template violation."""
+    """All lanes share ONE head; a second head would be a template violation.
+
+    M50-26: the block carries exactly ONE canonical head — the lane lines after
+    it are continuations (each still carrying its own figures), not new heads.
+    """
     sid = "s-comp4"
     for lane in LABELS:
         t.register(sid, LABELS[lane], kind="anchor")
     line = t.compose_line(sid)
-    for part in line.splitlines():
-        assert part.count("· router ·") == 1, part
+    assert line.count("· router ·") == 1, line
+    parts = [p for p in line.splitlines() if p.strip()]
+    assert len(parts) == 3, parts
+    assert parts[0].startswith("· router ·"), parts[0]
+    for part in parts[1:]:
+        assert part.count("· router ·") == 0, part
 
 
 def test_no_lane_line_is_rendered_without_token_spend():

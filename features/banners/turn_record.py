@@ -610,7 +610,14 @@ def compose_line(session_id: str) -> str:
         # that fired more than once this turn does not get more lines — its one
         # line carries the aggregated totals (_merge sums tokens and cost, keeps
         # the distinct trigger types and counts the actions, rendered as ×N).
-        return "\n".join("%s %s" % (head, p) for p in parts)
+        # M50-26 (BANNER-SPEC §1): ONE canonical head per delivered body. Every
+        # lane line used to be prefixed with `head`, so a turn where two lanes
+        # fired delivered two heads in one body (analyst
+        # api_1794774302_b2dd3a43: impulse + higher-self). The head opens the
+        # block once; the remaining lane lines are continuations. The cells,
+        # the columns and the head itself are unchanged — only the repeat goes.
+        return "\n".join(["%s %s" % (head, parts[0])]
+                         + ["  %s" % p for p in parts[1:]])
     except Exception:  # noqa: BLE001 — a render never breaks a delivery
         return ""
 

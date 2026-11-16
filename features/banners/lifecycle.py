@@ -591,6 +591,34 @@ class BannerLifecycle:
                                 "banner_capture_fallback event log failed")
                         return
                 row = self._newest_persisted_assistant_row(sid)
+                # M50-26 (BANNER-SPEC §1): ONE canonical head per delivered body.
+                # `delivered` used to be row + "\n\n" + captured unconditionally,
+                # so a row that already carried a head (an earlier compose
+                # landed) got a SECOND banner block appended — two heads in one
+                # body. The row's head wins: the duplicate is suppressed and the
+                # slot is consumed, because the banner is already visible.
+                _head_mark = ""
+                try:
+                    _head_mark = str(getattr(db, "BANNER_HEAD", "") or "")
+                except Exception:  # noqa: BLE001 — evidence only
+                    _head_mark = ""
+                if row and _head_mark and _head_mark in str(row):
+                    db._ANCHOR_TASKS.pop(sid, None)
+                    db._ANCHOR_SEGS.pop(sid, None)
+                    db._ANCHOR_BANNERS.pop(sid, None)
+                    try:
+                        db._PARK_RECORDS.pop(sid, None)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        _log_route("POST",
+                                   event_detail="banner_capture_fallback",
+                                   outcome="suppressed_already_headed",
+                                   session_id=sid)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "banner_capture_fallback event log failed")
+                    return
                 delivered = ("%s\n\n%s" % (row, captured)) if row else ""
                 ok = False
                 if row:
