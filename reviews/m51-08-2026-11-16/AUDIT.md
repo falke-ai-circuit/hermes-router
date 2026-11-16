@@ -236,7 +236,9 @@ behaviour of the reading, not as a defect of this slice.
    is low by design).
 2. M51-02 node-id set-difference suite delta still owed.
 3. F2 banner-to-tail relocation vs docstring claim.
-4. tests/test_m51_02_five_event_fixture.py is untracked in the repo (M51-02 in flight).
+4. tests/test_m51_02_five_event_fixture.py was untracked (M51-02 in flight); committed
+   as-found by this close, content byte-identical (md5 aef3258f237ff064c68b916110dc346a
+   at commit time), ownership and its remaining obligations stay with M51-02.
 
 reviewed_by: reviewer
 verdict: TIER A PASS | TIER B DEFERRED
