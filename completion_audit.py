@@ -511,6 +511,140 @@ def work_mass_gate(context: Optional[dict] = None) -> Dict[str, Any]:
                 "thr": 40, "files_thr": 5, "muts_thr": 10, "reason": "below"}
 
 
+# ------------------------------------------------ negative low effort ---- #
+# M51-01 (M50-22 §1): a DECLARED capacity limit on a LOW-EFFORT turn is the
+# measured blind region — "small, confident, wrong". Corpus: 950 distinct
+# declared-negative final answers, 539 of them carrying <= 5 tool rows.
+# This arm NOMINATES such a turn for the standard POST consult; it never
+# decides the answer (false positives cost one advisory line).
+_NLE_MAX_TOOLS = 5
+
+# Nominator only, not a judge: EN/IT/HR/DE families, deliberately loose. The
+# consult decides whether a route exists; precision here would cost recall on
+# exactly the turns this arm exists to catch.
+_DECLARED_LIMIT_RE = re.compile(
+    r"(?i)"
+    # EN: cannot / unable / no access / blocked
+    r"\b(?:i\s+)?(?:can\s*not|can't|cannot|am\s+unable\s+to|'m\s+unable\s+to)"
+    r"\b"
+    r"|\bunable\s+to\b"
+    r"|\b(?:do\s+not|don't)\s+have\s+(?:access|permission|credentials)\b"
+    r"|\bno\s+(?:access|permission|credentials|shell|ssh)\b"
+    r"|\bwithout\s+(?:access|credentials|permission|a\s+shell|ssh)\b"
+    r"|\b(?:not|im)?possible\s+to\s+(?:access|reach|connect|log\s*in|verify)\b"
+    r"|\bblocked\s+(?:by|from)\b"
+    r"|\bnot\s+available\s+(?:to|from|in)\s+(?:me|us|this)\b"
+    # IT
+    r"|\bnon\s+(?:posso|riesco|è\s+possibile)\b|\bimpossibile\b"
+    r"|\bsenza\s+(?:accesso|credenziali|permessi)\b"
+    # HR
+    r"|\bne\s+mogu\b|\bnije\s+moguće\b|\bnemam\s+pristup\b"
+    # DE
+    r"|\bkann(?:st)?\s+(?:nicht|kein)\b|\bnicht\s+möglich\b"
+    r"|\bkein(?:e|en)?\s+(?:zugriff|zugang|berechtigung)\b"
+)
+
+
+def _declares_capacity_limit(text: Any) -> bool:
+    """True when `text` DECLARES a capacity limit / gives up (nominator only).
+
+    Bounded to the delivered body, folds typographic apostrophes (the
+    classifier's R33 lesson), never raises: an uncertain body is not nominated.
+    """
+    try:
+        t = str(text or "")
+        if not t.strip():
+            return False
+        return bool(_DECLARED_LIMIT_RE.search(t.replace("\u2019", "'")))
+    except Exception:  # noqa: BLE001 — a broken regex must not fire the arm
+        return False
+
+
+def _turn_messages(context: Optional[dict]) -> list:
+    """This turn's messages from the SAME sources work_mass_facts reads.
+
+    Request messages when the host passes them, else the session transcript.
+    Never raises; [] means "effort unknown".
+    """
+    try:
+        _req = (context or {}).get("request") if isinstance(context, dict) else None
+        _msgs = (_req or {}).get("messages") if isinstance(_req, dict) else None
+        if isinstance(_msgs, list):
+            return _msgs
+        return _work_mass_messages_from_db(context)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _claiming_turn_tool_rows(context: Optional[dict]) -> Optional[int]:
+    """Tool rows in the CLAIMING turn (the tail after the last user message).
+
+    "Turn's realised effort" is a per-turn count, not the session total: a
+    session with 60 earlier tool rows must not read as a heavy turn when the
+    turn that declared the limit ran two. Returns None when unreadable.
+    Never raises.
+    """
+    try:
+        msgs = _turn_messages(context)
+        if not msgs:
+            return None
+        start = 0
+        for i in range(len(msgs) - 1, -1, -1):
+            if isinstance(msgs[i], dict) and \
+                    str(msgs[i].get("role") or "") == "user":
+                start = i
+                break
+        rows = 0
+        calls = 0
+        for m in msgs[start:]:
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("role") or "") == "tool":
+                rows += 1
+            _c = m.get("tool_calls")
+            if isinstance(_c, list):
+                calls += sum(1 for c in _c if isinstance(c, dict))
+        return max(rows, calls)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def negative_low_effort_gate(context: Optional[dict],
+                             response_text: str = "") -> Dict[str, Any]:
+    """POST fire decision: a declared capacity limit on a LOW-effort turn.
+
+    Fires when the delivered body declares a limit/give-up AND the claiming
+    turn's realised effort is <= _NLE_MAX_TOOLS tool rows AND the body is not
+    refusal-class — a "won't" belongs to the denial lane and must never summon
+    a route-hunt. Returns {fire, tools, reason}; never raises (degrades to
+    no-fire, the fail-open every POST arm keeps).
+    """
+    out: Dict[str, Any] = {"fire": False, "tools": 0,
+                           "reason": "no_declared_limit"}
+    try:
+        # A refusal is not a capacity limit — exclude before any spend.
+        if is_refusal_shaped_body(response_text):
+            out["reason"] = "refusal_class"
+            return out
+        # Cheap text test first: turns with no declared limit cost no DB read.
+        if not _declares_capacity_limit(response_text):
+            return out
+        _tools = _claiming_turn_tool_rows(context)
+        if _tools is None:
+            out["reason"] = "effort_unreadable"
+            return out
+        out["tools"] = int(_tools)
+        if int(_tools) > _NLE_MAX_TOOLS:
+            out["reason"] = "effort_high"
+            return out
+        out["fire"] = True
+        out["reason"] = "declared_limit_low_effort"
+        return out
+    except Exception:  # noqa: BLE001 — fail-open
+        out["reason"] = "error"
+        return out
+
+
 def _already_reflected(session_id: str) -> bool:
     """True when this session already paid a work-mass POST inside the TTL."""
     try:
@@ -1474,6 +1608,22 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                             pass
             except Exception:  # noqa: BLE001 — L3 must never break the gate
                 pass
+        if not _fire:
+            # M51-01 (M50-22 §1): declared capacity limit on a LOW-effort
+            # turn. Work-mass PRECEDENCE is structural, not a check: this
+            # branch is only reachable when no heavier arm already owns the
+            # label, and the predicate itself requires <= 5 tool rows, so the
+            # two arms are disjoint by construction (no double-fire).
+            _nle = negative_low_effort_gate(_wm_ctx, response_text or "")
+            if _nle.get("fire"):
+                _fire = True
+                _fire_trigger = "negative_low_effort"
+                try:
+                    _log("negative_low_effort_gate fire=True tools=%d"
+                         % int(_nle.get("tools") or 0),
+                         session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
         # R42: the old >=3-tool-message arm is retired — it was a proxy for
         # work mass and fired on ordinary read-heavy turns. Work mass is the
         # single source of truth for "was this heavy" (work_mass_gate above).
@@ -1557,7 +1707,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                     session_id, ask, response_text, _req, model,
                     timeout_s=_sync_budget, fold_revision=False,
                     diag=_diag, scope_id=_scope_id,
-                    scope_source=_scope_source, **_sync_kw)
+                    scope_source=_scope_source,
+                    negative_low_effort=(_fire_trigger
+                                         == "negative_low_effort"),
+                    **_sync_kw)
             except Exception as _sx:  # noqa: BLE001
                 _diag["reason"] = "consult_raised"
                 _diag["detail"] = type(_sx).__name__
@@ -1760,7 +1913,9 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         run_completion_audit(session_id, ask, response_text, _req, model,
                              pre_brief=(str(_pair_ctx.get("text") or "") if _pair_ctx else ""),
                              pre_trigger=(str(_pair_ctx.get("trigger") or "") if _pair_ctx else ""),
-                             scope_id=_scope_id, scope_source=_scope_source)
+                             scope_id=_scope_id, scope_source=_scope_source,
+                             negative_low_effort=(_fire_trigger
+                                                  == "negative_low_effort"))
         if _pair:
             _log_pair("post", True, pre_trigger=str(_pair.get("trigger") or ""),
                       session_id=session_id)
@@ -2033,6 +2188,52 @@ def _post_required_instruction() -> str:
     )
 
 
+def _negative_route_instruction() -> str:
+    """The conditional paragraph for a declared-limit, low-effort POST.
+
+    Appended to the ALREADY-SHIPPED POST instruction — same call, no second
+    round trip, so it rides the existing 25s audit_sync_seconds cap and the
+    runner's 30s kill. Contract (M50-22 §1): ONE concrete route the agent has
+    not tried, specific enough to act on now, max 60 words; exactly NONE when
+    none exists; empty output is read as NONE (normalised in code, never in
+    the prompt alone).
+    """
+    return (
+        "\n\nONE ROUTE, IF ONE EXISTS: this answer declined work it could still "
+        "have done, and the turn shows almost no tool use to justify that. If a "
+        "concrete route exists that the agent has NOT tried, name exactly one: "
+        "the exact path or URL, the tool, the method, or the wait condition -- "
+        "specific enough to act on now, MAX 60 WORDS. If no route exists, "
+        "answer exactly NONE. Empty or blank output is read as NONE. Do not "
+        "restate the answer, do not praise, do not give generic \"try again\" "
+        "advice."
+    )
+
+
+_NEGATIVE_ROUTE_NONE = "NONE"
+
+
+def normalise_negative_route(text: Any) -> str:
+    """The one-route lane's answer, normalised in CODE (M51-01).
+
+    Measured defect class, not hypothetical: a reasoning model can spend the
+    whole output allowance on reasoning tokens and return EMPTY content. An
+    empty route must never reach the row as a blank, so blank/whitespace
+    collapses to exactly NONE (and NO-FINDINGS, the lane's other "nothing to
+    say" word, is read the same way — the contract's vocabulary is NONE).
+    Never raises: an unrepresentable answer reads as NONE.
+    """
+    try:
+        t = str(text or "").strip()
+        if not t:
+            return _NEGATIVE_ROUTE_NONE
+        if t.upper().strip(" .!:") == "NO-FINDINGS":
+            return _NEGATIVE_ROUTE_NONE
+        return t
+    except Exception:  # noqa: BLE001
+        return _NEGATIVE_ROUTE_NONE
+
+
 def _pov_active(ask: str) -> bool:
     """Multi-POV gate for THIS consult. off -> False; always -> True;
     auto -> heavy consults only (_is_complex_ask = the complexity gate).
@@ -2217,7 +2418,8 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
                    pre_trigger: str = "",
                    total_cap: int = 0,
                    fold_revision: bool = False,
-                   fold_char_cap: int = 0) -> List[Dict[str, str]]:
+                   fold_char_cap: int = 0,
+                   negative_low_effort: bool = False) -> List[Dict[str, str]]:
     parts = ["ORIGINAL USER ASK:\n" + (ask or "")[:4000]]
     if work:
         parts.append("WORK DONE THIS TURN (tool/activity digest):\n" + work)
@@ -2266,6 +2468,10 @@ def _audit_payload(ask: str, work: str, response_text: str, max_chars: int,
         # tail, so anything asked mid-prompt is the first thing lost -- which is
         # exactly what a silent `baseline=none` looks like.
         + _post_required_instruction()
+        # M51-01: the one-route paragraph rides the SAME call and the SAME
+        # tail — conditional on this turn being a declared-limit low-effort
+        # candidate, so ordinary POSTs pay nothing for it.
+        + (_negative_route_instruction() if negative_low_effort else "")
     )
     # R34-19i: total_cap must bound the WHOLE payload, not just the user part.
     # The system block (instructions + persona card) is ~2.5-3k on its own, so a
@@ -2351,7 +2557,8 @@ def _strip_render_mandate(card: str) -> str:
 def run_completion_audit(session_id: str, ask: str, response_text: str,
                          request: Optional[dict], model: str = "",
                          pre_brief: str = "", pre_trigger: str = "",
-                         scope_id: str = "", scope_source: str = "") -> None:
+                         scope_id: str = "", scope_source: str = "",
+                         negative_low_effort: bool = False) -> None:
     """Fire the audit ASYNC (legacy path): marker set FIRST (once-per-task
     even across fx-retries), consult in a daemon thread, verdict stashed for
     next turn. Never raises, never blocks delivery."""
@@ -2375,7 +2582,8 @@ def run_completion_audit(session_id: str, ask: str, response_text: str,
         args=(session_id, ask, response_text, request, model, key, pre_brief,
               pre_trigger), daemon=True,
         kwargs={"task_id": _task_id, "scope_id": key,
-                "scope_source": scope_source or _key_source})
+                "scope_source": scope_source or _key_source,
+                "negative_low_effort": negative_low_effort})
     t.start()
 
 
@@ -2387,7 +2595,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                               fold_revision: bool = True,
                               diag: Optional[Dict[str, Any]] = None,
                               scope_id: str = "",
-                              scope_source: str = "") -> Optional[Dict[str, Any]]:
+                              scope_source: str = "",
+                              negative_low_effort: bool = False) -> Optional[Dict[str, Any]]:
     """Sync POST audit (Goran 2026-09-10; R37-1 folded revision): frontier
     consult completes BEFORE delivery and returns BOTH halves in ONE call —
     the verdict and (when the defect is text-fixable) the corrected final
@@ -2425,7 +2634,8 @@ def run_completion_audit_sync(session_id: str, ask: str, response_text: str,
                              pre_brief=pre_brief, pre_trigger=pre_trigger,
                              fold_revision=fold_revision, diag=diag,
                              task_id=_task_id, scope_id=key,
-                             scope_source=scope_source or _key_source)
+                             scope_source=scope_source or _key_source,
+                             negative_low_effort=negative_low_effort)
         if result.get("timed_out"):
             # Goran 2026-09-10: slow is NOT failed. The sync window closed but
             # the consult kept running — deliver its verdict ASYNC (next turn)
@@ -2840,7 +3050,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                   diag: Optional[Dict[str, Any]] = None,
                   task_id: str = "",
                   scope_id: str = "",
-                  scope_source: str = "") -> Optional[Dict[str, Any]]:
+                  scope_source: str = "",
+                  negative_low_effort: bool = False) -> Optional[Dict[str, Any]]:
     """Shared consult core (sync + async): call frontier, build the
     higher-self note, stash + banner-park. Returns
     {note, model, endpoint, tokens_in, tokens_out, cost} or None.
@@ -2922,7 +3133,8 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
                               max_chars, pre_brief=pre_brief,
                               pre_trigger=pre_trigger, total_cap=_total_cap,
                               fold_revision=fold_revision,
-                              fold_char_cap=_fold_cap)
+                              fold_char_cap=_fold_cap,
+                              negative_low_effort=negative_low_effort)
         # reasoning_effort=max (Goran 09-10: maximum capacity on frontier)
         # burns 10k+ reasoning chars — the old 2500 cap starved consults
         # into empty_response BEFORE any verdict was emitted (battery-proven
@@ -3077,6 +3289,16 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
             _refund_post(_reason_token)
             return None
         verdict_text = str(content).strip()
+        # M51-01: this lane's answer normalises in CODE, not in the prompt. An
+        # EMPTY completion is the measured defect class (a reasoning model can
+        # burn the whole allowance on reasoning tokens), and a blank route in
+        # the row is the failure it produces. Blank -> NONE.
+        if negative_low_effort:
+            _was_blank = not verdict_text
+            verdict_text = normalise_negative_route(verdict_text)
+            if _was_blank:
+                _log("negative_low_effort_route_empty -> NONE",
+                     session_id=session_id)
         # R37-1: ONE call carries both halves. The envelope is parsed here (where
         # the draft and the generation cap are known) and the revised body is
         # returned only if it survives its own sanity checks; everything
