@@ -132,37 +132,44 @@ def record_tokens(lane: str, model: str, session_id: str,
         return False
 
 
-# R19.14 FIX 3 (P3): MEASURED pricing fallback for OpenRouter-hosted reflex
-# models the provider catalog misses. source=measured (Goran-approved):
-# input ~$0.042/1M, output free (earlier measurement). NOT fabricated rates;
-# provider-catalog rates still win when present. Unknown models stay 0.0.
+# R19.14 FIX 3 (P3): PUBLISHED pricing fallback for models whose provider does
+# not expose a machine-readable /models price. These are NOT invented rates:
+# every row below cites a provider-published number.
+#
+# JEV (typesafe) — M50-32, verified 2026-11-16 against the provider itself:
+#   * https://typesafe.ai/pricing — "Price (per Btok / per Mtok): $42 / $0.042"
+#     for jev-1.14.0 and jev-1.13.0, and "You pay per input token. Output tokens
+#     are free." ($42 per billion = $0.042 per million.)
+#   * GET https://api.typesafe.ai/openapi.json — Usage.output_tokens is
+#     documented "Output tokens are currently free of charge"; input_tokens are
+#     "billable input tokens".
+#   The typesafe API publishes NO price field and NO billing endpoint (the spec
+#   has exactly two paths: GET /v1/models, POST /v1/systemone), which is why this
+#   row cannot come from the catalog the way nous/venice/abliteration rates do.
 # FIX (v4.13.6 rider 3): jev_native consults pass model='jev-latest' —
-# the measured table only held 'typesafe/jev-router', so the banner
-# billed $0.00000. jev-latest/jev-preview are the same typesafe jev model
-# (aliases across the openrouter-hosted and native-direct paths); price
-# them identically (source=measured).
+# jev-latest/jev-preview are the same typesafe jev model (aliases across the
+# openrouter-hosted and native-direct paths); price them identically.
+_SOURCE_PUBLISHED = "provider-published"
 _MEASURED_PRICING: Dict[str, Dict[str, Any]] = {
     "typesafe/jev-router": {"input_per_1m": 0.042, "output_per_1m": 0.0,
-                            "source": "measured"},
+                            "source": _SOURCE_PUBLISHED},
     "typesafe/jev-latest": {"input_per_1m": 0.042, "output_per_1m": 0.0,
-                            "source": "measured"},  # same jev model, native path
+                            "source": _SOURCE_PUBLISHED},
     "jev-latest": {"input_per_1m": 0.042, "output_per_1m": 0.0,
-                   "source": "measured"},  # bare alias (jev_native cfg)
+                   "source": _SOURCE_PUBLISHED},
     "jev-preview": {"input_per_1m": 0.042, "output_per_1m": 0.0,
-                    "source": "measured"},  # preview alias
+                    "source": _SOURCE_PUBLISHED},
     "typesafe/jev-preview": {"input_per_1m": 0.042, "output_per_1m": 0.0,
-                             "source": "measured"},
-    # The uncensored render lane was UNPRICED: its provider catalog does not
-    # publish rates, so every abliterated render banner read $0.0000 while the
-    # call was really billed — a wrong number, not a missing one. Rates are the
-    # provider's own published listing (3.0 in / 5.0 out per 1M), recorded as
-    # measured, and provider rates still win the moment they appear.
+                             "source": _SOURCE_PUBLISHED},
+    # Uncensored render lane: the provider's own published listing (3.0 in /
+    # 5.0 out per 1M). The abliteration catalog now answers this directly, so
+    # these rows only matter when that fetch fails.
     "abliteration/abliterated-model-large-v2": {
-        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": _SOURCE_PUBLISHED},
     "abliterated-model-large-v2": {
-        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": _SOURCE_PUBLISHED},
     "abliterated-large-v2": {
-        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": "measured"},
+        "input_per_1m": 3.0, "output_per_1m": 5.0, "source": _SOURCE_PUBLISHED},
 }
 
 
@@ -194,14 +201,13 @@ def _price_row(model: str) -> Tuple[Optional[Dict[str, Any]], str, str]:
         row = pricing.get(m) if isinstance(pricing, dict) else None
         if isinstance(row, dict):
             return row, m, "config"
-        # R19.14 FIX 3 (P3): provider lookup misses for OpenRouter-hosted reflex
-        # models (typesafe/jev-router) were billing banners at $0.0000 — the
-        # reflex consults ARE billed (tiny but nonzero: measured $0.042/1M input,
-        # output free). MEASURED fallback table (marked source=measured, NOT
-        # fabricated rates); provider rates still win when present.
+        # R19.14 FIX 3 (P3): provider lookup misses for models whose rate the
+        # provider publishes only as prose (typesafe jev — see _MEASURED_PRICING).
+        # M50-32: the SOURCE label comes from the row, never a literal here — a
+        # hardcoded "measured" re-badged a provider-published rate as a guess.
         row = _MEASURED_PRICING.get(m)
         if isinstance(row, dict):
-            return row, m, "measured"
+            return row, m, str(row.get("source") or "measured")
         # v4.13.6 rider 3: alias normalization — try the model name with/without
         # the provider prefix so 'jev-latest' and 'typesafe/jev-latest' resolve to
         # the same row either way.
@@ -209,7 +215,7 @@ def _price_row(model: str) -> Tuple[Optional[Dict[str, Any]], str, str]:
         alias = low.split("/", 1)[1] if low.startswith("typesafe/") else "typesafe/" + low
         row = _MEASURED_PRICING.get(alias)
         if isinstance(row, dict):
-            return row, alias, "measured"
+            return row, alias, str(row.get("source") or "measured")
         return None, m, ""
     except Exception:  # noqa: BLE001 — a price lookup must never break a lane
         return None, m, ""
