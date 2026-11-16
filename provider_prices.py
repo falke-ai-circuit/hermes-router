@@ -274,14 +274,24 @@ def _price_from_entry(m: Dict[str, Any]) -> Optional[Dict[str, float]]:
                 i = pin.get("usd")
                 o = pout.get("usd")
                 if isinstance(i, (int, float)) and isinstance(o, (int, float)):
+                    if float(i) < 0 or float(o) < 0:
+                        return None
                     return {"input_per_1m": float(i), "output_per_1m": float(o)}
         ap = m.get("pricing")
         if isinstance(ap, dict):
             ip = ap.get("prompt")
             cp = ap.get("completion")
             if isinstance(ip, (int, float, str)) and isinstance(cp, (int, float, str)):
-                return {"input_per_1m": float(ip) * 1_000_000.0,
-                        "output_per_1m": float(cp) * 1_000_000.0}
+                fi = float(ip) * 1_000_000.0
+                fo = float(cp) * 1_000_000.0
+                # M50-31: a NEGATIVE rate is a SENTINEL, never a price. OpenRouter
+                # publishes prompt=-1 / completion=-1 for models whose price the
+                # provider does not expose (measured live: typesafe/jev-router).
+                # Parsing that as a rate bills a NEGATIVE cost and silently
+                # credits the daily cap. Unpriced must stay unpriced.
+                if fi < 0 or fo < 0:
+                    return None
+                return {"input_per_1m": fi, "output_per_1m": fo}
     except Exception:  # noqa: BLE001
         pass
     return None
@@ -402,7 +412,16 @@ def _refresh_catalog_prices(force: bool = False) -> Dict[str, Any]:
 
 
 def _lookup_in_index(model: str, idx: Dict[str, Any]) -> Optional[Dict[str, float]]:
-    """Exact id first, then the guarded provider-prefix suffix rule. Never raises."""
+    """Exact id, then guarded suffix rule, then BARE-name tolerance.
+
+    M50-31 (owner 11-16: "derive price from decision and unc lane in same
+    ways"): a caller-supplied provider prefix must not defeat the lookup. Live
+    miss: `venice/qwen-3-8-27b` was unpriced while `qwen-3-8-27b` resolved from
+    the provider — the same model, differently named by the lane. Source order
+    inside `idx` is nous-first (see `_refresh_catalog_prices`), so a bare-name
+    collision resolves deterministically to the billing provider.
+    Never raises.
+    """
     try:
         want = str(model or "")
         if not want:
@@ -416,6 +435,12 @@ def _lookup_in_index(model: str, idx: Dict[str, Any]) -> Optional[Dict[str, floa
             if mid.endswith(want) and (
                     len(mid) == len(want) or mid[-(len(want) + 1)] in "-/:"):
                 return price
+        bare = want.rsplit("/", 1)[-1]
+        if bare and bare != want:
+            for mid, price in idx.items():
+                if isinstance(price, dict) and isinstance(mid, str) \
+                        and mid.rsplit("/", 1)[-1] == bare:
+                    return price
     except Exception:  # noqa: BLE001
         pass
     return None
