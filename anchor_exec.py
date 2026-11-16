@@ -706,6 +706,59 @@ def _retry_raises_ceiling(can_raise: bool, cur_effort: Any, new_effort: Any) -> 
         return False
 
 
+def _retry_allowance(cur_mt: Any, new_mt: Any, raise_ceiling: bool,
+                     cur_effort: Any, new_effort: Any,
+                     model: Any = None) -> int:
+    """M50-25: the allowance the ONE finish=length retry actually sends.
+
+    `_retry_raises_ceiling` (below) keeps the current allowance when effort
+    descends, because the descended answer is cheap: measured 3,658 tokens to a
+    complete answer at a 12,000 cap, and 3,352 at 48,000 — the same content
+    either way. That reasoning holds only while the held allowance can HOLD the
+    descended answer.
+
+    Measured 2026-11-15 (M50-23 probe, one fixed ask): at a 1,200 cap the ladder
+    descended effort max -> high and held the allowance at 1,200; the answer
+    needs ~7.6k-9k completion tokens once deliberation is descended (12,751
+    chars at 12,000; 18,726 at 24,000), so the retry returned _empty at 1,200 —
+    a guaranteed billed-and-empty call, i.e. exactly the spend M50-16 forbids.
+    The ruling's floor never applied on that path: `_budget_retry_max_tokens`
+    computed 48,000 and `_retry_raises_ceiling` then discarded it.
+
+    So: the descent keeps the cheap allowance only when that allowance clears
+    the effort rung's own minimum headroom (`EFFORT_HEADROOM_FLOOR`: 4,000 for
+    high). Below it the advisory floor applies anyway — the floor's own stated
+    contract (anchor_exec.py:1262, "the length retry may never buy less than
+    this when it can afford it"), clamped to what the model accepts. Descent
+    lowers thinking, not headroom.
+
+    Never raises; returns the value to send.
+    """
+    try:
+        cur = int(cur_mt or 0)
+    except Exception:  # noqa: BLE001
+        cur = 0
+    if raise_ceiling:
+        try:
+            new = int(new_mt or 0)
+            if new > 0:
+                return new
+        except Exception:  # noqa: BLE001
+            pass
+        return cur
+    if str(cur_effort or "") == str(new_effort or ""):
+        return cur
+    try:
+        rung = _effort_key(new_effort)
+        needed = EFFORT_HEADROOM_FLOOR.get(rung, 0) if rung else 0
+    except Exception:  # noqa: BLE001
+        needed = 0
+    if cur >= needed and cur > 0:
+        return cur
+    floor = advisory_token_floor(model)
+    return max(cur, floor)
+
+
 def _empty_consult_spend(raws: Any, pricing: Any, model: str) -> float:
     """Price the responses of a consult that produced NO content.
 
@@ -1058,6 +1111,14 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                     # — the field evidence for "why did the retry not grow?"
                     # was unreadable.
                     _raise_ceiling = _retry_raises_ceiling(_can_raise, _eff_from, _eff_to)
+                    # M50-25: the allowance the retry ACTUALLY sends. On the
+                    # descent arm it is the held cap only while that cap can
+                    # hold a descended answer; below the rung's minimum
+                    # headroom the advisory floor applies instead, so a 1,200
+                    # cap no longer buys a guaranteed-empty retry.
+                    _send_mt = _retry_allowance(
+                        _cur_mt, _new_mt, _raise_ceiling,
+                        _eff_from, _eff_to, endpoint.model)
                     # M50-14b: retry when the budget can grow OR the deliberation
                     # setting changes. The old test was `_can_raise` alone, which
                     # left every at-ceiling starved consult unrescued.
@@ -1065,7 +1126,7 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         _budget_retry_log(
                             "anchor_budget_retry", model=endpoint.model,
                             finish="length", max_tokens_from=_cur_mt,
-                            max_tokens_to=_new_mt if _raise_ceiling else _cur_mt,
+                            max_tokens_to=_send_mt,
                             effort_from=_eff_from or "-",
                             effort_to=_eff_to or "-",
                             at_ceiling=(not _can_raise),
@@ -1077,15 +1138,15 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
                         # 48,000 — identical content). Raising the ceiling after
                         # the descent buys nothing and widens the exposure to
                         # 47,170-64,000 on a call that needs ~3.4K.
-                        if _raise_ceiling:
-                            _rp["max_tokens"] = _new_mt
+                        if _send_mt != int(_cur_mt or 0):
+                            _rp["max_tokens"] = _send_mt
                         if _eff_to != _eff_from:
                             if _eff_to:
                                 _rp["reasoning_effort"] = _eff_to
                             else:
                                 _rp.pop("reasoning_effort", None)
                         _budget_retry_paid = True
-                        _retry_mt = _new_mt if _raise_ceiling else int(_cur_mt or 0)
+                        _retry_mt = _send_mt
                         _rc_b, _rraw_b = _simple_anchored_call(
                             endpoint, _rp, timeout, keep_reasoning=True)
                         if str(_rc_b or "").strip():
