@@ -170,12 +170,14 @@ def test_pre_choke_point_refuses_second_pre_for_same_task(budget, monkeypatch):
     second = rc.stage_model_swap(session, dec)
     assert first is not None
     assert second is None
-    # M47-09: the PRE leg keys on the turn SCOPE (`s:<sid>|t:<n>`), not on the
-    # ask-hashed claim id — so the counter is read under the scope.
+    # M47-09: the PRE leg reads the turn SCOPE. M50-24: the COUNT slot is keyed
+    # `scope|task` (the cap is per TASK — a long tool-loop turn holds one scope
+    # for hours, so a pure scope key let the first consult spend every later
+    # task's slot). Both lookups must find the SAME single consumed slot.
     from hermes_router import state as _st
 
     assert budget.counts(session, _st.make_scope_id(session)) == {"pre": 1}
-    assert budget.counts(session, "t-m4525-stage") == {}
+    assert budget.counts(session, "t-m4525-stage") == {"pre": 1}
 
 
 def test_post_choke_point_refuses_second_post_for_same_task(budget, monkeypatch):

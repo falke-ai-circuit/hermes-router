@@ -475,12 +475,27 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
     try:
         key = scope_key(session_id, scope_id or task_id, ask=ask, model=model,
                         trace=trace)
+        # M50-24 (measured: orchestrator session 20261006_192644_08377425,
+        # 21:15:53Z-21:16:56Z). The cap counted per SCOPE, and a scope is a
+        # TURN identity that is HELD across every tool-loop continuation of one
+        # long agent turn. Seven distinct declared asks in that session shared
+        # `s:...|i:1|t:1`; the first PRE consult spent the one slot and every
+        # later task's staging was refused (`consult_capped leg=pre count=1
+        # cap=1`) -> declared_claim_standdown_unexecuted reason=staging_no_record
+        # (198 measured across the fleet). The cap is documented PER TASK, so
+        # the COUNT slot keys scope+TASK. The model-turn basis keeps the scope
+        # key, because both legs (`note_model_turn` and this reader) address it
+        # that way.
+        _tid = str(task_id or "").strip()
+        _count_key = ("%s|%s" % (key, _tid)) if (
+            _tid and str(scope_id or "").strip()) else key
         cap = max_per_task()
         floor = post_min_turns() if str(leg) == "post" else min_turns()
         turn = turn_no(session_id)
-        out.update({"key": key, "cap": cap, "turn": turn})
+        out.update({"key": _count_key, "cap": cap, "turn": turn,
+                    "scope_key": key})
         with _LOCK:
-            slot = _COUNTS.get(key) or {}
+            slot = _COUNTS.get(_count_key) or {}
             count = int(slot.get(str(leg), 0))
             # M46-07 owner ruling: the floor counts prior consults PER LEG,
             # never as a task total. A task whose PRE already spent its slot
@@ -494,7 +509,7 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
                 tturn = int(_MODEL_TURNS.get(key) or 0)
                 basis = "model_turns"
             else:
-                tturn = _task_turn_locked(key, turn)
+                tturn = _task_turn_locked(_count_key, turn)
                 basis = "session_turns"
             out["task_turn"] = tturn
             out["task_turn_basis"] = basis
@@ -508,28 +523,28 @@ def check(session_id: str, task_id: str = "", leg: str = "pre",
             if not deliverable and str(leg) == "post":
                 out.update({"allow": False, "count": count,
                             "reason": "after_delivery"})
-                _record_refusal(session_id, task_id, leg, key, count, cap,
+                _record_refusal(session_id, task_id, leg, _count_key, count, cap,
                                 "after_delivery", model, tturn,
                                 scope_id=scope_id)
                 return out
             if floor > 0 and 0 < tturn < floor and (prior > 0 or str(leg) == "post"):
                 out.update({"allow": False, "count": count,
                             "reason": "below_min_turns"})
-                _record_refusal(session_id, task_id, leg, key, count, cap,
+                _record_refusal(session_id, task_id, leg, _count_key, count, cap,
                                 "below_min_turns", model, tturn,
                                 scope_id=scope_id)
                 return out
-            slot = _COUNTS.setdefault(key, {})
+            slot = _COUNTS.setdefault(_count_key, {})
             count = int(slot.get(str(leg), 0))
             if count >= cap:
                 out.update({"allow": False, "count": count,
                             "reason": CAPPED_TRIGGER})
-                _record_refusal(session_id, task_id, leg, key, count, cap,
+                _record_refusal(session_id, task_id, leg, _count_key, count, cap,
                                 CAPPED_TRIGGER, model, tturn,
                                 scope_id=scope_id)
                 return out
             slot[str(leg)] = count + 1
-            _TURNS_SEEN[key] = turn
+            _TURNS_SEEN[_count_key] = turn
             _prune_locked()
             out.update({"allow": True, "count": count + 1})
             return out
@@ -585,6 +600,31 @@ def _prune_locked() -> None:
         _TASK_BORN.pop(next(iter(_TASK_BORN)), None)
 
 
+def _keys_for(session_id: str = "", task_id: str = "") -> list:
+    """Every counter key that belongs to (session, task).
+
+    M50-24: the count slot is keyed `scope|task`, so a bare `scope_key()`
+    lookup misses it. Callers that pass only a task id (diagnostics, tests,
+    refund-by-task) must still find the slot. Never raises.
+    """
+    base = scope_key(session_id, task_id)
+    tid = str(task_id or "").strip()
+    out = [base]
+    if tid:
+        # M50-24: the slot is keyed `scope|task`. A caller that names the SCOPE
+        # (base is a scope id) matches the composite by prefix; a caller that
+        # names the TASK matches by suffix. Both must find the slot.
+        out.extend([k for k in list(_COUNTS) + list(_TURNS_SEEN)
+                    + list(_TASK_BORN) + list(_MODEL_TURNS)
+                    if str(k).startswith(base + "|") or str(k).endswith("|" + tid)])
+    seen, uniq = set(), []
+    for k in out:
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    return uniq
+
+
 def refund(session_id: str = "", task_id: str = "", leg: str = "pre",
            key: str = "", ask: str = "", model: str = "",
            trace: str = "") -> bool:
@@ -625,11 +665,21 @@ def refund(session_id: str = "", task_id: str = "", leg: str = "pre",
 
 
 def counts(session_id: str = "", task_id: str = "", key: str = "") -> Dict[str, int]:
-    """Read-only snapshot of the counter for a scope (tests + diagnostics)."""
+    """Read-only snapshot of the counter for a scope (tests + diagnostics).
+
+    Aggregates every key that belongs to the task (M50-24: the slot is keyed
+    `scope|task`, so a bare scope_key lookup would read as empty).
+    """
     try:
-        k = str(key or "") or scope_key(session_id, task_id)
+        if str(key or ""):
+            with _LOCK:
+                return dict(_COUNTS.get(str(key)) or {})
+        out: Dict[str, int] = {}
         with _LOCK:
-            return dict(_COUNTS.get(k) or {})
+            for _k in _keys_for(session_id, task_id):
+                for lg, n in (_COUNTS.get(_k) or {}).items():
+                    out[lg] = int(out.get(lg, 0)) + int(n or 0)
+        return out
     except Exception:  # noqa: BLE001
         return {}
 
@@ -647,12 +697,12 @@ def reset(session_id: str = "", task_id: str = "", key: str = "") -> None:
                 _MODEL_TURN_IDS.pop(k, None)
                 return
             if session_id or task_id:
-                _k = scope_key(session_id, task_id)
-                _COUNTS.pop(_k, None)
-                _TURNS_SEEN.pop(_k, None)
-                _TASK_BORN.pop(_k, None)
-                _MODEL_TURNS.pop(_k, None)
-                _MODEL_TURN_IDS.pop(_k, None)
+                for _k in _keys_for(session_id, task_id):
+                    _COUNTS.pop(_k, None)
+                    _TURNS_SEEN.pop(_k, None)
+                    _TASK_BORN.pop(_k, None)
+                    _MODEL_TURNS.pop(_k, None)
+                    _MODEL_TURN_IDS.pop(_k, None)
                 return
             _COUNTS.clear()
             _TURNS_SEEN.clear()

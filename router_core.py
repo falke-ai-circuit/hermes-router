@@ -177,6 +177,43 @@ _SWAP_DONE: Dict[Tuple[str, str], float] = {}
 _SWAP_DONE_TTL = 600.0  # seconds
 _SWAP_DONE_MAX = 128
 
+# M50-24: stage_model_swap returns None for SIX different reasons (dedupe,
+# anchor backoff, no endpoint, fable pin, consult budget, internal error).
+# The gate could only report them as `staging_no_record`, so a terminal
+# BUDGET refusal (the PRE slot for that task was already spent) was retried on
+# every provider call of the turn and logged as a staging failure. The reason
+# rides this bounded map so the gate can name it and stop re-firing.
+_STAGE_REFUSAL: Dict[Tuple[str, str], str] = {}
+
+
+def _note_stage_refusal(key: Tuple[str, str], reason: str) -> None:
+    """Record WHY a staging attempt returned None. Never raises."""
+    try:
+        with _PENDING_SWAP_LOCK:
+            _STAGE_REFUSAL[key] = str(reason or "stage_error")
+            for k, ts in list(_SWAP_DONE.items()):
+                if time.time() - ts > _SWAP_DONE_TTL:
+                    _STAGE_REFUSAL.pop(k, None)
+            while len(_STAGE_REFUSAL) > _SWAP_DONE_MAX:
+                _STAGE_REFUSAL.pop(next(iter(_STAGE_REFUSAL)), None)
+    except Exception:  # noqa: BLE001 — observability only
+        pass
+
+
+def last_stage_refusal(session_id: str, task_id: str) -> str:
+    """The reason the LAST staging attempt for (session, task) was refused.
+
+    Empty when that key was never refused (a staged swap clears it). The
+    caller logs the reason and, for `budget_*`, treats the claim as spent
+    instead of re-firing it per provider call. Never raises.
+    """
+    try:
+        with _PENDING_SWAP_LOCK:
+            return str(_STAGE_REFUSAL.get((str(session_id or ""),
+                                           str(task_id or ""))) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
 # v3.3.1 anchor failure backoff: (session_id, task_id) -> ledger record.
 # _SWAP_DONE prevents re-staging INSIDE one turn (TTL 600s), but each NEW
 # user turn on the same stuck ask outlives it -> fresh anchor staging ->
@@ -1867,13 +1904,18 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                              scope_id=_scope,
                              scope_source=_scope_source)
             if not _cap.get("allow"):
+                # M50-24: name the budget reason; the gate treats `budget_*`
+                # as terminal (the slot is spent) instead of retrying it.
+                _note_stage_refusal(key, "budget_%s" % (
+                    str(_cap.get("reason") or "consult_capped")))
                 return None
         except Exception:  # noqa: BLE001 — budget check is fail-open
             pass
         with _PENDING_SWAP_LOCK:
             done_ts = _SWAP_DONE.get(key)
-            if done_ts is not None and now - done_ts <= _SWAP_DONE_TTL:
-                return None  # swap_already_staged — one consult per turn
+        if done_ts is not None and now - done_ts <= _SWAP_DONE_TTL:
+            _note_stage_refusal(key, "swap_already_staged")
+            return None  # swap_already_staged — one consult per turn
         # v3.3.1 anchor failure backoff: a recent FAILED attempt for this
         # (session, task) benches the anchor for its exponential window —
         # no staging, log anchor_backoff_blocked (the would-have-wasted
@@ -1890,10 +1932,12 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                            task_id=key[1], session_id=key[0])
             except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                 _obs_warn('anchor_backoff_blocked', _obs_exc)  # rider 19 item 1
+            _note_stage_refusal(key, "anchor_backoff")
             return None
         chain = anchor_chain.load_anchor_chain()
         ep = chain.endpoint_for(role)
         if ep is None:
+            _note_stage_refusal(key, "no_endpoint")
             return None
         # R7: model override is USER-ONLY — drop non-user overrides and
         # proceed with the config endpoint (logged, content-free).
@@ -1961,6 +2005,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                                    session_id=str(session_id or ""))
                     except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                         _obs_warn('fable_target_not_explicit', _obs_exc)
+                    _note_stage_refusal(key, "fable_target_not_explicit")
                     return None
         except Exception:  # noqa: BLE001 — the guard is fail-closed by intent
             pass
@@ -1988,6 +2033,7 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
         with _PENDING_SWAP_LOCK:
             _PENDING_SWAP[session_id or ""] = rec
             _SWAP_DONE[key] = now
+            _STAGE_REFUSAL.pop(key, None)  # a staged swap is not a refusal
             # TTL reap + size cap (same discipline as _TASK_STATE).
             for k in [k for k, ts in _SWAP_DONE.items() if now - ts > _SWAP_DONE_TTL]:
                 _SWAP_DONE.pop(k, None)
@@ -1996,6 +2042,12 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
                 _SWAP_DONE.pop(oldest, None)
         return rec
     except Exception:  # noqa: BLE001
+        try:
+            _note_stage_refusal((str(session_id or ""),
+                                 str(getattr(decision, "task_id", "") or "")),
+                                "stage_error")
+        except Exception:  # noqa: BLE001
+            pass
         return None
 
 

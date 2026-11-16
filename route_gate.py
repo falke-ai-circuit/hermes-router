@@ -1212,6 +1212,45 @@ def mark_claim_produced(session_id: str, reason: str = "",
         return False
 
 
+def mark_claim_refused(session_id: str, reason: str = "", **kw: Any) -> bool:
+    """The claim was CONSUMED by a TERMINAL refusal (no consult, no retry).
+
+    M50-24: a consult-budget refusal (`budget_consult_capped`) can never
+    succeed on a retry — the slot is spent — so leaving the claim
+    `executed=False` re-fired it on every provider call of the turn and logged
+    each attempt as `declared_claim_standdown_unexecuted reason=staging_no_record`
+    (the measured 198). The record is marked executed AND refused; the
+    release contract skips a refused claim so the turn does not reopen.
+    Never raises.
+    """
+    try:
+        lane = source = ""
+        with _CLAIM_LOCK:
+            _gc_claims_locked(time.time())
+            rec = _DECLARED_CLAIMS.get(str(session_id or ""))
+            if rec is not None:
+                rec["refused"] = True
+                lane = str(rec.get("lane") or "")
+                source = str(rec.get("source") or "")
+            trec = _TURN_CLAIMED.get(_turn_claim_key(str(session_id or "")))
+            if trec is not None:
+                trec["executed"] = True
+                trec["refused"] = True
+                lane = lane or str(trec.get("lane") or "")
+                source = source or str(trec.get("source") or "")
+        try:
+            _payload = {"claim_lane": lane, "claim_source": source,
+                        "reason": str(reason or ""), "session_id": session_id}
+            _payload.update(kw)
+            _pkg_fn("_log_route")("PRE", event_detail="claim_refused",
+                                  **_payload)
+        except Exception:  # noqa: BLE001 — observability only
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def release_turn_claim(session_id: str, reason: str, **kw: Any) -> bool:
     """RELEASE an unproduced claim: drop the turn-window record AND the pending
     declared claim so the turn reopens (a later eligible lane/leg can claim),
@@ -1958,7 +1997,7 @@ def decide_turn(ctx: Dict[str, Any]) -> GateDecision:
                 # on a claim that produced, or inside the produce-grace window
                 # (a concurrent provider call of the same turn may still be
                 # producing). No silent stand-down path survives.
-                if not _turn.get("produced"):
+                if not _turn.get("produced") and not _turn.get("refused"):
                     _age = 0.0
                     try:
                         _age = time.time() - float(_turn.get("ts") or 0.0)
@@ -2468,14 +2507,37 @@ def claim_pass(content: str, session_id: str, model: str,
                     # execute-once re-fire: the consult never ran, the
                     # claim was consumed, ZERO events (live: conductor —
                     # every higher-pre fire staged=False, no
-                    # frontier_consult rows since Sep 30). Keep the claim
-                    # re-executable and log the failure event.
-                    _pkg_fn("_log_route")(
-                        "PRE", event_detail="declared_claim_standdown_unexecuted",
-                        lane=str(decision.lane or ""),
-                        source=str(decision.source or ""),
-                        reason="staging_no_record", task_id=_task,
-                        session_id=session_id)
+                    # frontier_consult rows since Sep 30).
+                    #
+                    # M50-24: name the ACTUAL refusal. A budget refusal is
+                    # terminal (that task's PRE slot is spent, retrying per
+                    # provider call only re-logs it), so the claim is
+                    # consumed and reported as `declared_claim_budget_refused`
+                    # — never as a staging failure the next pass must retry.
+                    _why = ""
+                    try:
+                        _why = str(_rc.last_stage_refusal(session_id,
+                                                          _task) or "")
+                    except Exception:  # noqa: BLE001 — observability only
+                        _why = ""
+                    if _why.startswith("budget_"):
+                        mark_turn_claim_executed(session_id)
+                        mark_claim_refused(session_id, _why)
+                        _pkg_fn("_log_route")(
+                            "PRE",
+                            event_detail="declared_claim_budget_refused",
+                            lane=str(decision.lane or ""),
+                            source=str(decision.source or ""),
+                            reason=_why, task_id=_task,
+                            session_id=session_id)
+                    else:
+                        _pkg_fn("_log_route")(
+                            "PRE",
+                            event_detail="declared_claim_standdown_unexecuted",
+                            lane=str(decision.lane or ""),
+                            source=str(decision.source or ""),
+                            reason=_why or "staging_no_record", task_id=_task,
+                            session_id=session_id)
                 else:
                     # Leg 7c: the declared claim's consult has now FIRED —
                     # flag the turn-claim record executed so every later

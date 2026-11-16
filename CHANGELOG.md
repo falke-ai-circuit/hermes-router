@@ -1,3 +1,32 @@
+## Unreleased — M50-24 (declared claim survives the staging handoff)
+
+Measured (11 profiles, uncensored-router.log aggregate): `request_routing_executed
+staged=False` 276 vs `staged=True` 38, and every one of 198
+`declared_claim_standdown_unexecuted` rows carried `reason=staging_no_record`
+with 509 POST pairs left `paired=False reason=no_pre`. Detection was never at
+fault — all of them were `source=aux_intent reason=declared_user`.
+
+Cause: `consult_budget.check()` keyed its slot on the SCOPE, and a scope is a
+turn identity held across every tool-loop continuation, so ONE long turn shared
+one slot. The turn's first PRE consult spent it and every later DISTINCT task in
+that turn got `consult_capped leg=pre count=1 cap=1` -> `stage_model_swap()`
+returned `None` -> the claim stayed `executed=False` and re-fired per provider
+call (verbatim quartet: orchestrator session 20261006_192644_08377425,
+21:15:53Z-21:16:56Z).
+
+- the count slot is now keyed `scope|task` (the cap is per TASK, as documented);
+  the model-turn basis still reads by scope, unchanged.
+- `stage_model_swap()` records WHY it refused (`_STAGE_REFUSAL`,
+  `last_stage_refusal()`), so a refusal is named instead of flattened to
+  `staging_no_record`.
+- a `budget_*` refusal is TERMINAL: the claim is consumed and logged
+  `declared_claim_budget_refused` (+ `claim_refused`), never
+  `declared_claim_standdown_unexecuted`; the M34-11 release contract skips a
+  refused claim so the turn cannot reopen and re-bill. Genuine staging failures
+  keep their retry (R19.16 FIX 2).
+- detection, the declared phrase table and every effort/budget knob value are
+  untouched.
+
 ## Unreleased — M36-29 (emit boundary: `route_fired_no_stash` retired)
 
 M36-28 §1 ruling B. The gate/declaration-driven POST route is a route, so it
