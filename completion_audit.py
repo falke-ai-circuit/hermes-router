@@ -3496,7 +3496,15 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         # (fork_class=frontier_adversarial_parse_fail keeps it out of priors)
         # whenever the consult carried an adversarial instruction but the
         # parse missed. Never raises.
-        if _adv is None:
+        # M50-38b (measured 2026-11-17): the adversarial INSTRUCTION is
+        # conditional — it rides only when the ask itself declared adversarial
+        # (`_ask_declared_adversarial`). So on a benign ask `_adv is None` is the
+        # NORMAL outcome, and logging it unconditionally turned every ordinary
+        # consult into an apparent parser defect: a 100% "failure" rate, all of
+        # it phantom (has_key=False, because nothing was ever asked for). A
+        # metric that fires on every sample measures the logger, not the parser.
+        _adv_asked = _ask_declared_adversarial(ask)
+        if _adv is None and _adv_asked:
             try:
                 logger.info("frontier_adversarial_parse_failed "
                             "session_id=%s chars=%d braces=%d has_key=%s "

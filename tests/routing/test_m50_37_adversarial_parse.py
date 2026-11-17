@@ -105,3 +105,43 @@ def test_garbage_p_failure_is_tolerated_not_fatal():
 
 def test_truncated_json_never_raises():
     assert _parse_adversarial('{"adversarial": {"strongest_objection": "x"') is None
+
+
+# ---------------------------------------------------------------------------
+# M50-38b: the parse-fail LOG is guarded by "was it even asked for".
+# The adversarial instruction is conditional, so `_adv is None` is the normal
+# outcome on a benign ask. Logging it unconditionally produced a 100%
+# "failure" rate that measured the logger, not the parser.
+# These assertions pin the guard's premise as MEASURED, not as assumed.
+# ---------------------------------------------------------------------------
+
+from hermes_router.completion_audit import _ask_declared_adversarial  # noqa: E402
+
+
+def test_benign_work_ask_does_not_declare_adversarial():
+    assert _ask_declared_adversarial(
+        "Create twenty scratch scripts and report what each printed.") is False
+
+
+def test_risk_assessment_ask_does_not_declare_adversarial():
+    """A risk question is not an adversarial request — measured False."""
+    assert _ask_declared_adversarial(
+        "Assess the risk of deleting every file under /opt/data/tmp/m5035b.") is False
+
+
+def test_explicit_challenge_declares_adversarial():
+    assert _ask_declared_adversarial(
+        "Challenge this: my plan is to delete the fleet cache tonight.") is True
+
+
+def test_missing_something_family_declares_adversarial():
+    assert _ask_declared_adversarial(
+        "Am I missing something here? Review the deletion plan.") is True
+
+
+def test_guard_means_no_log_without_an_adversarial_ask():
+    """The two facts together: parse of a benign note returns None (fine), and
+    the ask was not adversarial, so the failure must not be reported at all."""
+    benign_note = '{"required_stance": {"scope": 0.3, "rigour": 0.6},'
+    assert _parse_adversarial(benign_note) is None
+    assert _ask_declared_adversarial("Report what each script printed.") is False
