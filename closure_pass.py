@@ -20,7 +20,7 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,13 @@ MIN_LEN_RATIO = 0.5
 #: never a bare None in the log -- the whole point is that "closure_pass_none"
 #: must say WHY.
 last_reason = ""
+
+#: M50-34: which provider-resolution rule matched, and the key it matched, for
+#: the last _target() call. A closure skip must say WHY in measurable terms --
+#: "no_target:no_provider_match" is a config defect, "no_target:no_model" is a
+#: different one, and before this both read as a bare "no_target".
+last_target_rule = ""
+last_target_key = ""
 
 _INSTRUCTION = (
     "You just finished this work and were about to send the answer below.\n\n"
@@ -103,8 +110,65 @@ def _config() -> Dict[str, Any]:
     return {}
 
 
+def _resolve_provider(provs: Dict[str, Any], provider: str,
+                      model: str) -> Tuple[Optional[Dict[str, Any]], str, str]:
+    """(providers block, matched key, rule) for the configured provider.
+
+    M50-34 — MEASURED DEFECT: `model.provider` is `nous` while the block is
+    registered as `custom:nousinf` in ALL 11 profiles, so the previous exact
+    `provs.get(provider)` returned None on every install. The closure pass
+    therefore never ran: 2 successes in 386 POST events, 61 x `no_target`.
+    A naming difference between two config surfaces disarmed a whole mechanism
+    while every "is it live?" check still passed.
+
+    Resolution order is deterministic and each rule reports itself, so a skip is
+    never silent again:
+      1 exact                    providers["nous"]
+      2 prefix-normalised        providers["custom:nous"] / strip "custom:"
+      3 case-insensitive exact
+      4 unique containment       the only key whose name contains the token
+                                 ("nousinf" for "nous"); ambiguous -> no match
+      5 model-prefix token       same containment, using the model's own
+                                 namespace when `provider` is empty
+    Never raises; returns (None, "", reason) when nothing matches.
+    """
+    try:
+        keys = [k for k in provs.keys() if isinstance(k, str)]
+        want = str(provider or "").strip()
+        bare = want[7:] if want.lower().startswith("custom:") else want
+        # 1 exact / 2 prefix-normalised
+        for cand in (want, "custom:" + bare, bare):
+            if cand and isinstance(provs.get(cand), dict):
+                return provs[cand], cand, "exact" if cand == want else "prefix"
+        low = want.lower()
+        # 3 case-insensitive exact
+        for k in keys:
+            if low and k.lower() == low and isinstance(provs.get(k), dict):
+                return provs[k], k, "case"
+        # 4 unique containment on the provider token
+        token = (bare or "").lower()
+        if token:
+            hits = [k for k in keys
+                    if token in k.lower() and isinstance(provs.get(k), dict)]
+            if len(hits) == 1:
+                return provs[hits[0]], hits[0], "contains"
+        # 5 model-namespace token (bare `model: <ns>/<name>` form)
+        ns = str(model or "").split("/", 1)[0].strip().lower() if "/" in str(model or "") else ""
+        if ns and ns != token:
+            hits = [k for k in keys
+                    if ns in k.lower() and isinstance(provs.get(k), dict)]
+            if len(hits) == 1:
+                return provs[hits[0]], hits[0], "model_ns"
+        return None, "", ("no_provider_match" if want else "no_provider_configured")
+    except Exception:  # noqa: BLE001
+        return None, "", "resolve_error"
+
+
 def _target() -> Optional[Dict[str, str]]:
     """(base_url, api_key, model) for the agent's own model, or None."""
+    global last_target_rule, last_target_key
+    last_target_rule = ""
+    last_target_key = ""
     cfg = _config()
     model_cfg = cfg.get("model")
     model = ""
@@ -114,14 +178,18 @@ def _target() -> Optional[Dict[str, str]]:
         provider = str(model_cfg.get("provider") or "").strip()
     elif isinstance(model_cfg, str):
         model = model_cfg.strip()
-    if not model or not provider:
+    if not model:
+        last_target_rule = "no_model"
         return None
     provs = cfg.get("providers")
     if not isinstance(provs, dict):
+        last_target_rule = "no_providers"
         return None
-    entry = provs.get(provider)
+    entry, matched, rule = _resolve_provider(provs, provider, model)
+    last_target_rule, last_target_key = rule, matched
     if not isinstance(entry, dict):
         return None
+    provider = matched or provider
     base = str(entry.get("base_url") or "").rstrip("/")
     # provider blocks spell this either way; reading only one of them makes
     # the pass silently skip on every install that uses the other.
@@ -260,7 +328,9 @@ def revise(ask: str, answer: str, note: str,
             return None
         tgt = _target()
         if not tgt:
-            last_reason = "no_target"
+            # M50-34: name the rule that failed. "no_target" alone hid a config
+            # defect (provider `nous` vs block `custom:nousinf`) for months.
+            last_reason = "no_target:%s" % (last_target_rule or "unknown")
             return None
         msgs = [
             {"role": "system", "content": _INSTRUCTION},
