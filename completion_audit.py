@@ -1023,15 +1023,41 @@ def _is_complex_ask(ask: str) -> bool:
         return False
 
 
+def _length_floor_blocks(response_text: Any, paired: bool,
+                         work_mass: bool) -> bool:
+    """True when the length floor should REFUSE this body.
+
+    M50-35 (owner 2026-11-16: "heavy but terse is still frontier or higher-self
+    eligible"). The floor exists to stop a ONE-LINE reply buying a consult. Work
+    mass already proves the turn was not a one-liner — measured live: a turn with
+    tools=84 files=20 muts=40 was refused as `response_too_short_unpaired
+    chars=211` only because the agent summarised tersely. Objective work evidence
+    outranks prose length.
+
+    Nothing else moves: a PAIRED turn was always exempt, a body that is not text
+    is still refused (there is nothing to audit), and a terse turn with NO work
+    mass is refused exactly as before. The floor decides size, and mass is
+    evidence about size that the body cannot fake.
+    """
+    if not isinstance(response_text, str):
+        return True
+    if paired or work_mass:
+        return False
+    return len(response_text.strip()) < _MIN_RESPONSE_CHARS
+
+
 def eligible(session_id: str, ask: str, response_text: str, model: str = "",
              turn_n: Optional[int] = None, paired: bool = False,
-             scope_id: str = "") -> Tuple[bool, str]:
+             scope_id: str = "", work_mass: bool = False) -> Tuple[bool, str]:
     """Fire decision for the completion audit. Returns (ok, reason).
 
     R34-19: `paired=True` = a PRE advisory exists for this turn, so this is
     its POST CONFIRMATION — it fires regardless of audit_mode (off included)
     and the PRE/POST mutual exclusion no longer applies (the pairing IS the
-    one-consult-per-turn contract)."""
+    one-consult-per-turn contract).
+
+    M50-35: `work_mass=True` = the turn's own tool/file/mutation counts already
+    cleared the work-mass gate, which exempts it from the length floor."""
     mode = audit_mode()
     if mode == "off":
         # R42: pairing no longer overrides the master switch — a PRE is payload
@@ -1041,22 +1067,26 @@ def eligible(session_id: str, ask: str, response_text: str, model: str = "",
     # R34-19: the floor stops a one-liner buying a consult, but a PAIRED turn
     # already paid for its PRE — its confirmation is owed even when the report
     # is terse (live: 2 files + 5 tests reported in 264 chars lost its POST).
-    if not paired and (not isinstance(response_text, str)
-                       or len(response_text.strip()) < _MIN_RESPONSE_CHARS):
-        # M34-17 (Amendment A §A4): THE LENGTH GATE IS OUT OF THE DECISION.
-        # The M34-10 refusal-shape exception is DELETED, not disabled — with
-        # the PRE intent token deciding whether a refusal routes, a body's
-        # shape is no longer this arm's business, and a terse decline is no
-        # longer this floor's to rescue. What it still decides is SIZE (a
-        # one-liner does not buy a consult); what it observes (length, and
-        # shape as a boolean) is written to telemetry and decides nothing.
-        _log("audit_length_floor_observed",
-             chars=len(str(response_text or "")), pair=False,
-             floor="eligible",
-             refusal_shaped=bool(isinstance(response_text, str)
-                                 and is_refusal_shaped_body(response_text)),
-             session_id=session_id)
+    # M50-35: the same logic now covers WORK MASS — heavy work reported tersely
+    # is still eligible (owner ruling 2026-11-16).
+    # M34-17 (Amendment A §A4): the floor decides SIZE and nothing else. The
+    # M34-10 refusal-shape exception is DELETED, not disabled — shape is
+    # observed here and decides nothing.
+    if _length_floor_blocks(response_text, paired, work_mass):
+        if isinstance(response_text, str):
+            _log("audit_length_floor_observed",
+                 chars=len(response_text), pair=False,
+                 floor="eligible",
+                 work_mass=bool(work_mass),
+                 refusal_shaped=bool(is_refusal_shaped_body(response_text)),
+                 session_id=session_id)
         return False, "response_too_short"
+    if work_mass and not paired and isinstance(response_text, str) \
+            and len(response_text.strip()) < _MIN_RESPONSE_CHARS:
+        # The exempted case must be visible, or "POST fired on a terse body"
+        # reads as a floor regression in the log.
+        _log("audit_length_floor_mass_exempt",
+             chars=len(response_text.strip()), session_id=session_id)
     if paired and not isinstance(response_text, str):
         return False, "response_too_short"
     # R42: the ask-side complexity test is GONE from POST eligibility. POST
@@ -1373,8 +1403,10 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
         # confirmation is owed regardless of how terse the report is — a short
         # report over real work (2 files, 5 tests) was silently losing its
         # confirmation because the agent reported it in 264 chars.
-        if not isinstance(response_text, str) or (
-                not _pair and len(response_text.strip()) < _MIN_RESPONSE_CHARS):
+        # M50-35: work mass exempts the floor — heavy work reported tersely is
+        # still eligible (owner ruling). Measured defect this fixes: tools=84
+        # files=20 muts=40 was refused as `response_too_short_unpaired chars=211`.
+        if _length_floor_blocks(response_text, bool(_pair), bool(_wm["fire"])):
             # M34-17 (Amendment A §A4): TELEMETRY ONLY. The M34-10
             # refusal-shape exception is DELETED — shape cannot buy a terse
             # body past this floor, because a body's shape is no longer what
@@ -1388,7 +1420,7 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                      session_id=session_id)
             _skip("response_too_short_unpaired",
                   chars=len(str(response_text or "")), pair=bool(_pair),
-                  session_id=session_id)
+                  work_mass=bool(_wm["fire"]), session_id=session_id)
             return None
         # Leg 7 (single claim point, blueprint invariant #1): when the
         # gate's claim registry holds ANY claim for this session/turn,
@@ -1651,7 +1683,8 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
              session_id=session_id)
         _ok, _why = eligible(session_id, ask, response_text, model,
                              turn_n=_turn_n, paired=bool(_pair),
-                             scope_id=_scope_id)
+                             scope_id=_scope_id,
+                             work_mass=bool(_wm["fire"]))
         _log("completion_audit_gate",
                    ok=_ok, reason=_why, session_id=session_id,
                    turn=_turn_n, of=_min_turns, closure=_closure,
