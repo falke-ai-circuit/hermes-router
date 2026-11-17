@@ -2066,8 +2066,8 @@ def _adversarial_seed_instruction() -> str:
         "\nFIRST, NAME THE STRONGEST CASE THIS FAILS: strongest_objection "
         "(the single most damaging argument against the approach), "
         "failure_mode (how it would concretely break), p_failure (0.0-1.0, "
-        "your estimate). END WITH EXACTLY ONE JSON OBJECT (nothing after "
-        "it): {\"adversarial\": {\"strongest_objection\": \"...\", "
+        "your estimate). BEGIN YOUR REPLY WITH EXACTLY ONE JSON OBJECT "
+        "(before any prose), because a reply is truncated at its END: {\"adversarial\": {\"strongest_objection\": \"...\", "
         "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
 
 
@@ -2078,14 +2078,16 @@ def _adversarial_attack_instruction(merge_with_skeptic: bool) -> str:
     if merge_with_skeptic:
         return (
             "\nADVERSARIAL (via skeptic): your skeptic vantage above IS the "
-            "adversarial element — fold its strongest attack into the final "
-            "JSON. END WITH EXACTLY ONE JSON OBJECT (nothing after it): "
+            "adversarial element — fold its strongest attack into the JSON. BEGIN "
+            "YOUR REPLY WITH EXACTLY ONE JSON OBJECT (before any prose), "
+            "because a reply is truncated at its END: "
             "{\"adversarial\": {\"strongest_objection\": \"...\", "
             "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
     return (
         "\nTHEN ATTACK: construct the strongest counterargument against the "
         "approach AND the result — find weak points, loopholes, unstated "
-        "assumptions. END WITH EXACTLY ONE JSON OBJECT (nothing after it): "
+        "assumptions. BEGIN YOUR REPLY WITH EXACTLY ONE JSON OBJECT (before any "
+        "prose), because a reply is truncated at its END: "
         "{\"adversarial\": {\"strongest_objection\": \"...\", "
         "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
 
