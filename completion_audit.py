@@ -2090,19 +2090,69 @@ def _adversarial_attack_instruction(merge_with_skeptic: bool) -> str:
         "\"failure_mode\": \"...\", \"p_failure\": 0.0}}\n")
 
 
+def _json_object_candidates(text: str):
+    """Yield every brace-BALANCED substring of `text`, in document order.
+
+    Brace counting ignores braces inside JSON strings (and escaped quotes), so
+    a quoted "{...}" in prose cannot shift the depth. Nested objects yield both
+    inner and outer spans; callers try them in reverse order.
+    """
+    s = str(text or "")
+    stack = []
+    in_str = False
+    esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            stack.append(i)
+        elif ch == "}":
+            if stack:
+                yield s[stack.pop():i + 1]
+
+
 def _parse_adversarial(verdict_text: str) -> Optional[Dict[str, Any]]:
     """Tolerant adversarial extraction — {strongest_objection, failure_mode,
     p_failure}. Fail-open: absent/malformed returns None (the consult never
-    breaks on a formatting miss). Never raises."""
+    breaks on a formatting miss). Never raises.
+
+    M50-37 (measured 2026-11-17): the extractor used a GREEDY `\\{.*\\}` with
+    DOTALL, so it spanned from the FIRST brace in the note to the LAST one. The
+    instruction tells the model to END with one JSON object, but its reasoning
+    routinely mentions braces earlier ("{strongest_objection, failure_mode,
+    p_failure}"), so the greedy span was not valid JSON and the adversarial
+    half was silently dropped — `frontier_adversarial_parse_failed` fired on
+    EVERY audited turn (chars=1096 / 1370 / 1678). Consequence downstream: the
+    note handed back to the agent's own model had no adversarial half, so the
+    closure pass found nothing actionable and rewrote the body as itself
+    (`closure_pass_applied changed=0` on every run).
+
+    Candidates are now brace-balanced and tried LAST-FIRST, because the
+    contract says the target object ends the note.
+    """
     try:
-        m = re.search(r"\{.*\}", str(verdict_text or ""), re.DOTALL)
-        if not m:
-            return None
-        data = json.loads(m.group(0))
-        if not isinstance(data, dict):
-            return None
-        adv = data.get("adversarial")
-        if not isinstance(adv, dict):
+        adv = None
+        for blob in reversed(list(_json_object_candidates(verdict_text))):
+            try:
+                data = json.loads(blob)
+            except Exception:  # noqa: BLE001 — not JSON, try the next candidate
+                continue
+            if not isinstance(data, dict):
+                continue
+            cand = data.get("adversarial")
+            if (isinstance(cand, dict)
+                    and str(cand.get("strongest_objection") or "").strip()):
+                adv = cand
+                break
+        if adv is None:
             return None
         obj = str(adv.get("strongest_objection") or "").strip()
         if not obj:
