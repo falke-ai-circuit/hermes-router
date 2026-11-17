@@ -3497,8 +3497,12 @@ def _consult_meta(session_id: str, ask: str, response_text: str,
         if _adv is None:
             try:
                 logger.info("frontier_adversarial_parse_failed "
-                            "session_id=%s chars=%d", session_id,
-                            len(verdict_text))
+                            "session_id=%s chars=%d braces=%d has_key=%s "
+                            "tail=%r",
+                            session_id, len(verdict_text),
+                            str(verdict_text or "").count("{"),
+                            ("adversarial" in str(verdict_text or "")),
+                            str(verdict_text or "")[-240:])
                 from .decision import ledger_write as _lw
 
                 _lw({"session_id": session_id, "task_id": str(key or ""),
