@@ -1834,6 +1834,18 @@ def audit_gate(session_id: str, response_text: str, model: str = "",
                          session_id=session_id)
                 except Exception:  # noqa: BLE001 — provenance never breaks delivery
                     logger.debug("folded-body reconcile error", exc_info=True)
+                # M50-41 (owner behavioural model, 2026-11-18): the response is
+                # a DRAFT that the POST consult intercepts. The advisory was
+                # handed to the agent's own model and `_delivered` is what that
+                # model returned — agent-authored, therefore the FINAL answer.
+                # Stamp the turn so the delivery seam ships it instead of the
+                # pre-consult draft. Fail-open: no stamp -> draft ships, which is
+                # exactly the old behaviour, so this can never block a turn.
+                try:
+                    from .features.banners import turn_record as _tr_adj
+                    _tr_adj.mark_main_adjusted(session_id)
+                except Exception:  # noqa: BLE001 — advisory never blocks delivery
+                    pass
             elif _note:
                 # revised_response is null: the defect needs TOOL work (or the
                 # fold failed its own checks). Behave exactly as before — deliver

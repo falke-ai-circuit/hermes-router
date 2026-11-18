@@ -71,6 +71,35 @@ def turn_no(session_id: str) -> int:
         return 0
 
 
+def mark_main_adjusted(session_id: str) -> None:
+    """M50-41: the audit's revision this turn is AGENT-AUTHORED.
+
+    The POST advisory is handed to the agent's own model, and what that model
+    returns is the agent's final answer — not router prose. The delivery seam
+    needs to know that, because its decision input is otherwise the
+    pre-consult DRAFT. Stored on the per-turn record, which `_record()` rebuilds
+    whenever the turn key changes, so the flag can never leak into the next turn.
+    Never raises: a failed stamp leaves the draft in place.
+    """
+    try:
+        _record(session_id)["main_adjusted"] = True
+    except Exception:  # noqa: BLE001 — provenance never blocks delivery
+        pass
+
+
+def main_adjusted(session_id: str) -> bool:
+    """True when this turn's body was adjusted by the agent's own model.
+
+    Fail-open by construction: any failure answers False, which is the
+    pre-M50-41 behaviour (deliver the draft).
+    """
+    try:
+        return bool(_record(session_id).get("main_adjusted"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+
 def _lane_of(text: str) -> str:
     s = str(text or "")
     for label, lane in _LANE_LABELS:

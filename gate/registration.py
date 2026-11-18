@@ -324,7 +324,24 @@ def on_transform_llm_output_guarded(**kwargs):
     _failure = ""
     final = None
     try:
-        _facts = _build_facts(_original, kwargs, _turn, out, _closed_hit,
+        # M50-41 (owner behavioural model): the agent's response is a DRAFT the
+        # POST consult intercepts. When the agent's own model adjusted that
+        # draft after seeing the advisory, the ADJUSTED body is the final answer
+        # and the draft must never be a delivery candidate.
+        #
+        # Provenance comes from the audit's stamp, never from `out` alone: `out`
+        # is the aggregated transform output, so without the tag any lane render
+        # could masquerade as an agent adjustment and re-open M34-04. Any
+        # failure here fails open to the draft — the router never blocks a turn.
+        _entered_dec = _original
+        try:
+            from ..features.banners import turn_record as _tr_dec
+            if (_tr_dec.main_adjusted(str(kwargs.get("session_id") or ""))
+                    and isinstance(out, str) and out.strip()):
+                _entered_dec = out
+        except Exception:  # noqa: BLE001 — fail open to the draft
+            _entered_dec = _original
+        _facts = _build_facts(_entered_dec, kwargs, _turn, out, _closed_hit,
                                attempt=_pre_attempt)
         _decision = _decide(_facts)
         if _decision.action == _dd.CONSULT_REENTER:
