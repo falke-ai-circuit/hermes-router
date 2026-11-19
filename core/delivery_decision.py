@@ -109,6 +109,13 @@ REASON_SEAM_FAILURE = "seam_failure"
 # --------------------------------------------------------------------------- #
 MARKERS = (
     '<turn declined=',
+    # M53-02: the ARMED-turn attestation is the same marker FAMILY and was
+    # missing from this vocabulary, so `carries_marker` could not see it and a
+    # truncated/malformed fragment ('<turn domain="…" type="…" /') reached the
+    # delivered body. The well-formed form is removed byte-wise by `_TAG_RE`
+    # in `strip_markers`; this entry is what makes the LEAK VOCABULARY agree
+    # with the strip, and it is the only thing that catches a fragment.
+    '<turn domain=',
     "PLATFORM RULE",
     "[router]",
     "[router advisory",
@@ -254,6 +261,12 @@ ROUTER_PROSE = (
 # marker strip — remove bytes only, and record the delta
 # --------------------------------------------------------------------------- #
 _TAG_RE = re.compile(r"<turn\b[^>]*?/?>", re.IGNORECASE)
+# M53-02: an UNTERMINATED tag line — the shape an output cap leaves behind
+# (`<turn domain="none" type="produced" /`) — never matches `_TAG_RE`, which
+# requires the closing `>`. Measured: such a body reached D6, `_delivered_bytes`
+# returned None (host pass-through), and the host shipped the fragment. The
+# whole line is routing metadata wherever it sits, so the LINE goes.
+_TAG_FRAGMENT_RE = re.compile(r"(?im)^[ \t]*<turn\b[^\n>]*$")
 _MARKER_LINE_RE = re.compile(
     r"(?im)^[ \t]*(?:\[router[^\]]*\]|\[router advisory[^\n]*|"
     r"\[router fork note[^\n]*|\[internal state readout[^\n]*|"
@@ -275,7 +288,20 @@ def strip_markers(text: str) -> "tuple[str, int]":
     if not original:
         return original, 0
     try:
-        clean = _TAG_RE.sub("", original)
+        clean = _TAG_FRAGMENT_RE.sub("", original)
+        clean = _TAG_RE.sub("", clean)
+        # M53-02: strip the attestation form through its OWN module too. The
+        # vocabulary entry above makes the leak scan agree; this makes the
+        # STRIP agree on every variant the tag module accepts (no-self-close,
+        # leading spaces), and both are counted, so `strip_bytes` is non-zero
+        # and `_delivered_bytes` returns explicit bytes instead of the
+        # pass-through None that let the host ship its own tag-bearing copy.
+        try:
+            from ..features.detection import attestation as _att_strip
+
+            clean, _att = _att_strip.strip_attestation(clean)
+        except Exception:  # noqa: BLE001 — a missing module is not a leak
+            pass
         clean = _MARKER_LINE_RE.sub("", clean)
         clean = _FOOTER_RE.sub("", clean)
         clean = _JSON_TAIL_RE.sub("", clean)

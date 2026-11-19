@@ -495,24 +495,39 @@ ECHOING_RENDER_BOOL = ('<turn declined="true" />\n\n'
                        'RENDERED MATERIAL — the requested body, in full.')
 
 
-def test_declined_route_delivered_bytes_carry_no_tag(rows):
-    """declined -> rule 1 -> route -> the bytes the user receives.
+def test_registration_seam_delivers_bytes_without_a_tag(rows, monkeypatch):
+    """END-TO-END at the DELIVERY SEAM — the function that computes `final`.
 
-    The render carries the tag too (the measured live shape: the render model
-    echoed the draft's opening line). Neither form may ship.
+    This is the seam that shipped the tag in the live battery: `_build_facts`
+    strips markers, `_decide` names the bytes, `_delivered_bytes` hands them to
+    the host (None = "deliver the body you gave me" = the host's own copy).
+
+    Four shapes, including the one that actually escaped in production: an
+    UNTERMINATED tag line (what an output cap leaves behind), which `_TAG_RE`
+    cannot match because it requires the closing `>`.
     """
-    for sid, render in (("m53-e2e-echo", ECHOING_RENDER),
-                        ("m53-e2e-echo-bool", ECHOING_RENDER_BOOL)):
-        _prime(sid)
-        with mock.patch.object(plugin.router, "call", return_value=render):
-            out = _post(sid, TAG_DECLINED + "\n\n" + ACTION_BODY)
-        delivered = out if isinstance(out, str) else (
-            getattr(plugin.state, "get_last_seen", lambda _s: "")(sid))
-        assert "<turn domain=" not in delivered
-        assert "<turn declined=" not in delivered
-        assert "RENDERED MATERIAL" in delivered
-        route = _events(rows, "rule_route")
-        assert route and route[-1]["replace"] == 1
+    from hermes_router.gate import registration as reg
+
+    monkeypatch.setattr(
+        domain_gate, "read", lambda sid: {"domain": "none", "gate": "not_flagged"})
+    shapes = {
+        "well-formed": TAG_PRODUCED,
+        "declined": TAG_DECLINED,
+        "truncated": '<turn domain="none" type="produced" /',
+        "boolean-truncated": '<turn declined="true"',
+    }
+    for label, tag in shapes.items():
+        body = tag + "\n\n" + BENIGN_BODY
+        facts = reg._build_facts(body, {"session_id": "m53-seam"}, None, None, "")
+        decision = reg._decide(facts)
+        out = reg._delivered_bytes(decision, body)
+        # `None` is the documented pass-through: the HOST ships its own copy,
+        # which is the tag-bearing body. Resolve it to the bytes the user sees.
+        delivered = body if out is None else out
+        assert "<turn domain=" not in delivered, label
+        assert "<turn declined=" not in delivered, label
+        assert BENIGN_BODY in delivered, label
+        assert int(decision.strip_bytes) > 0, label
 
 
 def test_pre_render_delivery_never_injects_a_tag(monkeypatch):
