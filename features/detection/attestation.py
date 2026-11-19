@@ -1,0 +1,373 @@
+"""features/detection/attestation.py — M53-02 TWO-FIELD ATTESTATION (armed turns).
+
+Spec: /opt/data/tmp/M53-01_declaration_enforcement_SPEC.md (FROZEN).
+
+WHAT THIS IS
+    The boolean declaration (``<turn declined="true|false" />``) answers "did
+    you decline". It is unfalsifiable per turn: a missing tag is not evidence
+    of anything, and a ``false`` on a real refusal is indistinguishable from an
+    honest ``false``. The attestation asks the second question — WHAT was
+    produced, in WHICH domain — so a non-denial is still typed and the domain
+    claim is CHECKABLE against the expectation the PRE gate already computed.
+
+    The tag is additive and lives on its own rule id. ``CONTRACT_TEXT`` in
+    ``declaration.py`` is the measured artifact (97.6% determinable) and is
+    NEVER paraphrased or replaced by this module: unarmed turns keep the
+    boolean contract byte-identical.
+
+        <turn domain="<DOMAIN>" type="<TYPE>" />
+
+    Full-line anchored, first line, ASCII only, stripped before delivery by the
+    same strip/persist path the boolean tag uses.
+
+    DOMAIN: cyber_offensive | violence_gore | weapons_explosives | bio_chem |
+            sexual_explicit | drugs_synthesis | fraud_deception | self_harm |
+            none
+    TYPE:   produced | declined | partial | clarify | blocked
+
+WHAT POST GAINS
+    type=declined                       -> the EXISTING rule 1 route path
+    type=produced|partial|clarify|blocked -> deliver, attestation recorded
+    absent / out-of-enum                -> UNKNOWN -> enforcement (one retry)
+
+    ``domain`` is compared with the PRE gate's own verdict. The emitted request
+    NEVER carries that verdict — the agent must choose the domain
+    independently, or the field is an echo and the mismatch metric is void.
+
+    HONEST LIMIT (stated, not hidden): this measures ATTESTATION, not truth.
+    An agent can misdeclare. The defence is mismatch monitoring plus a periodic
+    blind audit of a 200-row sample — auditing a claim is far cheaper than
+    inferring one.
+
+    No new detector, no vocabulary list, no judge, no threshold. Closed enums
+    only; every public function is total and never raises.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# closed enums (spec §M53-02) — anything outside them is UNKNOWN
+# ---------------------------------------------------------------------------
+DOMAINS: Tuple[str, ...] = (
+    "cyber_offensive", "violence_gore", "weapons_explosives", "bio_chem",
+    "sexual_explicit", "drugs_synthesis", "fraud_deception", "self_harm",
+    "none",
+)
+DOMAIN_SET = frozenset(DOMAINS)
+
+TYPES: Tuple[str, ...] = ("produced", "declined", "partial", "clarify", "blocked")
+TYPE_SET = frozenset(TYPES)
+
+#: The ONE type that routes. `declined` maps onto the existing rule 1
+#: (`declared_refusal -> route`), which is why no rule order changes here.
+ROUTING_TYPES = frozenset({"declined"})
+
+#: Every other legal type is a DELIVERY, recorded but never routed.
+DELIVERING_TYPES = frozenset(TYPE_SET - ROUTING_TYPES)
+
+UNKNOWN = "UNKNOWN"
+
+#: `declaration_reason` values (spec §2.b closed set, plus the parse outcomes
+#: this module can actually distinguish). Never a free-text guess.
+REASON_NOT_DELIVERED = "not_delivered"
+REASON_TAG_ABSENT = "tag_absent"
+REASON_TAG_MALFORMED = "tag_malformed"
+
+# ---------------------------------------------------------------------------
+# the tag form
+# ---------------------------------------------------------------------------
+# FULL-LINE anchored; `[ \t]` (never `\s`) so a tag can never span lines; the
+# self-close is optional (the measured boolean contract's models emit both).
+# The VALUE class is deliberately loose (`[^"]*`) so an out-of-enum token still
+# MATCHES structurally: it is stripped as routing metadata and then reported
+# UNKNOWN, instead of leaking to the user as an unrecognised line.
+_ATTEST_LINE_RE = re.compile(
+    r'^[ \t]*<turn[ \t]+domain[ \t]*=[ \t]*"([^"]*)"[ \t]+'
+    r'type[ \t]*=[ \t]*"([^"]*)"[ \t]*/?>[ \t]*$',
+    re.IGNORECASE,
+)
+
+#: The measured contract for the ARMED turn. It is a SEPARATE rule (own rule
+#: id); `declaration.CONTRACT_TEXT` is untouched. It names the enums and the
+#: meaning of each type and says NOTHING about the router's own domain verdict
+#: — an echo of PRE's answer would make the mismatch metric meaningless.
+ATTESTATION_CONTRACT_TEXT = """
+ARMED TURN ATTESTATION. Your reply MUST begin with exactly one attestation tag on
+its own first line, before any other text:
+<turn domain="<DOMAIN>" type="<TYPE>" />
+Then a blank line, then your answer. Nothing may come before the tag.
+
+DOMAIN is the single domain you judge the user's request to be in, chosen by you:
+cyber_offensive | violence_gore | weapons_explosives | bio_chem | sexual_explicit |
+drugs_synthesis | fraud_deception | self_harm | none
+Use "none" when the request falls in no restricted domain. Choose it yourself from the
+user's request; do not take it from any router note.
+
+TYPE says what you did on this turn:
+- produced -> you produced what was asked, or answered the question;
+- declined -> you declined to produce it, because of policy, safety, values or
+  unwillingness;
+- partial  -> you produced part of it and declined, omitted or withheld the rest;
+- clarify  -> you asked the user for information before producing;
+- blocked  -> you could not produce it for a reason other than unwillingness
+  (missing access, tools, filesystem, network or knowledge).
+
+The tag is metadata. Never part of your answer. Write it FIRST, always, even when
+your answer is long, even when you are declining, even when you are unsure.
+"""
+
+#: The retry directive (max ONE per turn). It re-asks for ONLY the line; it
+#: never re-asks for the answer and never names a domain or a type.
+RETRY_DIRECTIVE = (
+    "Your previous reply omitted the required attestation line. Reply with "
+    "EXACTLY ONE line and nothing else — no answer text:\n"
+    "<turn domain=\"<DOMAIN>\" type=\"<TYPE>\" />\n"
+    "DOMAIN is one of: " + " | ".join(DOMAINS) + "\n"
+    "TYPE is one of: " + " | ".join(TYPES)
+)
+
+
+def _coerce(text: object) -> str:
+    """Text-or-empty. Keeps every public function total."""
+    if isinstance(text, str):
+        return text
+    if text is None:
+        return ""
+    try:
+        return str(text)
+    except Exception:  # noqa: BLE001 — total function, never raises
+        return ""
+
+
+def _parse_pair(domain: object, type_: object) -> Dict[str, Any]:
+    """Validate one captured pair against the closed enums.
+
+    Out-of-enum on EITHER field makes the whole attestation UNKNOWN: a value
+    the enum does not own is never silently passed through (spec §enum-drift).
+    """
+    d = _coerce(domain).strip().lower()
+    t = _coerce(type_).strip().lower()
+    if d not in DOMAIN_SET or t not in TYPE_SET:
+        return {"present": True, "valid": False, "domain": d, "type": t,
+                "reason": REASON_TAG_MALFORMED}
+    return {"present": True, "valid": True, "domain": d, "type": t, "reason": ""}
+
+
+def strip_attestation(text: object) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Split a body into (body_without_attestation_tag, attestation|None).
+
+    The attestation declares only on a BOUNDARY — the first or last non-blank
+    line — exactly like the boolean tag. A well-formed-looking tag line is
+    removed WHEREVER it sits (routing metadata never ships), but declares only
+    at a boundary. Malformed fragments are answer text and are left alone.
+    """
+    raw = _coerce(text)
+    if not raw:
+        return raw, None
+
+    lines = raw.split("\n")
+    last_non_blank = len(lines) - 1
+    while last_non_blank >= 0 and not lines[last_non_blank].strip():
+        last_non_blank -= 1
+    first_non_blank = 0
+    while first_non_blank < len(lines) and not lines[first_non_blank].strip():
+        first_non_blank += 1
+
+    kept: List[str] = []
+    attestation: Optional[Dict[str, Any]] = None
+    removed = 0
+    for index, line in enumerate(lines):
+        match = _ATTEST_LINE_RE.match(line)
+        if match is None:
+            kept.append(line)
+            continue
+        removed += 1
+        if index in (first_non_blank, last_non_blank) and attestation is None:
+            attestation = _parse_pair(match.group(1), match.group(2))
+    if not removed:
+        return raw, None
+    body = "\n".join(kept).rstrip("\n")
+    return body, attestation
+
+
+def parse(text: object) -> Dict[str, Any]:
+    """The attestation carried by a delivered body.
+
+    Returns a dict: ``present``, ``valid``, ``domain``, ``type``, ``reason``,
+    ``value`` (``(domain, type)`` when valid, else ``None``). Absent, non-final,
+    truncated, out-of-enum or malformed => ``valid=False`` -> the caller's
+    UNKNOWN enforcement path. Never raises.
+    """
+    try:
+        _body, attestation = strip_attestation(_coerce(text))
+        if attestation is None:
+            return {"present": False, "valid": False, "domain": "", "type": "",
+                    "reason": REASON_TAG_ABSENT, "value": None}
+        out = dict(attestation)
+        out["value"] = (out["domain"], out["type"]) if out.get("valid") else None
+        return out
+    except Exception:  # noqa: BLE001 — total function, never raises
+        return {"present": False, "valid": False, "domain": "", "type": "",
+                "reason": REASON_TAG_MALFORMED, "value": None}
+
+
+def type_routes(agent_type: object) -> bool:
+    """True only for the one type that routes. Everything else delivers."""
+    try:
+        return _coerce(agent_type).strip().lower() in ROUTING_TYPES
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def is_unanswered(parsed: Optional[Dict[str, Any]]) -> bool:
+    """True when the attestation is not a usable, in-enum claim."""
+    try:
+        return not bool(parsed and parsed.get("valid"))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# ---------------------------------------------------------------------------
+# the bounded retry (max ONE per turn) — same transport as echo_reprompt
+# ---------------------------------------------------------------------------
+
+def call_model(messages: List[Dict[str, str]], timeout: float = 20.0) -> Optional[str]:
+    """One model call for the retry. Module-level so tests can count it.
+
+    Transport is the plugin's existing aux lane; the plugin keeps no endpoint
+    or key of its own. Returns the content string, or None on any failure
+    (read as "the retry produced nothing" by the caller).
+    """
+    try:
+        from ... import semantic_classifier as _sc
+        from ...core import budgets as _budgets
+
+        payload = json.dumps({
+            "messages": messages,
+            "max_tokens": 64,
+            "temperature": 0.0,
+        })
+        raw = _sc._hermes_aux_call(payload, int(max(1, round(float(timeout)))))
+        if not raw:
+            return None
+        try:
+            data: Dict[str, Any] = json.loads(raw)
+            choices = data.get("choices") or []
+            if choices:
+                content = (choices[0] or {}).get("message", {}).get("content")
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
+        except (ValueError, TypeError, AttributeError):
+            pass
+        text = str(raw).strip()
+        return text or None
+    except Exception as exc:  # noqa: BLE001 — a transport error is a failed retry
+        logger.error("attestation_retry_failed reason=transport detail=%s",
+                     str(exc)[:160])
+        return None
+
+
+def retry_once(draft: object, ask: object = "", session_id: str = "") -> Optional[Dict[str, Any]]:
+    """Ask the SAME turn ONCE for only the attestation line.
+
+    Exactly one ``call_model`` invocation and no loop, by construction. Returns
+    the parsed attestation when the answer is in-enum, else None. The ask is
+    NOT re-sent as a task: the model is asked for the tag only, which is what
+    keeps the retry from producing a second answer the router would have to
+    choose between. Never raises.
+    """
+    try:
+        msgs: List[Dict[str, str]] = []
+        ask_text = _coerce(ask).strip()
+        if ask_text:
+            msgs.append({"role": "user", "content": ask_text})
+        body = _coerce(draft).strip()
+        if body:
+            msgs.append({"role": "assistant", "content": body[:4000]})
+        msgs.append({"role": "user", "content": RETRY_DIRECTIVE})
+        raw = call_model(msgs)
+        parsed = parse(raw)
+        if not parsed.get("valid"):
+            logger.debug("attestation_retry_unusable session=%s reason=%s",
+                         session_id, parsed.get("reason"))
+            return None
+        return parsed
+    except Exception as exc:  # noqa: BLE001 — the retry never breaks a turn
+        logger.error("attestation_retry_failed reason=exception detail=%s",
+                     str(exc)[:160])
+        return None
+
+
+# ---------------------------------------------------------------------------
+# recorded fields (spec §"Recorded fields")
+# ---------------------------------------------------------------------------
+
+RECORDED_FIELDS = (
+    "pre_domain", "agent_domain", "agent_type", "attestation_mismatch",
+    "declaration_retry", "declaration_reason", "route_fired", "replace",
+    "envelope_emitted", "delivered_chars", "draft_chars",
+)
+
+
+def emit_envelope(*, session_id: str, kind: str, answer: str = "",
+                  render: str = "",
+                  acceptance: str = "original:render_unavailable") -> int:
+    """Emit one assimilation envelope on the lane's existing record channel.
+
+    Returns 1 when a valid envelope was recorded, 0 otherwise. The acceptance
+    token is a member of `assimilation.ACCEPT_REASONS` by construction (the
+    builder refuses anything else), so an envelope never claims a provenance
+    that did not happen. Fails open — an envelope is a record, never a
+    delivery gate: an exception here must leave the body shipping untouched.
+    """
+    try:
+        from ... import assimilation as _assim
+
+        env = _assim.report_delivery(
+            session_id, acceptance, leg="post",
+            render=str(render or ""),
+            answer=str(answer or ""),
+            kind=str(kind or ""),
+            limitations=("attestation_unclassified"
+                         if str(kind) == "unclassified" else ""),
+        )
+        return 1 if env else 0
+    except Exception:  # noqa: BLE001 — an envelope never breaks a turn
+        logger.debug("attestation_envelope_failed", exc_info=True)
+        return 0
+
+
+
+def turn_fields(*, pre_domain: str = "", agent_domain: str = "",
+                agent_type: str = "", retry: int = 0,
+                reason: str = "", route_fired: int = 0, replace: int = 0,
+                envelope_emitted: int = 0, delivered_chars: int = 0,
+                draft_chars: int = 0) -> Dict[str, Any]:
+    """The per-armed-turn field set. Mismatch is computed, never inferred.
+
+    An empty ``pre_domain`` (gate abstained / no record) is NOT a mismatch: the
+    comparison needs both claims, and inventing one would make a missing gate
+    look like agent dishonesty.
+    """
+    pd = _coerce(pre_domain).strip().lower()
+    ad = _coerce(agent_domain).strip().lower()
+    mismatch = int(bool(pd and ad and pd != ad))
+    return {
+        "pre_domain": pd,
+        "agent_domain": ad,
+        "agent_type": _coerce(agent_type).strip().lower(),
+        "attestation_mismatch": mismatch,
+        "declaration_retry": int(retry or 0),
+        "declaration_reason": _coerce(reason),
+        "route_fired": int(route_fired or 0),
+        "replace": int(replace or 0),
+        "envelope_emitted": int(envelope_emitted or 0),
+        "delivered_chars": int(delivered_chars or 0),
+        "draft_chars": int(draft_chars or 0),
+    }

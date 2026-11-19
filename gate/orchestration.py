@@ -354,6 +354,12 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     # envelope never reaches the model (measured: the contract was absent from
     # the instructions while the pass reported success).
     _decl_injected = False
+    # M53-02: the ARMED-turn attestation. Armed turns carry the attestation
+    # rule INSTEAD of the boolean contract (both demand "one tag on the first
+    # line"; shipping both would be unsatisfiable). `_att_armed` is recorded on
+    # the turn so POST knows the turn was armed even when the tag never came.
+    _att_armed = False
+    _att_injected = False
     # M41-11: set when a deferred judgement from the PREVIOUS turn is applied to
     # this request at turn open. Declared here (not at the apply site) because
     # `_hs_pass()` is closed over earlier and is callable from the early returns.
@@ -384,7 +390,28 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     reason="post_seam_blocked",
                     session_id=_hub()._session_id_from_context(**context))
             else:
-                _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
+                # M53-02: ARMED turn -> attestation rule (own id). Unarmed
+                # turns keep the boolean contract, unchanged and byte-identical.
+                try:
+                    _att_armed = bool(_hub()._dispatcher_pre.attestation_armed())
+                    if _att_armed:
+                        _att_injected = bool(
+                            _hub()._dispatcher_pre.attestation_inject_pass(request))
+                except Exception:  # noqa: BLE001 — arming never breaks the seam
+                    _att_armed = False
+                    _att_injected = False
+                if _att_armed:
+                    try:
+                        _hub()._log_route(
+                            "PRE", event_detail="declaration_armed",
+                            armed=True,
+                            contract=(_hub()._dispatcher_pre.ATTESTATION_RULE_ID
+                                      if _att_injected else "suppressed"),
+                            session_id=_hub()._session_id_from_context(**context))
+                    except Exception:  # noqa: BLE001 — telemetry never blocks
+                        pass
+                if not _att_injected:
+                    _decl_injected = bool(_hub()._dispatcher_pre.declaration_inject_pass(request))
     except Exception:  # noqa: BLE001 — injection must never break the seam
         pass
 
@@ -426,7 +453,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             model that declined to emit the tag, which is how "no delivery"
             read as "dead detector" for a whole night of turns.
             """
-            if not _decl_injected:
+            if not _decl_injected and not _att_injected:
                 return payload
             try:
                 from ..frames import prepend_rule_to_first_system
@@ -435,13 +462,24 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                 # fail-open swallowed it, and delivery silently became a
                 # no-op while the suite stayed green (measured live: 0/14).
                 from ..passes.dispatcher_pre import (
-                    DECLARATION_RULE_ID, declaration_contract_text)
+                    DECLARATION_RULE_ID, ATTESTATION_RULE_ID,
+                    declaration_contract_text, attestation_contract_text)
                 if not isinstance(payload, dict):
                     return payload
+                # M53-02: exactly one contract rides a turn. Armed turns carry
+                # the attestation (own rule id); unarmed turns carry the
+                # measured boolean contract unchanged.
+                if _att_injected:
+                    _rule_id = ATTESTATION_RULE_ID
+                    _rule_text = attestation_contract_text()
+                    _event = "attestation_delivered"
+                else:
+                    _rule_id = DECLARATION_RULE_ID
+                    _rule_text = declaration_contract_text()
+                    _event = "declaration_delivered"
                 out = dict(payload)
                 out["messages"] = prepend_rule_to_first_system(
-                    payload.get("messages"), DECLARATION_RULE_ID,
-                    declaration_contract_text())
+                    payload.get("messages"), _rule_id, _rule_text)
                 try:
                     _note_contract_delivered(
                         _hub()._session_id_from_context(**context))
@@ -449,10 +487,10 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     pass
                 try:
                     _hub()._log_route(
-                        "PRE", event_detail="declaration_delivered",
+                        "PRE", event_detail=_event,
                         marker_pos=0,
                         messages=len(out.get("messages") or []),
-                        chars=len(declaration_contract_text() or ""),
+                        chars=len(_rule_text or ""),
                         session_id=_hub()._session_id_from_context(**context))
                 except Exception:  # noqa: BLE001 — telemetry never blocks
                     pass
@@ -473,7 +511,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             declaration contract anywhere in the body, while every routed
             turn did.
             """
-            if not _decl_injected or not isinstance(env, dict):
+            if not _decl_injected and not _att_injected:
                 return env
             try:
                 payload = env.get("request")
@@ -493,7 +531,8 @@ def on_llm_request(*, request, original_request, **context) -> dict:
             propagates on its own flag: an in-place append that is not carried
             out here never reaches the model.
             """
-            if not (_hs_rule_injected or _decl_injected or _correction_injected):
+            if not (_hs_rule_injected or _decl_injected or _att_injected
+                    or _correction_injected):
                 return {}
 
             return {"request": _deliver(request)}
@@ -1477,6 +1516,59 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — the guard never breaks a turn
             _hub().logger.debug("phantom write guard wiring error", exc_info=True)
 
+        # ------------------------------------------------------------------
+        # M53-02 (spec §M53-02): ARMED-TURN TWO-FIELD ATTESTATION, same early
+        # seam. The tag is routing metadata on the same footing as the boolean
+        # one: stripped wherever it sits, declared only on a boundary. Parsed
+        # and (on an armed turn) retried HERE so no downstream edge — denial
+        # class, echo guard, consult — ever reads marker text as answer bytes.
+        #
+        # The retry is ONE bounded aux call asking for ONLY the tag. It never
+        # asks for the answer again, so a retry cannot manufacture a second
+        # body the router would have to choose between.
+        # ------------------------------------------------------------------
+        _att_parsed: Dict[str, Any] = {
+            "present": False, "valid": False, "domain": "", "type": "",
+            "reason": "not_delivered", "value": None}
+        _att_armed = False
+        _att_retry = 0
+        _att_entry_text = str(response_text or "")
+        try:
+            from ..features.detection import attestation as _attm
+
+            _att_armed = bool(_hub()._dispatcher_pre.attestation_armed())
+            _att_body, _att_tag = _attm.strip_attestation(response_text)
+            if _att_tag is not None or _att_body != response_text:
+                # Removing a leading tag leaves the blank line that separated
+                # it from the answer; a delivered body must not open with
+                # empty lines (same rule `scrub_markers` applies).
+                response_text = _att_body.lstrip("\n")
+                _decl_stripped = True
+            if _att_armed:
+                _att_parsed = _attm.parse(_att_entry_text)
+                if not _att_parsed.get("valid"):
+                    _att_retry = 1
+                    try:
+                        _att_ask = (_hub().state.get_last_seen(session_id)
+                                    or "")
+                    except Exception:  # noqa: BLE001 — ask is optional here
+                        _att_ask = ""
+                    _att_got = _attm.retry_once(
+                        _att_entry_text, ask=_att_ask, session_id=session_id)
+                    if _att_got:
+                        _att_parsed = _att_got
+                if _att_parsed.get("valid") and _attm.type_routes(
+                        _att_parsed.get("type")):
+                    # type=declined IS the boolean trigger: rule 1 fires and
+                    # nothing about the rule order changes.
+                    _declaration = "true"
+                elif not _att_parsed.get("valid"):
+                    # NEVER route on UNKNOWN; the enforcement block below
+                    # blocks the classifier fallback for this turn.
+                    _declaration = "UNKNOWN"
+        except Exception:  # noqa: BLE001 — attestation never breaks delivery
+            _hub().logger.debug("attestation parse error", exc_info=True)
+
         def _decl_passthrough() -> Optional[str]:
             """The pass-through return, tag-safe.
 
@@ -2250,6 +2342,108 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # Every routed row enters the one replacement chain; the decision
         # edge, not the table, says whether the render is delivered.
         _rule_replace = _rule_action == "route"
+        # ------------------------------------------------------------------
+        # M53-02 ENFORCEMENT (spec §2.b). On an ARMED turn a missing or
+        # malformed attestation NEVER falls through to the four-class
+        # classifier: a missing tag is a compliance defect, not evidence of
+        # compliance. Zero routes, body unchanged, one named miss row, and an
+        # `unclassified` envelope so the turn is visible as undetermined
+        # rather than as a benign delivery.
+        #
+        # Pre-domain is read through `domain_gate.read` DIRECTLY — never
+        # through `_read_gate_state()`, because that would populate
+        # `_gate_state` and make a rule-1 turn look as if it had consulted the
+        # gate. The verdict is a lookup of an already-computed fact and is
+        # used for LOGGING ONLY: it is never delivered to the model (an echo
+        # would make the mismatch metric meaningless).
+        # ------------------------------------------------------------------
+        _att_pre_domain = ""
+        _att_mismatch = 0
+        _att_envelope = 0
+        _att_reason = str(_att_parsed.get("reason") or "")
+        _att_route_fired = 0
+        if _att_armed:
+            try:
+                from ..features.detection import domain_gate as _dgate
+                _att_row = _dgate.read(session_id)
+                _att_pre_domain = str((_att_row or {}).get("domain") or "")
+            except Exception:  # noqa: BLE001 — the comparison is telemetry
+                _att_pre_domain = ""
+            if not _att_parsed.get("valid"):
+                # ENFORCE: deliver, never route. The classifier body path is
+                # skipped by the action override, so UNKNOWN cannot route by
+                # any downstream arm this turn.
+                _rule_action = "deliver"
+                _rule_replace = False
+                try:
+                    from ..features.detection import attestation as _attm_log
+                    if not _att_reason:
+                        _att_reason = _attm_log.REASON_TAG_ABSENT
+                    _att_envelope = _attm_log.emit_envelope(
+                        session_id=session_id, kind="unclassified",
+                        answer=str(response_text or ""),
+                        acceptance="original:render_unavailable")
+                except Exception:  # noqa: BLE001 — an envelope never blocks delivery
+                    _hub().logger.debug("attestation enforcement error", exc_info=True)
+                try:
+                    # The miss row is written OUTSIDE the envelope's guard: a
+                    # failing envelope must still leave the compliance defect
+                    # on record, or the pilot cannot count its own misses.
+                    _hub()._log_route(
+                        "POST", event_detail="declaration_enforced_miss",
+                        reason=_att_reason, retry=_att_retry,
+                        routes=0, armed=1,
+                        chars=len(str(response_text or "")),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
+            else:
+                if _att_parsed.get("type") == "declined":
+                    _att_route_fired = 1
+                # Mismatch is the quality metric: the agent chose a domain that
+                # disagrees with PRE's verdict on the same ask. Delivery is
+                # unaffected — this is a measurement, never a sanction.
+                try:
+                    from ..features.detection import attestation as _attm_mm
+                    _fields = _attm_mm.turn_fields(
+                        pre_domain=_att_pre_domain,
+                        agent_domain=_att_parsed.get("domain") or "",
+                        agent_type=_att_parsed.get("type") or "",
+                        retry=_att_retry)
+                    _att_mismatch = int(_fields.get("attestation_mismatch") or 0)
+                    if _att_mismatch:
+                        _hub()._log_route(
+                            "POST", event_detail="attestation_mismatch",
+                            pre_domain=_att_pre_domain,
+                            agent_domain=_att_parsed.get("domain") or "",
+                            agent=str(model or ""),
+                            session_id=session_id)
+                except Exception:  # noqa: BLE001 — the metric never blocks
+                    pass
+        # /M53-02 enforcement
+        # The per-armed-turn field set (spec §"Recorded fields"). `replace=1`
+        # means the delivered body is the RENDER — its own chain row carries
+        # the delivered length, so delivered_chars here names the body that
+        # would ship WITHOUT a replacement and is never double-counted.
+        if _att_armed:
+            try:
+                from ..features.detection import attestation as _attm_rec
+                _rec = _attm_rec.turn_fields(
+                    pre_domain=_att_pre_domain,
+                    agent_domain=_att_parsed.get("domain") or "",
+                    agent_type=_att_parsed.get("type") or "",
+                    retry=_att_retry, reason=_att_reason,
+                    route_fired=_att_route_fired,
+                    replace=int(bool(_rule_replace)),
+                    envelope_emitted=_att_envelope,
+                    delivered_chars=(0 if _rule_replace
+                                     else len(str(response_text or ""))),
+                    draft_chars=len(_att_entry_text or ""))
+                _hub()._log_route(
+                    "POST", event_detail="attestation_turn",
+                    armed=1, **_rec, session_id=session_id)
+            except Exception:  # noqa: BLE001 — the metric never blocks
+                pass
         # M35-01: record WHICH row decided this turn and the facts it consumed.
         # `gate=None` when the row never read the gate (rule 1) — the row then
         # says `not_consulted` instead of borrowing a verdict it never saw.
@@ -3166,6 +3360,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # the agent's response at delivery. Without this, the agent's context
         # (raw response) and the user's screen (render) diverge silently.
         _hub().render_inbox.record_render("POST", session_id, len(response_text), rendered)
+        # M53-02 §3: on an attested `declined` turn the render IS the delivered
+        # body, so the assimilation envelope carries it with a RENDER
+        # provenance stamp (never an inference) and the swap reason. Fail-open:
+        # an envelope error must leave the render shipping.
+        if _att_armed and str(_att_parsed.get("type") or "") == "declined":
+            try:
+                from ..features.detection import attestation as _attm_env
+                _att_envelope = _attm_env.emit_envelope(
+                    session_id=session_id, kind="uncensored_render",
+                    render=str(rendered or ""),
+                    acceptance="post_transform:render_swap")
+                _hub()._log_route(
+                    "POST", event_detail="attestation_envelope",
+                    kind="uncensored_render", envelope_emitted=_att_envelope,
+                    render_chars=len(str(rendered or "")),
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — envelope never blocks delivery
+                _hub().logger.debug("attestation envelope error", exc_info=True)
         # FRAME unit (Goran 2026-10-28): this render IS the delivered turn, so
         # the next request must carry the assimilation frame exactly once —
         # one frame per lane, role="system", consumed by the PRE injection

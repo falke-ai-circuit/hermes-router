@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 # append; the string is the dedupe key, so it must never be reused.
 DECLARATION_RULE_ID = "turn_declaration_contract"
 
+# M53-02: the ARMED-turn two-field attestation. A SEPARATE rule id, because
+# `CONTRACT_TEXT` is the measured boolean artifact (97.6% determinable) and a
+# paraphrase fell to 75% — the attestation never replaces it on unarmed turns,
+# and the two can never be confused in the payload.
+ATTESTATION_RULE_ID = "turn_attestation_contract"
+
 
 def _plugin():
     """Package-module late-binding seam. Deferred to call time so tests'
@@ -186,6 +192,64 @@ def declaration_contract_text() -> str:
         return CONTRACT_TEXT or ""
     except Exception:  # noqa: BLE001 — a missing contract is not a crash
         return ""
+
+
+def attestation_contract_text() -> str:
+    """M53-02 — the ARMED-turn attestation text (empty when unavailable)."""
+    try:
+        from ..features.detection.attestation import ATTESTATION_CONTRACT_TEXT
+        return ATTESTATION_CONTRACT_TEXT or ""
+    except Exception:  # noqa: BLE001 — a missing contract is not a crash
+        return ""
+
+
+def attestation_armed() -> bool:
+    """Is this profile inside the attestation pilot (SHADOW ONLY)?
+
+    The trigger is deterministic and comes from configuration the profile
+    already carries: `declaration_attestation.armed is True`. It is a
+    deployment switch, not a detector — no classification, no vocabulary, no
+    threshold. It ships DARK (absent => False), so arming is a per-profile
+    pilot decision and never a fleet-wide one.
+
+    LATER (not this unit): the existing PRE `domain_gate` verdict `flagged`
+    may widen arming. That would be a lookup of an already-computed verdict,
+    never a new classifier.
+    """
+    try:
+        cfg = _plugin()._cfg()
+        block = cfg.get("declaration_attestation")
+        return bool(isinstance(block, dict) and block.get("armed") is True)
+    except Exception:  # noqa: BLE001 — arming must never break a turn
+        return False
+
+
+def attestation_inject_pass(request: Any) -> bool:
+    """Decide whether this turn carries the ATTESTATION contract.
+
+    Armed turns get the attestation rule INSTEAD of the boolean contract: both
+    ask for "one tag on the first line", so delivering both would be a
+    contradiction the model cannot satisfy. Unarmed turns keep the boolean
+    contract byte-identical (that text is the measured artifact).
+
+    Same rules as the boolean pass: a malformed request is not a reason to
+    inject, the marker is deduped by rule id, and every failure is fail-open.
+    """
+    try:
+        from ..frames import platform_rule_present
+
+        if not attestation_armed() or not attestation_contract_text():
+            return False
+        if not isinstance(request, dict):
+            return False
+        msgs = request.get("messages")
+        if msgs is not None and not isinstance(msgs, list):
+            return False
+        if isinstance(msgs, list) and platform_rule_present(msgs, ATTESTATION_RULE_ID):
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — injection must never break the seam
+        return False
 
 
 def declaration_inject_pass(request: Any) -> bool:

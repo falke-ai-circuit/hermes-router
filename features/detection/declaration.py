@@ -241,6 +241,11 @@ def routes(declaration: object) -> bool:
 # head/tail, the envelope marker, and the bare phrase — not just the tag.
 _MARKER_RESIDUAL_RE = re.compile(
     r"<turn[ \t]*declined"
+    # M53-02: the ARMED-turn attestation is the same marker family. Without
+    # this branch the delivery boundary's residual scan does not recognise
+    # `<turn domain="…" type="…" />`, so a main-body pass-through could ship
+    # the tag verbatim — the one leak the whole contract forbids.
+    r"|<turn[ \t]+domain[ \t]*="
     r"|\[PLATFORM RULE: "
     r"|----- BEGIN ROUTER READING"
     r"|----- END ROUTER READING"
@@ -273,6 +278,16 @@ def scrub_markers(text: object) -> Tuple[str, str]:
     """
     try:
         body, _declaration = strip_tag(text)
+        # M53-02: the ARMED-turn attestation is a well-formed tag line too.
+        # Strip it on the same two-pass path so a legitimate armed turn is
+        # removed silently, and only a malformed fragment reaches the residual
+        # scan below.
+        try:
+            from .attestation import strip_attestation as _strip_att
+
+            body, _att = _strip_att(body)
+        except Exception:  # noqa: BLE001 — a missing module is not a leak
+            pass
         # Removing the leading tag line leaves the blank line that separated it
         # from the answer; a delivered body must not open with an empty line.
         body = body.lstrip("\n") if isinstance(body, str) else body

@@ -279,6 +279,12 @@ def strip_markers(text: str) -> "tuple[str, int]":
         clean = _MARKER_LINE_RE.sub("", clean)
         clean = _FOOTER_RE.sub("", clean)
         clean = _JSON_TAIL_RE.sub("", clean)
+        # M53-02: `_TAG_RE` is form-agnostic (`<turn …>`), so it already removes
+        # the attestation tag — but only its BYTES, leaving the newline run the
+        # tag line occupied. A delivered body must never open with blank lines
+        # that exist only because routing metadata was removed.
+        if clean != original:
+            clean = clean.lstrip("\n")
         removed = len(original) - len(clean)
         return clean, max(0, removed)
     except Exception:  # noqa: BLE001 — a strip failure never loses bytes
