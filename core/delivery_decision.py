@@ -721,6 +721,26 @@ def decide(facts: Any) -> Decision:
             lane_clean, ask)
         if lane_blessed:
             diag["sanctioned_markers"] = "|".join(lane_blessed)
+        # M53-02 (round 5): the LANE body gets the SAME marker vocabulary the
+        # entered path uses. `lane_clean` already went through `_strip` above,
+        # so this is idempotent for a body that strip recognised — but a lane
+        # body assembled by any other route must not depend on that happening
+        # upstream. The removed bytes ride the decision's strip field, so
+        # `_delivered_bytes` names EXPLICIT cleaned bytes instead of the None
+        # pass-through that ships the host's own copy.
+        #
+        # M50-19/20 stays intact: the LINE is stripped and the answer ships;
+        # a marker quoted in the ask is preserved by `carries_marker` below,
+        # so the violation path (not a withhold of the whole turn) still
+        # applies to genuine leaks.
+        try:
+            _lane_vocab_clean, _lane_vocab_removed = strip_markers(lane_chosen)
+            if _lane_vocab_clean != lane_chosen:
+                lane_chosen = _lane_vocab_clean
+                lane_blessed_chars += max(0, int(_lane_vocab_removed or 0))
+                diag["lane_marker_stripped"] = True
+        except Exception:  # noqa: BLE001 — the strip never blocks a decision
+            pass
         if lane_ok and _admissible(lane_chosen) and not carries_marker(
                 lane_chosen, quoted_spans(ask)):
             return Decision(DELIVER_LANE, D5, REASON_LANE_DELIVERED, SOURCE_LANE,

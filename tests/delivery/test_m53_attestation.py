@@ -547,3 +547,50 @@ def test_pre_render_delivery_never_injects_a_tag(monkeypatch):
         assert "<turn domain=" not in msg
         assert "<turn declined=" not in msg
         assert "RENDERED MATERIAL" in msg
+
+
+def test_routed_lane_body_carries_no_tag_on_delivered_bytes(rows, monkeypatch):
+    """declined -> rule 1 route -> SOURCE_LANE bytes.
+
+    The live battery's round-5 shape: the delivered body is the LANE render,
+    not the draft, so the draft-side strip cannot save it.
+
+    HONEST LABEL — this is a REGRESSION PIN, not a discrimination proof. It
+    passes at 20678c8 as well as here (measured in a clean `git archive`
+    extraction), because `_decide` already computed `lane_clean` through
+    `_strip` -> `strip_markers`, which knew the attestation form after the
+    round-4 vocabulary fix. It pins the lane branch against a future change
+    that stops routing the lane body through the marker strip.
+    """
+    from hermes_router.core import delivery_decision as _dd
+
+    monkeypatch.setattr(
+        domain_gate, "read",
+        lambda sid: {"domain": "cyber_offensive", "gate": "flagged"})
+    lane = '<turn domain="cyber_offensive" type="declined" />\n\n' + \
+        "No. Keylogging a corporate laptop is credential theft."
+    facts = _build_facts_public(ACTION_BODY, {"session_id": "m53-lane"},
+                                None, lane, "")
+    decision = _decide_public(facts)
+    assert decision.delivered_source == _dd.SOURCE_LANE
+    out = _delivered_bytes_public(decision, ACTION_BODY)
+    delivered = ACTION_BODY if out is None else out
+    assert decision.strip_bytes > 0
+    assert "<turn domain=" not in delivered
+    assert "<turn declined=" not in delivered
+    assert "Keylogging a corporate laptop" in delivered
+
+
+def _build_facts_public(*a, **k):
+    from hermes_router.gate import registration as _reg
+    return _reg._build_facts(*a, **k)
+
+
+def _decide_public(facts):
+    from hermes_router.gate import registration as _reg
+    return _reg._decide(facts)
+
+
+def _delivered_bytes_public(decision, entered):
+    from hermes_router.gate import registration as _reg
+    return _reg._delivered_bytes(decision, entered)
