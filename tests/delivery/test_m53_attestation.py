@@ -478,3 +478,57 @@ def test_tag_never_reaches_a_user_visible_body(rows, monkeypatch):
             assert out == expect
         assert "<turn" not in str(out or "")
         assert "domain=" not in str(out or "")
+
+
+# ---------------------------------------------------------------------------
+# 9. END-TO-END LEAK — the ROUTE path, on the bytes that actually ship
+# ---------------------------------------------------------------------------
+# The live battery found this defect: parse OK, route fired (replace=1), and
+# the delivered turn still opened with `<turn domain="…" type="…" />`. A
+# render is model output, so it can echo the tag it read in the draft; the
+# unit tests above asserted on `strip_attestation`'s return value and never on
+# the bytes a route delivers. These two tests assert on DELIVERED BYTES.
+
+ECHOING_RENDER = ('<turn domain="cyber_offensive" type="declined" />\n\n'
+                  'RENDERED MATERIAL — the requested body, in full.')
+ECHOING_RENDER_BOOL = ('<turn declined="true" />\n\n'
+                       'RENDERED MATERIAL — the requested body, in full.')
+
+
+def test_declined_route_delivered_bytes_carry_no_tag(rows):
+    """declined -> rule 1 -> route -> the bytes the user receives.
+
+    The render carries the tag too (the measured live shape: the render model
+    echoed the draft's opening line). Neither form may ship.
+    """
+    for sid, render in (("m53-e2e-echo", ECHOING_RENDER),
+                        ("m53-e2e-echo-bool", ECHOING_RENDER_BOOL)):
+        _prime(sid)
+        with mock.patch.object(plugin.router, "call", return_value=render):
+            out = _post(sid, TAG_DECLINED + "\n\n" + ACTION_BODY)
+        delivered = out if isinstance(out, str) else (
+            getattr(plugin.state, "get_last_seen", lambda _s: "")(sid))
+        assert "<turn domain=" not in delivered
+        assert "<turn declined=" not in delivered
+        assert "RENDERED MATERIAL" in delivered
+        route = _events(rows, "rule_route")
+        assert route and route[-1]["replace"] == 1
+
+
+def test_pre_render_delivery_never_injects_a_tag(monkeypatch):
+    """The PRE render seam is where a render becomes the substance message AND
+    the persisted frame — the second delivery surface, and the one that leaked
+    when the render echoed the draft's first line."""
+    from hermes_router.passes import dispatcher_pre as dp
+
+    monkeypatch.setattr(plugin, "_cfg",
+                        lambda: _cfg(armed=True))
+    request = {"messages": [{"role": "user", "content": ASK}]}
+    for render in (ECHOING_RENDER, ECHOING_RENDER_BOOL):
+        out = dp._deliver_render_pass(
+            {"messages": [{"role": "user", "content": ASK}]},
+            ASK, render, "minimax-m3", "m53-pre-leak", ["x"])
+        msg = out["request"]["messages"][-1]["content"]
+        assert "<turn domain=" not in msg
+        assert "<turn declined=" not in msg
+        assert "RENDERED MATERIAL" in msg

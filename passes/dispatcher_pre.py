@@ -1117,6 +1117,34 @@ def _deliver_render_pass(request: Any, content: str, rendered: str,
                    pattern_groups="render_empty",
                    content_chars=len(content), session_id=session_id)
         return {"request": request}
+    # M53-02: a render is model output, so it can ECHO the declaration tag it
+    # read in the draft (measured live: the delivered turn opened with
+    # `<turn domain="…" type="…" />` on a routed refusal). This seam is the
+    # last point before the render becomes the substance message AND the
+    # persisted frame, so the tag — both forms — is removed HERE, not only on
+    # the POST body. Routing metadata never reaches a delivered body.
+    try:
+        from ..features.detection import attestation as _att_pre
+
+        _rendered_clean, _ = _att_pre.strip_attestation(rendered)
+        _rendered_clean = _rendered_clean.lstrip("\n")
+        if _rendered_clean != rendered:
+            _plugin()._log_route("PRE", event_detail="render_tag_stripped",
+                                 chars_from=len(str(rendered or "")),
+                                 chars_to=len(_rendered_clean or ""),
+                                 session_id=session_id)
+        rendered = _rendered_clean
+        from ..features.detection import declaration as _decl_pre
+
+        rendered, _ = _decl_pre.strip_tag(rendered)
+        rendered = str(rendered or "").lstrip("\n")
+    except Exception:  # noqa: BLE001 — the strip never blocks a render
+        pass
+    if not str(rendered or "").strip():
+        _plugin()._log_route("PRE", event_detail="route_failed",
+                   pattern_groups="render_empty_after_strip",
+                   content_chars=len(content), session_id=session_id)
+        return {"request": request}
     render_inbox.record_pre_frame(session_id, len(content), rendered,
                                   "uncensored_render")
     # Stash for post-router recovery (spec §6.1) + record msg hash for the
