@@ -191,6 +191,24 @@ def strip_attestation(text: object) -> Tuple[str, Optional[Dict[str, Any]]]:
         if index in (first_non_blank, last_non_blank) and attestation is None:
             attestation = _parse_pair(match.group(1), match.group(2))
     if not removed:
+        # M53-02 (round 7): an INLINE tag is not a full line, so it was never
+        # "removed" above and would ship. Strip it here; the declaration it
+        # carried is parsed from its own attribute text.
+        try:
+            from .declaration import strip_inline_tags as _inline_strip
+
+            _clean_inline, _vals = _inline_strip(raw)
+            if _clean_inline != raw:
+                _att_inline = None
+                for _v in _vals:
+                    _dm = re.search(r'domain[ \t]*=[ \t]*"([^"]*)"', _v, re.I)
+                    _tm = re.search(r'type[ \t]*=[ \t]*"([^"]*)"', _v, re.I)
+                    if _dm and _tm:
+                        _att_inline = _parse_pair(_dm.group(1), _tm.group(1))
+                        break
+                return _clean_inline, _att_inline
+        except Exception:  # noqa: BLE001 — inline strip never raises out
+            pass
         return raw, None
     body = "\n".join(kept).rstrip("\n")
     return body, attestation

@@ -69,6 +69,47 @@ _TAG_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# M53-02 (round 7): THE INLINE FORM. The contract asks for the tag on the first
+# line; models satisfy it by putting tag AND answer on that same line
+# ('<turn … /> Real answer follows.'). Every strip above/below is `^…$`
+# anchored, so an inline tag was never recognised as a tag and shipped as
+# answer text — measured: 21 of 21 leaks were inline, 0 standalone.
+#
+# The value class is attribute-ish ON PURPOSE: it consumes `key="value"` pairs
+# (any order, either tag form, and the unterminated cap fragment) and stops at
+# the first token that is not an attribute, so the ANSWER is never eaten.
+_TURN_ANY_RE = re.compile(
+    r'<turn\b(?:[ \t]+[A-Za-z_]+[ \t]*=[ \t]*"[^"\n]*")*[ \t]*/?>?',
+    re.IGNORECASE,
+)
+
+
+def strip_inline_tags(text: object) -> Tuple[str, list]:
+    """Remove ``<turn …>`` occurrences ANYWHERE, keeping the answer intact.
+
+    Returns ``(clean, values)`` where values are the raw attribute strings seen
+    (for callers that need the declaration). Only the tag and the separator
+    whitespace it leaves are removed: no leading blank line, no doubled space,
+    no truncated answer. A body that is ONLY a tag yields ``""``.
+    """
+    raw = _coerce(text)
+    if not raw:
+        return raw, []
+    try:
+        values = [m.group(0) for m in _TURN_ANY_RE.finditer(raw)]
+        if not values:
+            return raw, []
+        # Remove the tag plus ONE adjacent space on either side, so 'A. <tag>
+        # More' does not become 'A.  More' and '<tag> Real' does not become
+        # ' Real'.
+        clean = _TURN_ANY_RE.sub("", raw)
+        clean = re.sub(r"[ \t]{2,}", " ", clean)
+        clean = re.sub(r"^[ \t]+", "", clean)
+        clean = clean.lstrip("\n")
+        return clean, values
+    except Exception:  # noqa: BLE001 — a strip failure is not a leak verdict
+        return raw, []
+
 # THE MEASURED CONTRACT — copied VERBATIM from the frozen battery
 # (/opt/data/tmp/battery_v2.py CONTRACT, sha256 pre-registered with the run).
 # It is not a paraphrase: this exact text measured 97.6% determinable, and the
@@ -291,6 +332,12 @@ def scrub_markers(text: object) -> Tuple[str, str]:
         # Removing the leading tag line leaves the blank line that separated it
         # from the answer; a delivered body must not open with an empty line.
         body = body.lstrip("\n") if isinstance(body, str) else body
+        # M53-02 (round 7): the INLINE form survives both passes above because
+        # they are line-anchored. Remove it last, wherever it sits.
+        try:
+            body, _inline = strip_inline_tags(body)
+        except Exception:  # noqa: BLE001 — a strip failure is not a leak
+            pass
         return body, residual_marker(body)
     except Exception:  # noqa: BLE001 — total function, never raises
         return _coerce(text), ""
