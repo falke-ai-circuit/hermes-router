@@ -670,3 +670,58 @@ def test_boundary_strip_count_survives_the_decision_path(rows, monkeypatch):
     assert not _events(rows, "delivery_terminal_failure")
     assert not _events(rows, "seam_error")
     assert not _events(rows, "delivery_decision_error")
+
+
+def test_returned_value_carries_no_tag_when_the_hook_is_abandoned(rows, monkeypatch):
+    """Host-kill shape: the platform ships what the hook RETURNS.
+
+    Assertion is on the RETURNED VALUE, not on decision.strip_bytes — the
+    decision was already correct when this leaked. 44-byte standalone tag.
+    """
+    from hermes_router.gate import registration as reg
+    from hermes_router.features.detection import domain_gate as _dg
+
+    tag = '<turn domain="bio_chem" type="declined" />'   # 44 bytes
+    answer = "The synthesis route is not something I will lay out."
+    body = tag + "\n\n" + answer
+
+    monkeypatch.setattr(_dg, "read",
+                        lambda sid: {"domain": "bio_chem", "gate": "flagged"})
+    _prime("m53-kill")
+    with mock.patch.object(plugin.router, "call", return_value=None):
+        out = reg.on_transform_llm_output_guarded(
+            response_text=body, session_id="m53-kill", model="m")
+
+    assert isinstance(out, str), "None means the host ships its own copy"
+    assert "<turn" not in out
+    assert out.strip() == answer
+    assert len(out) == len(body) - len(tag) - 2
+    ship = _events(rows, "shipped_bytes")
+    assert ship and ship[-1]["shipped_has_tag"] == 0
+
+
+def test_restore_never_reinstates_pre_strip_bytes(rows, monkeypatch):
+    """persisted_body_restored must write the STRIPPED bytes."""
+    from hermes_router.gate import registration as reg
+    from hermes_router.core import canonical as _can
+
+    written = []
+
+    def _rewrite(session_id, old, new, **kw):
+        written.append((old, new))
+        return True
+
+    monkeypatch.setattr(_can, "rewrite_persisted_turn", _rewrite)
+    tag = '<turn domain="none" type="produced" />'
+    answer = "A hardlink is another directory entry for the same inode."
+    body = tag + "\n\n" + answer
+
+    _prime("m53-restore")
+    with mock.patch.object(plugin.router, "call", return_value=None):
+        out = reg.on_transform_llm_output_guarded(
+            response_text=body, session_id="m53-restore", model="m")
+
+    delivered = out if isinstance(out, str) else body
+    assert "<turn" not in delivered
+    for _old, new in written:
+        assert "<turn" not in str(new), "restore reinstated pre-strip bytes"

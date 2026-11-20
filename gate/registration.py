@@ -632,6 +632,38 @@ def on_transform_llm_output_guarded(**kwargs):
             _prov.finish(_turn, delivered=final)
     except Exception:  # noqa: BLE001
         pass
+    # M53-02 (round 11): SHIPPED-BYTE OBSERVABILITY + LAST-MILE GUARD.
+    #
+    # Measured: the strip produced the right short body (`delivered -
+    # strip_bytes == refusal_chars`) and the platform still shipped the
+    # pre-strip bytes — so the next sweep must be able to tell "the decision
+    # was wrong" from "the platform shipped another copy" WITHOUT inference.
+    # These two rows are that instrument.
+    #
+    # The guard is the one thing this seam controls: if this pass stripped a
+    # tag and the settled value is None (the documented host pass-through,
+    # which means the host ships ITS OWN copy) or still carries marker text,
+    # hand back the stripped body explicitly instead.
+    try:
+        _ship = final
+        if _boundary_stripped and (not isinstance(_ship, str)
+                                   or not _ship.strip()
+                                   or "<turn" in str(_ship).lower()):
+            _ship = _original
+        if _ship is not final:
+            final = _ship
+        _lg_ship = _hub_log_route()
+        if _lg_ship is not None:
+            _lg_ship(
+                "POST", event_detail="shipped_bytes",
+                shipped_chars=(len(final) if isinstance(final, str) else 0),
+                shipped_has_tag=int("<turn" in str(final or "").lower()),
+                shipped_is_none=int(final is None),
+                boundary_stripped=int(bool(_boundary_stripped)),
+                decision_case=str(getattr(_decision, "case_id", "") or ""),
+                session_id=str(kwargs.get("session_id") or ""))
+    except Exception:  # noqa: BLE001 — the instrument never breaks delivery
+        pass
     return final
 
 
