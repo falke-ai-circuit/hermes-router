@@ -99,10 +99,27 @@ def strip_inline_tags(text: object) -> Tuple[str, list]:
         values = [m.group(0) for m in _TURN_ANY_RE.finditer(raw)]
         if not values:
             return raw, []
-        # Remove the tag plus ONE adjacent space on either side, so 'A. <tag>
-        # More' does not become 'A.  More' and '<tag> Real' does not become
-        # ' Real'.
-        clean = _TURN_ANY_RE.sub("", raw)
+        # A MULTI-LINE tag is not a tag (its attributes continue on the next
+        # line). Matching only the first attribute would leave a fragment
+        # (`type="produced" />`) where answer text used to be — so a match
+        # without a closing bracket that is followed by another attribute on a
+        # following line is left untouched.
+        _spans = []
+        for m in _TURN_ANY_RE.finditer(raw):
+            _txt = m.group(0)
+            if ">" not in _txt:
+                _rest = raw[m.end():m.end() + 64]
+                if re.match(r"[ \t]*\n[ \t]*[A-Za-z_]+[ \t]*=", _rest):
+                    continue
+            _spans.append((m.start(), m.end()))
+        if not _spans:
+            return raw, []
+        _out, _last = [], 0
+        for _s, _e in _spans:
+            _out.append(raw[_last:_s])
+            _last = _e
+        _out.append(raw[_last:])
+        clean = "".join(_out)
         clean = re.sub(r"[ \t]{2,}", " ", clean)
         clean = re.sub(r"^[ \t]+", "", clean)
         clean = clean.lstrip("\n")
