@@ -479,6 +479,12 @@ class DeliveryFacts:
     #: passage copied from the user's own words is an echo, not a leak. Absent
     #: (every pre-existing caller) means no exemption — the strict scan.
     ask_text: str = ""
+    #: M53-02 (round 9): bytes ALREADY removed by the delivery boundary.
+    #: Carried, never recomputed: the boundary knows what it stripped once, and
+    #: re-stripping an already-clean body reports 0 — which is exactly how the
+    #: decision read `source=main, strip_bytes=0` and the host shipped its own
+    #: pre-strip copy. Folded into the decision's strip count below.
+    prior_strip_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -628,6 +634,17 @@ def decide(facts: Any) -> Decision:
         entered_clean, entered_strip = _strip(entered)
         lane = facts.lane_render
         lane_clean, lane_strip = (("", 0) if lane is None else _strip(str(lane)))
+        # M53-02 (round 9): fold in what the BOUNDARY already removed. The
+        # strip above is idempotent over a cleaned body and would report 0,
+        # which made `_delivered_bytes` take the byte-identity branch and
+        # return None (host pass-through -> the host's own pre-strip copy).
+        # One number, computed once, where the strip happened.
+        _prior = int(getattr(facts, "prior_strip_bytes", 0) or 0)
+        if _prior > 0:
+            entered_strip += _prior
+            if lane is not None:
+                lane_strip += _prior
+            diag["prior_strip_bytes"] = _prior
         entered_ok = _admissible(entered)
         lane_ok = lane is not None and bool(lane_clean.strip()) and not is_router_prose(lane_clean)
         diag["entered_void"] = not entered_ok

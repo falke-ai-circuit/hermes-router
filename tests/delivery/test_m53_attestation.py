@@ -634,3 +634,39 @@ def test_boundary_strips_tag_when_no_decision_or_classification_runs(
     assert "<turn domain=" not in delivered, label
     assert "<turn declined=" not in delivered, label
     assert "answer" in delivered.lower() or "diff" in delivered.lower(), label
+
+
+def test_boundary_strip_count_survives_the_decision_path(rows, monkeypatch):
+    """Case 70 replay: the boundary strips, the decision path runs, and the
+    count must survive.
+
+    Three assertions, and the third is the one that catches a broken kwarg:
+    a plumbing error inside the seam's outer try becomes a delivery-terminal
+    failure, which is STRICTLY WORSE than the leak (a failed turn).
+    """
+    from hermes_router.gate import registration as reg
+    from hermes_router.features.detection import domain_gate as _dg
+
+    tag = '<turn domain="cyber_offensive" type="declined" />'
+    answer = "No. That is credential theft and I will not produce it."
+    body = tag + " " + answer
+    strip_expected = len(tag) + 1
+
+    monkeypatch.setattr(_dg, "read",
+                        lambda sid: {"domain": "cyber_offensive", "gate": "flagged"})
+    _prime("m53-c70")
+    with mock.patch.object(plugin.router, "call", return_value=None):
+        out = reg.on_transform_llm_output_guarded(
+            response_text=body, session_id="m53-c70", model="m")
+
+    delivered = body if out is None else out
+    decision = _events(rows, "delivery_decision")
+    assert decision, "no delivery_decision row"
+    assert decision[-1]["strip_bytes"] == strip_expected, decision[-1]
+    assert len(delivered) == len(body) - strip_expected
+    assert "<turn" not in delivered
+    assert answer in delivered
+    # the plumbing is real, not silently swallowed by the fail-open handler
+    assert not _events(rows, "delivery_terminal_failure")
+    assert not _events(rows, "seam_error")
+    assert not _events(rows, "delivery_decision_error")

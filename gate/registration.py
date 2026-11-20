@@ -431,8 +431,15 @@ def on_transform_llm_output_guarded(**kwargs):
                 _entered_dec = out
         except Exception:  # noqa: BLE001 — fail open to the draft
             _entered_dec = _original
-        _facts = _build_facts(_entered_dec, kwargs, _turn, out, _closed_hit,
-                               attempt=_pre_attempt)
+        _facts = _build_facts(
+            _entered_dec, kwargs, _turn, out, _closed_hit,
+            attempt=_pre_attempt,
+            # M53-02 (round 9): the strip count is carried, not recomputed.
+            # The boundary already knows what it deleted (51 bytes); re-running
+            # an idempotent strip downstream is how the count read 0 and the
+            # host shipped its own pre-strip copy.
+            prior_strip_bytes=(max(0, len(_original_raw) - len(_original))
+                               if _boundary_stripped else 0))
         _decision = _decide(_facts)
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
@@ -667,7 +674,8 @@ def _closed_line_hit(kwargs) -> str:
         return ""
 
 
-def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0):
+def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0,
+                 prior_strip_bytes: int = 0):
     """Build the frozen facts record ONCE at the delivery edge (spec §1.1).
 
     `gate_consulted` has NO default-true: it is True only when a gate record
@@ -722,6 +730,8 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
         closed_line_hit=str(closed_hit or ""),
         lane_render=(None if lane_render is None else str(lane_render)),
         attempt=int(attempt or 0),
+        # M53-02 (round 9): the boundary's counted delta rides the facts.
+        prior_strip_bytes=int(prior_strip_bytes or 0),
     )
 
 
