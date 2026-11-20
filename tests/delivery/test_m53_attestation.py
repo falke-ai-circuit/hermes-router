@@ -594,3 +594,43 @@ def _decide_public(facts):
 def _delivered_bytes_public(decision, entered):
     from hermes_router.gate import registration as _reg
     return _reg._delivered_bytes(decision, entered)
+
+
+# ---------------------------------------------------------------------------
+# 10. THE UNCONDITIONAL BOUNDARY — paths where no decision/classification runs
+# ---------------------------------------------------------------------------
+# The sweep measured 9/19 armed denials still shipping the tag: some turns had
+# NO delivery_decision row (the decision never ran) and some skipped POST
+# classification entirely. A strip bound to those paths cannot cover them, so
+# the wrapper's entry strip must, and the edge must return explicit bytes
+# (None is the host pass-through = its own raw, tag-bearing copy).
+
+@pytest.mark.parametrize("label,tag", [
+    ("decision-skipped", TAG_DECLINED),
+    ("classification-skipped", TAG_PRODUCED),
+    ("mid-body", TAG_PRODUCED),
+    ("unterminated-fragment", '<turn domain="none" type="produced" /'),
+])
+def test_boundary_strips_tag_when_no_decision_or_classification_runs(
+        label, tag, rows, monkeypatch):
+    from hermes_router.gate import registration as reg
+
+    if label == "mid-body":
+        body = "First line of the answer.\n" + tag + "\nLast line."
+    else:
+        body = tag + "\n\n" + BENIGN_BODY
+
+    # Simulate BOTH failure classes: the orchestration seam never contributes a
+    # decision (class A) and never classifies (class B).
+    monkeypatch.setattr(
+        reg.orchestration, "on_transform_llm_output",
+        lambda **kwargs: None)
+
+    _prime("m53-boundary-" + label)
+    out = reg.on_transform_llm_output_guarded(
+        response_text=body, session_id="m53-boundary-" + label, model="m")
+    delivered = "" if out is None else out
+    assert out is not None, label + ": None is the host pass-through (leak)"
+    assert "<turn domain=" not in delivered, label
+    assert "<turn declined=" not in delivered, label
+    assert "answer" in delivered.lower() or "diff" in delivered.lower(), label

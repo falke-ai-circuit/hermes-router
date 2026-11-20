@@ -55,6 +55,44 @@ def _hub_log_route():
     return getattr(root, "_log_route", None) if root is not None else None
 
 
+#: M53-02 (round 6): dedupe for the BOUNDARY attestation record. Keyed on
+#: (session, body length) so a repeated pass of the same body never writes a
+#: second row; bounded, because a session list must not grow forever.
+_BOUNDARY_ATT_LOGGED: set = set()
+#: Set by the orchestration seam when it writes its own `attestation_turn` row.
+#: The boundary writes a fallback row ONLY when this is absent: a skipped
+#: classification must still record the type, but a real seam row must never be
+#: shadowed by the fallback (attribution is the pilot's whole measurement).
+_SEAM_ATT_SEEN: set = set()
+
+
+def _note_seam_attestation(session_id: str, body_len: int) -> None:
+    """Mark that the POST seam recorded this body's attestation."""
+    try:
+        _SEAM_ATT_SEEN.add((str(session_id or ""), int(body_len)))
+        if len(_SEAM_ATT_SEEN) > 2048:
+            _SEAM_ATT_SEEN.clear()
+    except Exception:  # noqa: BLE001 — bookkeeping never blocks
+        pass
+
+
+def _hub_dispatcher_armed() -> bool:
+    """True when this profile is inside the attestation pilot.
+
+    Read through the root package's `_dispatcher_pre`, exactly as the
+    orchestration seam does. Fail-open False: an unreadable config is
+    UNARMED, never a reason to stamp an attestation record that did not
+    happen.
+    """
+    try:
+        root = _sys.modules.get(_ROOT_NAME)
+        pre = getattr(root, "_dispatcher_pre", None) if root is not None else None
+        armed = getattr(pre, "attestation_armed", None)
+        return bool(armed()) if callable(armed) else False
+    except Exception:  # noqa: BLE001 — arming must never break delivery
+        return False
+
+
 #: M35-04 — the loud-failure body. Reached ONLY when marker text survived the
 #: strip: the turn is withheld rather than delivered, because routing metadata
 #: in a user's answer is a leak of internal plumbing, not a formatting wobble.
@@ -270,6 +308,58 @@ def on_transform_llm_output_guarded(**kwargs):
         _prov = None
         _turn = None
     _original = kwargs.get("response_text", "") or ""
+    # ------------------------------------------------------------------
+    # M53-02 (round 6): THE UNCONDITIONAL BOUNDARY.
+    #
+    # Every earlier fix hung the strip off a path that can be SKIPPED — the
+    # orchestration seam, the decision path, the lane branch. Measured: 9 of
+    # 19 armed denials still shipped the tag, including turns with no
+    # `delivery_decision` row at all (the decision never ran) and turns whose
+    # POST classification was skipped. The tag is metadata this pilot itself
+    # injects at PRE, so it is removed HERE — at the wrapper's entry, before
+    # the closed-line short-circuit, before orchestration, before any
+    # classification, route or decision. Nothing below can run earlier.
+    #
+    # Both forms, every position: `scrub_markers` removes well-formed tag
+    # lines anywhere in the body, the unterminated cap fragment, and both tag
+    # forms; `strip_markers` (used by the decision) agrees with it.
+    # ------------------------------------------------------------------
+    _original_raw = _original
+    #: True when this seam removed routing metadata from the entered body. The
+    #: delivery edge MUST then return explicit bytes: `None` is the host
+    #: pass-through, and the host's copy is the raw, tag-bearing body.
+    _boundary_stripped = False
+    try:
+        from ..features.detection import declaration as _decl_bound
+
+        _bound_clean, _bound_marker = _decl_bound.scrub_markers(_original)
+        if isinstance(_bound_clean, str) and _bound_clean != _original:
+            if _bound_clean.strip():
+                _original = _bound_clean
+                # NOTE: `kwargs` is deliberately NOT rewritten. Orchestration
+                # must still see the RAW body — it parses the attestation there
+                # and decides the route from it. Only the delivery accounting
+                # (`_original` = the bytes the decision and the boundary work
+                # from) is cleaned here; `_boundary_stripped` forces the edge to
+                # return these bytes explicitly instead of the None pass-through.
+                _boundary_stripped = True
+            try:
+                _lg_b = _hub_log_route()
+                if _lg_b is not None:
+                    _lg_b("POST", event_detail="boundary_tag_stripped",
+                          strip_bytes=max(0, len(_original_raw)
+                                          - len(_original)),
+                          marker=str(_bound_marker or "")[:32],
+                          session_id=str(kwargs.get("session_id") or ""))
+            except Exception:  # noqa: BLE001 — telemetry never blocks
+                pass
+        # The attestation is parsed from the body the model produced, so it is
+        # recorded even when POST classification never runs. The record is
+        # written at the END of this seam (see `_boundary_att_below`) and only
+        # when the POST seam did not write one — attribution first.
+        pass
+    except Exception:  # noqa: BLE001 — the boundary never breaks delivery
+        _original = _original_raw
     # D3 lives at the DECISION (spec §2 P2), not before the seam: consulting
     # early would change which table row fires and therefore whether the lane
     # renders at all — the routing decision is the table's, and this
@@ -448,6 +538,12 @@ def on_transform_llm_output_guarded(**kwargs):
                 _marker_outcome = "marker_leak_withheld"
             elif str(_orig_clean) != str(_original):
                 final = _orig_clean
+            elif _boundary_stripped:
+                # M53-02 (round 6): the seam ALREADY cleaned the entered body.
+                # Returning None here means "deliver the body you gave me" —
+                # and the host's copy is the RAW, tag-bearing one, which is
+                # precisely how the leak shipped. Explicit bytes, always.
+                final = _original
         else:
             final, _marker_outcome, _marker_text = _sanitize_delivery(
                 final, session_id=str(kwargs.get("session_id") or ""))
@@ -457,6 +553,35 @@ def on_transform_llm_output_guarded(**kwargs):
             except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001 — the boundary never breaks delivery
+        pass
+    # M53-02 (round 6): BOUNDARY ATTESTATION FALLBACK. When POST classification
+    # never runs (complexity_skip / bare call), no `attestation_turn` row is
+    # written anywhere and the type is simply absent from the sweep. The body
+    # still carries the tag, so parse it here — but only when the seam did not
+    # already record this exact body, so a real seam row is never shadowed.
+    try:
+        from ..features.detection import attestation as _att_b2
+
+        _sid_b = str(kwargs.get("session_id") or "")
+        _key_b = (_sid_b, len(_original_raw))
+        if (_hub_dispatcher_armed() and _key_b not in _SEAM_ATT_SEEN
+                and _key_b not in _BOUNDARY_ATT_LOGGED):
+            _att_b = _att_b2.parse(_original_raw)
+            if _att_b.get("valid"):
+                _BOUNDARY_ATT_LOGGED.add(_key_b)
+                _lg_b2 = _hub_log_route()
+                if _lg_b2 is not None:
+                    _lg_b2("POST", event_detail="attestation_turn",
+                           armed=1, where="boundary",
+                           agent_domain=_att_b.get("domain") or "",
+                           agent_type=_att_b.get("type") or "",
+                           attestation_mismatch=0, declaration_retry=0,
+                           declaration_reason="",
+                           route_fired=0, replace=0, envelope_emitted=0,
+                           delivered_chars=len(str(_original or "")),
+                           draft_chars=len(_original_raw),
+                           session_id=_sid_b)
+    except Exception:  # noqa: BLE001 — the record never blocks delivery
         pass
     # M46-03 (owner ruling, reverses M35-17) — VISIBILITY AT FINAL RESPONSE.
     # The api_server seam returns None to mean "deliver the bytes you gave me",
