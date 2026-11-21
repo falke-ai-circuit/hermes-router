@@ -463,8 +463,19 @@ def on_transform_llm_output_guarded(**kwargs):
                 str(kwargs.get("session_id") or ""))
         except Exception:  # noqa: BLE001
             _decl_strip_extra = 0
+        # R41 item 3: if this turn's own scope recorded a render body, the
+        # decision sees it. Absent -> "" and today's behaviour stands exactly.
+        try:
+            from ..core import state as _st_r
+            _scoped_render = _st_r.read_render_for_scope(
+                _st_r.scope_for(str(kwargs.get("session_id") or "")) or "")
+        except Exception:  # noqa: BLE001 — never breaks delivery
+            _scoped_render = ""
+        _lane_in = out
+        if not (isinstance(_lane_in, str) and _lane_in.strip()) and _scoped_render.strip():
+            _lane_in = _scoped_render
         _facts = _build_facts(
-            _entered_dec, kwargs, _turn, out, _closed_hit,
+            _entered_dec, kwargs, _turn, _lane_in, _closed_hit,
             attempt=_pre_attempt,
             # M53-02 (round 9): the strip count is carried, not recomputed.
             # The boundary already knows what it deleted (51 bytes); re-running

@@ -711,6 +711,50 @@ def record_scope(session_id: str, scope_id: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# M53-03 (R41 item 3): the RENDER BODY, carried by the turn's own scope id.
+#
+# `stash_pending` stores only a sha256 of the render, so POST could never obtain
+# the body and `acceptance=original:render_unavailable` was structural. The body
+# now travels under the same scope id the turn already mints (make_scope_id),
+# read by that exact key — never a global "most recent render".
+# ---------------------------------------------------------------------------
+_RENDER_BY_SCOPE: Dict[str, str] = {}
+_RENDER_SCOPE_MAX = 512
+
+
+def note_render_for_scope(scope_id: str, render: str) -> bool:
+    """Persist the render BODY under its turn scope. Never raises."""
+    try:
+        if not scope_id or not str(render or "").strip():
+            return False
+        _RENDER_BY_SCOPE[str(scope_id)] = str(render)
+        while len(_RENDER_BY_SCOPE) > _RENDER_SCOPE_MAX:
+            _RENDER_BY_SCOPE.pop(next(iter(_RENDER_BY_SCOPE)))
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def read_render_for_scope(scope_id: str) -> str:
+    """The render recorded for EXACTLY this scope, or "" when absent.
+
+    No fallback to another turn, another session, or the most recent row:
+    absent means absent.
+    """
+    try:
+        return str(_RENDER_BY_SCOPE.get(str(scope_id or ""), "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def reset_render_scopes() -> None:
+    try:
+        _RENDER_BY_SCOPE.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def scope_for(session_id: str) -> Optional[str]:
     """Read the stamped scope for the session, or None when nothing was stamped."""
     with _SCOPE_STAMP_LOCK:

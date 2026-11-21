@@ -885,6 +885,12 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                         request if isinstance(request, dict) else None)
                     rendered, _render_retries = _hub()._render_with_retry_ladder(
                         content, ["shadow_declared"], _persona, session_id)
+                    # R41 item 3: the BODY, not a digest, under this turn's own
+                    # scope id — the one key POST already computes.
+                    try:
+                        _hub().state.note_render_for_scope(_scope_id, rendered)
+                    except Exception:  # noqa: BLE001 — capture never breaks
+                        pass
                     # R26-2b: whitespace-only render == empty — a route that
                     # produced no substance fails open to the original turn,
                     # NEVER delivers an empty replacement.
