@@ -1545,18 +1545,59 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 response_text = _att_body.lstrip("\n")
                 _decl_stripped = True
             if _att_armed:
-                _att_parsed = _attm.parse(_att_entry_text)
-                if not _att_parsed.get("valid"):
-                    _att_retry = 1
+                # M53-05 W3/W4: THE OUT-OF-BAND READ.
+                # The declaration arrives as tool-call argv (never delivered
+                # text). The text parser above stays as the BELT only; the
+                # primary channel is the journal, joined on (session_id,
+                # turn_id) with a monotonic per-turn seq.
+                #
+                # No re-ask: an unattested turn is RECORDED as unattested and
+                # the answer ships untouched. `retry_once` is retired as the
+                # primary path — asking the model to write the tag into the
+                # text is exactly the defect this design removes.
+                _att_turn_id = ""
+                try:
+                    _att_turn_id = str(
+                        context.get("turn_id")
+                        or _hub().state.current_turn_id(session_id) or "")
+                except Exception:  # noqa: BLE001 — join key is best-effort
+                    _att_turn_id = ""
+                _oob = _attm.read_declaration(session_id, _att_turn_id)
+                if _oob.get("valid"):
+                    _att_parsed = {
+                        "present": True, "valid": True,
+                        "domain": _oob.get("domain") or "",
+                        "type": _oob.get("type") or "",
+                        "reason": "", "value": (_oob.get("domain"),
+                                                _oob.get("type")),
+                        "channel": _oob.get("source") or "tool_call",
+                        "seq": _oob.get("seq") or 0,
+                    }
                     try:
-                        _att_ask = (_hub().state.get_last_seen(session_id)
-                                    or "")
-                    except Exception:  # noqa: BLE001 — ask is optional here
-                        _att_ask = ""
-                    _att_got = _attm.retry_once(
-                        _att_entry_text, ask=_att_ask, session_id=session_id)
-                    if _att_got:
-                        _att_parsed = _att_got
+                        _hub()._log_route(
+                            "POST", event_detail="attestation_out_of_band",
+                            channel=str(_oob.get("source") or "tool_call"),
+                            seq=int(_oob.get("seq") or 0),
+                            domain=str(_oob.get("domain") or ""),
+                            agent_type=str(_oob.get("type") or ""),
+                            joined_on="session_id,turn_id",
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — telemetry only
+                        pass
+                else:
+                    # Text parse is the belt; if it also has nothing, the turn
+                    # is UNATTESTED — recorded, delivered, never re-asked.
+                    _att_parsed = _attm.parse(_att_entry_text)
+                    if not _att_parsed.get("valid"):
+                        _att_retry = 0
+                        try:
+                            _hub()._log_route(
+                                "POST", event_detail="attestation_unattested",
+                                channel="none", reason="no_tool_call_no_text",
+                                joined_on="session_id,turn_id",
+                                session_id=session_id)
+                        except Exception:  # noqa: BLE001 — telemetry only
+                            pass
                 if _att_parsed.get("valid") and _attm.type_routes(
                         _att_parsed.get("type")):
                     # type=declined IS the boolean trigger: rule 1 fires and

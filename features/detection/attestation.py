@@ -243,6 +243,85 @@ def type_routes(agent_type: object) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# M53-05: THE OUT-OF-BAND CHANNEL (design option B).
+#
+# The attestation must never exist inside the answer text. Five rounds of strip
+# fixes proved the point: any metadata written into the body leaks on some path
+# (host hook-kill, persisted-body restore, None pass-through). The declaration
+# therefore arrives as a TOOL CALL argv — never delivered text — and the reader
+# joins it to the turn on (session_id, turn_id) with a monotonic per-turn seq.
+#
+#   journal:  (session_id, turn_id) -> [(seq, {domain, type, source}), ...]
+#
+# ABSENCE IS NORMAL: an unattested turn is recorded as unattested and the
+# answer ships untouched. There is no re-ask, and no text-tag fallback.
+# ---------------------------------------------------------------------------
+_DECLARATIONS: Dict[Tuple[str, str], list] = {}
+_SEQ: Dict[Tuple[str, str], int] = {}
+_DECL_MAX_TURNS = 512
+
+
+def record_declaration(session_id: object, turn_id: object, domain: object,
+                       type_: object, source: str = "tool_call") -> int:
+    """Record one out-of-band declaration. Returns its seq (0 on failure).
+
+    `source` is "tool_call" (primary, argv) or "reasoning" (corroborating
+    only). Invalid enums are recorded as UNATTESTED rather than as a claim.
+    Never raises: a missing channel must never cost a turn.
+    """
+    try:
+        key = (_coerce(session_id), _coerce(turn_id))
+        seq = int(_SEQ.get(key, 0)) + 1
+        _SEQ[key] = seq
+        pair = _parse_pair(domain, type_)
+        entry = {
+            "seq": seq,
+            "domain": pair.get("domain", "") if pair.get("valid") else "",
+            "type": pair.get("type", "") if pair.get("valid") else "",
+            "valid": bool(pair.get("valid")),
+            "source": str(source or "tool_call"),
+        }
+        _DECLARATIONS.setdefault(key, []).append(entry)
+        if len(_DECLARATIONS) > _DECL_MAX_TURNS:
+            _DECLARATIONS.clear()
+            _SEQ.clear()
+        return seq
+    except Exception:  # noqa: BLE001 — recording never breaks a turn
+        return 0
+
+
+def read_declaration(session_id: object, turn_id: object) -> Dict[str, Any]:
+    """The turn's LATEST valid declaration, or an unattested record.
+
+    Returns {"present", "valid", "domain", "type", "seq", "source"}.
+    Empty is normal and is reported as `unattested`, not as an error.
+    """
+    try:
+        key = (_coerce(session_id), _coerce(turn_id))
+        entries = [e for e in _DECLARATIONS.get(key, []) if e.get("valid")]
+        if not entries:
+            return {"present": False, "valid": False, "domain": "", "type": "",
+                    "seq": 0, "source": "", "reason": "unattested"}
+        last = max(entries, key=lambda e: int(e.get("seq") or 0))
+        return {"present": True, "valid": True,
+                "domain": last.get("domain", ""), "type": last.get("type", ""),
+                "seq": int(last.get("seq") or 0),
+                "source": last.get("source", ""), "reason": ""}
+    except Exception:  # noqa: BLE001
+        return {"present": False, "valid": False, "domain": "", "type": "",
+                "seq": 0, "source": "", "reason": "unattested"}
+
+
+def reset_declarations() -> None:
+    """Clear the journal (test isolation)."""
+    try:
+        _DECLARATIONS.clear()
+        _SEQ.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def is_unanswered(parsed: Optional[Dict[str, Any]]) -> bool:
     """True when the attestation is not a usable, in-enum claim."""
     try:

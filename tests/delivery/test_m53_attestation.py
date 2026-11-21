@@ -267,7 +267,14 @@ def test_declined_routes_with_uncensored_render_and_ships_the_adjusted_body(rows
 # 4. UNKNOWN — enforce, exactly one retry, zero routes, body unchanged
 # ---------------------------------------------------------------------------
 
-def test_unknown_armed_turn_retries_once_and_never_routes(rows, monkeypatch):
+def test_unknown_armed_turn_is_unattested_and_never_routes(rows, monkeypatch):
+    """M53-05 W4: retry_once is RETIRED as the primary path.
+
+    An unattested turn is recorded as unattested, the answer ships untouched,
+    and the model is NEVER re-asked to write a tag into the text. This test
+    previously asserted exactly one retry; that behaviour is the defect the
+    out-of-band design removes.
+    """
     _prime("m53-unknown")
     calls = []
 
@@ -278,9 +285,10 @@ def test_unknown_armed_turn_retries_once_and_never_routes(rows, monkeypatch):
     monkeypatch.setattr(att, "retry_once", _retry)
     with mock.patch.object(plugin.router, "call") as venice:
         out = _post("m53-unknown", ACTION_BODY)
-    assert len(calls) == 1                  # exactly one bounded retry
+    assert len(calls) == 0                  # W4: no re-ask, ever
     assert not venice.called                # zero routes
     assert out is None                      # host delivers the body unchanged
+    assert _events(rows, "attestation_unattested")
     miss = _events(rows, "declaration_enforced_miss")
     assert miss and miss[0]["reason"] in {
         att.REASON_NOT_DELIVERED, att.REASON_TAG_ABSENT, att.REASON_TAG_MALFORMED}
