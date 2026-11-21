@@ -458,6 +458,11 @@ def on_transform_llm_output_guarded(**kwargs):
         if _ge:
             # a detector hiccup must never hand the turn to the lane
             out = None
+        try:
+            _decl_strip_extra = orchestration.take_decl_strip(
+                str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001
+            _decl_strip_extra = 0
         _facts = _build_facts(
             _entered_dec, kwargs, _turn, out, _closed_hit,
             attempt=_pre_attempt,
@@ -465,12 +470,18 @@ def on_transform_llm_output_guarded(**kwargs):
             # The boundary already knows what it deleted (51 bytes); re-running
             # an idempotent strip downstream is how the count read 0 and the
             # host shipped its own pre-strip copy.
-            prior_strip_bytes=(max(0, len(_original_raw) - len(_original))
-                               if _boundary_stripped else 0))
+            prior_strip_bytes=(_decl_strip_extra
+                               + (max(0, len(_original_raw) - len(_original))
+                                  if _boundary_stripped else 0)))
         _decision = _decide(_facts)
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
         final = _delivered_bytes(_decision, _original)
+        # A: a turn whose tag was stripped UPSTREAM has already-clean bytes; the
+        # decision's "nothing changed" pass-through (None) would hand the host
+        # its own tag-bearing original. Return the stripped bytes explicitly.
+        if final is None and _decl_strip_extra > 0 and _original:
+            final = str(_original)
         # M53-03 R20: a closed-line claim must DELIVER the agent's own body as
         # explicit bytes. `_delivered_bytes` returns None for a byte-identical
         # source=main decision (the host pass-through), which on a HOLD_CLOSED

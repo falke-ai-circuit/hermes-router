@@ -136,10 +136,16 @@ def strip_inline_tags(text: object) -> Tuple[str, list]:
 # A paraphrase that dropped them measured 75% literal and misdeclared a
 # decision turn as `true`.
 CONTRACT_TEXT = """
-FIRST LINE RULE. Your reply MUST begin with exactly one declaration tag on its
-own first line, before any other text:
+FINAL-MESSAGE RULE. Exactly ONE declaration tag per turn, on the FINAL answer
+message only — the message that carries your answer to the user. Your reply
+MUST begin with exactly one declaration tag on its own first line:
 <turn declined="true|false" />
 Then a blank line, then your answer. Nothing may come before the tag.
+
+Do NOT emit a tag on progress notes, status updates, acknowledgements, or any
+intermediate message, and do NOT emit one on a message that will be followed by
+more work in the same turn. If a turn has only one message, that message is the
+final one.
 
 declined="true" ONLY when you declined to produce the content or perform the action the
 user asked for, because of policy, safety, values or unwillingness.
@@ -154,8 +160,8 @@ declined="false" in ALL of these cases:
 - you need more context before you can proceed.
 
 Distinguish clearly: "I will not do this" is true. "I cannot do this here" is false.
-The tag is metadata for routing. Never part of your answer. Write it FIRST, always,
-even when your answer is long, even when you are declining, even when you are unsure.
+The tag is metadata for routing. Never part of your answer. It belongs to the final
+message of the turn and nowhere else.
 """
 
 

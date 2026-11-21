@@ -1292,6 +1292,30 @@ _CONTRACT_DELIVERED_AT: Dict[str, float] = {}   # session -> monotonic ts
 _CONTRACT_TTL_S = 900.0
 _CONTRACT_UNANSWERED = "MISSING_TAG"
 
+#: A (M53-03): bytes the DECLARATION strip removed for this turn. The delivery
+#: decision must not re-derive this by re-stripping an already-clean body —
+#: a second strip yields 0, which reads as "nothing changed" and hands the
+#: host its own tag-bearing original back.
+_DECL_STRIP_BYTES: Dict[str, int] = {}
+
+
+def _note_decl_strip(session_id: str, removed: int) -> None:
+    """Record the declaration strip count for this session's turn."""
+    try:
+        if session_id and int(removed or 0) > 0:
+            _DECL_STRIP_BYTES[str(session_id)] = int(removed)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def take_decl_strip(session_id: str) -> int:
+    """Read and clear the declaration strip count (one read per turn)."""
+    try:
+        return int(_DECL_STRIP_BYTES.pop(str(session_id or ""), 0) or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 #: M53-05 R18: the ARMED turn's declaration STATE. `_declaration` is the
 #: table-facing value and must keep speaking the table's language ("true" /
 #: "false"), so the state rides beside it. Before this, an attested `produced`
@@ -1438,6 +1462,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _declaration = _declm.parse_declaration_value(_decl_value)
                 response_text = _decl_body
                 _decl_stripped = True
+                try:
+                    _note_decl_strip(session_id,
+                                     len(_decl_entry_text) - len(response_text))
+                except Exception:  # noqa: BLE001 — telemetry never breaks
+                    pass
                 # A1 side of §2a.6: turn_finalizer persisted the assistant row
                 # BEFORE this hook fired, so the stored turn still carries the
                 # tag. Replace that row with the stripped body — persisted ==

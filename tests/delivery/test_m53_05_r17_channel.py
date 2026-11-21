@@ -38,10 +38,11 @@ from hermes_router.gate import registration as reg  # noqa: E402
 from hermes_router.gate import orchestration  # noqa: E402
 from hermes_router.passes import dispatcher_pre  # noqa: E402
 
-#: The unarmed boolean contract is the MEASURED artifact (frozen battery text,
-#: sha256 pre-registered with the run). Pinned here so a migration on the armed
-#: path can never quietly rewrite the unarmed one.
-UNARMED_CONTRACT_SHA256 = "d706b67850171246ec06d5239081c510f869e2b6a33270835f449502eac2fb7b"
+#: The unarmed boolean contract is pinned so an accidental edit cannot slip in.
+#: RE-BASELINED by the owner's final-message-only ruling (M53-03 Fix B): the
+#: contract text now scopes the tag to the FINAL message, which is a deliberate
+#: change to this artifact, not a regression. The pin still catches drift.
+UNARMED_CONTRACT_SHA256 = "4ae24a97cde8381d0b0a5e435d3f598b3683be75ad6b76ad1412e9464d8cfdca"
 
 BENIGN_BODY = "Here is the diff you asked for: the parser skips blank lines."
 TAG_BODY = '<turn domain="none" type="produced" />\n\n' + BENIGN_BODY
