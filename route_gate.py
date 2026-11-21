@@ -589,7 +589,17 @@ def _lane_request_from_messages(request: Any) -> Optional[Dict[str, Any]]:
         msgs = (request or {}).get("messages")
         if not isinstance(msgs, list):
             return None
-        for m in msgs:
+        # M53-03: a routing request claims ONLY the turn it was made in. Scan
+        # assistant calls AFTER the most recent user message; an earlier call
+        # belongs to a previous turn and must not re-fire the guard forever
+        # (unbounded here, one request_routing poisoned every later turn).
+        _last_user = -1
+        for _i, _m in enumerate(msgs):
+            if isinstance(_m, dict) and _m.get("role") == "user":
+                _last_user = _i
+        if _last_user < 0:
+            return None          # no turn boundary -> nothing claims this turn
+        for m in msgs[_last_user + 1:]:
             if not isinstance(m, dict) or m.get("role") != "assistant":
                 continue
             calls = m.get("tool_calls")
