@@ -445,6 +445,124 @@ def _ping() -> str:
 
 
 # ---------------------------------------------------------------------------
+# turn_attest — M53-05 W2, the OUT-OF-BAND declaration writer
+#
+# M53-05 moved the attestation out of the answer text: the journal in
+# `features/detection/attestation.py` is the primary channel and the POST seam
+# reads it joined on (session_id, turn_id). W3/W4 shipped the reader and left
+# the journal with no writer, so an armed turn fell back to the text belt —
+# the exact leak the design removes. This tool is the writer.
+#
+# Two hard properties, both structural rather than tested-into-place:
+#   * it writes ONLY through `attestation.record_declaration` (single writer,
+#     one seq counter), never into any answer/body field;
+#   * it never raises — a failure to record is an UNATTESTED turn, which the
+#     POST seam already records and delivers, never a crashed turn.
+#
+# Identity comes from the tool-call seam, not from module state: `session_id`
+# is a host-supplied handler kwarg, and `turn_id` is the per-turn id the host
+# binds for the duration of the dispatch (the SAME id `transform_llm_output`
+# receives, which is what the POST reader joins on). No "last session seen".
+# ---------------------------------------------------------------------------
+
+#: Tool exposure is a CONFIG condition, not a registration-time decision: an
+#: unarmed profile must not even see the tool in its definitions, and arming
+#: is per-profile `declaration_attestation.armed`. The host TTL-caches
+#: check_fn (~30 s per profile scope), so arming lands without a bounce.
+def _attestation_tool_available() -> bool:
+    """True only on a profile whose `declaration_attestation.armed` is True.
+
+    Reuses the gate's own predicate (`attestation_armed`) instead of reading
+    config a second way: two arming readers is how a tool appears on a profile
+    whose gate never fires. Fail-closed on any error.
+    """
+    try:
+        from ..passes import dispatcher_pre
+
+        return bool(dispatcher_pre.attestation_armed())
+    except Exception:  # noqa: BLE001 — an unreadable config means unarmed
+        return False
+
+
+def _attest_turn_id_from_host_context() -> str:
+    """The host's per-turn id bound for this tool call ("" when unavailable).
+
+    `model_tools._approval_observability` binds `turn_id` (from
+    ``agent._current_turn_id``) around the handler dispatch; the same value is
+    passed to `transform_llm_output`, so this is the join key POST reads —
+    not a plugin-side counter that merely looks like one. Read via the host
+    module's own contextvar; any other host version returns "" and the caller
+    records nothing rather than joining a guessed key.
+    """
+    try:
+        from tools import approval_context as _ac
+
+        return str(_ac._approval_turn_id.get() or "")
+    except Exception:  # noqa: BLE001 — host context is optional at this seam
+        return ""
+
+
+def turn_attest(domain: str = "", type_: str = "", session_id: str = "",
+                turn_id: str = "") -> str:
+    """Record ONE out-of-band attestation for the CURRENT turn.
+
+    argv: `domain` + `type`, validated against the CLOSED enums in
+    `features/detection/attestation.py` (DOMAINS / TYPES). Out-of-enum values
+    are recorded as UNATTESTED — never passed through as a valid claim, the
+    same rule `_ATTEST_RE` applies to the text form. The ack reports the
+    adjudication; it never carries answer text.
+
+    `session_id` / `turn_id` are the tool-call identity: the handler kwarg and
+    the host's per-turn context. A turn with no host turn id is NOT recorded
+    under a session-only key (that cannot be audited as a join) — the call
+    returns `turn_id_unavailable` and the turn stays unattested.
+
+    Never raises. Returns a small JSON ack.
+    """
+    try:
+        from ..features.detection import attestation as _att
+
+        if not _attestation_tool_available():
+            return json.dumps({"ok": False, "error": "not_armed",
+                               "recorded": False})
+
+        sid = str(session_id or "")
+        tid = str(turn_id or "") or _attest_turn_id_from_host_context()
+        if not tid:
+            return json.dumps({"ok": False, "error": "turn_id_unavailable",
+                               "recorded": False,
+                               "detail": "no host turn identity at the tool-call seam"})
+        if not sid:
+            return json.dumps({"ok": False, "error": "session_id_unavailable",
+                               "recorded": False})
+
+        d = str(domain or "").strip().lower()
+        t = str(type_ or "").strip().lower()
+        valid = d in _att.DOMAIN_SET and t in _att.TYPE_SET
+
+        # Single writer. `record_declaration` re-validates the pair and stores
+        # an out-of-enum claim as UNATTESTED (valid=False), so the journal
+        # never holds a value the enum does not own.
+        seq = _att.record_declaration(sid, tid, d, t, source="tool_call")
+        if not seq:
+            return json.dumps({"ok": False, "error": "record_failed",
+                               "recorded": False})
+        return json.dumps({
+            "ok": True,
+            "recorded": True,
+            "seq": int(seq),
+            "valid": bool(valid),
+            "domain": d if valid else _att.UNKNOWN,
+            "type": t if valid else _att.UNKNOWN,
+            "source": "tool_call",
+            "joined_on": "session_id,turn_id",
+        })
+    except Exception as exc:  # noqa: BLE001 — recording never breaks a turn
+        return json.dumps({"ok": False, "error": "attest_failed",
+                           "recorded": False, "detail": str(exc)[:120]})
+
+
+# ---------------------------------------------------------------------------
 # Registration (ctx.register_tool; spotify plugin pattern)
 # ---------------------------------------------------------------------------
 
@@ -502,6 +620,35 @@ CONTROL_SCHEMA = {
 }
 
 
+TURN_ATTEST_SCHEMA = {
+    "name": "turn_attest",
+    "description": (
+        "Record this turn's out-of-band attestation (domain + type) for the "
+        "hermes-router declaration journal. Call it ONCE per turn, before you "
+        "finish, whenever this tool is offered. The values are metadata: they "
+        "are joined to the delivered turn by the host turn identity, never "
+        "written into your answer. domain: cyber_offensive | violence_gore | "
+        "weapons_explosives | bio_chem | sexual_explicit | drugs_synthesis | "
+        "fraud_deception | self_harm | none. type: produced | declined | "
+        "partial | clarify | blocked."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": "The single domain you judge the user's request to be in: cyber_offensive | violence_gore | weapons_explosives | bio_chem | sexual_explicit | drugs_synthesis | fraud_deception | self_harm | none.",
+            },
+            "type": {
+                "type": "string",
+                "description": "What you did on this turn: produced | declined | partial | clarify | blocked.",
+            },
+        },
+        "required": ["domain", "type"],
+    },
+}
+
+
 def register(ctx) -> None:
     """Register both tools via ctx.register_tool. Raises propagate to the
     plugin register() wrapper which logs them — a tool failure must never
@@ -530,4 +677,23 @@ def register(ctx) -> None:
         ),
         description=CONTROL_SCHEMA["description"],
         emoji="🎛️",
+    )
+    # M53-05 W2: the out-of-band declaration writer. Registered for EVERY
+    # profile but EXPOSED only where `declaration_attestation.armed is True`
+    # (check_fn) — an unarmed profile never sees the tool and is never asked
+    # to call it. The handler refuses too, so a stale cached definition cannot
+    # turn an unarmed profile into a journal writer.
+    ctx.register_tool(
+        name="turn_attest",
+        toolset="hermes-router",
+        schema=TURN_ATTEST_SCHEMA,
+        handler=lambda args, **kw: turn_attest(
+            domain=args.get("domain", ""),
+            type_=args.get("type", ""),
+            session_id=str(kw.get("session_id") or ""),
+            turn_id=str(kw.get("turn_id") or ""),
+        ),
+        check_fn=_attestation_tool_available,
+        description=TURN_ATTEST_SCHEMA["description"],
+        emoji="🪪",
     )
