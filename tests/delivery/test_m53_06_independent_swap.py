@@ -470,3 +470,82 @@ def test_m20_detected_domain_empty_lane_ships_the_draft(rows, monkeypatch):
     decided = _events(rows, "delivery_decision")
     assert decided[0].get("delivered_source") != "lane", decided[0]
     assert _split_banner(out)[1] == "", "no render => no banner"
+
+
+# ---------------------------------------------------------------------------
+# M53-06g — the envelope tells the next main turn WHICH KIND of render it got
+# ---------------------------------------------------------------------------
+
+CONTENT_CLAUSE = "this body is your output for this turn; continue from it"
+REFUSAL_CLAUSE = ("this body is the uncensored lane's refusal, not your "
+                  "content; do not endorse or extend it")
+
+
+def _next_frame_text(sid):
+    request = {"messages": [{"role": "user", "content": "continue from that"}]}
+    injected = frames_inject(request, sid)
+    text = "\n".join(str(m.get("content") or "") for m in request["messages"]
+                     if isinstance(m, dict) and m.get("role") == "system")
+    return injected, text
+
+
+def test_e1_content_render_envelope_carries_kind(rows, monkeypatch):
+    """BEHAVIOURAL — a content render is reported as content, with its size."""
+    sid = "m53-06-e1"
+    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL, render=RENDER)
+    assert out == RENDER
+
+    injected, text = _next_frame_text(sid)
+    assert injected is True, "the next turn must carry the envelope frame"
+    assert "[UNC-RENDER ENVELOPE" in text, text[:300]
+    assert "render_is_refusal=0" in text, text[:300]
+    assert "render_chars=%d" % len(RENDER) in text, text[:300]
+    sha = hashlib.sha256(RENDER.encode("utf-8")).hexdigest()
+    assert "render_sha=%s" % sha in text, text[:300]
+    assert CONTENT_CLAUSE in text, text[:400]
+    assert REFUSAL_CLAUSE not in text, text[:400]
+
+    # E4: never in the delivered bytes.
+    assert "UNC-RENDER ENVELOPE" not in out, out
+
+
+def test_e2_refusal_render_envelope_says_refusal(rows, monkeypatch):
+    """BEHAVIOURAL — a refusal render is named as a refusal, and gets the
+    opposite instruction, so it is not assimilated as the agent's writing."""
+    sid = "m53-06-e2"
+    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                       render=REFUSAL_RENDER)
+    assert out == REFUSAL_RENDER
+
+    injected, text = _next_frame_text(sid)
+    assert injected is True
+    assert "render_is_refusal=1" in text, text[:300]
+    assert "render_chars=%d" % len(REFUSAL_RENDER) in text, text[:300]
+    assert REFUSAL_CLAUSE in text, text[:400]
+    assert CONTENT_CLAUSE not in text, text[:400]
+    assert "UNC-RENDER ENVELOPE" not in out, out
+
+
+def test_e3_unswapped_turn_carries_no_envelope(rows, monkeypatch):
+    """CONTROL — an ordinary turn's frame is byte-identical: no envelope line."""
+    sid = "m53-06-e3"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, COMPLIANT,
+                      gate_state="not_flagged", domain="meta_doctrine",
+                      reason="out_of_domain")
+    assert lane.called is False
+    assert out is None
+    assert assimilation.read_swap_envelope(sid) == {}
+    assert assimilation.swap_envelope_line(sid) == ""
+    _injected, text = _next_frame_text(sid)
+    assert "UNC-RENDER ENVELOPE" not in text, text[:300]
+
+
+def test_e5_graceful_fail_writes_no_envelope(rows, monkeypatch):
+    """CONTROL — nothing rendered, nothing to attribute: no envelope, no line."""
+    sid = "m53-06-e5"
+    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL, render="")
+    assert out is None
+    assert assimilation.read_swap_envelope(sid) == {}, "no render => no envelope"
+    assert assimilation.swap_envelope_line(sid) == ""
+    _injected, text = _next_frame_text(sid)
+    assert "UNC-RENDER ENVELOPE" not in text, text[:300]
