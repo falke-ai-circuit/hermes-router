@@ -1570,13 +1570,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         "type": _oob.get("type") or "",
                         "reason": "", "value": (_oob.get("domain"),
                                                 _oob.get("type")),
-                        "channel": _oob.get("source") or "tool_call",
+                        "channel": "tool_call",
+                        "channel_reason": "",
                         "seq": _oob.get("seq") or 0,
                     }
                     try:
                         _hub()._log_route(
                             "POST", event_detail="attestation_out_of_band",
-                            channel=str(_oob.get("source") or "tool_call"),
+                            channel="tool_call",
                             seq=int(_oob.get("seq") or 0),
                             domain=str(_oob.get("domain") or ""),
                             agent_type=str(_oob.get("type") or ""),
@@ -1590,14 +1591,33 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _att_parsed = _attm.parse(_att_entry_text)
                     if not _att_parsed.get("valid"):
                         _att_retry = 0
+                        # M53-05 R17 (fix B): the row must say WHICH channel
+                        # lost and WHY. Closed reason set — no free text in a
+                        # coverage column, or acceptance C cannot be counted.
+                        if not _att_turn_id:
+                            _att_ch_reason = "turn_id_unavailable"
+                        elif int(_oob.get("rejected") or 0):
+                            _att_ch_reason = "out_of_enum"
+                        elif _att_parsed.get("present"):
+                            _att_ch_reason = "out_of_enum"
+                        else:
+                            _att_ch_reason = "no_call"
+                        _att_parsed["channel"] = "unattested"
+                        _att_parsed["channel_reason"] = _att_ch_reason
                         try:
                             _hub()._log_route(
                                 "POST", event_detail="attestation_unattested",
-                                channel="none", reason="no_tool_call_no_text",
+                                channel="unattested", reason=_att_ch_reason,
                                 joined_on="session_id,turn_id",
                                 session_id=session_id)
                         except Exception:  # noqa: BLE001 — telemetry only
                             pass
+                    else:
+                        # The belt won: a legacy tag was still written into the
+                        # answer. Counted as text_belt so the migration can be
+                        # measured to completion (and does not read as clean).
+                        _att_parsed["channel"] = "text_belt"
+                        _att_parsed["channel_reason"] = ""
                 if _att_parsed.get("valid") and _attm.type_routes(
                         _att_parsed.get("type")):
                     # type=declined IS the boolean trigger: rule 1 fires and
@@ -2402,6 +2422,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _att_mismatch = 0
         _att_envelope = 0
         _att_reason = str(_att_parsed.get("reason") or "")
+        _att_channel = str(_att_parsed.get("channel") or "unattested")
+        _att_channel_reason = str(_att_parsed.get("channel_reason") or "")
         _att_route_fired = 0
         if _att_armed:
             try:
@@ -2479,7 +2501,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     envelope_emitted=_att_envelope,
                     delivered_chars=(0 if _rule_replace
                                      else len(str(response_text or ""))),
-                    draft_chars=len(_att_entry_text or ""))
+                    draft_chars=len(_att_entry_text or ""),
+                    channel=_att_channel,
+                    channel_reason=_att_channel_reason)
                 _hub()._log_route(
                     "POST", event_detail="attestation_turn",
                     armed=1, **_rec, session_id=session_id)

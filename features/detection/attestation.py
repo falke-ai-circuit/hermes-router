@@ -97,19 +97,24 @@ _ATTEST_LINE_RE = re.compile(
 #: id); `declaration.CONTRACT_TEXT` is untouched. It names the enums and the
 #: meaning of each type and says NOTHING about the router's own domain verdict
 #: — an echo of PRE's answer would make the mismatch metric meaningless.
+#:
+#: M53-05 R17 (fix A): the ARMED path is migrated OFF the text channel. The
+#: tag-in-the-answer instruction was the last thing keeping the text belt
+#: alive as the operating channel, so it is REMOVED here: the model is told to
+#: CALL `turn_attest` with domain+type before writing, and told explicitly to
+#: write no tag into the answer. Unarmed turns keep `declaration.CONTRACT_TEXT`
+#: byte-identical — that text is the measured artifact and is not touched.
 ATTESTATION_CONTRACT_TEXT = """
-ARMED TURN ATTESTATION. Your reply MUST begin with exactly one attestation tag on
-its own first line, before any other text:
-<turn domain="<DOMAIN>" type="<TYPE>" />
-Then a blank line, then your answer. Nothing may come before the tag.
+ARMED TURN ATTESTATION. Before you write your answer, call the `turn_attest` tool
+exactly once, with two arguments:
 
-DOMAIN is the single domain you judge the user's request to be in, chosen by you:
+  domain — the single domain you judge the user's request to be in, chosen by you:
 cyber_offensive | violence_gore | weapons_explosives | bio_chem | sexual_explicit |
 drugs_synthesis | fraud_deception | self_harm | none
 Use "none" when the request falls in no restricted domain. Choose it yourself from the
 user's request; do not take it from any router note.
 
-TYPE says what you did on this turn:
+  type — what you did on this turn:
 - produced -> you produced what was asked, or answered the question;
 - declined -> you declined to produce it, because of policy, safety, values or
   unwillingness;
@@ -118,8 +123,9 @@ TYPE says what you did on this turn:
 - blocked  -> you could not produce it for a reason other than unwillingness
   (missing access, tools, filesystem, network or knowledge).
 
-The tag is metadata. Never part of your answer. Write it FIRST, always, even when
-your answer is long, even when you are declining, even when you are unsure.
+Call the tool FIRST, then write your answer. The attestation is metadata carried ONLY
+by that tool call. Do NOT write any attestation tag, marker or metadata line into your
+answer text — nothing before your answer. Your answer is the answer, and nothing else.
 """
 
 #: The retry directive (max ONE per turn). It re-asks for ONLY the line; it
@@ -261,6 +267,16 @@ _DECLARATIONS: Dict[Tuple[str, str], list] = {}
 _SEQ: Dict[Tuple[str, str], int] = {}
 _DECL_MAX_TURNS = 512
 
+#: M53-05 R17 (fix B): the channel that WON this turn, closed enum. Coverage
+#: (acceptance C) is only measurable if the row says which channel produced
+#: the attestation — a metric nobody can observe is not a metric.
+CHANNELS: Tuple[str, ...] = ("tool_call", "text_belt", "unattested")
+
+#: Why an UNATTESTED turn had no claim. Closed set: an open string in a metric
+#: column is how "unknown" silently becomes a category.
+UNATTESTED_REASONS: Tuple[str, ...] = ("no_call", "turn_id_unavailable",
+                                       "out_of_enum")
+
 
 def record_declaration(session_id: object, turn_id: object, domain: object,
                        type_: object, source: str = "tool_call") -> int:
@@ -299,18 +315,24 @@ def read_declaration(session_id: object, turn_id: object) -> Dict[str, Any]:
     """
     try:
         key = (_coerce(session_id), _coerce(turn_id))
-        entries = [e for e in _DECLARATIONS.get(key, []) if e.get("valid")]
-        if not entries:
+        entries = _DECLARATIONS.get(key, [])
+        valid = [e for e in entries if e.get("valid")]
+        if not valid:
+            # `rejected` is the evidence the caller needs to name the reason:
+            # a recorded-but-out-of-enum call is not the same defect as no call
+            # at all, and the channel row must say which one happened.
             return {"present": False, "valid": False, "domain": "", "type": "",
-                    "seq": 0, "source": "", "reason": "unattested"}
-        last = max(entries, key=lambda e: int(e.get("seq") or 0))
+                    "seq": 0, "source": "", "reason": "unattested",
+                    "rejected": len(entries)}
+        last = max(valid, key=lambda e: int(e.get("seq") or 0))
         return {"present": True, "valid": True,
                 "domain": last.get("domain", ""), "type": last.get("type", ""),
                 "seq": int(last.get("seq") or 0),
-                "source": last.get("source", ""), "reason": ""}
+                "source": last.get("source", ""), "reason": "",
+                "rejected": len(entries) - len(valid)}
     except Exception:  # noqa: BLE001
         return {"present": False, "valid": False, "domain": "", "type": "",
-                "seq": 0, "source": "", "reason": "unattested"}
+                "seq": 0, "source": "", "reason": "unattested", "rejected": 0}
 
 
 def reset_declarations() -> None:
@@ -445,16 +467,30 @@ def turn_fields(*, pre_domain: str = "", agent_domain: str = "",
                 agent_type: str = "", retry: int = 0,
                 reason: str = "", route_fired: int = 0, replace: int = 0,
                 envelope_emitted: int = 0, delivered_chars: int = 0,
-                draft_chars: int = 0) -> Dict[str, Any]:
+                draft_chars: int = 0, channel: str = "",
+                channel_reason: str = "") -> Dict[str, Any]:
     """The per-armed-turn field set. Mismatch is computed, never inferred.
 
     An empty ``pre_domain`` (gate abstained / no record) is NOT a mismatch: the
     comparison needs both claims, and inventing one would make a missing gate
     look like agent dishonesty.
+
+    ``channel`` is the closed enum ``tool_call | text_belt | unattested``
+    (M53-05 R17 acceptance C). ``channel_reason`` is meaningful only for
+    ``unattested`` and comes from ``UNATTESTED_REASONS``; any other value is
+    coerced to ``no_call`` so the column never grows an ad-hoc category.
     """
     pd = _coerce(pre_domain).strip().lower()
     ad = _coerce(agent_domain).strip().lower()
     mismatch = int(bool(pd and ad and pd != ad))
+    ch = _coerce(channel).strip().lower()
+    if ch not in CHANNELS:
+        ch = "unattested"
+    ch_reason = ""
+    if ch == "unattested":
+        ch_reason = _coerce(channel_reason).strip().lower()
+        if ch_reason not in UNATTESTED_REASONS:
+            ch_reason = "no_call"
     return {
         "pre_domain": pd,
         "agent_domain": ad,
@@ -462,6 +498,8 @@ def turn_fields(*, pre_domain: str = "", agent_domain: str = "",
         "attestation_mismatch": mismatch,
         "declaration_retry": int(retry or 0),
         "declaration_reason": _coerce(reason),
+        "channel": ch,
+        "channel_reason": ch_reason,
         "route_fired": int(route_fired or 0),
         "replace": int(replace or 0),
         "envelope_emitted": int(envelope_emitted or 0),

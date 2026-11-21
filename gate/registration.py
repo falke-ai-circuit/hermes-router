@@ -584,6 +584,11 @@ def on_transform_llm_output_guarded(**kwargs):
                            agent_type=_att_b.get("type") or "",
                            attestation_mismatch=0, declaration_retry=0,
                            declaration_reason="",
+                           # M53-05 R17 (fix B): this row can only exist
+                           # because a legacy tag was parsed out of the body —
+                           # naming the channel keeps it from reading as
+                           # out-of-band coverage.
+                           channel="text_belt", channel_reason="",
                            route_fired=0, replace=0, envelope_emitted=0,
                            delivered_chars=len(str(_original or "")),
                            draft_chars=len(_original_raw),

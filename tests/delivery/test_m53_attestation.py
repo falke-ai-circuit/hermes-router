@@ -234,7 +234,9 @@ def test_armed_turn_carries_the_attestation_rule_not_the_boolean_one(monkeypatch
         request["messages"], dispatcher_pre.ATTESTATION_RULE_ID,
         dispatcher_pre.attestation_contract_text())
     text = wire[0]["content"]
-    assert '<turn domain="<DOMAIN>" type="<TYPE>" />' in text
+    # M53-05 R17: the ARMED path instructs a TOOL CALL, not a tag in the answer.
+    assert "turn_attest" in text
+    assert '<turn domain="<DOMAIN>" type="<TYPE>" />' not in text
     # the emitted request must NOT reveal PRE's own domain verdict
     assert "cyber_offensive |" in text         # the enum, as a choice
     assert dispatcher_pre.declaration_inject_pass({"messages": wire}) is True
