@@ -468,7 +468,7 @@ def turn_fields(*, pre_domain: str = "", agent_domain: str = "",
                 reason: str = "", route_fired: int = 0, replace: int = 0,
                 envelope_emitted: int = 0, delivered_chars: int = 0,
                 draft_chars: int = 0, channel: str = "",
-                channel_reason: str = "") -> Dict[str, Any]:
+                channel_reason: str = "", rule_replaced: int = 0) -> Dict[str, Any]:
     """The per-armed-turn field set. Mismatch is computed, never inferred.
 
     An empty ``pre_domain`` (gate abstained / no record) is NOT a mismatch: the
@@ -505,4 +505,8 @@ def turn_fields(*, pre_domain: str = "", agent_domain: str = "",
         "envelope_emitted": int(envelope_emitted or 0),
         "delivered_chars": int(delivered_chars or 0),
         "draft_chars": int(draft_chars or 0),
+        # E: `delivered_chars` is a MEASUREMENT of the body that shipped —
+        # never zeroed to encode "a rule replaced it". That fact gets its own
+        # field, so one name cannot mean two things.
+        "rule_replaced": int(rule_replaced or 0),
     }

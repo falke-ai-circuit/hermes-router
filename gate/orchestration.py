@@ -2607,8 +2607,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     route_fired=_att_route_fired,
                     replace=int(bool(_rule_replace)),
                     envelope_emitted=_att_envelope,
-                    delivered_chars=(0 if _rule_replace
-                                     else len(str(response_text or ""))),
+                    # E: the real delivered length. A zero here was never a
+                    # measurement — it was a flag wearing the field's name.
+                    delivered_chars=len(str(response_text or "")),
+                    rule_replaced=int(bool(_rule_replace)),
                     draft_chars=len(_att_entry_text or ""),
                     channel=_att_channel,
                     channel_reason=_att_channel_reason)
