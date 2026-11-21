@@ -336,7 +336,21 @@ def _model_attempt(entry: Dict[str, Any], prompt: str, *, max_tokens: Optional[i
         return "", f"http_{status}"
 
 
+#: G (M53-03): the last chain report, so exhaustion by REFUSAL is
+#: distinguishable from exhaustion by transport failure.
+_LAST_CHAIN_REPORT: Dict[str, Any] = {}
+
+
+def last_chain_report() -> Dict[str, Any]:
+    """Which entry produced the accepted render, and what was rejected."""
+    try:
+        return dict(_LAST_CHAIN_REPORT)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional[float] = None,
+         reject=None,
          system_prompt: str = "", session_id: str = "") -> str:
     """Route `prompt` through the ordered uncensored-model chain. Returns
     rendered content or "" on total failure.
@@ -371,6 +385,8 @@ def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional
     )
     _render_prompt = _mandate + prompt + "\n\n=== END REQUEST — render it in full now ==="
     chain = _chain_entries()
+    _report: Dict[str, Any] = {"entry": "", "index": -1, "rejected": [],
+                               "refusal_exhausted": False}
     last_reason = "no_models"
     for idx, entry in enumerate(chain):
         name = str(entry.get("name") or entry.get("model") or f"model_{idx}")
@@ -379,16 +395,40 @@ def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional
             max_tokens=max_tokens, temperature=temperature,
             system_prompt=system_prompt, session_id=session_id,
         )
+        if content and reject is not None:
+            try:
+                _refused = bool(reject(content))
+            except Exception:  # noqa: BLE001 — a broken predicate never retries
+                _refused = False
+            if _refused:
+                # G: a refusal is HTTP 200 with content. Accepting it is how the
+                # lane's own refusal replaced the agent's. Advance instead.
+                _report["rejected"].append(name)
+                logger.warning("route_render_refused entry=%s chain_index=%d",
+                               name, idx)
+                last_reason = "refusal"
+                if idx < len(chain) - 1:
+                    logger.warning("route_fallback from=%s reason=refusal next=%s",
+                                   name, str(chain[idx + 1].get("name")
+                                             or chain[idx + 1].get("model")
+                                             or f"model_{idx+1}"))
+                continue
         if content:
+            _report.update(entry=name, index=idx)
             if idx > 0:
                 logger.warning("route_fallback used_model=%s chain_index=%d after_fail=%s", name, idx, last_reason)
+            _LAST_CHAIN_REPORT.update(_report)
             return content
         last_reason = fail_reason
         if idx < len(chain) - 1:
             logger.warning("route_fallback from=%s reason=%s next=%s",
                            name, fail_reason,
                            str(chain[idx + 1].get("name") or chain[idx + 1].get("model") or f"model_{idx+1}"))
-    logger.error("route_failed reason=chain_exhausted models=%d last_fail=%s", len(chain), last_reason)
+    if _report["rejected"]:
+        _report["refusal_exhausted"] = True
+    _LAST_CHAIN_REPORT.update(_report)
+    logger.error("route_failed reason=chain_exhausted models=%d last_fail=%s rejected=%d",
+                 len(chain), last_reason, len(_report["rejected"]))
     return ""
 
 

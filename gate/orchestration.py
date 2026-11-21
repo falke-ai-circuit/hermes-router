@@ -3390,11 +3390,33 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _render_chain_used = ""
         if _rule_replace and _replacement_entry:
             _render_chain_used = str(_replacement_entry)
+        try:
+            _reject_render = _hub()._dispatcher_post._refusal_shaped_post
+        except Exception:  # noqa: BLE001 — no predicate, no rejection
+            _reject_render = None
         rendered = _hub().router.call(
             original_user_message,
             system_prompt=_system_prompt,
             session_id=session_id,
+            reject=_reject_render,
         )
+        # G: every entry refused -> the LANE wrote no render. The agent's own
+        # body must ship; a lane refusal must never masquerade as one.
+        try:
+            _rep = _hub().router.last_chain_report()
+        except Exception:  # noqa: BLE001
+            _rep = {}
+        if _rep.get("refusal_exhausted") and not str(rendered or "").strip():
+            rendered = ""
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="lane_refusals_exhausted",
+                    lane_refusals_exhausted=1,
+                    rejected=len(_rep.get("rejected") or []),
+                    entries=",".join(_rep.get("rejected") or [])[:200],
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         # E: the attestation row is written BEFORE the render exists, so on a
         # replaced turn it could only measure the draft. Once the shipped
         # render is known, re-emit the row with the ACTUAL delivered length
