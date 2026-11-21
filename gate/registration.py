@@ -292,6 +292,23 @@ def on_transform_llm_output_guarded(**kwargs):
     # a closed line is a property of the ASK, so no render may be billed for it
     # and no case may open it later.
     _closed_hit = _closed_line_hit(kwargs)
+    # M53-03 R20: when the ARMED guard supplied this hit, the wrapper claims the
+    # turn BEFORE orchestration runs, so orchestration's own guard row never
+    # writes. Emit it here: the record must survive the shortcut ("detect all"
+    # — the guard changes the ACTION, never the record).
+    if _closed_hit and _hub_dispatcher_armed():
+        try:
+            from ..features.detection import closed_line as _cl_row
+            _lg_cl = _hub_log_route()
+            if _lg_cl is not None:
+                _lg_cl("POST", event_detail="closed_line_blocked",
+                       kind=_closed_hit,
+                       reason=_cl_row.reason_for(_closed_hit),
+                       domain="", replace_ms=0, render_emitted=0,
+                       where="delivery_edge",
+                       session_id=str(kwargs.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
     try:
         from ..core import turn_provenance as _prov_mod
 
@@ -444,6 +461,18 @@ def on_transform_llm_output_guarded(**kwargs):
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
         final = _delivered_bytes(_decision, _original)
+        # M53-03 R20: a closed-line claim must DELIVER the agent's own body as
+        # explicit bytes. `_delivered_bytes` returns None for a byte-identical
+        # source=main decision (the host pass-through), which on a HOLD_CLOSED
+        # reads as "no decision" and let the contract be satisfied only by
+        # luck. The claim names these bytes; hand them back.
+        if _decision is not None and final is None:
+            try:
+                from ..core import delivery_decision as _ddm
+                if _decision.action == _ddm.HOLD_CLOSED and _original:
+                    final = str(_original)
+            except Exception:  # noqa: BLE001 — never breaks delivery
+                pass
         if _decision.delivered_source == _dd.SOURCE_MAIN:
             _guard_reason = (_dd.REASON_MAIN_COMPLIED
                              if _decision.case_id == _dd.D4
@@ -706,7 +735,39 @@ def _closed_line_hit(kwargs) -> str:
     try:
         from ..features.detection import compound_split as _cs
 
-        return str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
+        _hit = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
+        if _hit:
+            # Another detector's class name is translated into the classifier's
+            # canonical token — it must not define a second vocabulary.
+            from ..features.detection import closed_line as _cl_c
+            return _cl_c.canonical_kind(_hit)
+        # M53-03 R20: the guard's verdict must reach the DELIVERY EDGE, not
+        # just the rule dispatch. Suppressing `_rule_replace` is not enough —
+        # `core/delivery_decision` decides delivery independently, and P0 D1
+        # is the only rule that cannot be overridden by a lane render.
+        #
+        # ARMED-ONLY (owner ruling): "" is unarmed and unarmed profiles keep
+        # byte-identical behaviour, so this branch is unreachable when the
+        # profile is not armed.
+        #
+        # Never vetoes an ordinary delivery: it only ADDS a hit when the
+        # armed guard classifies the ask as closed. An error here returns ""
+        # (no hit) — D1 holding a benign turn would be an outage.
+        from ..passes import dispatcher_pre as _pre
+
+        if not _pre.attestation_armed():
+            return ""
+        from ..features.detection import attestation as _attm
+        from ..features.detection import closed_line as _cl
+
+        _sid = str(kwargs.get("session_id") or "")
+        _tid = str(kwargs.get("turn_id") or "")
+        _decl = _attm.read_declaration(_sid, _tid) if _tid else {}
+        _blocked, _kind, _reason = _cl.classify(
+            _ask_for(kwargs),
+            str((_decl or {}).get("domain") or ""),
+            str((_decl or {}).get("type") or ""))
+        return str(_kind or "") if _blocked else ""
     except Exception:  # noqa: BLE001 — a gap opens no line and closes none
         return ""
 

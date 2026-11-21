@@ -145,6 +145,42 @@ def _scope_present(text: str) -> bool:
     return bool(SCOPE_RE.search(stripped))
 
 
+#: Canonical kind -> its spec reason. The CLASSIFIER is the single source of
+#: truth for both tokens; a second detector's vocabulary is translated into
+#: these, never allowed to define them (hard_closed_class says "minors").
+KIND_REASON = {"minor": "C1", "real_person": "C2",
+               "weapon_class_no_scope": "C3"}
+
+_KIND_ALIASES = {
+    "minor": "minor", "minors": "minor", "minor_indicated": "minor",
+    "real_person": "real_person", "person": "real_person",
+    "named_person": "real_person",
+    "weapon_class_no_scope": "weapon_class_no_scope",
+    "weapon_class": "weapon_class_no_scope", "weapon": "weapon_class_no_scope",
+}
+
+
+def canonical_kind(raw: object) -> str:
+    """Translate any detector's class name into the classifier's canonical kind.
+
+    Unknown tokens pass through unchanged so nothing is silently swallowed;
+    only known aliases are normalised.
+    """
+    try:
+        token = str(raw or "").strip().lower().replace("-", "_")
+        return _KIND_ALIASES.get(token, token)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def reason_for(kind: object) -> str:
+    """The spec reason (C1/C2/C3) for a canonical kind."""
+    try:
+        return KIND_REASON.get(str(kind or "").strip().lower(), "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def classify(ask: object, domain: object = "", type_: object = "") -> Tuple[bool, str, str]:
     """(blocked, kind, reason). Deterministic, total, never raises.
 
