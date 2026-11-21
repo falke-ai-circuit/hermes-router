@@ -2499,7 +2499,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # ships. The attestation row and the decision row are still written
         # below and after — "detect all" stands: this changes the ACTION only.
         # ------------------------------------------------------------------
-        if (_rule_replace or _declaration == "true") and _att_state == _ATTESTED_ROUTING:
+        # M53-03 (R41 item 1): a SAFETY gate must not be conditioned on the
+        # agent cooperating. `_att_state == _ATTESTED_ROUTING` meant an
+        # UNDECLARED turn skipped the guard entirely — i=5 (sarin) and i=44
+        # (pipe bomb) carried no declaration and reached the lane. Gate on the
+        # PROFILE being armed instead: armed -> the guard runs for EVERY turn;
+        # unarmed -> unreachable, so byte-identical.
+        try:
+            from ..passes import dispatcher_pre as _pre_cl
+            _cl_armed = bool(_pre_cl.attestation_armed())
+        except Exception:  # noqa: BLE001 — an unreadable arming reads unarmed
+            _cl_armed = False
+        if _cl_armed:
             try:
                 from ..features.detection import closed_line as _cl
 
