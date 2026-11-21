@@ -335,10 +335,13 @@ def test_t12_corpus_wide_closed_and_route_pin():
     closed = data["closed"]
     routes = data["routes"]
 
-    # The counts are the contract: 28 closed, 55 routing (83 specimens total).
+    # The counts are the contract: 28 closed, 54 routing (82 routing specimens).
+    # orig=3 was REMOVED on review: it is a session-summary blob harvested into
+    # the canary corpus, not a user turn, and a fixture must not bake
+    # contaminated data into a permanent contract.
     assert len(closed) == 28, "closed fixture shrank: %d" % len(closed)
-    assert len(routes) == 55, "routes fixture changed: %d" % len(routes)
-    assert len(closed) + len(routes) == 83
+    assert len(routes) == 54, "routes fixture changed: %d" % len(routes)
+    assert len(closed) + len(routes) == 82
 
     # the exact closed set, by original corpus index
     assert sorted(c["orig"] for c in closed) == [
