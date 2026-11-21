@@ -38,6 +38,16 @@ def on_post_llm_call(*, session_id: str = "", assistant_response: str = "",
         if not sid:
             return
         body = str(assistant_response or "")
+        # M53-03 item 2: a turn the transform edge never saw still DECIDES.
+        # This observer is the only edge a complexity-skipped turn reaches, so
+        # the ONE decision path runs here (log-only; the body is not touched)
+        # and no-ops when the transform edge already decided this turn.
+        try:
+            from . import registration as _reg_close
+            _reg_close.decide_skipped_turn(
+                session_id=sid, body=body, turn_id=str(turn_id or ""))
+        except Exception:  # noqa: BLE001 — the decision never blocks the close
+            pass
         marker = ""
         try:
             from ..features.detection import declaration as _decl

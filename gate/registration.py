@@ -10,6 +10,8 @@ from __future__ import annotations
 import functools
 import logging
 import sys as _sys
+import time
+from typing import Dict
 
 from . import orchestration
 from . import turn_close
@@ -1034,8 +1036,56 @@ def _force_main_row(turn, decision) -> None:
     except Exception:  # noqa: BLE001 — instrumentation never breaks a turn
         pass
 
+#: M53-03 item 2 — one delivery decision per turn, whichever edge observes it.
+_DECIDED: Dict[tuple, float] = {}
+_DECIDED_TTL_S = 600.0
+_DECIDED_MAX = 512
 
-def _log_decision(decision, kwargs) -> None:
+
+def _decision_key(session_id: str, turn_id: str = "") -> tuple:
+    """The (session, turn) join key for the once-per-turn decision mark."""
+    sid = str(session_id or "")
+    tid = str(turn_id or "")
+    if not tid:
+        try:
+            from ..core import state as _st_key
+            tid = str(_st_key.current_turn_id(sid) or "")
+        except Exception:  # noqa: BLE001 — an unknown turn key is session-scoped
+            tid = ""
+    return (sid, tid)
+
+
+def _mark_decided(session_id: str, turn_id: str = "") -> None:
+    """Record that this turn's ONE delivery decision has been written."""
+    try:
+        now = time.time()
+        for _k, _ts in list(_DECIDED.items()):
+            if now - float(_ts or 0.0) > _DECIDED_TTL_S:
+                _DECIDED.pop(_k, None)
+        _DECIDED[_decision_key(session_id, turn_id)] = now
+        while len(_DECIDED) > _DECIDED_MAX:
+            _DECIDED.pop(next(iter(_DECIDED)))
+    except Exception:  # noqa: BLE001 — bookkeeping never blocks delivery
+        pass
+
+
+def decision_logged(session_id: str, turn_id: str = "") -> bool:
+    """True when this turn already produced its delivery decision."""
+    try:
+        return _decision_key(session_id, turn_id) in _DECIDED
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def reset_decided_for_tests() -> None:
+    """Clear the once-per-turn decision marks (test isolation only)."""
+    try:
+        _DECIDED.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _log_decision(decision, kwargs, extra=None) -> None:
     """One `delivery_decision` event per delivery edge (spec §10)."""
     try:
         lg = _hub_log_route()
@@ -1043,9 +1093,50 @@ def _log_decision(decision, kwargs) -> None:
             return
         lg("POST", event_detail="delivery_decision",
            **decision.as_record(),
+           **dict(extra or {}),
            session_id=str(kwargs.get("session_id") or ""))
+        _mark_decided(str(kwargs.get("session_id") or ""),
+                      str(kwargs.get("turn_id") or ""))
     except Exception:  # noqa: BLE001 — observability never breaks delivery
         pass
+
+
+def decide_skipped_turn(*, session_id: str, body: str, turn_id: str = "") -> str:
+    """The delivery decision for a turn the POST seam never reached.
+
+    M53-03 item 2: a turn that exits PRE via `complexity_skip` (and any turn
+    whose transform pass the host skips) is observed only by the turn-close
+    edge. This calls the SAME path the delivery edge uses — `_closed_line_hit`
+    -> `_build_facts` -> `_decide` -> `_log_decision` — so the turn gets one
+    D1..D6 row and a definite delivered body. The ask is recovered through
+    `_ask_for`, whose `state.get_last_seen` fallback is the only source at this
+    edge. LOG-ONLY: the observer cannot replace the host's body, so the bytes
+    are reported and never substituted. Fail-open on ANY error; a turn whose
+    transform edge already decided is a no-op.
+    """
+    sid = str(session_id or "")
+    entered = str(body or "")
+    if not sid:
+        return ""
+    try:
+        if decision_logged(sid, turn_id):
+            return ""
+        kwargs = {"session_id": sid, "turn_id": str(turn_id or ""),
+                  "response_text": entered}
+        closed_hit = _closed_line_hit(kwargs)
+        facts = _build_facts(entered, kwargs, None, None, closed_hit)
+        decision = _decide(facts)
+        if decision is not None and decision.action == _dd.CONSULT_REENTER:
+            decision = _decide(_consult_gate(facts, kwargs))
+        if decision is None:
+            return ""
+        delivered = entered
+        _log_decision(decision, kwargs,
+                      extra={"delivered_chars": len(delivered),
+                             "where": "turn_close"})
+        return delivered
+    except Exception:  # noqa: BLE001 — the close edge never breaks a turn
+        return ""
 
 
 # The plugin attribute IS the registered hook (identity pin:
