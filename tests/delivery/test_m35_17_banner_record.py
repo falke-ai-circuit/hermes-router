@@ -178,9 +178,22 @@ def test_answer_region_byte_identical_at_every_verbosity(monkeypatch, _isolate, 
         tr.reset()
         out = _deliver(monkeypatch, sid, body,
                        lane_render=lane_render, segment=segment, level=level)
-        answer_region, _block = _block_split(out if isinstance(out, str) else expect)
+        delivered = out if isinstance(out, str) else expect
+        answer_region, _block = _block_split(delivered)
+        if lane_render is not None:
+            # M53-06f (owner ruling, supersedes M44-02 for THIS shape): a lane
+            # render that IS the delivered body carries the lane banner, so the
+            # answer region is the render and the block starts at the first
+            # lane-grammar line after a blank line — head-less continuation
+            # lines included.
+            import re as _re
+            _cut = _re.search(r"\n\n(?=(?:\u00b7 router \u00b7|  )?[^\n]*(?:shadow-self|higher-self|impulse)\s*\()",
+                              delivered)
+            if _cut:
+                answer_region, _block = delivered[:_cut.start()], delivered[_cut.start() + 1:]
         regions[level] = _sha(answer_region)
-        assert banner_grammar_absent(answer_region), (name, level, answer_region)
+        if lane_render is None:
+            assert banner_grammar_absent(answer_region), (name, level, answer_region)
         if expect:
             # M48 joins the block with "\n\n", so a trailing space run in the
             # body is normalised at the seam. Nothing is reordered, added or

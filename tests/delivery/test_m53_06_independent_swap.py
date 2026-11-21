@@ -383,7 +383,8 @@ def _split_banner(body):
     if not isinstance(body, str) or not head or head not in body:
         return body, ""
     idx = body.index(head)
-    return body[:idx].rstrip(), body[idx:]
+    # strip the SEPARATOR only: the render's own trailing whitespace is bytes.
+    return body[:idx].rstrip("\n"), body[idx:]
 
 
 def test_m15_unconfirmed_domain_routes(rows, monkeypatch):
@@ -549,3 +550,115 @@ def test_e5_graceful_fail_writes_no_envelope(rows, monkeypatch):
     assert assimilation.swap_envelope_line(sid) == ""
     _injected, text = _next_frame_text(sid)
     assert "UNC-RENDER ENVELOPE" not in text, text[:300]
+
+
+# ---------------------------------------------------------------------------
+# M53-06f — the lane banner survives to the wire on a routed render.
+# Equivalence (owner): banner present <=> the delivered body IS the render.
+# ---------------------------------------------------------------------------
+
+def _banner_on(monkeypatch):
+    """Enable the banner knob for a pin that must observe a banner."""
+    from hermes_router import debug_banner as _dbg
+
+    monkeypatch.setattr(_dbg, "_banner_section",
+                        lambda: {"debug_banner": 1, "banner_in_body": True})
+
+
+def test_m21_banner_ships_with_the_render(rows, monkeypatch):
+    """BEHAVIOURAL — shipped = render + banner, provable by digest."""
+    _banner_on(monkeypatch)
+    sid = "m53-06-m21"
+    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL)
+
+    answer, banner = _split_banner(out)
+    assert banner, "a routed turn must carry the lane banner"
+    # MEASURED: the composer appends with `base.rstrip()` (blank-line
+    # separation), so the remainder is the render minus trailing whitespace —
+    # that trim is the composer's contract, not a loss of render bytes.
+    assert answer == RENDER.rstrip(), ("the answer region is the render",
+                                       answer[:120])
+    assert "shadow-self (uncensored)" in banner, banner
+    assert "shadow-self (uncensored)" not in answer, answer[:120]
+
+    attached = _events(rows, "banner_attached")
+    assert attached and int(attached[-1].get("banner_chars") or 0) > 0, attached
+    ship = _events(rows, "shipped_bytes")[-1]
+    swap = _events(rows, "assimilation_swap")[-1]
+    assert ship.get("shipped_sha256") != swap.get("render_sha256"), (ship, swap)
+    # The identity that holds at the wire is the EDGE's own arithmetic: the
+    # body it appended to, plus the bytes it appended. (swap.render_chars is the
+    # seam's render; the decision may carry one trailing newline more, so the
+    # edge row is the honest pair to sum.)
+    assert ship.get("shipped_chars") == int(attached[-1].get("render_chars") or 0) + \
+        int(attached[-1].get("banner_chars") or 0), (ship, swap, attached[-1])
+    assert ship.get("shipped_has_tag") == 0, ship
+
+
+def test_m22_banner_not_duplicated_across_turns(rows, monkeypatch):
+    """BEHAVIOURAL — one banner per lane per delivered body."""
+    _banner_on(monkeypatch)
+    sid = "m53-06-m22"
+    out1, _ = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL)
+    assert _split_banner(out1)[1]
+    # a genuine SECOND turn in the same session: turn-scoped state rolls, the
+    # session (and therefore the banner record's key) does not.
+    router_core._test_reset(); router_core._cooldown_test_reset()
+    plugin._reset_declaration_state(); att.reset_declarations()
+    closed_line.reset_verdicts(); frames.reset_rule_latch()
+    assimilation.clear_marks()
+    # a DIFFERENT ask and draft: an identical (ask, refusal) pair is the
+    # canonical-idempotency key and would correctly skip the re-render.
+    out2, _ = _turn(rows, monkeypatch, sid,
+                    "summarize the other repo tree",
+                    "No. I won't write that either.")
+    _answer2, banner2 = _split_banner(out2)
+    assert banner2.count("· router ·") == 1, banner2
+
+
+def test_m23_unrouted_turn_has_no_lane_banner(rows, monkeypatch):
+    """CONTROL — delivery from main stays byte-identical: no unc banner."""
+    _banner_on(monkeypatch)
+    sid = "m53-06-m23"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, COMPLIANT,
+                      gate_state="not_flagged", domain="meta_doctrine",
+                      reason="out_of_domain")
+    assert lane.called is False
+    assert out is None, "main delivers the host's own body"
+    assert not _events(rows, "banner_attached")
+
+
+def test_m24_graceful_fail_has_no_banner(rows, monkeypatch):
+    """CONTROL — nothing rendered, nothing attributed: no swap, no banner."""
+    _banner_on(monkeypatch)
+    sid = "m53-06-m24"
+    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL, render="")
+    assert out is None
+    assert not _events(rows, "assimilation_swap"), "nothing was swapped"
+    assert not _events(rows, "banner_attached")
+    assert _split_banner(out)[1] == ""
+
+
+def test_m25_banner_iff_render_is_the_delivered_body(rows, monkeypatch):
+    """BEHAVIOURAL — the equivalence itself, over every shape in this file."""
+    _banner_on(monkeypatch)
+    cases = (
+        ("m53-06-m25-a", DENIAL, RENDER, "flagged", "cyber_offensive", None),
+        ("m53-06-m25-b", DENIAL, RENDER, "not_flagged", "sexual_explicit",
+         UNC_REASON_SEXUAL),
+        ("m53-06-m25-c", DENIAL, "", "flagged", "cyber_offensive", None),
+        ("m53-06-m25-d", COMPLIANT, RENDER, "not_flagged", "meta_doctrine",
+         "out_of_domain"),
+    )
+    for sid, body, render, state_, domain, reason in cases:
+        out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, body,
+                           gate_state=state_, domain=domain, reason=reason,
+                           render=render)
+        answer, banner = _split_banner(out)
+        # "the delivered body IS the render" must be judged on the BODY's
+        # leading bytes, not on an exact-tail compare: without a banner the
+        # composer never trims, so an exact compare would call the parent's
+        # bare render "not a render" and let the pin pass vacuously.
+        is_render = (bool(render) and isinstance(out, str)
+                     and out.startswith(render.rstrip()))
+        assert bool(banner) == bool(is_render), (sid, out, banner, is_render)

@@ -498,6 +498,49 @@ def on_transform_llm_output_guarded(**kwargs):
         if _decision.action == _dd.CONSULT_REENTER:
             _decision = _decide(_consult_gate(_facts, kwargs))
         final = _delivered_bytes(_decision, _original)
+        # M53-06f — THE BANNER MUST SURVIVE THE DECISION.
+        # Measured: the seam composed render+banner (207c) and the decision
+        # then named the RECORDED lane render (106c), so the banner died one
+        # layer below its own composer (shipped_sha256 == render_sha256). The
+        # decision's bytes are authoritative, so the banner is folded onto THEM
+        # here, from the same turn record and the same composer — no second
+        # composer, no re-derivation of what ships.
+        try:
+            from ..features.banners import turn_record as _tr_fx
+            from .. import debug_banner as _db_fx
+
+            from .. import assimilation as _as_fx
+
+            if (isinstance(final, str) and final.strip()
+                    and _decision is not None
+                    and _decision.delivered_source == _dd.SOURCE_LANE
+                    and _db_fx.BANNER_HEAD not in final
+                    and _db_fx.debug_banner_enabled()
+                    # ONLY the M53-06 swapped render: other lane deliveries
+                    # carry their own block on their own edge (M35-17/M48),
+                    # and composing there produced malformed double blocks.
+                    and bool(_as_fx.read_swap_envelope(
+                        str(kwargs.get("session_id") or "")))):
+                _fx = _tr_fx.compose_onto_delivery(
+                    str(kwargs.get("session_id") or ""), final,
+                    allow_lane_render=True)
+                if isinstance(_fx, str) and _fx != final:
+                    final = _fx
+                    try:
+                        _lg_fx = _hub_log_route()
+                        if _lg_fx is not None:
+                            _lg_fx("POST", event_detail="banner_attached",
+                                   edge="delivery_decision",
+                                   banner_chars=max(0, len(final)
+                                                    - len(_decision.body or "")),
+                                   render_chars=len(str(_decision.body or "")),
+                                   shipped_chars=len(final),
+                                   lane="uncensored",
+                                   session_id=str(kwargs.get("session_id") or ""))
+                    except Exception:  # noqa: BLE001 — telemetry only
+                        pass
+        except Exception:  # noqa: BLE001 — a banner never breaks a turn
+            pass
         # A: a turn whose tag was stripped UPSTREAM has already-clean bytes; the
         # decision's "nothing changed" pass-through (None) would hand the host
         # its own tag-bearing original. Return the stripped bytes explicitly.

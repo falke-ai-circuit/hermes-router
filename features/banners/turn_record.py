@@ -678,7 +678,49 @@ def _body_is_lane_render(session_id: str, body: Any) -> bool:
     return False
 
 
-def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
+def compose_onto_delivery(session_id: str, body: Any, *,
+                          allow_lane_render: bool = False) -> Any:
+    """Append the turn's ONE banner line at the SHIPPED-BYTE edge.
+
+    Same line, same rules as `compose_onto` — one banner per lane, one head,
+    blank-line separated, appended after the answer region — but it does not
+    consult the record's one-shot `emitted`/`attached_at` guard. That guard
+    exists so an INTERMEDIATE compose cannot be re-attached twice; at the edge
+    that owns the final bytes the body may have been re-derived by the delivery
+    decision since the earlier compose, so the guard would suppress the banner
+    on exactly the turn that must carry it (measured: seam composed 207c, the
+    decision named the 106c recorded render, shipped had zero banner bytes).
+
+    Idempotent the only way that matters at the wire: a body already carrying
+    the head is returned untouched.
+    """
+    try:
+        if not deliver_in_body_enabled():
+            return body
+        if not allow_lane_render and _body_is_lane_render(session_id, body):
+            return body
+        line = compose_line(session_id)
+        if not line:
+            return body
+        base = body if isinstance(body, str) else ""
+        if not base.strip():
+            return body
+        if _head() in base:
+            return body
+        try:
+            from ... import provenance_footer as _pf
+
+            if _pf.has_footer(base):
+                base = _pf.strip_footer(base)
+        except Exception:  # noqa: BLE001 — footer handling is best-effort
+            pass
+        return base.rstrip() + "\n\n" + line
+    except Exception:  # noqa: BLE001
+        return body
+
+
+def compose_onto(session_id: str, body: Any, *, mode: str = "append",
+                 allow_lane_render: bool = False) -> Any:
     """Append the record's ONE banner line to the DELIVERED body.
 
     Returns the body unchanged when the knob is off, when no lane fired, when
@@ -687,11 +729,17 @@ def compose_onto(session_id: str, body: Any, *, mode: str = "append") -> Any:
     When the body already carries a provenance footer, the BANNER WINS: the
     footer is stripped so the delivered bytes carry ONE attribution block.
     Never raises; never returns None for a str input.
+
+    `allow_lane_render=True` is the UNC RENDER DELIVERY edge (owner ruling):
+    there the lane render IS the delivered body, so the M44-02 suppression —
+    written for a lane render that reached the benign edge — would be the
+    opposite defect (a routed turn with zero banner bytes, measured as
+    shipped_sha256 == render_sha256). Every other edge keeps the default.
     """
     try:
         if not deliver_in_body_enabled():
             return body
-        if _body_is_lane_render(session_id, body):
+        if not allow_lane_render and _body_is_lane_render(session_id, body):
             return body
         line = compose_line(session_id)
         if not line:

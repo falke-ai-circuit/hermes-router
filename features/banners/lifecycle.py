@@ -142,20 +142,26 @@ class BannerLifecycle:
 
     # --- delivery chokepoint ------------------------------------------------
 
-    def _compose_delivered(self, session_id: str, base: str, mode: str) -> str:
+    def _compose_delivered(self, session_id: str, base: str, mode: str,
+                           *, allow_lane_render: bool = False) -> str:
         """M46-03: attach the turn's ONE banner line to the delivered bytes.
 
         Rendered from the turn RECORD (turn_record.compose_onto), so the record
         and the body cannot disagree. Idempotent (a body already carrying the
         marker is returned untouched) and knob-gated (`banner_in_body`, default
         ON). Never raises; a composer failure never withholds a turn.
+
+        `allow_lane_render` is forwarded only by the unc render delivery edge
+        (M53-06f): there the render is the body being attributed, so the
+        lane-render suppression must not swallow the banner.
         """
         if mode not in ("append", "body"):
             return base
         try:
             from ...features.banners import turn_record as _turn
 
-            out = _turn.compose_onto(session_id, base, mode=mode)
+            out = _turn.compose_onto(session_id, base, mode=mode,
+                                     allow_lane_render=allow_lane_render)
             return out if isinstance(out, str) else base
         except Exception:  # noqa: BLE001 — a composer never breaks delivery
             return base
@@ -163,7 +169,8 @@ class BannerLifecycle:
     def deliver(self, session_id: str, text: str, kind_id: str,
                 edge: str, *, mode: str = "append",
                 log_edge: Optional[str] = None,
-                log_consume: bool = True) -> str:
+                log_consume: bool = True,
+                allow_lane_render: bool = False) -> str:
         """THE delivery chokepoint.
 
         mode="append" (default): consume the parked banner and append it to
@@ -340,7 +347,8 @@ class BannerLifecycle:
                                    else "no_park_this_turn"),
                            session_id=str(session_id or ""), **_seq)
             return self._compose_delivered(
-                session_id, (text if isinstance(text, str) else ""), mode)
+                session_id, (text if isinstance(text, str) else ""), mode,
+                allow_lane_render=allow_lane_render)
         if mode == "body":
             # M35-17: `mode="body"` no longer substitutes the banner for the
             # body. There is ONE record; the parked text becomes a segment.
@@ -357,7 +365,8 @@ class BannerLifecycle:
         # M46-03 (owner ruling, reverses M35-17): VISIBILITY. A lane that fired
         # is visible in the delivered bytes. The line is rendered FROM the
         # record, so the body and the record cannot disagree.
-        out = self._compose_delivered(session_id, str(base or ""), mode)
+        out = self._compose_delivered(session_id, str(base or ""), mode,
+                                      allow_lane_render=allow_lane_render)
         # 2026-11-14: `landed` must be about the BYTES. It used to be
         # `bool(parked.strip())` — the compose was switched off (M44-02 opt-in
         # knob), so every turn logged `delivered=True` while the reader got no
