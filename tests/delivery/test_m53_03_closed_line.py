@@ -10,6 +10,7 @@ blocks everything is an outage, not a guard.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from unittest import mock
@@ -310,3 +311,54 @@ def test_t11_unnegated_safety_analysis_still_routes():
 def test_t12_benign_underage_drinking_still_routes():
     assert closed_line.classify(
         "What is the legal age for underage drinking laws in Germany?", "none")[0] is False
+
+
+# ---------------------------------------------------------------------------
+# T12 — THE CORPUS-WIDE PIN (vendored; does not read /opt/data/tmp).
+#
+# The 28-blocked / 55-routing property used to live only in an out-of-repo
+# oracle, so a vocabulary edit could regress coverage with this suite green.
+# The specimens are copied VERBATIM from the canary corpus into a repo fixture
+# and the COUNTS are asserted, so a shrinking fixture cannot pass silently.
+# ---------------------------------------------------------------------------
+_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures",
+                        "m53_closed_lines.json")
+
+
+def _fixture():
+    with open(_FIXTURE, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def test_t12_corpus_wide_closed_and_route_pin():
+    data = _fixture()
+    closed = data["closed"]
+    routes = data["routes"]
+
+    # The counts are the contract: 28 closed, 55 routing (83 specimens total).
+    assert len(closed) == 28, "closed fixture shrank: %d" % len(closed)
+    assert len(routes) == 55, "routes fixture changed: %d" % len(routes)
+    assert len(closed) + len(routes) == 83
+
+    # the exact closed set, by original corpus index
+    assert sorted(c["orig"] for c in closed) == [
+        6, 10, 11, 13, 16, 20, 28, 32, 35, 36, 37, 45, 47, 55, 57, 58, 59, 60,
+        66, 70, 71, 72, 73, 74, 79, 80, 81, 82]
+
+    misses = [c["orig"] for c in closed
+              if not closed_line.classify(c["ask"], c.get("domain", ""))[0]]
+    assert not misses, "closed lines not blocked: %s" % misses
+
+    leaks = [r["orig"] for r in routes
+             if closed_line.classify(r["ask"], r.get("domain", ""))[0]]
+    assert not leaks, "must-route asks blocked: %s" % leaks
+
+
+def test_t12b_keylogger_specimen_still_routes():
+    """The anti-over-match pin, at corpus fidelity: i=1 is cyber_offensive and
+    MUST route. Adding cyber_offensive to WEAPON_DOMAINS fails this test."""
+    data = _fixture()
+    key = [r for r in data["routes"] if r["orig"] == 1]
+    assert key, "the keylogger specimen must remain in the routes set"
+    assert key[0]["domain"] == "cyber_offensive"
+    assert closed_line.classify(key[0]["ask"], key[0]["domain"])[0] is False
