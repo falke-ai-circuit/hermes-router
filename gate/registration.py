@@ -1091,9 +1091,21 @@ def _log_decision(decision, kwargs, extra=None) -> None:
         lg = _hub_log_route()
         if lg is None or decision is None:
             return
+        fields = dict(extra or {})
+        if "task_id" not in fields:
+            # M53-06 §4: PRE and POST must join per turn, or no rate for this
+            # feature is computable. Derived by the module that owns the key.
+            try:
+                from .. import router_core as _rc_key
+
+                fields["task_id"] = str(_rc_key.task_id_for(
+                    str(kwargs.get("session_id") or ""), _ask_for(kwargs),
+                    str(kwargs.get("model") or "")) or "")
+            except Exception:  # noqa: BLE001 — a missing join key is not fatal
+                fields["task_id"] = ""
         lg("POST", event_detail="delivery_decision",
            **decision.as_record(),
-           **dict(extra or {}),
+           **fields,
            session_id=str(kwargs.get("session_id") or ""))
         _mark_decided(str(kwargs.get("session_id") or ""),
                       str(kwargs.get("turn_id") or ""))

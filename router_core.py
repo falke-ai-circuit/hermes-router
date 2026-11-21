@@ -1427,6 +1427,10 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 route_complex, meta = complexity.classify(user_text, level)
             _skip_score = int(meta.get("score") or 0)
             _skip_cls = str(meta.get("stage1") or "clear_simple")
+            # M53-06 §1: `armed` is read ONCE per turn and shared by the three
+            # skip sites below. Never per site — three independent reads is how
+            # a fourth site gets a fourth answer.
+            _indep_armed = _route_independence_armed()
             if str(meta.get("stage2") or "") == "routine":
                 _skip_cls = "stage2_routine"
             # R34-13 (behavioural finding, LOG-ONLY): the identical refactor
@@ -1446,6 +1450,12 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                              task_id=task_id, level=level)
                 except Exception as _obs_exc:  # noqa: BLE001 — fail-loud, never dispatch-breaking (rider 19 item 1)
                     _obs_warn('complexity_skip', _obs_exc)  # rider 19 item 1
+                # M53-06 §1a site 1/3: on an ARMED profile the skip is
+                # LOG-ONLY. It records its verdict and the turn continues to
+                # the transform edge, where POST decides from domain_gate.read
+                # (which has landed by then). Unarmed: today, byte-identical.
+                if _indep_armed:
+                    _note_route_independence(session_id, "clear_simple", task_id)
             if _pre_mode in ("shadow", "off") and route_complex and override != "anchor":
                 # Shadow/off (Goran 09-08 ruling): frontier consults belong at
                 # the completion audit, never at task start. 'shadow' keeps
@@ -1517,6 +1527,9 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                 level=level)
                     except Exception as _obs_exc:  # noqa: BLE001
                         _obs_warn('complexity_skip', _obs_exc)
+                    # M53-06 §1a site 2/3: log-only on an armed profile.
+                    if _indep_armed:
+                        _note_route_independence(session_id, "pre_no_impact", task_id)
                     route_complex = False
             if route_complex:
                 # v3.6.1 PRE-orientation (Goran 09-08): the PRE consult no
@@ -1535,6 +1548,7 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                 override, orientation=False)
                 # R16: auto-lane consult candidate — cooldown check on the
                 # normalized content hash (declared/manual never reaches here).
+                _cd_log_only = False
                 if _consult_cooldown_active(session_id, user_text):
                     _note_closed_line_verdict(session_id, user_text)
                     # R34-13: the no-fire cause is visible in the same event
@@ -1550,30 +1564,39 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                                task_id=task_id, level=level)
                     except Exception as _obs_exc:  # noqa: BLE001
                         _obs_warn('complexity_skip', _obs_exc)
-                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
-                                "consult_cooldown_suppressed")
-                _record_cooldown_fire(session_id,
-                                      _cooldown_hash(session_id, user_text))
-                # R8-4 (rider 8): compound turn — decision consult fires
-                # async BEFORE the orientation consult routes.
-                _fire_decision_stack()
-                if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
-                    return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
-                                "consult_no_frontier_config")
-                # R42: coverage countable from the ledger without log parsing.
-                try:
-                    from .core.telemetry import log_route as _lr_pref  # P1
+                    if not _indep_armed:
+                        return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                    "consult_cooldown_suppressed")
+                    # M53-06 §1a site 3/3: an ARMED profile never returns here.
+                    # The consult stays suppressed (that IS the cooldown), but
+                    # the turn continues to the transform edge, where POST
+                    # decides. Unarmed keeps today's return byte for byte.
+                    _note_route_independence(session_id, "consult_cooldown",
+                                             task_id)
+                    _cd_log_only = True
+                if not _cd_log_only:
+                    _record_cooldown_fire(session_id,
+                                          _cooldown_hash(session_id, user_text))
+                    # R8-4 (rider 8): compound turn — decision consult fires
+                    # async BEFORE the orientation consult routes.
+                    _fire_decision_stack()
+                    if _consult_no_frontier_config():  # R21 FABLE-PIN fail-closed
+                        return _dec(LANE_UNCENSORED, MODE_FLASH_DIRECT, None,
+                                    "consult_no_frontier_config")
+                    # R42: coverage countable from the ledger without log parsing.
+                    try:
+                        from .core.telemetry import log_route as _lr_pref  # P1
 
-                    _lr_pref("PRE", session_id=session_id,
-                             event_detail="pre_orientation_fired",
-                             trigger=str(locals().get("_imp_why") or "impact"),
-                             stage1=str(meta.get("stage1") or ""),
-                             score=_skip_score, task_id=task_id, level=level)
-                except Exception:  # noqa: BLE001 — telemetry only
-                    pass
-                return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
-                            "complexity_orientation",
-                            orientation=True)
+                        _lr_pref("PRE", session_id=session_id,
+                                 event_detail="pre_orientation_fired",
+                                 trigger=str(locals().get("_imp_why") or "impact"),
+                                 stage1=str(meta.get("stage1") or ""),
+                                 score=_skip_score, task_id=task_id, level=level)
+                    except Exception:  # noqa: BLE001 — telemetry only
+                        pass
+                    return _dec(LANE_COMPLEXITY, MODE_CONSULT, _primary_model(),
+                                "complexity_orientation",
+                                orientation=True)
             if override == "anchor":
                 # explicit ask outranks a "clear_simple" verdict at any level:
                 # manual-only semantics (L1) and the inline override contract.
@@ -2285,3 +2308,36 @@ def _note_closed_line_verdict(session_id, user_text) -> None:
                          "pre_skip_" + _cl.verdict_path(_tid))
     except Exception:  # noqa: BLE001
         pass
+
+
+def _route_independence_armed() -> bool:
+    """M53-06 §1: is this profile inside the armed attestation pilot?
+
+    Read ONCE per dispatch and shared by the three skip sites. Unarmed is the
+    WHOLE blast radius: those profiles keep today's skip behaviour byte for
+    byte, so nothing here may run on them.
+    """
+    try:
+        from .passes import dispatcher_pre as _pre
+        return bool(_pre.attestation_armed())
+    except Exception:  # noqa: BLE001 — an unreadable arming reads UNARMED
+        return False
+
+
+def _note_route_independence(session_id, site, task_id="", domain="") -> None:
+    """M53-06 §1: a skip on an ARMED profile is LOG-ONLY, never a return.
+
+    The row is the proof each site is live rather than assumed: without it a
+    "log-only" conversion is indistinguishable from a site nobody touched.
+    Never raises; a failed row must never restore the skip.
+    """
+    try:
+        from .core.telemetry import log_route as _lr
+        _lr("PRE", session_id=session_id,
+            event_detail="route_independence_applied",
+            route_independence_applied=1,
+            reason=str(site or ""),
+            domain=str(domain or ""),
+            task_id=task_id)
+    except Exception as _obs_exc:  # noqa: BLE001
+        _obs_warn("route_independence_applied", _obs_exc)

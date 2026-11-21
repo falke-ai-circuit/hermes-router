@@ -2683,6 +2683,53 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     armed=1, **_rec, session_id=session_id)
             except Exception:  # noqa: BLE001 — the metric never blocks
                 pass
+        # ------------------------------------------------------------------
+        # M53-06 §2 — INDEPENDENT ROUTING (owner ruling 2026-11-21).
+        #
+        # The router routes independently of the main model's cooperation.
+        # When the body IS a denial (`action_denial`) and the PRE gate flagged
+        # the ask in an unc domain, the unc lane renders and its render
+        # REPLACES the delivered body — even on a turn where the model never
+        # attested `declined` (rule 1) and rule 4 was downgraded by the
+        # attestation enforcement above. That downgrade is model-cooperation
+        # authority, and this ruling removes it from the routing question.
+        #
+        # PRECEDENCE DOES NOT MOVE: the closed-line verdict is read FIRST and
+        # a blocked ask is never routed here (D1 holds, deliver unchanged).
+        # `domain_gate` is a citation surface, never the authorisation; the
+        # authorisation is `closed_line.classify()` returning not-blocked.
+        #
+        # Unarmed profiles never reach this block (`_cl_armed` is False), so
+        # their behaviour is byte-identical.
+        # ------------------------------------------------------------------
+        _route_independent = False
+        if (_cl_armed and not _rule_replace
+                and str(_gate_verdict or "") == "flagged"
+                and str(_denial_class or "") == "action_denial"):
+            _gate_domain = (str((_gate_row or {}).get("domain") or "")
+                            if isinstance(_gate_row, dict) else "")
+            if _cl_blocked:
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="route_independence_suppressed",
+                        reason="closed_line", kind=str(_cl_kind or ""),
+                        domain=_gate_domain, replace_ms=0, render_emitted=0,
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+            else:
+                _rule_action = "route"
+                _rule_replace = True
+                _route_independent = True
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="route_independence_applied",
+                        route_independence_applied=1,
+                        reason="denial_in_unc_domain",
+                        domain=_gate_domain, replace=1,
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
         # M35-01: record WHICH row decided this turn and the facts it consumed.
         # `gate=None` when the row never read the gate (rule 1) — the row then
         # says `not_consulted` instead of borrowing a verdict it never saw.
@@ -3458,6 +3505,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _reject_render = _hub()._dispatcher_post._refusal_shaped_post
         except Exception:  # noqa: BLE001 — no predicate, no rejection
             _reject_render = None
+        if _route_independent:
+            # M53-06 §2: a refusal-shaped RENDER is not a reason to skip. On
+            # this path the lane's own refusal IS what ships — no quality gate,
+            # no re-ask, no fallback to the draft because it looks bad. The
+            # rejection predicate exists for the declared path, where a lane
+            # refusal must not masquerade as a render; here the owner ruling
+            # makes the render authoritative whatever its shape.
+            _reject_render = None
         rendered = _hub().router.call(
             original_user_message,
             system_prompt=_system_prompt,
@@ -3478,6 +3533,58 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     lane_refusals_exhausted=1,
                     rejected=len(_rep.get("rejected") or []),
                     entries=",".join(_rep.get("rejected") or [])[:200],
+                    session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
+        # ------------------------------------------------------------------
+        # M53-06 §3/§4 — SWAP RECORDED, ENVELOPE WRITTEN OUT OF BAND.
+        #
+        # The delivered body is the render, so the next turn must be able to
+        # continue from it as its OWN output. The provenance is recorded on
+        # the envelope channel and NEVER in the body (M53-05). `swapped=1` is
+        # what makes the feature's rate countable per turn.
+        # ------------------------------------------------------------------
+        _env_written = 0
+        if _rule_replace and str(rendered or "").strip():
+            try:
+                _render_is_refusal = bool(
+                    _hub()._dispatcher_post._refusal_shaped_post(str(rendered)))
+            except Exception:  # noqa: BLE001 — an unreadable shape is not a refusal
+                _render_is_refusal = False
+            _swap_domain = ((str((_gate_row or {}).get("domain") or "")
+                             if isinstance(_gate_row, dict) else "")
+                            or str(_att_parsed.get("domain") or ""))
+            try:
+                from .. import assimilation as _assim_swap
+
+                _env = _assim_swap.note_swap_envelope(
+                    session_id,
+                    turn_id=str((context or {}).get("turn_id") or ""),
+                    lane="uncensored",
+                    route_reason=("denial_in_unc_domain" if _route_independent
+                                  else ("declared_refusal" if _att_route_fired
+                                        else "gate_flagged")),
+                    domain=_swap_domain,
+                    render=str(rendered),
+                    swapped=True,
+                    render_is_refusal=_render_is_refusal)
+                _env_written = 1 if _env else 0
+            except Exception:  # noqa: BLE001 — an envelope never blocks delivery
+                _env_written = 0
+            try:
+                _task_swap = str(
+                    _hub()._tap_task_identity(session_id, model)[0] or "")
+            except Exception:  # noqa: BLE001 — a missing join key is not fatal
+                _task_swap = ""
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="assimilation_swap",
+                    swapped=1, route_independent=int(bool(_route_independent)),
+                    render_is_refusal=int(bool(_render_is_refusal)),
+                    render_chars=len(str(rendered)),
+                    draft_chars=len(str(response_text or "")),
+                    envelope_written=_env_written,
+                    domain=_swap_domain, task_id=_task_swap,
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — telemetry only
                 pass

@@ -39,6 +39,7 @@ not body prose (A2 own-voice), and the POST seam appends nothing.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -245,6 +246,13 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
             _note_lost_mark(sid)
             return False
         text = frame_text()
+        # M53-06 §3: a SWAPPED turn carries its provenance into the next
+        # request on the SAME frame channel — the model continues from a body
+        # it can recognise as its own output, never as an alien injection.
+        # Empty for an ordinary rendered turn, so that frame stays identical.
+        _swap_line = swap_envelope_line(sid)
+        if _swap_line:
+            text = text + "\n\n" + _swap_line
         # dedupe="call": the frame is a PER-RENDERED-TURN rule. The default
         # history-wide marker scan would let it land once per session and then
         # drop every later render as "not_appended" (the message list carries
@@ -570,3 +578,107 @@ def _report_mark_acceptance(session_id: str,
         )
     except Exception:  # noqa: BLE001 — never break delivery
         pass
+
+
+# ---------------------------------------------------------------------------
+# M53-06 §3 — THE SWAP ENVELOPE
+#
+# A turned that was SWAPPED (the lane's render is the delivered body, not the
+# draft) must come back to the model as its OWN output on the next turn, with
+# its provenance attached. The provenance is metadata on the envelope channel
+# and NEVER in the delivered body (M53-05): the body already lives in history
+# and render_inbox, so this record names it instead of duplicating it.
+#
+# Keyed per session+turn, bounded, fail-open. The next-turn carrier is the
+# EXISTING frame injection point (`inject_frame`), not a parallel channel.
+# ---------------------------------------------------------------------------
+_SWAP_ENVELOPES: Dict[str, Dict[str, Any]] = {}
+_SWAP_ENV_MAX = 512
+
+
+def note_swap_envelope(session_id: str, *, turn_id: str = "",
+                       lane: str = "", route_reason: str = "",
+                       domain: str = "", render: str = "",
+                       swapped: bool = True,
+                       render_is_refusal: bool = False) -> Dict[str, Any]:
+    """Record the envelope for a swapped turn and return it ({} on refusal).
+
+    CALLER CONTRACT
+        session_id      required; no session, no record
+        render          the exact delivered bytes; only its sha256 is stored
+        swapped         True when the delivered body IS the render
+        render_is_refusal  the render was refusal-shaped and shipped anyway
+                        (the M53-06 §2 ruling) — a measurement, not a gate
+
+    Never raises. A record is written only for a non-empty render: an empty
+    swap has no bytes to attribute and must not claim to be a delivery.
+    """
+    try:
+        sid = str(session_id or "")
+        body = str(render or "")
+        if not sid or not body.strip():
+            return {}
+        env = {
+            "origin": "unc_lane_render",
+            "lane": str(lane or ""),
+            "route_reason": str(route_reason or ""),
+            "domain": str(domain or ""),
+            "render_sha": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            "render_chars": len(body),
+            "render_is_refusal": bool(render_is_refusal),
+            "swapped": bool(swapped),
+            "turn_id": str(turn_id or ""),
+            "session_id": sid,
+            "ts": time.time(),
+        }
+        with _MARK_LOCK:
+            _SWAP_ENVELOPES[sid] = env
+            while len(_SWAP_ENVELOPES) > _SWAP_ENV_MAX:
+                _SWAP_ENVELOPES.pop(next(iter(_SWAP_ENVELOPES)))
+        _frame_log(sid, "swap_envelope_written",
+                   reason=str(route_reason or ""),
+                   render_sha=env["render_sha"],
+                   render_chars=env["render_chars"],
+                   domain=env["domain"], turn_id=env["turn_id"])
+        return dict(env)
+    except Exception:  # noqa: BLE001 — an envelope never breaks a turn
+        return {}
+
+
+def read_swap_envelope(session_id: Any) -> Dict[str, Any]:
+    """The latest swap envelope for this session ({} when none)."""
+    try:
+        env = _SWAP_ENVELOPES.get(str(session_id or ""))
+        return dict(env) if isinstance(env, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def clear_swap_envelopes() -> None:
+    """Test hook: forget every swap envelope."""
+    try:
+        with _MARK_LOCK:
+            _SWAP_ENVELOPES.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def swap_envelope_line(session_id: Any) -> str:
+    """The one-line envelope the NEXT turn's model reads as its own provenance.
+
+    Empty when no swap is recorded, so an ordinary rendered turn's frame is
+    byte-identical to today's.
+    """
+    try:
+        env = read_swap_envelope(session_id)
+        if not env:
+            return ""
+        return ("[UNC-RENDER ENVELOPE origin=%s lane=%s route_reason=%s "
+                "domain=%s render_sha=%s swapped=%d turn_id=%s]"
+                % (env.get("origin") or "", env.get("lane") or "",
+                   env.get("route_reason") or "", env.get("domain") or "",
+                   env.get("render_sha") or "",
+                   1 if env.get("swapped") else 0,
+                   env.get("turn_id") or ""))
+    except Exception:  # noqa: BLE001
+        return ""
