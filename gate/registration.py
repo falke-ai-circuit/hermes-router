@@ -8,6 +8,7 @@ registration contract are unchanged.
 from __future__ import annotations
 
 import functools
+import hashlib
 import logging
 import sys as _sys
 import time
@@ -293,7 +294,14 @@ def on_transform_llm_output_guarded(**kwargs):
     # M35-14: the closed-line grader is read ONCE, here, BEFORE the seam runs —
     # a closed line is a property of the ASK, so no render may be billed for it
     # and no case may open it later.
-    _closed_hit = _closed_line_hit(kwargs)
+    # M53-06d — ORDER, NOT EXEMPTION: the independent route is evaluated
+    # BEFORE the closed-line hold. On an armed profile with no attestation
+    # type and a PRE detection, the D1 hold may NOT preempt the route: the
+    # trigger wins, this turn takes no closed-line hit, the seam runs, and
+    # decide() names the render. No kind test, no domain test on the ASK, no
+    # acceptability test — the conjunction is the spec's own mechanical rule.
+    _route_default_turn = _m5306_default_route(kwargs)
+    _closed_hit = "" if _route_default_turn else _closed_line_hit(kwargs)
     # M53-03 R20: when the ARMED guard supplied this hit, the wrapper claims the
     # turn BEFORE orchestration runs, so orchestration's own guard row never
     # writes. Emit it here: the record must survive the shortcut ("detect all"
@@ -725,6 +733,11 @@ def on_transform_llm_output_guarded(**kwargs):
             _lg_ship(
                 "POST", event_detail="shipped_bytes",
                 shipped_chars=(len(final) if isinstance(final, str) else 0),
+                # M53-06d: the SHIPPED body's own hash. Without it "swapped"
+                # is an assertion; with it the delivered bytes and the render
+                # are comparable by digest, not by prose.
+                shipped_sha256=(hashlib.sha256(final.encode("utf-8")).hexdigest()
+                                if isinstance(final, str) else ""),
                 shipped_has_tag=int("<turn" in str(final or "").lower()),
                 shipped_is_none=int(final is None),
                 boundary_stripped=int(bool(_boundary_stripped)),
@@ -756,6 +769,39 @@ def _ask_for(kwargs) -> str:
         return ask or str(_st.get_last_seen(sid) or "")
     except Exception:  # noqa: BLE001 — ask recovery never blocks a turn
         return ""
+
+
+def _m5306_default_route(kwargs) -> bool:
+    """M53-06 §2 trigger, evaluated BEFORE the closed-line hold.
+
+    CALLER CONTRACT
+        kwargs  the transform hook kwargs (session_id + response_text)
+
+    True only for the spec's mechanical conjunction:
+        ARMED profile AND no attestation type AND PRE detected an unc domain.
+
+    It contains NO content judgement: it does not read the ask, classify the
+    body, or look at the closed-line kind. It exists so the D1 hold cannot
+    preempt the independent route; the lane's own model decides what it will
+    render (owner ruling: "it's not router who decides, router routes").
+
+    Never raises. Any error is False, which restores today's hold exactly.
+    """
+    try:
+        if not _hub_dispatcher_armed():
+            return False
+        from ..features.detection import attestation as _att
+
+        _type = str((_att.parse(str(kwargs.get("response_text") or ""))
+                     or {}).get("type") or "")
+        if _type:
+            return False
+        from ..features.detection import domain_gate as _dg
+
+        _row = _dg.read(str(kwargs.get("session_id") or ""))
+        return str(_dg.verdict(_row) or "") == "flagged"
+    except Exception:  # noqa: BLE001 — fail-open to today's behaviour
+        return False
 
 
 def _closed_line_hit(kwargs) -> str:

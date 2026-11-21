@@ -10,6 +10,7 @@ __init__ module globals, because _hub() resolves the same attribute.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib
 import sys
 from typing import Any, Dict, List, Optional
@@ -3580,6 +3581,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     "POST", event_detail="assimilation_swap",
                     swapped=1, route_independent=int(bool(_route_independent)),
                     render_is_refusal=int(bool(_render_is_refusal)),
+                    render_sha256=hashlib.sha256(
+                        str(rendered).encode("utf-8")).hexdigest(),
                     render_chars=len(str(rendered)),
                     draft_chars=len(str(response_text or "")),
                     envelope_written=_env_written,
