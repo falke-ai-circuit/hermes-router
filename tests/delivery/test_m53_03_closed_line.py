@@ -228,12 +228,13 @@ def test_t6_guard_error_delivers_without_replacing(rows, monkeypatch):
     out, venice = _run("m53-03-t6", C3_ASK, domain="bio_chem")
     assert not venice.called, "on a guard error the replace must NOT happen"
     assert _events(rows, "closed_line_guard_error"), "guard_error must be logged"
-    # The EDGE claims the turn, so orchestration never runs and
-    # `declaration_seen` is not written on an edge-claimed turn (open item:
-    # "detect all" wants that row; the seam is skipped by the early return).
-    # What the edge must still record is the decision and the guard error.
+    # T6 contract (owner-ruled, "detect all"): a guard error must suppress the
+    # lane, log the error, AND still emit the record. A guard error is not a
+    # closed line — claiming D1 would skip the record and punish benign turns
+    # on a detector hiccup.
     assert _events(rows, "closed_line_guard_error")
-    assert [f for e, f in rows if f.get("event_detail") == "delivery_decision"]
+    assert _events(rows, "declaration_seen"), "a guard error must still record"
+    assert (out is None) or (out == BODY), "the agent's own body must be delivered"
 
 
 # ---------------------------------------------------------------------------

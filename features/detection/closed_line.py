@@ -297,3 +297,28 @@ def absence_reason(session_id: object, turn_id: object) -> str:
         return "absent_cleared_or_cross_process"
     except Exception:  # noqa: BLE001
         return "absent_unknown"
+
+
+#: R21 correction (owner): a guard ERROR is not a closed line. It must not
+#: claim HOLD_CLOSED (that early return skips the record), and it must not let
+#: the lane substitute either. The flag is consumed by the delivery edge to
+#: suppress the lane render while the turn delivers MAIN and keeps recording.
+_GUARD_ERRORS: dict = {}
+
+
+def note_guard_error(session_id: object, turn_id: object) -> None:
+    """Record that classification failed for this turn (never raises)."""
+    try:
+        _GUARD_ERRORS[_vkey(session_id, turn_id)] = True
+        while len(_GUARD_ERRORS) > _VERDICT_MAX:
+            _GUARD_ERRORS.pop(next(iter(_GUARD_ERRORS)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def take_guard_error(session_id: object, turn_id: object) -> bool:
+    """Consume the guard-error flag for this turn."""
+    try:
+        return bool(_GUARD_ERRORS.pop(_vkey(session_id, turn_id), False))
+    except Exception:  # noqa: BLE001
+        return False

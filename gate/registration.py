@@ -448,6 +448,16 @@ def on_transform_llm_output_guarded(**kwargs):
                 _entered_dec = out
         except Exception:  # noqa: BLE001 — fail open to the draft
             _entered_dec = _original
+        try:
+            from ..features.detection import closed_line as _cl_g
+            _ge = _cl_g.take_guard_error(
+                str(kwargs.get("session_id") or ""),
+                str(kwargs.get("turn_id") or ""))
+        except Exception:  # noqa: BLE001
+            _ge = False
+        if _ge:
+            # a detector hiccup must never hand the turn to the lane
+            out = None
         _facts = _build_facts(
             _entered_dec, kwargs, _turn, out, _closed_hit,
             attempt=_pre_attempt,
@@ -800,9 +810,9 @@ def _closed_line_hit(kwargs) -> str:
         _cl.note_verdict(_sid, _tid, _blocked, _kind, _reason,
                          "edge_" + _cl.verdict_path(_tid))
         return str(_kind or "") if _blocked else ""
-    except Exception:  # noqa: BLE001 — A: fail CLOSED on the ARMED path
-        _cl.note_verdict(_sid, _tid, True, "guard_error", "guard_error",
-                         "edge_error")
+    except Exception:  # noqa: BLE001 — fail SAFE in both directions, not by
+        # claiming: do not let the lane substitute, do not skip the record.
+        _cl.note_guard_error(_sid, _tid)
         try:
             _lg_e = _hub_log_route()
             if _lg_e is not None:
@@ -812,7 +822,7 @@ def _closed_line_hit(kwargs) -> str:
                       session_id=_sid)
         except Exception:  # noqa: BLE001 — telemetry only
             pass
-        return "guard_error"
+        return ""          # no D1 claim: delivery MAIN still records
 
 
 def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0,
