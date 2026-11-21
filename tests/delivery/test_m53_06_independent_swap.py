@@ -59,10 +59,11 @@ def _cfg():
             "declaration_attestation": {"armed": True}}
 
 
-def _gate(state="flagged", domain="cyber_offensive"):
+def _gate(state="flagged", domain="cyber_offensive", reason=None):
+    if reason is None:
+        reason = "in_domain" if state == "flagged" else "out_of_domain"
     return {"gate": state, "domain": domain, "state": state,
-            "reason": "in_domain" if state == "flagged" else "out_of_domain",
-            "lane": "", "turn": 0}
+            "reason": reason, "lane": "", "turn": 0}
 
 
 @pytest.fixture()
@@ -109,9 +110,11 @@ def _events(rows, name):
 
 
 def _turn(rows, monkeypatch, sid, ask, body, gate_state="flagged",
-          render=RENDER):
+          render=RENDER, domain="cyber_offensive", reason=None):
     """PRE complexity skip, then the POST transform edge — the real path."""
-    monkeypatch.setattr(domain_gate, "read", lambda *_a, **_k: _gate(gate_state))
+    monkeypatch.setattr(domain_gate, "read",
+                        lambda *_a, **_k: (None if gate_state is None
+                                           else _gate(gate_state, domain, reason)))
     state.record_last_seen(sid, ask)
     state.set_last_user_msg_hash(sid, state.hash_text(ask))
     route = router_core.dispatch(ask, session_id=sid, model="m")
@@ -363,3 +366,107 @@ def test_m10_control_attested_denial_unchanged(rows, monkeypatch):
         ("D1", "HOLD_CLOSED"), decided[0]
     assert not _events(rows, "route_default_applied"), \
         "an attested turn is not the default-route case"
+
+
+# ---------------------------------------------------------------------------
+# M53-06e — route on a DETECTED unc domain; banner iff the render ships
+# ---------------------------------------------------------------------------
+
+UNC_REASON_SEXUAL = "unconfirmed:no_sexual_explicit_cue"
+
+
+def _split_banner(body):
+    """(answer region, banner region). The banner is the head-anchored tail."""
+    from hermes_router import debug_banner as _db
+
+    head = str(_db.BANNER_HEAD or "")
+    if not isinstance(body, str) or not head or head not in body:
+        return body, ""
+    idx = body.index(head)
+    return body[:idx].rstrip(), body[idx:]
+
+
+def test_m15_unconfirmed_domain_routes(rows, monkeypatch):
+    """BEHAVIOURAL — the owner's exact failing turn: the gate NAMED the domain
+    and withheld `flagged` because the cue test missed. Detection must route."""
+    sid = "m53-06-m15"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                      gate_state="not_flagged", domain="sexual_explicit",
+                      reason=UNC_REASON_SEXUAL)
+
+    defaulted = _events(rows, "route_default_applied")
+    assert defaulted, "a detected (unconfirmed) unc domain must route"
+    assert lane.called, "the unc lane must render"
+    answer, _banner = _split_banner(out)
+    assert answer == RENDER, ("the render is the answer region", answer[:120])
+    decided = _events(rows, "delivery_decision")
+    assert (decided[0].get("case_id"), decided[0].get("action")) != \
+        ("D1", "HOLD_CLOSED"), decided[0]
+    assert decided[0].get("delivered_source") == "lane", decided[0]
+
+
+def test_m16_any_unc_domain_routes(rows, monkeypatch):
+    """BEHAVIOURAL — not a per-topic test: cyber_offensive/unconfirmed routes."""
+    sid = "m53-06-m16"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                      gate_state="not_flagged", domain="cyber_offensive",
+                      reason="unconfirmed:no_cyber_cue")
+    assert _events(rows, "route_default_applied"), "any UNC_DOMAINS hit routes"
+    assert lane.called
+    assert _split_banner(out)[0] == RENDER
+
+
+def test_m17_out_of_domain_does_not_route(rows, monkeypatch):
+    """CONTROL — meta_doctrine / out_of_domain keeps today's no-route."""
+    sid = "m53-06-m17"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                      gate_state="not_flagged", domain="meta_doctrine",
+                      reason="out_of_domain")
+    assert not _events(rows, "route_default_applied"), "out_of_domain must not route"
+    assert lane.called is False
+    assert out is None
+
+
+def test_m18_absent_gate_does_not_route(rows, monkeypatch):
+    """CONTROL — abstain / no row / empty domain are NOT detections."""
+    for i, (state, dom, reason) in enumerate((
+            (None, "", None),
+            ("abstain", "cyber_offensive", "abstain"),
+            ("not_flagged", "", "out_of_domain")), start=1):
+        sid = "m53-06-m18-%d" % i
+        _out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                           gate_state=state, domain=dom, reason=reason)
+        assert not _events(rows, "route_default_applied"), (state, dom, reason)
+        assert lane.called is False, (state, dom, reason)
+
+
+def test_m19_attested_type_does_not_route(rows, monkeypatch):
+    """CONTROL — a typed body (produced) is not the default-route case."""
+    sid = "m53-06-m19"
+    body = '<turn domain="cyber_offensive" type="produced" />\n\n' + DENIAL
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, body,
+                      gate_state="not_flagged", domain="cyber_offensive",
+                      reason="unconfirmed:no_cyber_cue")
+    assert not _events(rows, "route_default_applied"), "type=produced must not route"
+    assert lane.called is False
+    # MEASURED: the boundary strips the tag and returns the clean draft
+    # explicitly (None is the host pass-through; a stripped body is not None).
+    assert out == DENIAL, out
+
+
+def test_m20_detected_domain_empty_lane_ships_the_draft(rows, monkeypatch):
+    """BEHAVIOURAL — the graceful-fail rule on the WIDENED path."""
+    sid = "m53-06-m20"
+    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
+                      gate_state="not_flagged", domain="sexual_explicit",
+                      reason=UNC_REASON_SEXUAL, render="")
+    assert lane.called, "the lane is still tried"
+    assert out is None, "no render => the host's own draft ships"
+    unavailable = _events(rows, "render_unavailable")
+    assert unavailable, "the miss must be named"
+    assert str(unavailable[-1].get("reason") or "") in (
+        "chain_returned_nothing", "empty_body"), unavailable[-1]
+    assert not _events(rows, "assimilation_swap"), "nothing was swapped"
+    decided = _events(rows, "delivery_decision")
+    assert decided[0].get("delivered_source") != "lane", decided[0]
+    assert _split_banner(out)[1] == "", "no render => no banner"

@@ -799,7 +799,7 @@ def _m5306_default_route(kwargs) -> bool:
         from ..features.detection import domain_gate as _dg
 
         _row = _dg.read(str(kwargs.get("session_id") or ""))
-        return str(_dg.verdict(_row) or "") == "flagged"
+        return bool(_dg.domain_detected(_row))
     except Exception:  # noqa: BLE001 — fail-open to today's behaviour
         return False
 

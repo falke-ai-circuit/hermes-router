@@ -606,6 +606,41 @@ def verdict(row: Optional[dict]) -> str:
         return GATE_ABSTAIN
 
 
+def domain_detected(row: Optional[dict]) -> bool:
+    """Did the gate NAME an unc domain? (M53-06e routing predicate.)
+
+    CALLER CONTRACT
+        row  the PRE gate record (`domain_gate.read`), or None.
+
+    True only when the gate reported a domain in `UNC_DOMAINS` AND the reason
+    says it was detected — `in_domain`, or an `unconfirmed:*` reason (the gate
+    identified the domain and withheld `flagged` because its finer cue test was
+    not met). Measured census: 121 turns read
+    `gate=not_flagged reason=unconfirmed domain=UNC` and were dropped by a
+    predicate that demanded `flagged`.
+
+    NOT detected: empty/absent domain, `out_of_domain` (meta_doctrine), a
+    `CLOSED_DOMAINS` label, a gate that never answered (`abstain`/None), and a
+    row with no gate verdict at all. This is not a quality judgement on the ask
+    and not a per-topic test: any domain in `UNC_DOMAINS` counts, and the model
+    in the lane decides what is produced.
+
+    Never raises: an unreadable row reads as NOT detected.
+    """
+    try:
+        if not isinstance(row, dict):
+            return False
+        if str(row.get("gate") or "") not in (GATE_FLAGGED, GATE_NOT_FLAGGED):
+            return False
+        domain = str(row.get("domain") or "").strip()
+        if not domain or domain in CLOSED_DOMAINS or domain not in UNC_DOMAINS:
+            return False
+        reason = str(row.get("reason") or "").strip().lower()
+        return reason == "in_domain" or reason.startswith("unconfirmed")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _emit(log: Optional[Callable[..., Any]], row: Dict[str, Any],
           session_id: str) -> None:
     """One PRE row per gate pass. Never prints the ask and never prints a closed

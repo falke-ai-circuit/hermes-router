@@ -2708,7 +2708,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         _route_independent = False
         if _att_armed and not _rule_replace:
             _att_type_t = str(_att_parsed.get("type") or "")
-            if not _att_type_t and str(_gate_verdict or "") == "flagged":
+            # M53-06e: the conjunct is "the gate DETECTED an unc domain", not
+            # "the gate said flagged". `unconfirmed:*` means the domain was
+            # identified and the finer cue test was not met — measured: 121
+            # such turns were dropped while 217 in_domain turns routed. Any
+            # domain in UNC_DOMAINS counts (no per-topic test); empty domain,
+            # out_of_domain, abstain and a never-landed gate do NOT route.
+            _detected = False
+            try:
+                from ..features.detection import domain_gate as _dg_det
+                _detected = bool(_dg_det.domain_detected(_gate_row))
+            except Exception:  # noqa: BLE001 — an unreadable gate is not a detection
+                _detected = False
+            if not _att_type_t and _detected:
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
                 # route — the render replaces the body.
@@ -3955,7 +3967,15 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 try:
                     _merged_r = _bll_r.LIFECYCLE.deliver(
                         session_id, rendered, "anchor", "pre_render",
-                        log_edge="uncensored-render", log_consume=False)
+                        log_edge="uncensored-render", log_consume=False,
+                        # M53-06e (owner ruling): the banner ships exactly
+                        # when the unc lane's render is the delivered body.
+                        # The composer's lane-render suppression was written
+                        # for the benign edge (M44-02); on THIS edge the
+                        # render IS the delivery, so suppression would be the
+                        # defect it was meant to prevent — measured live:
+                        # shipped_sha256 == render_sha256, zero banner bytes.
+                        allow_lane_render=True)
                 except _bll_r.IllegalDeliveryEdge as _ide_r:
                     # chokepoint fail-open: the rendered body is still
                     # delivered (I2 intact); telemetry row instead of a
@@ -3967,6 +3987,22 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     if isinstance(_merged_r, str) and _merged_r and \
                             _merged_r != str(rendered or ""):
                         rendered = _merged_r
+                        # M53-06e accounting: the append must be COUNTED, not
+                        # implied. shipped = render + banner on this edge, so
+                        # the two digests differ and the delta names the
+                        # banner bytes.
+                        try:
+                            _hub()._log_route(
+                                "POST", event_detail="banner_attached",
+                                edge="uncensored-render",
+                                banner_chars=max(0, len(str(rendered))
+                                                 - len(str(_rendered_pre_banner))),
+                                render_chars=len(str(_rendered_pre_banner)),
+                                shipped_chars=len(str(rendered)),
+                                lane="uncensored-render",
+                                session_id=session_id)
+                        except Exception:  # noqa: BLE001 — telemetry only
+                            pass
                         # FIX-FIRST rider 4 (item 1, parked-loss): the render
                         # seam's own rewrite (canonical line above) ran BEFORE
                         # this consume, so the persisted row held the
