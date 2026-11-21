@@ -1292,6 +1292,17 @@ _CONTRACT_DELIVERED_AT: Dict[str, float] = {}   # session -> monotonic ts
 _CONTRACT_TTL_S = 900.0
 _CONTRACT_UNANSWERED = "MISSING_TAG"
 
+#: M53-05 R18: the ARMED turn's declaration STATE. `_declaration` is the
+#: table-facing value and must keep speaking the table's language ("true" /
+#: "false"), so the state rides beside it. Before this, an attested `produced`
+#: turn left `_declaration` at "UNKNOWN" — indistinguishable from a turn that
+#: declared nothing — and the belt below fired `contract_delivered_no_tag` on
+#: turns that had attested by tool call. "No tag in the text" is the NORMAL
+#: state of a migrated armed turn, not a missing declaration.
+_ATTESTED_ROUTING = "attested_routing"        # valid + type routes (declined)
+_ATTESTED_NONROUTING = "attested_nonrouting"  # valid, not a routing type
+_UNATTESTED = "unattested"                    # no valid claim, either channel
+
 
 def _note_contract_delivered(session_id: str) -> None:
     """Record that the declaration contract rode out on this session's payload."""
@@ -1532,6 +1543,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             "reason": "not_delivered", "value": None}
         _att_armed = False
         _att_retry = 0
+        _att_state = ""          # "" = unarmed; else one of the three above
         _att_entry_text = str(response_text or "")
         try:
             from ..features.detection import attestation as _attm
@@ -1623,10 +1635,20 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     # type=declined IS the boolean trigger: rule 1 fires and
                     # nothing about the rule order changes.
                     _declaration = "true"
+                    _att_state = _ATTESTED_ROUTING
+                elif _att_parsed.get("valid"):
+                    # M53-05 R18: an attested NON-routing turn (produced,
+                    # partial, clarify, blocked) is a DECLARED turn. It carries
+                    # the table's "false" so the table keeps its language, and
+                    # an explicit state so the belt can tell it apart from a
+                    # turn that declared nothing.
+                    _declaration = "false"
+                    _att_state = _ATTESTED_NONROUTING
                 elif not _att_parsed.get("valid"):
                     # NEVER route on UNKNOWN; the enforcement block below
                     # blocks the classifier fallback for this turn.
                     _declaration = "UNKNOWN"
+                    _att_state = _UNATTESTED
         except Exception:  # noqa: BLE001 — attestation never breaks delivery
             _hub().logger.debug("attestation parse error", exc_info=True)
 
@@ -2344,7 +2366,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # UNKNOWN — and gets its own loud row; an UNKNOWN row now carries the
         # exact condition that produced it.
         _contract_state = _contract_delivery_state(session_id)
-        if _declaration == "UNKNOWN" and _contract_state == "delivered":
+        # M53-05 R18: the belt fires ONLY for a genuinely unattested turn. An
+        # attested turn carries "true"/"false" and an explicit state, so this
+        # branch cannot claim MISSING_TAG for a turn that attested by tool call
+        # — "no tag in the text" is the NORMAL state after the contract
+        # migration, not a missing declaration.
+        if (_declaration == "UNKNOWN"
+                and _att_state not in (_ATTESTED_ROUTING, _ATTESTED_NONROUTING)
+                and _contract_state == "delivered"):
             _declaration = _CONTRACT_UNANSWERED
             try:
                 _hub()._log_route(
@@ -2369,6 +2398,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _hub()._log_route(
                 "POST", event_detail="declaration_seen",
                 decl=_declaration, contract=_contract_state,
+                decl_state=(_att_state or "unarmed"),
+                # read from the parse result: `_att_channel` is bound LATER in
+                # this function (at the record block), and referencing it here
+                # raised NameError inside the fail-open guard — the row silently
+                # disappeared instead of reporting.
+                channel=(str(_att_parsed.get("channel") or "") if _att_armed else ""),
                 cls=(_denial_class or "unavailable"),
                 chars=len(response_text or ""), session_id=session_id)
         except Exception:  # noqa: BLE001 — observability never breaks delivery
@@ -2461,9 +2496,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 except Exception:  # noqa: BLE001 — telemetry never blocks
                     pass
             else:
-                if _att_parsed.get("type") == "declined":
+                if _att_state == _ATTESTED_NONROUTING:
+                    # M53-05 R18 (item 2): the classifier fallback stays for
+                    # the genuinely-unattested case ONLY. A turn that attested
+                    # produced/partial/clarify/blocked is DECLARED — delivering
+                    # is its outcome, and the metered classifier is not a
+                    # second opinion on a question the agent already answered
+                    # out of band.
+                    _rule_action = "deliver"
+                    _rule_replace = False
+                elif _att_parsed.get("type") == "declined":
+                    # type=declined IS the boolean trigger; rule 1 has fired
+                    # above and this keeps the row's count honest.
                     _att_route_fired = 1
-                # Mismatch is the quality metric: the agent chose a domain that
                 # disagrees with PRE's verdict on the same ask. Delivery is
                 # unaffected — this is a measurement, never a sanction.
                 try:
