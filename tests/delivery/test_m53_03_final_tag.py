@@ -58,7 +58,22 @@ def _run(sid, body):
 
 
 def test_t_t1_stripped_upstream_returns_explicit_stripped_bytes(rows):
-    out = _run("m53-03-tt1", TAGGED)
+    """THE PRODUCTION PATH: the upstream strip site notes the count, then a
+    CLEAN body is handed onward. Feeding TAGGED straight to the seam would let
+    the SEAM do the strip and prove nothing about the hand-off.
+    """
+    sid = "m53-03-tt1"
+    removed = len(TAGGED) - len(BODY)
+    assert removed > 0
+
+    from hermes_router.gate import orchestration as _orch
+
+    assert hasattr(_orch, "_note_decl_strip"), \
+        "no upstream strip hand-off exists (this is the defect)"
+    _orch._note_decl_strip(sid, removed)      # exactly what the strip site does
+
+    out = _run(sid, BODY)                     # CLEAN body, not TAGGED
+
     assert isinstance(out, str), "a stripped turn must not pass through (None)"
     assert "<turn" not in out, "the delivered bytes must carry no tag"
     assert BODY in out
