@@ -156,6 +156,12 @@ def test_b_verdict_present_on_ninety_percent_of_turns(monkeypatch):
     # violence_gore), so those two turns are `flagged` too and NOTHING is left
     # abstained. `abstain` remains the verdict for pending/no-record only — see
     # test_d, which still proves that path is never read as "safe".
+    # M53-07b: MEASURED distribution unchanged. Fusion takes the unc side only
+    # on MULTI-WORD act evidence (the specificity floor that keeps generic
+    # single tokens like "explicit"/"exploit" from flagging benign prose).
+    # This fixture's evidence is "tortures" / "pliers" — single words — so the
+    # 9 turns whose aux label came back benign/meta stay not_flagged, exactly
+    # as before, and nothing abstains.
     assert kinds.get("flagged") == 11
     assert kinds.get("not_flagged") == 9
     assert kinds.get("abstain") is None

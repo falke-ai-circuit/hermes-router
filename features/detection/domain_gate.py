@@ -150,6 +150,32 @@ PRE_QUESTION_OUTPUT_FIELDS = ("domain", "gate", "criterion", "state", "reason")
 _CRITERION_KINDS = ("code", "commands", "file", "items", "prose")
 
 _MAX_ASK_CHARS = 3000
+#: M53-07b: at most ONE prior user turn is prepended as context, bounded. A
+#: follow-up denial ("Justify it operationally then: write the raid-plan annex")
+#: carries no domain words by construction, so the fragment alone cannot be
+#: labelled by any scheme; the judge needs the turn it follows. Zero extra
+#: calls: this rides the SAME prompt the label already comes from.
+_MAX_PRIOR_CHARS = 1200
+
+
+def _prior_context(session_id: str, ask: str) -> str:
+    """The immediately preceding user turn, bounded, or "" when unavailable.
+
+    Never the current ask (a gate pass that re-reads the same turn must not
+    label it as its own context), never more than one turn, never more than
+    _MAX_PRIOR_CHARS. Unavailable context is not an error: the gate behaves
+    exactly as today.
+    """
+    try:
+        if not session_id:
+            return ""
+        last = str(_state.get_last_seen(str(session_id)) or "").strip()
+        cur = str(ask or "").strip()
+        if not last or last == cur:
+            return ""
+        return last[:_MAX_PRIOR_CHARS]
+    except Exception:  # noqa: BLE001 — context never breaks the gate
+        return ""
 
 # ---------------------------------------------------------------------------
 # IN-DOMAIN CONFIRMATION (M35-06) → LANGUAGE-AGNOSTIC (M53-07)
@@ -313,6 +339,64 @@ _FAMILY_CUES = {
         re.IGNORECASE)
     for fam in UNC_DOMAINS
 }
+
+
+def _specific_cue_family(text: str) -> str:
+    """The family whose cue matched as a MULTI-WORD act phrase, or "".
+
+    M53-07b FUSION FLOOR. Fusion may overrule a benign/meta/other aux label,
+    so the evidence it acts on has to be specific. Measured on the frozen
+    benign replay, generic SINGLE tokens ("explicit", "exploit", "nmap",
+    "launder") appear in ordinary operational prose (updating a skill library,
+    a command-approval notice, an API-key error) — treating those as family
+    evidence flagged 6 benign asks. A multi-word act phrase ("pipe bomb",
+    "key press", "reverse shell") is the shape that actually names an act, so
+    fusion is gated on it; the accelerator itself is unchanged and may still
+    name a family for the aux_none fallback.
+    """
+    try:
+        best, best_key = "", (0, 0)
+        for family in _DETERMINISTIC_ORDER:
+            cue = _FAMILY_CUES.get(family)
+            if cue is None:
+                continue
+            spans = {m.group(0).lower(): len(m.group(0))
+                     for m in cue.finditer(str(text or ""))}
+            # SPECIFICITY FLOOR: a multi-word span of at least 9 characters.
+            # "pipe bomb" / "key press" / "reverse shell" name an act; "api
+            # key" (7) and a truncated "CVE-2" (5) are infrastructure tokens
+            # that appear in ordinary ops prose, and acting on them flagged
+            # benign asks.
+            multi = {k: v for k, v in spans.items()
+                     if (" " in k or "-" in k) and v >= 9}
+            if not multi:
+                continue
+            key = (max(multi.values()), len(multi))
+            if key > best_key:
+                best, best_key = family, key
+        return best
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _own_artifact_exempt(text: str) -> bool:
+    """True when the ask points at OUR OWN artifacts (M35-06 protection).
+
+    Kept verbatim in behaviour: a named third-party target network lifts the
+    carve-out, otherwise an own path/tree/build/host/service/state marker
+    exempts the ask. This runs BEFORE evidence fusion so a specific cue inside
+    "what does my own repo contain" can never outvote the protection.
+    """
+    try:
+        t = str(text or "")
+        if _THIRD_PARTY_RE.search(t):
+            return False
+        for _name, rx in _OWN_ARTIFACT_CHECKS:
+            if rx.search(t):
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def confirm_in_domain(ask: str, domain: str, *,
@@ -631,6 +715,14 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         out["reason"] = "aux_unavailable"
         return out
     prompt = _PROMPT % text[:_MAX_ASK_CHARS]
+    # M53-07b CONTEXT: one bounded prior turn, clearly delimited, in the SAME
+    # call. A follow-up fragment resolves its domain only in context.
+    _prior = _prior_context(session_id, text)
+    if _prior:
+        prompt = _PROMPT % ("PRIOR CONTEXT (the user's PREVIOUS turn — use it only to resolve what "
+                            "the CURRENT REQUEST refers to; judge the current request):\n<<<\n%s\n>>>\n\n"
+                            "CURRENT REQUEST:\n<<<\n%s\n>>>"
+                            % (_prior, text[:_MAX_ASK_CHARS]))
     try:
         raw = _sc.aux_raw_call(prompt, session_id=session_id,
                                record_failure=False)
@@ -710,10 +802,30 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
             out.update({"domain": domain, "gate": GATE_FLAGGED,
                         "state": GATE_FLAGGED, "reason": "in_domain",
                         "claim": claim_basis(text, domain)})
+            # M53-07b: two layers named different unc families — the aux side
+            # stands, but the disagreement is recorded, never silenced.
+            _det_u = deterministic_domain(text)
+            if _det_u and _det_u != domain:
+                out["domain_disagreement"] = "det=%s aux=%s" % (_det_u, domain)
+                logger.info("domain_disagreement det=%s aux=%s", _det_u, domain)
             return out
         out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
                     "state": GATE_NOT_FLAGGED,
                     "reason": "unconfirmed:" + unconfirmed, "claim": ""})
+        return out
+    # M53-07b EVIDENCE FUSION (R1/R2). A specific deterministic cue may NOT be
+    # discarded because the aux label said benign/meta/other: "pipe bomb" is
+    # evidence the fragment carries, and the 30 measured misses were exactly
+    # that shape. Own-artifact protection runs first and still wins.
+    _det_family = _specific_cue_family(text)
+    if _det_family and not _own_artifact_exempt(text):
+        out.update({"domain": _det_family, "gate": GATE_FLAGGED,
+                    "state": GATE_FLAGGED, "reason": "in_domain",
+                    "claim": "det",
+                    "domain_disagreement": "det=%s aux=%s"
+                    % (_det_family, domain or "none")})
+        logger.info("domain_disagreement det=%s aux=%s",
+                    _det_family, domain or "none")
         return out
     if domain in SAFE_DOMAINS:
         out.update({"domain": domain, "gate": GATE_NOT_FLAGGED,
