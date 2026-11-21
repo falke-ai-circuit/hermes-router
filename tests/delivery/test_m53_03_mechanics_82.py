@@ -23,6 +23,7 @@ import hermes_router as plugin  # noqa: E402
 from hermes_router import frames, state  # noqa: E402
 from hermes_router.features.detection import attestation as att  # noqa: E402
 from hermes_router.features.detection import closed_line  # noqa: E402
+from hermes_router.gate import orchestration  # noqa: E402
 
 BODY = "No. I won't provide that."
 RENDER = "SYNTHESIS ROUTE — the substituted lane body."
@@ -72,6 +73,26 @@ def _post(sid, armed=True, declare=None):
     return out, v
 
 
+def _seam(sid, declare=None):
+    """Call the POST SEAM itself, past the wrapper's delivery-edge shortcut.
+
+    `gate.registration.on_transform_llm_output_guarded` short-circuits on the
+    delivery edge's own `_closed_line_hit`, so a wrapper-level test can pass
+    while the seam's guard is dead (measured: it did — this test passed at
+    705e1f6). The i=5 shape is the seam being the last line of defence, so the
+    pin must call the seam.
+    """
+    state.record_last_seen(sid, SARIN)
+    state.set_last_user_msg_hash(sid, state.hash_text(SARIN))
+    if declare:
+        tid = str(state.current_turn_id(sid))
+        att.record_declaration(sid, tid, *declare)
+    with mock.patch.object(plugin.router, "call", return_value=RENDER) as v:
+        out = orchestration.on_transform_llm_output(
+            response_text=BODY, session_id=sid, model="m")
+    return out, v
+
+
 def test_m1_undeclared_armed_turn_still_runs_the_closed_line_guard(rows, monkeypatch):
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
     out, venice = _post("m53-03-m1", armed=True, declare=None)   # NO declaration
@@ -80,6 +101,24 @@ def test_m1_undeclared_armed_turn_still_runs_the_closed_line_guard(rows, monkeyp
     assert blocked, "an UNDECLARED armed turn must still be guarded (i=5 shape)"
     assert blocked[0]["kind"] == "weapon_class_no_scope"
     assert not venice.called, "a closed line must never reach the lane"
+
+
+def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
+    """THE SAFETY PIN, at the line that carries it (orchestration.py:2502).
+
+    Fails at 705e1f6: the seam gate was `_att_state == _ATTESTED_ROUTING`, so
+    an undeclared turn ran no closed-line guard and wrote no blocked row.
+    """
+    monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
+    out, venice = _seam("m53-03-m1b", declare=None)             # NO declaration
+
+    blocked = _events(rows, "closed_line_blocked")
+    assert blocked, ("seam: an armed turn with NO declaration must still be "
+                     "guarded — the guard may not be conditioned on the "
+                     "agent cooperating")
+    assert blocked[0]["kind"] == "weapon_class_no_scope"
+    assert not venice.called, "a closed line must never reach the lane"
+    assert out is None, "a held turn delivers the agent's own body (None)"
 
 
 def test_m2_unarmed_profile_is_unchanged(rows, monkeypatch):
