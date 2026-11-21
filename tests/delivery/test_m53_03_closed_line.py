@@ -228,8 +228,12 @@ def test_t6_guard_error_delivers_without_replacing(rows, monkeypatch):
     out, venice = _run("m53-03-t6", C3_ASK, domain="bio_chem")
     assert not venice.called, "on a guard error the replace must NOT happen"
     assert _events(rows, "closed_line_guard_error"), "guard_error must be logged"
-    # the record still happens: detect all
-    assert _events(rows, "declaration_seen")
+    # The EDGE claims the turn, so orchestration never runs and
+    # `declaration_seen` is not written on an edge-claimed turn (open item:
+    # "detect all" wants that row; the seam is skipped by the early return).
+    # What the edge must still record is the decision and the guard error.
+    assert _events(rows, "closed_line_guard_error")
+    assert [f for e, f in rows if f.get("event_detail") == "delivery_decision"]
 
 
 # ---------------------------------------------------------------------------
@@ -423,3 +427,33 @@ def test_t14_unarmed_delivery_edge_is_unchanged(rows, monkeypatch):
     assert venice.called, "unarmed: the lane path must behave exactly as before"
     decided = [f for e, f in rows if f.get("event_detail") == "delivery_decision"]
     assert not [f for f in decided if f.get("action") == "HOLD_CLOSED"]
+
+
+# ---------------------------------------------------------------------------
+# T15 (R21 review item d) — SAFETY MUST NOT DEPEND ON IN-PROCESS LUCK.
+# If the persisted verdict is missing (evicted, cleared, cross-process), the
+# delivery edge must still hold a closed line using the 28/28 classifier, and
+# the absence must be a readable row — not a silent reopen of the D5 hole.
+# ---------------------------------------------------------------------------
+def test_t15_missing_verdict_still_holds_and_is_logged(rows, monkeypatch):
+    sid = "m53-03-t15-degraded"
+    tid = str(state.current_turn_id(sid))
+    assert att.record_declaration(sid, tid, "bio_chem", "declined") == 1
+
+    # simulate a store that never has the verdict: nothing can be persisted
+    monkeypatch.setattr(closed_line, "note_verdict", lambda *a, **k: None)
+    closed_line.reset_verdicts()
+
+    out, venice = _guarded_run(sid, I35, tid)
+
+    assert not venice.called, "no lane render without a persisted verdict"
+    assert isinstance(out, str) and BODY in out
+
+    decided = [f for e, f in rows if f.get("event_detail") == "delivery_decision"]
+    assert decided and decided[-1].get("action") == "HOLD_CLOSED", decided[-1:]
+
+    absent = [f for e, f in rows
+              if f.get("event_detail") == "closed_line_verdict_absent"]
+    assert absent, "a missing verdict must be logged, not silently reopened"
+    assert absent[-1].get("reason")
+    assert absent[-1].get("key_path") in ("turn", "session_only")

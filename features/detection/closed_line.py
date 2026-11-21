@@ -212,3 +212,88 @@ def classify(ask: object, domain: object = "", type_: object = "") -> Tuple[bool
         return False, "", ""
     except Exception:  # noqa: BLE001 — fail CLOSED, never crash the seam
         return True, "guard_error", "guard_error"
+
+
+# ---------------------------------------------------------------------------
+# M53-03 R21 (items A/B/D): ONE VERDICT PER TURN, ONE ASK SOURCE.
+#
+# The seam and the delivery edge used to classify independently, from two
+# different ask-recovery paths (state.get_last_seen vs registration._ask_for),
+# so two verdicts could diverge with nothing to show for it. The verdict is now
+# persisted where it is FIRST computed and read at the edge. Classification only
+# happens when no verdict exists.
+#
+# Keyed (session_id, turn_id). An empty turn_id keys on the session alone and is
+# reported as path="session_only" — the contract is explicit rather than silent.
+# Bounded, fail-open on storage errors (the caller treats absence as "classify").
+# ---------------------------------------------------------------------------
+_VERDICTS: dict = {}
+_VERDICT_MAX = 512
+
+
+def _vkey(session_id: object, turn_id: object) -> tuple:
+    return (str(session_id or ""), str(turn_id or ""))
+
+
+def note_verdict(session_id: object, turn_id: object, blocked: bool,
+                 kind: object = "", reason: object = "",
+                 where: str = "") -> None:
+    """Persist this turn's guard verdict. Never raises."""
+    try:
+        key = _vkey(session_id, turn_id)
+        _VERDICTS[key] = {"blocked": bool(blocked),
+                          "kind": canonical_kind(kind) if blocked else "",
+                          "reason": str(reason or "") if blocked else "",
+                          "where": str(where or "")}
+        while len(_VERDICTS) > _VERDICT_MAX:
+            _VERDICTS.pop(next(iter(_VERDICTS)))
+    except Exception:  # noqa: BLE001 — storage never breaks a turn
+        pass
+
+
+def read_verdict(session_id: object, turn_id: object):
+    """The persisted verdict for this turn, or None (never raises)."""
+    try:
+        return _VERDICTS.get(_vkey(session_id, turn_id))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def take_verdict(session_id: object, turn_id: object):
+    """Read and REMOVE — used at the delivery edge so a verdict cannot bleed
+    into a later turn that reuses the session key."""
+    try:
+        return _VERDICTS.pop(_vkey(session_id, turn_id), None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def verdict_path(turn_id: object) -> str:
+    """Which key the verdict used: 'turn' or 'session_only' (item D contract)."""
+    return "turn" if str(turn_id or "") else "session_only"
+
+
+def reset_verdicts() -> None:
+    """Test isolation."""
+    try:
+        _VERDICTS.clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def absence_reason(session_id: object, turn_id: object) -> str:
+    """WHY a verdict was missing — a readable counter, not a silent reopen.
+
+    Distinguishes the three real causes: a session-only key (a different path
+    wrote/read it), eviction under the bound, and the remainder (cleared, or a
+    different process — this store is process memory and does not survive a
+    bounce).
+    """
+    try:
+        if not str(turn_id or ""):
+            return "key_session_only"
+        if len(_VERDICTS) >= _VERDICT_MAX:
+            return "evicted_at_bound"
+        return "absent_cleared_or_cross_process"
+    except Exception:  # noqa: BLE001
+        return "absent_unknown"

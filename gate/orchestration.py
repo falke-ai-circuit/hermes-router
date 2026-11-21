@@ -2464,10 +2464,23 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _cl_ask = _hub().state.get_last_seen(session_id) or ""
                 except Exception:  # noqa: BLE001 — no ask, no match
                     _cl_ask = ""
-                _cl_blocked, _cl_kind, _cl_reason = _cl.classify(
-                    ask=_cl_ask,
-                    domain=_att_parsed.get("domain") or "",
-                    type_=_att_parsed.get("type") or "")
+                # B/D: one verdict per (session, turn). Reuse the seam's own
+                # verdict when one exists; otherwise classify ONCE here and
+                # persist it for the delivery edge to read.
+                _cl_tid = str(context.get("turn_id") or "")
+                _cl_prev = _cl.read_verdict(session_id, _cl_tid)
+                if _cl_prev is not None:
+                    _cl_blocked = bool(_cl_prev.get("blocked"))
+                    _cl_kind = str(_cl_prev.get("kind") or "")
+                    _cl_reason = str(_cl_prev.get("reason") or "")
+                else:
+                    _cl_blocked, _cl_kind, _cl_reason = _cl.classify(
+                        ask=_cl_ask,
+                        domain=_att_parsed.get("domain") or "",
+                        type_=_att_parsed.get("type") or "")
+                    _cl.note_verdict(session_id, _cl_tid, _cl_blocked,
+                                     _cl_kind, _cl_reason,
+                                     "seam_" + _cl.verdict_path(_cl_tid))
             except Exception:  # noqa: BLE001 — fail CLOSED, never crash
                 _cl_blocked, _cl_kind, _cl_reason = True, "guard_error", "guard_error"
                 try:

@@ -733,43 +733,86 @@ def _closed_line_hit(kwargs) -> str:
     `unjudged` and the ledger counts it. Never raises.
     """
     try:
-        from ..features.detection import compound_split as _cs
-
-        _hit = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
-        if _hit:
-            # Another detector's class name is translated into the classifier's
-            # canonical token — it must not define a second vocabulary.
-            from ..features.detection import closed_line as _cl_c
-            return _cl_c.canonical_kind(_hit)
-        # M53-03 R20: the guard's verdict must reach the DELIVERY EDGE, not
-        # just the rule dispatch. Suppressing `_rule_replace` is not enough —
-        # `core/delivery_decision` decides delivery independently, and P0 D1
-        # is the only rule that cannot be overridden by a lane render.
-        #
-        # ARMED-ONLY (owner ruling): "" is unarmed and unarmed profiles keep
-        # byte-identical behaviour, so this branch is unreachable when the
-        # profile is not armed.
-        #
-        # Never vetoes an ordinary delivery: it only ADDS a hit when the
-        # armed guard classifies the ask as closed. An error here returns ""
-        # (no hit) — D1 holding a benign turn would be an outage.
         from ..passes import dispatcher_pre as _pre
 
-        if not _pre.attestation_armed():
-            return ""
-        from ..features.detection import attestation as _attm
-        from ..features.detection import closed_line as _cl
+        _armed = bool(_pre.attestation_armed())
+    except Exception:  # noqa: BLE001 — an unreadable arming reads as unarmed
+        _armed = False
 
-        _sid = str(kwargs.get("session_id") or "")
-        _tid = str(kwargs.get("turn_id") or "")
+    if not _armed:
+        # UNARMED: byte-identical behaviour. No verdict store is consulted and
+        # no guard exception can ever claim a turn.
+        try:
+            from ..features.detection import compound_split as _cs
+            from ..features.detection import closed_line as _cl_u
+
+            _hard = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
+            return _cl_u.canonical_kind(_hard) if _hard else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    from ..features.detection import closed_line as _cl
+
+    _sid = str(kwargs.get("session_id") or "")
+    _tid = str(kwargs.get("turn_id") or "")
+
+    # B: ONE verdict per turn. If the seam already classified, read it — do not
+    # classify again from a different ask-recovery path.
+    _prev = _cl.read_verdict(_sid, _tid)
+    if _prev is not None:
+        return str(_prev.get("kind") or "") if _prev.get("blocked") else ""
+
+    # ABSENCE IS LOUD: a missing verdict must be a readable counter, never a
+    # silent reopen of the D5 lane hole.
+    try:
+        _lg_a = _hub_log_route()
+        if _lg_a is not None:
+            _lg_a("POST", event_detail="closed_line_verdict_absent",
+                  reason=_cl.absence_reason(_sid, _tid),
+                  key_path=_cl.verdict_path(_tid),
+                  session_id=_sid)
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
+
+    # hard_closed_class is an ADDITIONAL contributor — a hit is still a hit —
+    # never the only source: it fires on 6 of the 28 closed lines.
+    try:
+        from ..features.detection import compound_split as _cs
+
+        _hard = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
+    except Exception:  # noqa: BLE001
+        _hard = ""
+    _kind_h = _cl.canonical_kind(_hard) if _hard else ""
+
+    try:
+        from ..features.detection import attestation as _attm
+
         _decl = _attm.read_declaration(_sid, _tid) if _tid else {}
         _blocked, _kind, _reason = _cl.classify(
             _ask_for(kwargs),
             str((_decl or {}).get("domain") or ""),
             str((_decl or {}).get("type") or ""))
+        if _kind_h and not _blocked:
+            # a hard-detector hit can only ADD a hold, never remove one
+            _blocked, _kind, _reason = True, _kind_h, _cl.reason_for(_kind_h)
+        # D: the key contract is explicit — session-only when turn_id is empty,
+        # never silently reported as an attested-turn verdict.
+        _cl.note_verdict(_sid, _tid, _blocked, _kind, _reason,
+                         "edge_" + _cl.verdict_path(_tid))
         return str(_kind or "") if _blocked else ""
-    except Exception:  # noqa: BLE001 — a gap opens no line and closes none
-        return ""
+    except Exception:  # noqa: BLE001 — A: fail CLOSED on the ARMED path
+        _cl.note_verdict(_sid, _tid, True, "guard_error", "guard_error",
+                         "edge_error")
+        try:
+            _lg_e = _hub_log_route()
+            if _lg_e is not None:
+                _lg_e("POST", event_detail="closed_line_guard_error",
+                      reason="guard_error", where="delivery_edge",
+                      key_path=_cl.verdict_path(_tid),
+                      session_id=_sid)
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
+        return "guard_error"
 
 
 def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0,
