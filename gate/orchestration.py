@@ -983,8 +983,11 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     # claim record, so every later pass and the audit gate see
                     # delivery, not licence).
                     try:
+                        # M53-03 B: a failure notice is not a delivered
+                        # render — claiming one manufactures the very seam
+                        # failure the next pass reports.
                         _hub()._route_gate.mark_claim_produced(
-                            session_id, "render_delivered",
+                            session_id, claim_reason_for(rendered),
                             rendered_chars=len(str(rendered or "")))
                     except Exception:  # noqa: BLE001 — observability only
                         pass
@@ -1111,6 +1114,21 @@ def _aux_user_message(*args: Any, **kwargs: Any) -> str:
 
 def _semantic_stage(*args: Any, **kwargs: Any) -> "tuple[Optional[str], List[str]]":
     return _hub()._dispatcher_post._semantic_stage(*args, **kwargs)
+
+
+def claim_reason_for(rendered) -> str:
+    """M53-03 B: the honest claim reason for a would-be render.
+
+    A failure NOTICE is not a delivered render; claiming one manufactures the
+    transcript_divergence the next pass reports. Pure and total.
+    """
+    try:
+        from ..core import delivery_integrity as _dint
+        if str(rendered or "").startswith(_dint.FAILURE_PREFIX):
+            return "render_failed"
+    except Exception:  # noqa: BLE001
+        pass
+    return "render_delivered"
 
 
 def _is_refusal_shaped(text: str) -> bool:

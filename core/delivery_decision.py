@@ -99,7 +99,11 @@ REASON_CLOSED_LINE = "closed_line"
 REASON_MARKER_VOID = "marker_void"
 REASON_GATE_UNCONSULTED = "gate_not_consulted"
 REASON_GATE_UNAVAILABLE = "gate_unavailable_after_consult"
+#: M53-03: the lane produced NO render; the original body stands. Distinct from
+#: lane_delivered so a reader cannot mistake "nothing was substituted" for a
+#: substitution.
 REASON_LANE_DELIVERED = "lane_delivered"
+REASON_LANE_NO_RENDER = "lane_no_render"
 REASON_NO_LANE = "no_admissible_lane"
 REASON_MARKER_VIOLATION = "marker_violation"
 REASON_SEAM_FAILURE = "seam_failure"
@@ -485,6 +489,11 @@ class DeliveryFacts:
     #: decision read `source=main, strip_bytes=0` and the host shipped its own
     #: pre-strip copy. Folded into the decision's strip count below.
     prior_strip_bytes: int = 0
+    #: M53-03: the assimilation acceptance token for this turn ("" when
+    #: unknown). Says WHOSE bytes the user read: "<source>:<reason>". A token
+    #: naming `original:*` means the lane produced no render, however the lane
+    #: body was threaded through — so D5 must not claim SOURCE_LANE.
+    lane_acceptance: str = ""
 
 
 @dataclass(frozen=True)
@@ -760,6 +769,17 @@ def decide(facts: Any) -> Decision:
             pass
         if lane_ok and _admissible(lane_chosen) and not carries_marker(
                 lane_chosen, quoted_spans(ask)):
+            # M53-03: WHOSE bytes are these? The acceptance token is read, not
+            # recomputed. `original:*` means the chain produced nothing and the
+            # original body stands — claiming SOURCE_LANE there is a lineage
+            # lie. An EMPTY token keeps today's behaviour exactly: unknown must
+            # never silently become "no render".
+            _accept = str(getattr(facts, "lane_acceptance", "") or "")
+            if _accept.startswith("original:"):
+                diag["lane_acceptance"] = _accept
+                return Decision(DELIVER_LANE, D5, REASON_LANE_NO_RENDER,
+                                SOURCE_MAIN,
+                                lane_strip + lane_blessed_chars, diag, lane_chosen)
             return Decision(DELIVER_LANE, D5, REASON_LANE_DELIVERED, SOURCE_LANE,
                             lane_strip + lane_blessed_chars, diag, lane_chosen)
 

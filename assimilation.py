@@ -363,6 +363,29 @@ ACCEPT_REASONS = frozenset({
 
 DEFAULT_ACCEPTANCE = "post_transform:delivered_render"
 
+#: M53-03: the acceptance token EMITTED for a session's latest turn. The
+#: delivery decision READS this — it must never recompute it, or the row and the
+#: decision can tell different stories.
+_LAST_ACCEPTANCE: dict = {}
+
+
+def _note_acceptance(session_id: Any, token: str) -> None:
+    try:
+        if session_id and token:
+            _LAST_ACCEPTANCE[str(session_id)] = str(token)
+            while len(_LAST_ACCEPTANCE) > 512:
+                _LAST_ACCEPTANCE.pop(next(iter(_LAST_ACCEPTANCE)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def last_acceptance(session_id: Any) -> str:
+    """The acceptance token this session last emitted ('' when unknown)."""
+    try:
+        return str(_LAST_ACCEPTANCE.get(str(session_id or ""), "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
 
 def acceptance_token(source: Any, reason: Any = "delivered_render") -> str:
     """"<source>:<reason>" — '' when either token is outside the closed sets.
@@ -509,6 +532,7 @@ def report_delivery(session_id: str, acceptance: Any, *,
                  acceptance=token, errors=";".join(errors)[:300])
             return {}
         src, rsn = parse_acceptance(token)
+        _note_acceptance(session_id, token)
         _log(session_id, "uncensored_assimilation", lane="uncensored",
              schema=str(env.get("schema") or ""), leg=str(leg or ""),
              acceptance=token, accept_source=src, accept_reason=rsn,

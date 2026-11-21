@@ -880,8 +880,14 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
             seam_failure = "transcript_divergence"
     except Exception:  # noqa: BLE001 — recognition never blocks a turn
         seam_failure = ""
+    try:
+        from .. import assimilation as _asm
+        _accept = _asm.last_acceptance(sid)
+    except Exception:  # noqa: BLE001 — an unreadable token is "" (unknown)
+        _accept = ""
     return _dd.DeliveryFacts(
         seam_failure=seam_failure,
+        lane_acceptance=_accept,
         ask_text=_ask_for(kwargs),
         entered_body=str(entered or ""),
         body_class=_pg.classify_original(clean),
