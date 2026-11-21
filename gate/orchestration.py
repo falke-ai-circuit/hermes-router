@@ -2684,50 +2684,49 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001 — the metric never blocks
                 pass
         # ------------------------------------------------------------------
-        # M53-06 §2 — INDEPENDENT ROUTING (owner ruling 2026-11-21).
+        # M53-06 §2 (REVISED) — THE TRIGGER IS MECHANICAL. NO JUDGEMENT.
         #
-        # The router routes independently of the main model's cooperation.
-        # When the body IS a denial (`action_denial`) and the PRE gate flagged
-        # the ask in an unc domain, the unc lane renders and its render
-        # REPLACES the delivered body — even on a turn where the model never
-        # attested `declined` (rule 1) and rule 4 was downgraded by the
-        # attestation enforcement above. That downgrade is model-cooperation
-        # authority, and this ruling removes it from the routing question.
+        # There is NO closed domain, no acceptability test and no content
+        # classifier on this path. The rule table below is the only decision,
+        # plus exactly one clause beside it:
         #
-        # PRECEDENCE DOES NOT MOVE: the closed-line verdict is read FIRST and
-        # a blocked ask is never routed here (D1 holds, deliver unchanged).
-        # `domain_gate` is a citation surface, never the authorisation; the
-        # authorisation is `closed_line.classify()` returning not-blocked.
+        #   ROUTE         attested type == declined              (existing, rule 1)
+        #   ROUTE         type undefined / empty / absent
+        #                 AND PRE detected an unc domain          (new, below)
+        #   DO NOT ROUTE  type in {produced, partial, blocked, clarify}
         #
-        # Unarmed profiles never reach this block (`_cl_armed` is False), so
-        # their behaviour is byte-identical.
+        # "PRE detected" is the spec's own AND conjunct (§2: "the AND clause is
+        # load-bearing") — an abstain / not_flagged / never-landed verdict does
+        # NOT route. For an attested denial the gate is never read at all.
+        #
+        # No `closed_line.classify()` call exists here: that judgement was in
+        # the superseded §1c/§2 and is deleted. The pre-existing M53-03 guard
+        # still runs ABOVE this block on armed turns; it is untouched and is
+        # reported, not extended.
         # ------------------------------------------------------------------
         _route_independent = False
-        if (_cl_armed and not _rule_replace
-                and str(_gate_verdict or "") == "flagged"
-                and str(_denial_class or "") == "action_denial"):
-            _gate_domain = (str((_gate_row or {}).get("domain") or "")
-                            if isinstance(_gate_row, dict) else "")
-            if _cl_blocked:
-                try:
-                    _hub()._log_route(
-                        "POST", event_detail="route_independence_suppressed",
-                        reason="closed_line", kind=str(_cl_kind or ""),
-                        domain=_gate_domain, replace_ms=0, render_emitted=0,
-                        session_id=session_id)
-                except Exception:  # noqa: BLE001 — telemetry only
-                    pass
-            else:
+        if _att_armed and not _rule_replace:
+            _att_type_t = str(_att_parsed.get("type") or "")
+            if not _att_type_t and str(_gate_verdict or "") == "flagged":
+                # No attestation type: the model did not speak to its own
+                # output. PRE detected an unc domain, so the default is to
+                # route — the render replaces the body.
                 _rule_action = "route"
                 _rule_replace = True
                 _route_independent = True
                 try:
                     _hub()._log_route(
-                        "POST", event_detail="route_independence_applied",
+                        # M53-06c: the POST default-route decision has its OWN
+                        # event name. The PRE skip sites keep
+                        # `route_independence_applied` with reason=<site>; one
+                        # name for both made "the skip was bypassed" and "the
+                        # turn was routed" indistinguishable in the log.
+                        "POST", event_detail="route_default_applied",
                         route_independence_applied=1,
-                        reason="denial_in_unc_domain",
-                        domain=_gate_domain, replace=1,
-                        session_id=session_id)
+                        reason="denial",
+                        domain=str((_gate_row or {}).get("domain") or "")
+                        if isinstance(_gate_row, dict) else "",
+                        replace=1, session_id=session_id)
                 except Exception:  # noqa: BLE001 — telemetry only
                     pass
         # M35-01: record WHICH row decided this turn and the facts it consumed.

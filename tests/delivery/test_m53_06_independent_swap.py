@@ -135,11 +135,24 @@ def test_m1_flagged_skip_turn_reaches_the_decision_edge(rows, monkeypatch):
     assert len(decided) == 1, decided
     assert decided[0].get("case_id") in ("D1", "D2", "D3", "D4", "D5", "D6")
     assert decided[0].get("task_id"), "the POST row must carry the join key"
-    # the skip was converted to a LOG-ONLY record, named by its site
-    grants = _events(rows, "route_independence_applied")
-    assert grants, "no route_independence_applied row: the skip still returned"
-    assert grants[-1].get("reason") == "clear_simple", grants[-1]
-    assert out is None, "a compliant body still passes through untouched"
+
+    # M53-06c: assert the PRE SKIP-SITE row itself. Filtering by the shared
+    # reason-less name let a later POST routing row answer this assertion —
+    # the exact collision the split removes.
+    skip_sites = {"clear_simple", "skip", "pre_no_impact", "no_impact",
+                  "consult_cooldown", "cooldown"}
+    grants = [f for f in _events(rows, "route_independence_applied")
+              if str(f.get("reason") or "") in skip_sites]
+    assert grants, "no PRE skip-site row: the skip still returned"
+    assert any(str(f.get("reason") or "") == "clear_simple" for f in grants), grants
+
+    # the POST default-route decision is a DIFFERENT event, and it fired here
+    defaulted = _events(rows, "route_default_applied")
+    assert any(str(f.get("reason") or "") == "denial" for f in defaulted), defaulted
+    # Delivery precedence is UNCHANGED: a compliant body still wins D4, so the
+    # route firing is a decision event, not a guarantee that its render ships.
+    assert out is None, "D4 still delivers the compliant body"
+
 
 
 # ---------------------------------------------------------------------------
