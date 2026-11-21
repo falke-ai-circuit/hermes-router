@@ -2439,6 +2439,56 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # edge, not the table, says whether the render is delivered.
         _rule_replace = _rule_action == "route"
         # ------------------------------------------------------------------
+        # M53-03 CLOSED-LINE GUARD. Answers ONE question before a lane render
+        # may REPLACE the agent's own body: is this ask inside a closed line?
+        # It runs BEFORE the replacement is decided — a guard after composition
+        # has already spent the render and can still leak it.
+        #
+        # Only consulted when a replace is otherwise about to happen, so the
+        # guard cannot change any turn that delivers normally. Deterministic:
+        # no model call exists anywhere on this path.
+        #
+        # FAIL-CLOSED: if the guard errors, do NOT replace; the agent's body
+        # ships. The attestation row and the decision row are still written
+        # below and after — "detect all" stands: this changes the ACTION only.
+        # ------------------------------------------------------------------
+        if (_rule_replace or _declaration == "true") and _att_state == _ATTESTED_ROUTING:
+            try:
+                from ..features.detection import closed_line as _cl
+
+                # The ask comes from the middleware's recorded user message,
+                # not from `original_user_message`: that name is bound LATER
+                # in this function, and referencing it here raised NameError
+                # inside the fail-open — which fail-closed every turn.
+                try:
+                    _cl_ask = _hub().state.get_last_seen(session_id) or ""
+                except Exception:  # noqa: BLE001 — no ask, no match
+                    _cl_ask = ""
+                _cl_blocked, _cl_kind, _cl_reason = _cl.classify(
+                    ask=_cl_ask,
+                    domain=_att_parsed.get("domain") or "",
+                    type_=_att_parsed.get("type") or "")
+            except Exception:  # noqa: BLE001 — fail CLOSED, never crash
+                _cl_blocked, _cl_kind, _cl_reason = True, "guard_error", "guard_error"
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="closed_line_guard_error",
+                        reason="guard_error", session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+            if _cl_blocked:
+                _rule_replace = False
+                _rule_action = "deliver"
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="closed_line_blocked",
+                        kind=_cl_kind, reason=_cl_reason,
+                        domain=str(_att_parsed.get("domain") or ""),
+                        replace_ms=0, render_emitted=0,
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
+        # ------------------------------------------------------------------
         # M53-02 ENFORCEMENT (spec §2.b). On an ARMED turn a missing or
         # malformed attestation NEVER falls through to the four-class
         # classifier: a missing tag is a compliance defect, not evidence of
