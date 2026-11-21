@@ -90,13 +90,22 @@ def test_aux_none_never_freezes_a_cue_bearing_render_ask(aux_dead):
     assert res["reason"] == "aux_none"
 
 
-def test_aux_alive_path_is_unchanged(aux_alive):
-    """With an aux answer the deterministic table is never consulted."""
+def test_aux_alive_label_stands_on_a_cue_miss(aux_alive):
+    """M53-07 supersession: the aux label is not overruled by an English cue.
+
+    This ask carries no fraud cue, and before M53-07 that cue miss VETOED the
+    label (`unconfirmed:no_fraud_deception_cue`). A cue miss is absence of
+    evidence, so the label now stands and the row names which evidence carried
+    it. The invariant this test protects is unchanged and still asserted: the
+    DETERMINISTIC TABLE DID NOT NAME THIS ASK (`deterministic_domain == ""`),
+    i.e. the aux label was not replaced by a deterministic guess.
+    """
     res = dg.evaluate(BENIGN_ASK, session_id="s-m36-33-alive")
     assert res["domain"] == "fraud_deception"
-    # The aux label is unconfirmed by this ask's cues, exactly as before M36-33.
-    assert res["gate"] == dg.GATE_NOT_FLAGGED
-    assert res["reason"].startswith("unconfirmed:no_fraud_deception_cue")
+    assert res["gate"] == dg.GATE_FLAGGED
+    assert res["reason"] == "in_domain"
+    assert res["claim"] == "label", res          # carried by the aux label alone
+    assert dg.deterministic_domain(BENIGN_ASK) == ""
 
 
 def test_empty_ask_is_still_abstain(aux_dead):
