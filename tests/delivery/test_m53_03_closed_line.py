@@ -458,3 +458,22 @@ def test_t15_missing_verdict_still_holds_and_is_logged(rows, monkeypatch):
     assert absent, "a missing verdict must be logged, not silently reopened"
     assert absent[-1].get("reason")
     assert absent[-1].get("key_path") in ("turn", "session_only")
+
+
+# ---------------------------------------------------------------------------
+# T16 (item E) — delivered_chars is a MEASUREMENT of the shipped body, and the
+# replacement fact rides its own field. Asserted on a REAL replacement path.
+# ---------------------------------------------------------------------------
+def test_t16_replaced_turn_reports_shipped_length(rows):
+    out, venice = _run("m53-03-t16", KEYLOGGER_ASK, domain="cyber_offensive")
+    assert venice.called, "the keylogger ask must route (not a closed line)"
+
+    turn = _events(rows, "attestation_turn")
+    assert turn, "an armed turn must write its row"
+    row = turn[-1]
+    shipped = out if isinstance(out, str) and out else RENDER
+    assert row["rule_replaced"] == 1
+    assert row["delivered_chars"] == len(shipped), (
+        "delivered_chars must measure the shipped body: %r vs %r"
+        % (row["delivered_chars"], len(shipped)))
+    assert row["delivered_chars"] > 0

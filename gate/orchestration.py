@@ -3395,6 +3395,30 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             system_prompt=_system_prompt,
             session_id=session_id,
         )
+        # E: the attestation row is written BEFORE the render exists, so on a
+        # replaced turn it could only measure the draft. Once the shipped
+        # render is known, re-emit the row with the ACTUAL delivered length
+        # (delivered_chars is a measurement; rule_replaced carries the fact).
+        if _att_armed and _rule_replace and str(rendered or "").strip():
+            try:
+                from ..features.detection import attestation as _attm_e
+                _rec_e = _attm_e.turn_fields(
+                    pre_domain=_att_pre_domain,
+                    agent_domain=_att_parsed.get("domain") or "",
+                    agent_type=_att_parsed.get("type") or "",
+                    retry=_att_retry, reason=_att_reason,
+                    route_fired=_att_route_fired, replace=1,
+                    envelope_emitted=_att_envelope,
+                    delivered_chars=len(str(rendered)),
+                    draft_chars=len(_att_entry_text or ""),
+                    channel=_att_channel,
+                    channel_reason=_att_channel_reason,
+                    rule_replaced=1)
+                _hub()._log_route(
+                    "POST", event_detail="attestation_turn",
+                    armed=1, corrected=1, **_rec_e, session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         if _render_chain_used:
             # Chain + budget ride the row so a replacement is auditable even
             # when it produced nothing.
