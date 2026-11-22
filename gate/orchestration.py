@@ -2709,6 +2709,39 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # turn `replace` (rule 1 routes on `declined` alone, which is exactly
         # the path the owner's contract replaces): denial, softening and
         # unknown all take the same render-swap route here.
+        # M53-27 DIAGNOSTIC: WHICH CONJUNCT FAILED?
+        # Rows that route carry a `route` event; every D6 drop carries none,
+        # so the defect is the route DECISION, not the lane. The predicate is
+        # `_att_armed and _detected and outcome != compliant`, and the record
+        # never said which conjunct was false. This line is emitted BEFORE the
+        # armed gate so an unarmed turn is still attributable - instrumenting
+        # after it was the mistake that produced two dead diagnostics.
+        try:
+            _att_type_d = str(_att_parsed.get("type") or "")
+            try:
+                from ..features.detection.attestation import (
+                    response_outcome as _ro_d,
+                    OUTCOME_COMPLIANT as _OC_d,
+                )
+                _outcome_d = _ro_d(_att_type_d)
+            except Exception:  # noqa: BLE001
+                _outcome_d, _OC_d = "unknown", "compliant"
+            _hub()._log_route(
+                "POST", event_detail="route_predicate_eval",
+                armed=int(bool(_att_armed)),
+                detected=int(bool(_unc_domain)),
+                gate_row_present=int(isinstance(_gate_row, dict)),
+                gate_domain=str((_gate_row or {}).get("domain") or "")
+                if isinstance(_gate_row, dict) else "",
+                gate_reason=str((_gate_row or {}).get("reason") or "")
+                if isinstance(_gate_row, dict) else "",
+                att_type=_att_type_d[:16],
+                outcome=str(_outcome_d or "")[:16],
+                would_route=int(bool(_att_armed and _unc_domain
+                                     and _outcome_d != _OC_d)),
+                session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         if _att_armed:
             _att_type_t = str(_att_parsed.get("type") or "")
             # M53-06e: the conjunct is "the gate DETECTED an unc domain", not
