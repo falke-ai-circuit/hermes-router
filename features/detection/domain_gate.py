@@ -891,7 +891,13 @@ def domain_detected(row: Optional[dict]) -> bool:
         if not domain or domain not in UNC_DOMAINS:
             return False
         reason = str(row.get("reason") or "").strip().lower()
-        return reason == "in_domain" or reason.startswith("unconfirmed")
+        # M53-22: a DETERMINISTIC detection counts. The sync cue layer names a
+        # family before the aux worker can land (`det_<family>`) precisely so a
+        # POST that beats the worker still sees a detected domain; refusing that
+        # reason re-introduced the very gap the write above closes.
+        return (reason == "in_domain"
+                or reason.startswith("unconfirmed")
+                or reason.startswith("det_"))
     except Exception:  # noqa: BLE001
         return False
 
@@ -960,9 +966,30 @@ def start(session_id: str, ask: str, *, log: Optional[Callable[..., Any]] = None
         if not sid or not text.strip():
             return
         lane_id = _lane_registry.lane_for_pre_question(PRE_QUESTION) or ""
-        _state.mark_pre_domain(sid, text, lane=lane_id, question=PRE_QUESTION,
-                               gate=GATE_PENDING, state=GATE_PENDING,
-                               criterion=extract_criterion(text))
+        # M53-22: DETERMINISTIC VERDICT FIRST.
+        # The aux worker is asynchronous, so a POST that beat it read `pending`,
+        # `read()` turned that into None, `verdict()` turned None into `abstain`,
+        # and `domain_detected` was False -- the turn was recorded as
+        # `not_consulted`. Measured: a csam ask reached the POST seam with NO
+        # gate row at all while `deterministic_domains(ask)` named
+        # `sexual_explicit` synchronously and for free.
+        # Detection must not depend on an aux call landing in time, so the
+        # deterministic cue layer writes the verdict the turn carries. The
+        # worker still overwrites it with the finer verdict if/when it lands.
+        try:
+            _det = deterministic_domains(text)
+        except Exception:  # noqa: BLE001 — a cue read never breaks the gate
+            _det = ()
+        if _det:
+            _dom = str(_det[0])
+            _state.mark_pre_domain(sid, text, lane=lane_id, question=PRE_QUESTION,
+                                   gate=GATE_FLAGGED, state=GATE_FLAGGED,
+                                   domain=_dom, reason="det_" + _dom,
+                                   criterion=extract_criterion(text))
+        else:
+            _state.mark_pre_domain(sid, text, lane=lane_id, question=PRE_QUESTION,
+                                   gate=GATE_PENDING, state=GATE_PENDING,
+                                   criterion=extract_criterion(text))
         try:
             threading.Thread(target=_worker, args=(sid, text, log),
                              name="domain-gate", daemon=True).start()
