@@ -636,6 +636,66 @@ def _lane_request_from_messages(request: Any) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# M53-08 — INTENT, not vocabulary. The guard may fire only on an explicit
+# request to ROUTE, made in the user's own turn.
+#
+# Measured: ~60 fires in one conductor session, every one on prose that merely
+# NAMED the lane — a log path (uncensored-router.log), a test name, the gate's
+# own fields (lane=uncensored-render, route_fired), or the agent DISCUSSING
+# routing. Each fire injected an instruction that would fabricate a lane
+# request and write a false ledger row — the defect this lane exists to stop.
+#
+# The predicate is semantic: an IMPERATIVE that asks for this turn's answer to
+# be produced by the lane, on the same line as the lane it names. Anything that
+# quotes, reports, analyses or describes is inert, and ambiguity does NOT fire.
+# ---------------------------------------------------------------------------
+_ROUTE_IMPERATIVE_HEADS = (
+    "route this", "route it", "route the", "route my", "route our",
+    "send this to", "send it to", "hand this to", "hand it to",
+    "answer this with", "answer this using", "answer it with",
+    "have the unc", "have unc", "have shadow", "have the shadow",
+    "have higher", "have the higher", "have frontier",
+    "ask shadow", "ask the shadow", "ask higher", "ask the higher",
+    "use the unc", "use uncensored", "use the shadow", "use higher",
+    "switch this turn", "switch the turn", "give this to", "give it to",
+)
+_LANE_WORDS = ("unc", "uncensored", "shadow", "higher self", "higher self",
+               "frontier", "lane")
+# Anything that marks a REPORT, a path, a field dump, code or a test name.
+_ROUTE_REPORT_MARKERS = (
+    "did not fire", "didn't fire", "no lane", "banner", "route_fired",
+    "route_default", "gate=", "domain_gate", ".py", "/opt/", "test_",
+    "=", "`", "#", "->", "assert", "log", "diff", "commit", "brief",
+)
+
+
+def explicit_routing_request(content: str) -> bool:
+    """True only for an explicit imperative to route THIS turn (M53-08).
+
+    Judged line-wise on the directive surface (quoted/fenced lines already
+    inert). A line must START with a routing imperative AND name the lane on
+    that same line; a line carrying any report/path/field marker is skipped,
+    so "the unc lane did not fire", "lane=uncensored-render" and
+    "read domain_gate.py" can never fire. Ambiguity does not fire: a missed
+    hint costs nothing, a false fire injects a false instruction.
+    """
+    try:
+        for raw in _directive_lines(content):
+            norm = _normalize_directive_line(raw)
+            if not norm:
+                continue
+            if any(mark in norm for mark in _ROUTE_REPORT_MARKERS):
+                continue
+            if not any(word in norm for word in _LANE_WORDS):
+                continue
+            if any(norm.startswith(head) for head in _ROUTE_IMPERATIVE_HEADS):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 — ambiguity is silence
+        return False
+
+
 def lane_request_for_turn(session_id: str, content: str = "",
                           model: str = "",
                           request: Any = None) -> Optional[Dict[str, Any]]:
@@ -694,11 +754,31 @@ def bare_call_guard(content: str, session_id: str, model: str = "",
         log = _pkg_fn("_log_route")
     except Exception:  # noqa: BLE001
         log = None
+    # M53-08: INTENT is decisive. A structural record alone is not enough —
+    # a stale turn-claim / registry entry can outlive the turn that made it —
+    # so the guard fires only when the USER'S OWN TURN carries an explicit
+    # routing imperative, or when the router's own `request_routing` tool call
+    # was emitted in THIS turn (that call IS a request by construction).
+    _explicit = explicit_routing_request(content)
+    _origin = str((request_rec or {}).get("origin") or "")
+    # A router_control request_routing ACTION is a request by construction
+    # (tool call, or its registered claim). A bare turn-claim is keyed on the
+    # content hash and can outlive the turn that made it, so it is not enough
+    # on its own — that path produced the vocabulary fires.
+    if request_rec is not None and not _explicit and _origin not in (
+            "request_routing_tool_call", "claim_registry"):
+        request_rec = None
+    if _explicit and request_rec is None:
+        # The USER'S OWN TURN asked for the route. That is the request; no
+        # structural record needs to have survived for it to count.
+        request_rec = {"origin": "explicit_user_request", "lane": "",
+                       "source": SOURCE_DECLARED_USER}
     if request_rec is None:
         if log is not None:
             try:
                 log("PRE", event_detail="bare_call_guard_skipped",
                     reason="no_routing_request", word_evidence=evidence,
+                    intent_evidence=_explicit,
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — telemetry never breaks a turn
                 pass
