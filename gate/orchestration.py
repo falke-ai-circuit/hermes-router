@@ -3517,6 +3517,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — telemetry only
                 pass
+        # M53-26 DIAGNOSTIC: WHAT DID THE LANE RETURN?
+        # 15 detected turns ended as D6 `no_admissible_lane` in the 82-case
+        # canary and the record could not say whether the lane was never
+        # called or was called and returned nothing. Those are opposite
+        # defects, and the downstream `withheld` row (written AFTER D6) made
+        # it worse by looking like a cause. One line here separates them:
+        # absent this event, the render block was never entered.
+        try:
+            _hub()._log_route(
+                "POST", event_detail="lane_render_result",
+                rendered_chars=len(str(rendered or "")),
+                rendered_empty=0 if str(rendered or "").strip() else 1,
+                route_independent=int(bool(_route_independent)),
+                rule_replace=int(bool(_rule_replace)),
+                refusal_exhausted=1 if _rep.get("refusal_exhausted") else 0,
+                rejected_count=len(_rep.get("rejected") or []),
+                chain=str(_render_chain_used or "")[:40],
+                session_id=session_id)
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         # ------------------------------------------------------------------
         # M53-06 §3/§4 — SWAP RECORDED, ENVELOPE WRITTEN OUT OF BAND.
         #
