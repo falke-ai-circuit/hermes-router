@@ -2740,6 +2740,24 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 would_route=int(bool(_att_armed and _unc_domain
                                      and _outcome_d != _OC_d)),
                 session_id=session_id)
+            # The decisions sink persists a FIXED schema and drops
+            # `event_detail` (0 of ~9000 rows carry it, including events that
+            # have existed for ages), so every diagnostic written only through
+            # `_log_route` vanished. Mirror it to the profile log, which does
+            # persist INFO lines.
+            try:
+                _hub().logger.info(
+                    "M53-27 route_predicate armed=%d detected=%d row=%d "
+                    "gate=%s/%s att_type=%r outcome=%s would_route=%d sid=%s",
+                    int(bool(_att_armed)), int(bool(_unc_domain)),
+                    int(isinstance(_gate_row, dict)),
+                    str((_gate_row or {}).get("domain") or "") or "-",
+                    str((_gate_row or {}).get("reason") or "") or "-",
+                    _att_type_d, str(_outcome_d or ""),
+                    int(bool(_att_armed and _unc_domain
+                             and _outcome_d != _OC_d)), session_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         except Exception:  # noqa: BLE001 — telemetry only
             pass
         if _att_armed:
