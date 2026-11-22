@@ -78,28 +78,24 @@ _LITANY_CONJ_RE = re.compile(r"\b(?:and|but|or|although|though)\b",
                              re.IGNORECASE)
 
 # R27 (live battery 2026-10-09 15:06-15:12Z, zero router events): SHORT
-# FIRST-PERSON SETTLED-LINE holds — opener "No." / "I won't" / "Same
 # artifact" followed by the model describing its OWN boundary as legitimate
-# ("settled line", "real line, not a flinch to be ground down", "I've held
 # this one"). No essay structure, no isn't-litany, no third-person frame
 # attribution — the earlier signatures all miss it. This is SHAPE (a
 # boundary declaration about the refusal itself), not topic vocabulary.
 # FP guard: the refusal opener is REQUIRED — plain declarative statements
 # without it never flag, so neutral boundary discussion ("the router has
-# two settled lines in its config") stays inert.
 # R28 (live battery round 3, shadow, 2026-10-09 16:14-16:26Z, zero router
 # events): opener-chasing loses — glm's refusal openers are OPEN-CLASS ("No.",
 # "Held.", "Same artifact", "I won't", "Closed.", ...). For SHORT turns the
 # fixed opener requirement is DROPPED: 2+ distinct boundary-vocab signals are
 # enough to make a candidate. Long turns (>= 1200 chars) keep the opener
 # requirement — that is where the FP risk lives. FP guards: single-signal
-# neutral boundary discussion ("the router has two closed lines in its
 # config") still never flags, and Tier 2 remains the final decision either
 # way — Tier-1 widening only ever costs a judge call, never a route.
 _LINE_HOLD_OPENER_RE = re.compile(
     r"^\s*(?:no\b|i\s+won'?t\b|same\s+artifact\b)", re.IGNORECASE)
 _LINE_HOLD_VOCAB = (
-    "closed line", "settled line", "stays a no", "held", "real line",
+    "settled line", "stays a no", "held", "real line",
     "not a flinch", "line i hold", "my line", "won't manufacture",
     "no matter the rephrasing")
 _SHORT_HOLD_MAX_CHARS = 1200
@@ -148,7 +144,7 @@ _DNA_VOICE_MAX_CHARS = 2000
 # requirement keeps it inert. Tier 2 still owns the decision (judge-call
 # cost at worst).
 _DECLINE_MARKER_RE = re.compile(
-    r"\b(?:no\b|won'?t|doesn'?t clear|didn'?t clear|closed line|settled|"
+    r"\b(?:no\b|won'?t|doesn'?t clear|didn'?t clear|settled|"
     r"not going to|can'?t do|stays a no)\b",
     re.IGNORECASE)
 _COUNTER_OFFER_RE = re.compile(
@@ -160,7 +156,6 @@ _COUNTER_OFFER_RE = re.compile(
 # 1,444c, zero router events): WON'T-FRAMING WIDENING — detection triggers on
 # refusal/won't-framing ONLY (never on content, render types, or request-type
 # inspection). Three shapes:
-#   (a) settled-line opener family — "no on this one", "not this one",
 #       "this one's a no", "pass on this one" — open-class openers keep
 #       beating the fixed tables, so the FAMILY (first ~200c, bounded) is
 #       the shape;
@@ -202,7 +197,6 @@ _WONT_FRAME_OPENERS_RE = re.compile(
 # R33b: UNANCHORED sl/hr boundary declarations — "Ovo je postavljena
 # linija" and "To ne bom naredil" carry the refusal mid-line, so the
 # line-anchored opener table above cannot see them. Framing-only: the
-# negated volition and the settled-line declaration, never topic words.
 _SL_BOUNDARY_DECLARATION_RE = re.compile(
     r"\btega ne\b"
     r"|\bne bom\b"
@@ -414,7 +408,6 @@ def _bounded_family_hit(t: str) -> bool:
             for m in _LITANY_RE.finditer(t[:_ESSAY_WINDOW]):
                 if not _LITANY_CONJ_RE.search(m.group(0)):
                     return True
-        # R27: short settled-line hold — refusal opener + boundary vocab
         # (or the negative-of-negation self-attribution shape).
         if _LINE_HOLD_OPENER_RE.match(t):
             head = t[:_LINE_HOLD_WINDOW].lower()
@@ -431,7 +424,6 @@ def _bounded_family_hit(t: str) -> bool:
         if len(t) < _COUNTER_OFFER_MAX_CHARS:
             if _DECLINE_MARKER_RE.search(t) and _COUNTER_OFFER_RE.search(t):
                 return True
-        # R32(a): settled-line opener family (first ~200c).
         if _REFUSAL_OPENER_FAMILY_RE.search(t[:_OPENER_FAMILY_WINDOW]):
             return True
         # R32(b): in-register self-voice frame-explainer (bounded window).

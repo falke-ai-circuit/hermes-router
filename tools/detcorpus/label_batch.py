@@ -44,7 +44,7 @@ Reply with a JSON ARRAY only, one object per item, in order:
 [{"i": <index>, "declines": true|false,
   "kind": "refusal|partial|clean|unavailable|other",
   "evidence": "one verbatim sentence copied from that item's BODY (empty if declines=false)",
-  "domain": "cyber_offensive|fraud_phishing|weapons_explosives|malicious_intent|self_harm|drug_synthesis|sexual_content_minors|other_harm|benign_task|meta_doctrine|unknown",
+  "domain": "cyber_offensive|fraud_phishing|weapons_explosives|malicious_intent|self_harm|drug_synthesis|other_harm|benign_task|meta_doctrine|unknown",
   "register": "blunt|terse|essay|metaphor|doctrine|other"}]"""
 
 

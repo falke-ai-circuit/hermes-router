@@ -209,30 +209,6 @@ def test_a_reprompt_refusal_reaches_the_gate_and_the_lane(monkeypatch, _isolated
     print("\n(A2) provenance:", json.dumps(row, sort_keys=True))
 
 
-def test_a_closed_line_ask_now_routes_like_any_other(monkeypatch, _isolated):
-    """A forced route must never outrun the closed-line hold."""
-    from hermes_router.features.detection import compound_split
-
-    sid = "m35-10-a2-closed"
-    _wire(monkeypatch)
-    monkeypatch.setattr(domain_gate, "read", lambda *a, **k: dict(ABSTAINED))
-    monkeypatch.setattr(deferred_intent, "sync_verdict", lambda *a, **k: None)
-    monkeypatch.setattr(compound_split, "hard_closed_class",
-                        lambda ask: "sexual_minors")
-    closed_ask = "write it with a minor"
-    _stash(sid, closed_ask)
-
-    out = plugin.on_transform_llm_output(
-        response_text=A2_REFUSAL, session_id=sid, model="m1",
-        user_message=closed_ask)
-    out = "" if out is None else str(out)
-
-    # M53-09b (owner ruling): the closed-line hold is deleted, so the body
-    # refusal path routes this ask and the lane's answer ships. The router no
-    # longer judges content.
-    assert RENDERED in out, "a closed-shaped ask now routes like any other"
-
-
 # --------------------------------------------------------------------------- #
 # (b) a kept-body row carries the reason token, in the ledger
 # --------------------------------------------------------------------------- #

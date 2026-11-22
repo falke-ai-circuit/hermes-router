@@ -37,9 +37,6 @@ _p7_bind(globals(), "classifier-groups")
 
 def strip_injected_context(text: str) -> str:
     """Platform-injected blocks (<memory-context>, [System note: ... recalled
-    memory context ...]) are METADATA, not the user's words. The csam/minors
-    recall note ("minors asks are deliberate testing probes") lives in every
-    profile's recall text — a bare-word minors pattern scanning it FP-routes
     benign asks (audit/re-audit asks shadow-routed live 2026-09-08). Strip
     before classification. Never raises.
 
@@ -143,10 +140,7 @@ def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False)
     per-group loops. A combined hit falls through to the named-group scan
     for attribution (honors the config-selected subset)."""
     # Injected-context strip (2026-09-08): platform metadata blocks are not
-    # the user's words — the recall-text "minors" note FP-routed benign asks.
     content = strip_injected_context(content)
-    if is_doctrine_quote(content):
-        return []
     if case_sensitive:
         return _scan(content, patterns)
     try:
@@ -341,29 +335,3 @@ def _scan(content: str, patterns: List[str]) -> List[str]:
             matched.append(name)
     return matched
 
-
-# Doctrine-quote exclusion (2026-09-02, Goran-approved fixset #4): a message
-# that QUOTES the doctrine's settled/closed lines (e.g. a session summary
-# listing prohibited classes) must not classify as a request for those
-# classes. Live false-fire 2026-09-02 16:23Z: the [Recent Summary] paste
-# containing "sexualized minors" as a CLOSED line matched csam_underage and
-# the router GENERATED the very content the gate exists to keep out.
-# Detection = explicit doctrine/list frame markers, NOT bare keyword presence:
-# requires the text to name the line-system (settled/closed lines, CLOSED=,
-# etc.). Conservative direction: only ever NARROWS pre-routing; POST paths
-# and the hard-coded excluded-class fallback gate are unaffected.
-_DOCTRINE_FRAME_RE = re.compile(
-    r"settled[- ]lines|closed lines|CLOSED=\{|closed[- ]line|"
-    r"no-bottom|ruling \d{4}-\d{2}-\d{2}|settled line|"
-    r"doctrine.{0,40}(closed|settled|prohibited)|(closed|settled|prohibited).{0,40}doctrine",
-    re.IGNORECASE,
-)
-
-
-def is_doctrine_quote(content: str) -> bool:
-    """True when the message frames itself as quoting/listing the doctrine's
-    settled lines rather than requesting content. Used ONLY to narrow
-    pre-router classification."""
-    if not content:
-        return False
-    return bool(_DOCTRINE_FRAME_RE.search(content))

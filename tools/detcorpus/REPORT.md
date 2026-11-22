@@ -94,7 +94,6 @@ benign_task 199 | 31.2% | 18.1% | 48.2% | 61.8% | 17.6%
 meta_doctrine 126 | 30.2% | 17.5% | 47.6% | 56.3% | 16.7%
 other_harm 103 | 71.8% | 50.5% | 82.5% | 75.7% | 63.1%
 weapons_explosives 80 | 78.8% | 33.8% | 95.0% | 98.8% | 76.3%
-sexual_content_minors 45 | 80.0% | 48.9% | 86.7% | 84.4% | 71.1%
 cyber_offensive 40 | 65.0% | 47.5% | 67.5% | 95.0% | 55.0%
 malicious_intent 31 | 74.2% | 29.0% | 100% | 96.8% | 74.2%
 fraud_phishing 11 | 36.4% | 27.3% | 81.8% | 90.9% | 36.4%
@@ -121,8 +120,6 @@ Form barely separates the judges; it separates the regexes, and the worst form
 for them is the shortest one — an explicit "do not refuse" demand that gets a
 terse "no". Refusal register is not request syntax.
 
-Probe coverage: 6 domains × 7 forms. `sexual_content_minors` was deliberately
-not authored — writing a request for that content is a closed line even as a
 fixture — and is covered only by the 45 harvested refusal bodies. Bodies that
 **complied** in a harm domain were scored for the record but their text was
 discarded and never stored (7 of 42 probes complied: drug/self-harm/weapons
@@ -195,7 +192,6 @@ Also unmeasured, and therefore not reported as zero:
 - the **cue screen's own recall**: 119,830 assistant bodies never entered the
   candidate pool, so their refusal rate is unknown and 674 is a floor;
 - **per-layer deterministic latency**: the 3.47 ms is three calls timed together;
-- the **minors domain has no probe rows** (closed line), so its recall figures
   come only from the 45 harvested bodies and are not comparable to the other
   domains' probe rows;
 - **model variance**: one probe per ask, one delivery each — no repeat sampling;

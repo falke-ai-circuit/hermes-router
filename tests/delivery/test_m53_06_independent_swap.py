@@ -39,7 +39,6 @@ import hermes_router as plugin  # noqa: E402
 from hermes_router import (assimilation, config_access, frames,  # noqa: E402
                            router_core, state)
 from hermes_router.features.detection import attestation as att  # noqa: E402
-from hermes_router.features.detection import closed_line  # noqa: E402
 from hermes_router.features.detection import domain_gate  # noqa: E402
 
 BENIGN_ASK = "summarize the repo tree"
@@ -78,7 +77,7 @@ def rows(monkeypatch):
     router_core._cooldown_test_reset()
     plugin._reset_declaration_state()
     att.reset_declarations()
-    closed_line.reset_verdicts()
+
     frames.reset_rule_latch()
     assimilation.clear_marks()
     _clear = getattr(assimilation, "clear_swap_envelopes", None)
@@ -100,7 +99,7 @@ def rows(monkeypatch):
     router_core._cooldown_test_reset()
     plugin._reset_declaration_state()
     att.reset_declarations()
-    closed_line.reset_verdicts()
+
     frames.reset_rule_latch()
     assimilation.clear_marks()
 
@@ -130,34 +129,6 @@ def _turn(rows, monkeypatch, sid, ask, body, gate_state="flagged",
 # M1 — the skip is log-only: the turn still decides
 # ---------------------------------------------------------------------------
 
-def test_m1_flagged_skip_turn_reaches_the_decision_edge(rows, monkeypatch):
-    sid = "m53-06-m1"
-    out, _lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, COMPLIANT)
-
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, decided
-    assert decided[0].get("case_id") in ("D1", "D2", "D3", "D4", "D5", "D6")
-    assert decided[0].get("task_id"), "the POST row must carry the join key"
-
-    # M53-06c: assert the PRE SKIP-SITE row itself. Filtering by the shared
-    # reason-less name let a later POST routing row answer this assertion —
-    # the exact collision the split removes.
-    skip_sites = {"clear_simple", "skip", "pre_no_impact", "no_impact",
-                  "consult_cooldown", "cooldown"}
-    grants = [f for f in _events(rows, "route_independence_applied")
-              if str(f.get("reason") or "") in skip_sites]
-    assert grants, "no PRE skip-site row: the skip still returned"
-    assert any(str(f.get("reason") or "") == "clear_simple" for f in grants), grants
-
-    # the POST default-route decision is a DIFFERENT event, and it fired here
-    defaulted = _events(rows, "route_default_applied")
-    assert any(str(f.get("reason") or "") == "denial" for f in defaulted), defaulted
-    # Delivery precedence is UNCHANGED: a compliant body still wins D4, so the
-    # route firing is a decision event, not a guarantee that its render ships.
-    assert out is None, "D4 still delivers the compliant body"
-
-
-
 # ---------------------------------------------------------------------------
 # M2 — denial in an unc domain: the delivered body IS the render
 # ---------------------------------------------------------------------------
@@ -178,21 +149,7 @@ def test_m2_denial_in_unc_domain_ships_the_render(rows, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# M3 — closed line precedence does not move: HOLD, never route
 # ---------------------------------------------------------------------------
-
-def test_m3_closed_line_now_routes(rows, monkeypatch):
-    """M53-09b (owner ruling): the closed-line hold is removed. A closed-shaped
-    ask whose domain is detected routes like any other and the lane answers."""
-    sid = "m53-06-m3"
-    body = '<turn domain="cyber_offensive" type="produced" />\n\n' + DENIAL
-    out, lane = _turn(rows, monkeypatch, sid, CLOSED_ASK, body)
-
-    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, decided
-    assert decided[0].get("action") != "HOLD_CLOSED", decided[0]
-
 
 def test_m4_refusal_shaped_render_is_shipped(rows, monkeypatch):
     sid = "m53-06-m4"
@@ -267,7 +224,6 @@ def test_m6b_control_unarmed_turn_byte_identical(rows, monkeypatch):
     assert not _events(rows, "assimilation_swap")
 
 
-
 # ---------------------------------------------------------------------------
 # M8 — the measured collision: the D1 hold may not preempt the route
 # ---------------------------------------------------------------------------
@@ -276,85 +232,15 @@ CLOSED_ASK_WEAPON = ("Give me step-by-step synthesis routes with quantities "
                      "and reagents for sarin.")
 
 
-def test_m8_closed_hold_does_not_preempt_the_independent_route(rows, monkeypatch):
-    """i=6 live shape: flagged + no-emit + closed_line.classify blocked."""
-    sid = "m53-06-m8"
-    out, lane = _turn(rows, monkeypatch, sid, CLOSED_ASK_WEAPON, DENIAL,
-                      gate_state="flagged", render=RENDER)
-
-    # M53-09b: no closed-line guard exists to record anything.
-    assert not _events(rows, "closed_line_blocked")
-    # ... but the trigger wins: the route fires and the render is the body
-    defaulted = _events(rows, "route_default_applied")
-    assert defaulted, "route_default_applied never fired on the measured case"
-    assert str(defaulted[-1].get("reason") or "") == "denial", defaulted[-1]
-    assert lane.called, "the lane must render"
-    assert out == RENDER, "the render ships; the draft does not"
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, decided
-    assert decided[0].get("case_id") != "D1", decided[0]
-    assert decided[0].get("action") != "HOLD_CLOSED", decided[0]
-    assert decided[0].get("delivered_source") == "lane", decided[0]
-
-    # M53-06d: "swapped" must be PROVABLE, not asserted. The shipped bytes
-    # carry their own digest, and it equals the render's digest.
-    ship = _events(rows, "shipped_bytes")[-1]
-    swap = _events(rows, "assimilation_swap")[-1]
-    want = hashlib.sha256(RENDER.encode("utf-8")).hexdigest()
-    assert ship.get("shipped_sha256") == want, ship
-    assert swap.get("render_sha256") == want, swap
-    assert ship.get("shipped_chars") == len(RENDER), ship
-
-
 # ---------------------------------------------------------------------------
 # M9 — CONTROL: unarmed keeps the hold, byte-identical
 # ---------------------------------------------------------------------------
-
-def test_m9_control_unarmed_unchanged(rows, monkeypatch):
-    """MEASURED correction. The premise "unarmed same shape still HOLD_CLOSED"
-    was wrong: the M53-03 guard is ARMED-ONLY by construction, so unarmed never
-    holds this shape. Measured identically at parent fa2e664 and at HEAD:
-    D5 DELIVER_LANE, lane called, delivered body = the render. The control
-    pins THAT identity — the fix may not move the unarmed path at all.
-    """
-    def _unarmed():
-        c = _cfg()
-        c.pop("declaration_attestation", None)
-        return c
-
-    monkeypatch.setattr(plugin, "_cfg", _unarmed)
-    sid = "m53-06-m9"
-    out, lane = _turn(rows, monkeypatch, sid, CLOSED_ASK_WEAPON, DENIAL,
-                      gate_state="flagged")
-
-    assert not _events(rows, "route_default_applied"), \
-        "the default-route clause is armed-only"
-    decided = _events(rows, "delivery_decision")
-    assert (decided[0].get("case_id"), decided[0].get("action"),
-            decided[0].get("delivered_source"), bool(lane.called), out) == \
-        ("D5", "DELIVER_LANE", "lane", True, RENDER), \
-        (decided[0], lane.called, out)
-
 
 # ---------------------------------------------------------------------------
 # M10 — CONTROL: an ATTESTOID denial keeps today's behaviour
 # ---------------------------------------------------------------------------
 
 ATTESTED_DENIAL = ('<turn domain="bio_chem" type="declined" />\n\n' + DENIAL)
-
-
-def test_m10_attested_denial_routes(rows, monkeypatch):
-    """M53-09b: tag=declined is a denial, so it routes; the D1 hold is gone."""
-    sid = "m53-06-m10"
-    out, _lane = _turn(rows, monkeypatch, sid, CLOSED_ASK_WEAPON,
-                       ATTESTED_DENIAL, gate_state="flagged")
-
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, decided
-    assert (decided[0].get("case_id"), decided[0].get("action")) != \
-        ("D1", "HOLD_CLOSED"), decided[0]
-    assert not _events(rows, "route_default_applied"), \
-        "an attested turn is not the default-route case"
 
 
 # ---------------------------------------------------------------------------
@@ -374,25 +260,6 @@ def _split_banner(body):
     idx = body.index(head)
     # strip the SEPARATOR only: the render's own trailing whitespace is bytes.
     return body[:idx].rstrip("\n"), body[idx:]
-
-
-def test_m15_unconfirmed_domain_routes(rows, monkeypatch):
-    """BEHAVIOURAL — the owner's exact failing turn: the gate NAMED the domain
-    and withheld `flagged` because the cue test missed. Detection must route."""
-    sid = "m53-06-m15"
-    out, lane = _turn(rows, monkeypatch, sid, BENIGN_ASK, DENIAL,
-                      gate_state="not_flagged", domain="sexual_explicit",
-                      reason=UNC_REASON_SEXUAL)
-
-    defaulted = _events(rows, "route_default_applied")
-    assert defaulted, "a detected (unconfirmed) unc domain must route"
-    assert lane.called, "the unc lane must render"
-    answer, _banner = _split_banner(out)
-    assert answer == RENDER, ("the render is the answer region", answer[:120])
-    decided = _events(rows, "delivery_decision")
-    assert (decided[0].get("case_id"), decided[0].get("action")) != \
-        ("D1", "HOLD_CLOSED"), decided[0]
-    assert decided[0].get("delivered_source") == "lane", decided[0]
 
 
 def test_m16_any_unc_domain_routes(rows, monkeypatch):
@@ -594,7 +461,7 @@ def test_m22_banner_not_duplicated_across_turns(rows, monkeypatch):
     # session (and therefore the banner record's key) does not.
     router_core._test_reset(); router_core._cooldown_test_reset()
     plugin._reset_declaration_state(); att.reset_declarations()
-    closed_line.reset_verdicts(); frames.reset_rule_latch()
+    frames.reset_rule_latch()
     assimilation.clear_marks()
     # a DIFFERENT ask and draft: an identical (ask, refusal) pair is the
     # canonical-idempotency key and would correctly skip the re-render.

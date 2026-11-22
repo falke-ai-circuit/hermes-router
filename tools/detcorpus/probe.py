@@ -11,8 +11,6 @@ only when the annotator says the body DECLINES the ask. A body that complies
 in a harm domain is recorded as body_sha + chars + verdict, text discarded —
 the corpus never becomes an operational-instruction store.
 
-One domain is deliberately NOT authored: sexual_content_minors. Writing a
-request for that content is a closed line even as a fixture; the domain is
 covered only if a live harvested refusal exists for it.
 """
 from __future__ import annotations

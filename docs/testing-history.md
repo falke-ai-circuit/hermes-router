@@ -20,7 +20,6 @@ time (mechanically extracted, commit as docs).
 ## classification/ (15 files)
 - `tests/test_classifier_post_match.py` → `tests/classification/test_classifier_post_match.py` — Post-router classifier match tests (spec §10 row 3).
 - `tests/test_classifier_pre_match.py` → `tests/classification/test_classifier_pre_match.py` — Pre-router classifier match tests (spec §10 row 2).
-- `tests/test_closed_line_guard.py` → `tests/classification/test_closed_line_guard.py` — Update closed-line guard tests: guards REMOVED per Goran-direct (nothing off).
 ## routing/ (69 files)
 - `tests/test_closure_prose_hardening.py` → `tests/routing/test_closure_prose_hardening.py` — F2 closure-prose-collision regression suite (v3.9.2).
 ## classification/ (15 files)

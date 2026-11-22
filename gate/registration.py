@@ -291,17 +291,12 @@ def on_transform_llm_output_guarded(**kwargs):
     """
     _prov = None
     _turn = None
-    # M35-14: the closed-line grader is read ONCE, here, BEFORE the seam runs —
-    # a closed line is a property of the ASK, so no render may be billed for it
     # and no case may open it later.
     # M53-06d — ORDER, NOT EXEMPTION: the independent route is evaluated
-    # BEFORE the closed-line hold. On an armed profile with no attestation
     # type and a PRE detection, the D1 hold may NOT preempt the route: the
-    # trigger wins, this turn takes no closed-line hit, the seam runs, and
     # decide() names the render. No kind test, no domain test on the ASK, no
     # acceptability test — the conjunction is the spec's own mechanical rule.
     _route_default_turn = _m5306_default_route(kwargs)
-    # M53-09b: the closed-line hold is removed from this path. The router
     # routes on the TAG; the unc model decides what the ask deserves.
     try:
         from ..core import turn_provenance as _prov_mod
@@ -328,7 +323,6 @@ def on_transform_llm_output_guarded(**kwargs):
     # `delivery_decision` row at all (the decision never ran) and turns whose
     # POST classification was skipped. The tag is metadata this pilot itself
     # injects at PRE, so it is removed HERE — at the wrapper's entry, before
-    # the closed-line short-circuit, before orchestration, before any
     # classification, route or decision. Nothing below can run earlier.
     #
     # Both forms, every position: `scrub_markers` removes well-formed tag
@@ -381,7 +375,6 @@ def on_transform_llm_output_guarded(**kwargs):
     try:
         if _prov is not None:
             _prov.seam_enter()
-        # A HOLD_CLOSED ask never enters the seam: no render, no split, no
         # replacement. The decision below names the entered body unchanged.
         out = orchestration.on_transform_llm_output(**kwargs)
     except Exception:
@@ -509,18 +502,6 @@ def on_transform_llm_output_guarded(**kwargs):
         # its own tag-bearing original. Return the stripped bytes explicitly.
         if final is None and _decl_strip_extra > 0 and _original:
             final = str(_original)
-        # M53-03 R20: a closed-line claim must DELIVER the agent's own body as
-        # explicit bytes. `_delivered_bytes` returns None for a byte-identical
-        # source=main decision (the host pass-through), which on a HOLD_CLOSED
-        # reads as "no decision" and let the contract be satisfied only by
-        # luck. The claim names these bytes; hand them back.
-        if _decision is not None and final is None:
-            try:
-                from ..core import delivery_decision as _ddm
-                if _decision.action == _ddm.HOLD_CLOSED and _original:
-                    final = str(_original)
-            except Exception:  # noqa: BLE001 — never breaks delivery
-                pass
         if _decision.delivered_source == _dd.SOURCE_MAIN:
             _guard_reason = (_dd.REASON_MAIN_COMPLIED
                              if _decision.case_id == _dd.D4
@@ -566,13 +547,11 @@ def on_transform_llm_output_guarded(**kwargs):
     if _prov is not None and _decision is not None:
         try:
             # M45-12: the settle cannot tell a legal suppression from a lost
-            # body by looking at "" — the DECISION knows. D1 HOLD_CLOSED named
             # no bytes on purpose; every other empty body is a failure.
             _failure = _prov.settle_delivery(
                 _turn, final, log=_hub_log_route(),
                 session_id=str(kwargs.get("session_id") or ""),
-                suppress_reason=_guard_reason,
-                hold_closed=bool(_decision.action == _dd.HOLD_CLOSED)) or _failure
+                suppress_reason=_guard_reason) or _failure
         except Exception:  # noqa: BLE001
             _failure = _failure or ""
     # A main-body delivery whose render already rewrote the store must put the
@@ -761,7 +740,6 @@ def on_transform_llm_output_guarded(**kwargs):
 def _ask_for(kwargs) -> str:
     """The turn's ASK, recovered the same way the seam recovers it.
 
-    Used by exactly two callers: the closed-line grader (a property of the ask,
     read before anything runs) and D3's consult. Never raises.
     """
     try:
@@ -778,20 +756,18 @@ def _ask_for(kwargs) -> str:
 
 
 def _m5306_default_route(kwargs) -> bool:
-    """M53-06 §2 trigger, evaluated BEFORE the closed-line hold.
+    """True only for the spec's mechanical conjunction.
 
     CALLER CONTRACT
         kwargs  the transform hook kwargs (session_id + response_text)
 
-    True only for the spec's mechanical conjunction:
-        ARMED profile AND no attestation type AND PRE detected an unc domain.
+    ARMED profile AND no attestation type AND PRE detected an unc domain.
 
     It contains NO content judgement: it does not read the ask, classify the
-    body, or look at the closed-line kind. It exists so the D1 hold cannot
-    preempt the independent route; the lane's own model decides what it will
-    render (owner ruling: "it's not router who decides, router routes").
+    body, or inspect what a lane will render. The lane's own model decides what
+    it will render (owner ruling: "it's not router who decides, router routes").
 
-    Never raises. Any error is False, which restores today's hold exactly.
+    Never raises. Any error is False.
     """
     try:
         if not _hub_dispatcher_armed():
@@ -810,7 +786,7 @@ def _m5306_default_route(kwargs) -> bool:
         return False
 
 
-def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0,
+def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
                  prior_strip_bytes: int = 0):
     """Build the frozen facts record ONCE at the delivery edge (spec §1.1).
 
@@ -1102,8 +1078,7 @@ def decide_skipped_turn(*, session_id: str, body: str, turn_id: str = "") -> str
             return ""
         kwargs = {"session_id": sid, "turn_id": str(turn_id or ""),
                   "response_text": entered}
-        closed_hit = ""
-        facts = _build_facts(entered, kwargs, None, None, closed_hit)
+        facts = _build_facts(entered, kwargs, None, None)
         decision = _decide(facts)
         if decision is not None and decision.action == _dd.CONSULT_REENTER:
             decision = _decide(_consult_gate(facts, kwargs))

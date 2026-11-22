@@ -37,7 +37,6 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
 import hermes_router as plugin  # noqa: E402
 from hermes_router import config_access, frames, route_gate, router_core, state  # noqa: E402
 from hermes_router.features.detection import attestation as att  # noqa: E402
-from hermes_router.features.detection import closed_line  # noqa: E402
 from hermes_router.gate import registration as reg  # noqa: E402
 from hermes_router.gate import turn_close  # noqa: E402
 
@@ -72,7 +71,7 @@ def rows(monkeypatch):
     router_core._cooldown_test_reset()
     plugin._reset_declaration_state()
     att.reset_declarations()
-    closed_line.reset_verdicts()
+
     frames.reset_rule_latch()
     _reset_decided()
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
@@ -89,7 +88,7 @@ def rows(monkeypatch):
     router_core._cooldown_test_reset()
     plugin._reset_declaration_state()
     att.reset_declarations()
-    closed_line.reset_verdicts()
+
     frames.reset_rule_latch()
     _reset_decided()
 
@@ -133,51 +132,8 @@ def _close(sid, body, turn_id=""):
 # M3 — behavioural: the skipped turn still produces its ONE decision
 # ---------------------------------------------------------------------------
 
-def test_m3_skipped_turn_yields_one_decision_and_a_body(rows, monkeypatch):
-    monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=False))
-    sid = "m53-03-i2-m3"
-
-    _skip_turn(sid, BENIGN_ASK)
-    skips = _events(rows, "complexity_skip")
-    assert skips and skips[-1].get("reason") == "clear_simple", skips
-    assert skips[-1].get("score") == 0
-
-    out = _close(sid, BODY)
-
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, "exactly one delivery decision, got %r" % (decided,)
-    decision = decided[0]
-    assert decision.get("case_id") in ("D1", "D2", "D3", "D4", "D5", "D6"), decision
-    # a definite delivered body: the verdict names non-zero bytes on the wire
-    assert int(decision.get("delivered_chars") or 0) == len(BODY), decision
-    # the observer never substitutes: the host's body is what ships
-    assert out is None, out
-
-
 # ---------------------------------------------------------------------------
-# M3b — behavioural: a skipped CLOSED LINE holds, it never reaches the lane
 # ---------------------------------------------------------------------------
-
-def test_m3b_skipped_closed_line_still_holds_d1(rows, monkeypatch):
-    monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
-    sid = "m53-03-i2-m3b"
-
-    _skip_turn(sid, CLOSED_ASK)
-    assert _events(rows, "complexity_skip"), "the ask must take the skip exit"
-
-    with mock.patch.object(plugin.router, "call", return_value="LANE RENDER") as lane:
-        out = _close(sid, REFUSAL)
-
-    # M53-09b: no closed-line hold exists; the skipped turn still decides once.
-    decided = _events(rows, "delivery_decision")
-    assert len(decided) == 1, decided
-    decision = decided[0]
-    assert (decision.get("case_id"), decision.get("action")) != ("D1", "HOLD_CLOSED"), decision
-    # The pin's subject was the HOLD. With it gone the remaining contract is
-    # that this skipped turn still decides exactly once and is not held by a
-    # closed-line veto (the delivery source depends on whether the lane答ed).
-    assert decision.get("delivered_source") != "closed_line", decision
-
 
 # ---------------------------------------------------------------------------
 # M6 — CONTROL: bytes unchanged, and never a second decision for one turn

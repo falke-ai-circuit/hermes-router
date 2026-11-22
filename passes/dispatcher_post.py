@@ -248,24 +248,6 @@ def _narrative_markers(text: str) -> int:
     return len(_DIALOGUE_RE.findall(t)) + len(_NARRATIVE_VERB_RE.findall(t))
 
 
-def _compound_grade(ask: str, text: str) -> Optional[str]:
-    """M34-03 late-bound compound grading (compound_split owns the rules)."""
-    try:
-        from ..features.detection import compound_split as _cs
-        return _cs.grade(ask, text)
-    except Exception:  # noqa: BLE001 — gate unavailable -> status quo
-        logger.debug("compound grade error", exc_info=True)
-        return None
-
-
-def _is_compound_ask(ask: str) -> bool:
-    try:
-        from ..features.detection import compound_split as _cs
-        return bool(_cs.is_compound(ask))
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def render_acceptance_failure(rendered: str, ask: str = "") -> Optional[str]:
     """M34-02 post-render acceptance. Returns a reason code when the render is
     NOT a deliverable, None when it is.
@@ -276,26 +258,13 @@ def render_acceptance_failure(rendered: str, ask: str = "") -> Optional[str]:
     substance`) when the reason survives the retry budget — a deflection is
     never delivered and never written to the transcript as the answer.
 
-    M34-03: a COMPOUND ask (open content + a closed line) is graded by
-    `compound_split` instead of the refusal-shape clause. A correctly split
-    body legitimately carries a named-line decline paragraph, so refusal
-    vocabulary alone no longer rejects it; but a whole-turn refusal, an
-    unnamed closed line, or an invented third line is still a failure.
     """
     text = str(rendered or "")
     if not text.strip():
         return "empty"
     if _tool_call_shaped(text):
         return "tool_call_shape"
-    _compound_reason = _compound_grade(ask, text)
-    if _compound_reason:
-        return _compound_reason
-    if not _compound_reason and _is_compound_ask(ask):
-        # Correctly split: the named-line paragraph is doctrine, not a refusal.
-        _split_ok = True
-    else:
-        _split_ok = False
-    if not _split_ok and _refusal_shaped_post(text):
+    if _refusal_shaped_post(text):
         return "refusal_shape"
     if _is_content_ask(ask):
         if len(text.strip()) < DELIVERABLE_MIN_CHARS:

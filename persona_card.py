@@ -244,7 +244,6 @@ PERSONA_READ_DOCTRINE_ROWS = 3     # constraints lifted when PROCEDURES is absen
 
 # PERSONA slice split when BOTH IDENTITY.md and SOUL.md carry prose: the read
 # card carries the identity lens AND the marker-driven SOUL rows (voice /
-# character / doctrine / closed-line), never one or the other. 55/45 is the
 # floor for SOUL — if IDENTITY is shorter than its share the remainder flows to
 # SOUL, so a terse identity never starves the doctrine rows.
 PERSONA_IDENTITY_SHARE = 55
@@ -331,7 +330,6 @@ def _persona_soul_slice(home: str, max_chars: int) -> str:
     """Marker-driven SOUL rows for the READ card's PERSONA section.
 
     Row-level selection (not whole section blocks): the voice / character /
-    doctrine / closed-line rows are the part of SOUL that changes which move is
     correct, and they survive a small PERSONA share where a long section would
     have eaten the budget on headers alone. Deterministic: marker hit count
     ranks rows, ties keep SOUL.md order, each row is clause-bounded. The
@@ -848,7 +846,6 @@ def _build_compact_persona_context() -> str:
 
     # v2.3.1 (battery audit 2026-09-03, Goran ruling): voice_only mode strips the
     # "VOICE & LINES" doctrine extract — the renderer exists to deliver what the
-    # agent could not, and doctrine rows (settled lines, lane boundaries, escalation
     # discipline) made the renderer refuse in-voice (live probe: 5/5
     # refusal-renders even under explicit render mandate). Voice comes from the
     # identity anchor; boundaries belong to the agent, not the uncensored channel.

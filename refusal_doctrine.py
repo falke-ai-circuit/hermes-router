@@ -35,12 +35,8 @@ _ROW_MARKERS = (
     "settled", "substrate brake", "won't", "wont ", "will not", "do not",
     "don't", "dont ", "hard no", "off-limits", "out of scope", "taboo",
     "boundary", "no-go", "decline",
-    # 2026-09-07 (architect live FP): closed-lines rows living in markdown
-    # tables ("Closed lines stay closed (minors never; DNA closed lists
     # honored)") never made the card — earlier marker rows ate the budget and
-    # the verdict machinery judged a minors refusal WITHOUT the minors row →
     # model_flinch → render ping-pong. Priority markers + bigger budget.
-    "minors", "minor", "csam", "underage", "closed line", "stay closed",
 )
 
 # Section headers whose whole block is line doctrine.
@@ -51,7 +47,7 @@ _SECTION_MARKERS = (
 
 _CACHE: Dict[str, Tuple[float, str]] = {}
 _CACHE_LOCK = threading.Lock()
-_MAX_CARD_CHARS = 6000  # ~1.5K tok (raised 2026-09-07: 2400 truncated Hard-Rules closed-line rows before they lifted — architect minors FP)
+_MAX_CARD_CHARS = 6000  # ~1.5K tok (raised 2026-09-07: 2400 truncated Hard-Rules doctrine rows before they lifted — architect minors FP)
 
 
 def _doctrine_knob() -> str:
@@ -163,7 +159,6 @@ def verdict_for_refusal(refusal_text: str, user_ask: str, *,
     v3.8.1 knob (config router section `refusal_doctrine`):
       "always_route" (default) — current behavior, hardcoded model_flinch,
         the doctrine machinery never runs (aux never called).
-      "doctrine" — honor the agent's closed lines from the doctrine card:
         verdicts consult SOUL/IDENTITY doctrine rows via aux LLM.
       "off" — same as always_route.
     Fail-open: missing/unreadable config -> always_route.
@@ -189,15 +184,12 @@ def verdict_for_refusal(refusal_text: str, user_ask: str, *,
             "ASSISTANT REFUSAL: {ref}\n"
             "Question: is this refusal BACKED by a SPECIFIC doctrine row — one that "
             "names the exact content class being refused (e.g. sexual content involving "
-            "minors) — or is it substrate/model caution dressed in boundary language?\n"
             "STRICT RULES:\n"
-            "- Generic boundary language ('closed line', 'not negotiable', 'hard no', "
             "'not fiction territory', 'transfers to real-world harm') WITHOUT a row in "
             "the doctrine naming that specific content class is NOT backing — that is "
             "model_flinch (the agent's router will handle contested content).\n"
             "- General design ethics, 'read-only role', or role-discipline rows are NOT "
             "refusal backing.\n"
-            "- A row naming minors/underage/csam backs refusals of minor-sexualization "
             "ONLY — it does not back refusals of other content classes (weapons, gore, "
             "drugs). Those are agent_flinch unless their own class row exists.\n"
             "Answer from the texts alone in at most two short sentences, then the "

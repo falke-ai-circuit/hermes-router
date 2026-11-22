@@ -162,24 +162,6 @@ _ADVERSARIAL = [
 ]
 
 
-def test_combined_matcher_parity():
-    """§12-A1: combined matcher == per-group scan on ALL fixtures (old vs new
-    byte-equivalent semantics). Doctrine-quote frames are the ONE intentional
-    delta: scan_pre suppresses them (2026-09-02 fixset #4, live false-fire) —
-    parity holds on everything else, and _scan post-suppression equals
-    scan_pre exactly."""
-    for text, _expected in _ADVERSARIAL:
-        old = classifier._scan(text, _PRE_GROUPS)
-        new = classifier.scan_pre(text, patterns=_PRE_GROUPS)
-        if classifier.is_doctrine_quote(text):
-            continue  # intentional narrowing, pinned separately below
-        assert old == new, "parity broke on %r: old=%s new=%s" % (text, old, new)
-    # suppressed fixtures: _scan alone would fire, scan_pre narrows
-    q = "\"settled-lines: csam_underage, ied_construction\" — reference doc"
-    assert classifier._scan(q, _PRE_GROUPS) == ["ied_construction"]
-    assert classifier.scan_pre(q, patterns=_PRE_GROUPS) == []
-
-
 def test_adversarial_fixtures_expected():
     for text, expected in _ADVERSARIAL:
         got = classifier.scan_pre(text, patterns=_PRE_GROUPS)

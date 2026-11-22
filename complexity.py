@@ -75,7 +75,6 @@ _PLANNING_ARCH: List[str] = [
     r"\bhelp\s+(?:me\s+)?evaluate\b",
     r"\bwhich\s+(?:approach|option|design)\s+(?:is\s+)?better\b",
     # T1 audit/second-opinion/double-check asks (2026-09-08, live case:
-    # re-audit asks FP-routed to shadow via recall-text "minors"; audit asks
     # scored 0 complexity signals -> no frontier). Luna T1 matrix: audit-
     # verify completed work = the user's dominant frontier pattern.
     r"\b(?:audit|re-audit|reaudit|double[- ]?check|second opinion|second[- ]opinion)\b.{0,60}\b(?:design|answer|work|plan|this|it|that|my|the)\b",

@@ -118,18 +118,6 @@ def test_every_watched_seam_is_a_seam_the_plugin_registers():
     assert "transform_tool_result" not in registered
 
 
-def test_closed_line_turn_still_counts_the_turn_end_seam(monkeypatch):
-    """M45-17: the host invokes the REGISTERED wrapper; a HOLD_CLOSED ask returns before the
-    orchestrator, so the turn-end seam counter must be taken in the wrapper."""
-    from hermes_router.core import telemetry as T
-    from hermes_router.gate import registration as R
-
-    T.seam_probe_register(None)
-    ctx = _registered_ctx()
-    ctx.hooks["transform_llm_output"](response_text="body", session_id="s1")
-    assert T.seam_fires().get("transform_llm_output", 0) == 1
-
-
 def test_seam_probe_judges_nothing_when_no_request_was_made():
     """A process that never reached a provider cannot indict the seams downstream of it."""
     from hermes_router.core import telemetry as T

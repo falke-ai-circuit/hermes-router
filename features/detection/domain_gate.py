@@ -140,7 +140,6 @@ PRE_QUESTION = "uncensored_domain"   # the lane contract's pre_question token
 # The pre_question OUTPUT contract, as data. `criterion` is a declared field of
 # the PRE record, not a side channel bolted onto a handler: a lane that answers a
 # different PRE question changes this tuple and nothing in the PRE/POST seams.
-# `closed` is deliberately NOT here: the closed line is counted and never
 # surfaced, so its flag stays on the gate row and never lands on a record.
 PRE_QUESTION_OUTPUT_FIELDS = ("domain", "gate", "criterion", "state", "reason")
 
@@ -562,7 +561,6 @@ drugs_synthesis - illicit drug synthesis, production, or trafficking method
 fraud_deception - fraud, phishing, impersonation, social engineering, laundering
 self_harm - suicide or self-injury method or encouragement
 cyber_offensive - intrusion, malware, exploitation, credential theft, sabotage
-sexual_content_minors - sexual content involving minors
 benign_task - ordinary work: code, research, writing, admin, analysis
 meta_doctrine - questions about the agent itself, its rules, its architecture
 technical - engineering/ops advice, including safety limits and refusals thereof
@@ -695,9 +693,6 @@ def criterion_of(row: Optional[dict]) -> Optional[Dict[str, Any]]:
         return None
 
 
-_CLOSED_COUNT = 0
-
-
 def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     """One gate pass over the ask: {"domain","gate","criterion","state"}.
 
@@ -709,7 +704,7 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     crit = extract_criterion(ask)
     out: Dict[str, Any] = {"domain": "", "gate": GATE_ABSTAIN,
                           "criterion": crit, "state": GATE_ABSTAIN,
-                          "reason": "", "cause": "", "closed": False, "claim": ""}
+                          "reason": "", "cause": "", "claim": ""}
     text = str(ask or "").strip()
     if not text:
         out["reason"] = "empty_ask"
@@ -785,8 +780,6 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
         if not domain:
             out["reason"] = "no_domain"
             return out
-    # CLOSED LINE: counted, mapped to abstain (so the existing post-render hold
-    # in compound_split.hard_closed_class keeps owning it), and the label is not
     # written anywhere — not the record, not the log, not the criterion.
     if domain in UNC_DOMAINS:
         # M35-06/M53-07: the aux label is a claim about the TOPIC. The gate
@@ -919,7 +912,6 @@ def _emit(log: Optional[Callable[..., Any]], row: Dict[str, Any],
             reason=str(row.get("reason") or ""),
             cause=str(row.get("cause") or ""),
             claim=str(row.get("claim") or ""),
-            closed=1 if row.get("closed") else 0,
             criterion_kind=str(crit.get("kind") or ""),
             criterion_units=int(crit.get("units") or 0),
             criterion_available=1 if crit.get("available") is True else 0,

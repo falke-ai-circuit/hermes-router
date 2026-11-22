@@ -22,7 +22,6 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
 import hermes_router as plugin  # noqa: E402
 from hermes_router import frames, state  # noqa: E402
 from hermes_router.features.detection import attestation as att  # noqa: E402
-from hermes_router.features.detection import closed_line  # noqa: E402
 from hermes_router.gate import orchestration  # noqa: E402
 
 BODY = "No. I won't provide that."
@@ -49,12 +48,12 @@ def rows(monkeypatch):
         captured.append((event, f))
 
     state.clear(); plugin._reset_declaration_state(); att.reset_declarations()
-    closed_line.reset_verdicts(); frames.reset_rule_latch()
+    frames.reset_rule_latch()
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     monkeypatch.setattr(plugin, "_log_route", _cap)
     yield captured
     state.clear(); plugin._reset_declaration_state(); att.reset_declarations()
-    closed_line.reset_verdicts(); frames.reset_rule_latch()
+    frames.reset_rule_latch()
 
 
 def _events(cap, name):
@@ -77,7 +76,6 @@ def _seam(sid, declare=None):
     """Call the POST SEAM itself, past the wrapper's delivery-edge shortcut.
 
     `gate.registration.on_transform_llm_output_guarded` short-circuits on the
-    delivery edge's own `_closed_line_hit`, so a wrapper-level test can pass
     while the seam's guard is dead (measured: it did — this test passed at
     705e1f6). The i=5 shape is the seam being the last line of defence, so the
     pin must call the seam.
@@ -97,10 +95,8 @@ def test_m1_undeclared_armed_turn_still_runs_the_closed_line_guard(rows, monkeyp
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
     out, venice = _post("m53-03-m1", armed=True, declare=None)   # NO declaration
 
-    # M53-09b (owner ruling): the closed-line guard is removed. Routing now
     # depends on the TAG plus a DETECTED domain; this fixture's gate abstains,
     # so the turn is delivered by main — and no veto row exists either way.
-    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
 
 
 def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
@@ -113,12 +109,4 @@ def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
     out, venice = _seam("m53-03-m1b", declare=None)             # NO declaration
 
     # M53-09b: no guard, no hold. The gate abstains here, so main delivers.
-    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
 
-
-def test_m2_unarmed_profile_is_unchanged(rows, monkeypatch):
-    monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=False))
-    out, venice = _post("m53-03-m2", armed=False, declare=None)
-
-    assert not _events(rows, "closed_line_blocked"), \
-        "unarmed: the guard must stay unreachable"

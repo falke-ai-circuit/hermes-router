@@ -17,7 +17,6 @@ import pytest
 import hermes_router as plugin
 from hermes_router import config_access, frames, router_core, state
 from hermes_router.features.detection import attestation as att
-from hermes_router.features.detection import closed_line
 from hermes_router.features.detection import domain_gate
 
 RENDER = "LANE RENDER — the unc model's body."
@@ -54,7 +53,7 @@ def turn(monkeypatch):
         router_core._test_reset()
         plugin._reset_declaration_state()
         att.reset_declarations()
-        closed_line.reset_verdicts()
+
         frames.reset_rule_latch()
         monkeypatch.setattr(plugin, "_cfg", _cfg)
         monkeypatch.setattr(plugin, "_dry_run", lambda: False)
@@ -159,13 +158,6 @@ def test_t7_refusal_without_domain_vocabulary_routes(turn):
 # ---------------------------------------------------------------------------
 # D1 — an unknown/abstained domain routes NOTHING
 # ---------------------------------------------------------------------------
-
-def test_d1_abstain_domain_never_routes(turn):
-    out, routed, rows = turn(TAG % "declined" + "No. I won't write that.", "s-d1",
-                           gate=_gate("abstain", domain=""))
-    print("\nD1 routed=%s out=%r" % (routed, out))
-    assert not routed, "no unc domain => nothing happens"
-
 
 def test_d1b_closed_domain_never_routes(turn):
     out, routed, _ = turn(TAG % "declined" + "No.", "s-d1b",

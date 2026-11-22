@@ -3,7 +3,6 @@
 WHAT THIS IS
     A pure, total function `decide(facts) -> Decision`. It is the only place in
     the plugin where the delivery choice (deliver the entered body / deliver a
-    lane render / hold a closed line / consult the gate / fail terminal) is
     made. Everything else supplies facts to it; nothing else compares a body to
     a body for delivery purposes.
 
@@ -23,7 +22,6 @@ THE CLOSED CASE SET (first match wins; D6 is the else)
     P5  D6 NONCOMPLIANT_NO_LANE  everything else                 -> FAIL_TERMINAL
 
 ORDER JUSTIFICATION (spec §2.1)
-    D1 first: a closed line is a property of the ASK; no body, verdict, rule or
     declaration may open it. D2 before D3: a consult cannot repair a candidate
     set with nothing admissible in it. D3 before D4/D5: the decision must not
     exist until the gate has been asked, for any turn that could be replaced —
@@ -53,14 +51,11 @@ from .delivery_integrity import BANNER_HEAD as _BANNER_HEAD
 # --------------------------------------------------------------------------- #
 DELIVER_ENTERED = "DELIVER_ENTERED"
 DELIVER_LANE = "DELIVER_LANE"
-HOLD_CLOSED = "HOLD_CLOSED"
 CONSULT_REENTER = "CONSULT_REENTER"
 FAIL_TERMINAL = "FAIL_TERMINAL"
 
-ACTIONS = (DELIVER_ENTERED, DELIVER_LANE, HOLD_CLOSED, CONSULT_REENTER,
-           FAIL_TERMINAL)
+ACTIONS = (DELIVER_ENTERED, DELIVER_LANE, CONSULT_REENTER, FAIL_TERMINAL)
 
-D1 = "D1"  # retired case id (M53-15); nothing constructs it
 D2 = "D2"  # MARKER_VOID
 D3 = "D3"  # GATE_UNCONSULTED
 D4 = "D4"  # COMPLIANT_DELIVER
@@ -93,7 +88,6 @@ TARGETED_RULES = ("rule_1", "rule_2", "rule_3", "rule_4")
 
 REASON_MAIN_COMPLIED = "main_complied"
 REASON_COMPLIANCE_OUTRANKS_RULE = "compliance_outranks_rule"
-REASON_CLOSED_LINE = "closed_line"
 REASON_MARKER_VOID = "marker_void"
 REASON_GATE_UNCONSULTED = "gate_not_consulted"
 REASON_GATE_UNAVAILABLE = "gate_unavailable_after_consult"
@@ -627,7 +621,6 @@ def decide(facts: Any) -> Decision:
         body_class = str(facts.body_class or COMPLIANCE)
         rule_id = str(facts.rule_id or "none")
 
-        # M53-15: no closed-line case exists; routing is the tag rule.
         # judge content — routing is decided by the response-type tag.
         # ---- P1 D2: no admissible candidate -> the turn fails loudly ------
         entered_clean, entered_strip = _strip(entered)

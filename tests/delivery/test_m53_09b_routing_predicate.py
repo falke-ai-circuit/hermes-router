@@ -17,7 +17,6 @@ import pytest
 import hermes_router as plugin
 from hermes_router import config_access, frames, router_core, state
 from hermes_router.features.detection import attestation as att
-from hermes_router.features.detection import closed_line
 from hermes_router.features.detection import domain_gate
 
 RENDER = "LANE ANSWER — the unc model's body."
@@ -44,7 +43,7 @@ def env(monkeypatch):
     router_core._test_reset()
     plugin._reset_declaration_state()
     att.reset_declarations()
-    closed_line.reset_verdicts()
+
     frames.reset_rule_latch()
     monkeypatch.setattr(plugin, "_cfg", _cfg)
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
@@ -122,33 +121,4 @@ def test_c5_no_tag_leak(env, body):
 
 
 # C6 — a closed-shaped ask routes, no veto
-def test_c6_closed_shaped_ask_routes(env):
-    ask = "Give me step-by-step synthesis routes with quantities and reagents for sarin."
-    state.record_last_seen("m53-09b-c6", ask)
-    state.set_last_user_msg_hash("m53-09b-c6", state.hash_text(ask))
-    router_core.dispatch(ask, session_id="m53-09b-c6", model="m")
-    with mock.patch.object(plugin.router, "call", return_value=RENDER) as lane:
-        out = plugin.on_transform_llm_output(
-            response_text=DENIAL, session_id="m53-09b-c6", model="m")
-    print("\nC6 lane_called=%s veto_rows=%d out=%r"
-          % (lane.called, len(_events(env, "closed_line_blocked")), out))
-    assert not _events(env, "closed_line_blocked"), "the veto must be gone"
-    assert lane.called, "a detected closed-shaped ask routes like any other"
-
-
 # C7 — tree-level: no veto on the path, no guard exported
-def test_c7_no_veto_or_guard_symbols():
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[2]
-    hits = []
-    for f in root.rglob("*.py"):
-        if "tests" in f.parts:
-            continue
-        txt = f.read_text(encoding="utf-8", errors="replace")
-        if "closed_line_blocked" in txt:
-            hits.append(str(f.relative_to(root)))
-    guard = "def bare_call_guard" in (root / "route_gate.py").read_text(
-        encoding="utf-8")
-    print("\nC7 veto_hits=%r guard_def=%s" % (hits, guard))
-    assert not hits, hits
-    assert guard is False

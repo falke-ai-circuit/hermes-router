@@ -75,13 +75,12 @@ LANES: Dict[str, Dict[str, frozenset]] = {
             "leg",                # pre|post
             "work_text",          # POST only: work to reason over
             "voice_mode",         # voice_stems|none
-            "close_class",        # closed-line class, never inferred downstream
         }),
         "assimilation": frozenset({
             "leg",                # pre|post
             "render",             # the rendered turn body
             "acceptance",         # accepted|partial|refused
-            "refusal_class",      # closed-line class on a refusal
+            "refusal_class",      # refusal class on a refusal
             "voice_mode",         # voice_stems|none
         }),
     },

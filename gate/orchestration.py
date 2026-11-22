@@ -721,7 +721,6 @@ def on_llm_request(*, request, original_request, **context) -> dict:
 
         # H3 gate — REMOVED 2026-09-04 (Goran-direct reversal: "remove csam
         # blocking, uncensored should not filter anything when asked"). The
-        # 2026-09-01 gate ("i dont want explicit minors") never actually fired
         # in production: it referenced `session_id` three lines before that
         # local was bound (UnboundLocalError swallowed by the outer handler),
         # so PRE silently passed through every time. Reversal makes removal
@@ -1387,7 +1386,6 @@ def _route_precondition_ok(gate_row: Any, type_: Any) -> bool:
 
     This is the ONLY place the rule exists. It is a consequence, not a guard:
     a closed label or an abstained gate is simply not an unc domain, so it can
-    never satisfy the precondition. No content judgement, no minors branch, no
     acceptability test, no ask text.
     """
     try:
@@ -2546,8 +2544,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001 — telemetry only
                 pass
         # ------------------------------------------------------------------
-        # M53-03 CLOSED-LINE GUARD. Answers ONE question before a lane render
-        # may REPLACE the agent's own body: is this ask inside a closed line?
         # It runs BEFORE the replacement is decided — a guard after composition
         # has already spent the render and can still leak it.
         #
@@ -2693,7 +2689,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # load-bearing") — an abstain / not_flagged / never-landed verdict does
         # NOT route. For an attested denial the gate is never read at all.
         #
-        # No `closed_line.classify()` call exists here: that judgement was in
         # the superseded §1c/§2 and is deleted. The pre-existing M53-03 guard
         # still runs ABOVE this block on armed turns; it is untouched and is
         # reported, not extended.
@@ -2733,7 +2728,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001
                 _outcome, _OC = "unknown", "compliant"
             _type_c = str(_att_type_t or "").strip().lower()
-            # M53-15: no minors branch. A closed label is simply not in
             # UNC_DOMAINS, so it can never satisfy the predicate — the safety
             # is a consequence of the rule, not a guard.
             if _detected and _outcome != _OC:
@@ -2925,14 +2919,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # else: action == "deliver" (rules 5 and 6) — matches stays empty and
         # the benign delivery edge below runs. No render, by construction.
         #
-        # M41-05: the CLOSED-LINE HARD BLOCK is checked on EVERY non-routing
         # edge, not only on the routed one. It used to be reachable only when
         # the turn routed, because the PRE probe token forced `matches`; with
-        # the probe retired a closed-line ask whose body is not a classifiable
-        # refusal would take the benign edge with no hold row. Closed lines stay
         # closed whichever rule delivered the turn — the ASK is read, never the
         # body.
-        # M35-14 (§7 item 9): the closed-line HARD CASE has ONE call site and
         # it lives in the delivery-edge facts builder, before anything runs. A
         # duplicate check here would be a second precedence mechanism for the
         # same fact — the exact layering this restructure removes.
@@ -3271,43 +3261,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # render loops.
             pass
 
-        # ------------------------------------------------------------------
-        # M34-03 (M35 §3 clause 3): COMPOUND ASKS ARE SPLIT, NOT REFUSED
-        # WHOLE; the two closed lines stay closed.
-        #
-        #   minors            -> hard block. No route, no render, no split.
-        #                        The refusal is delivered as-is.
-        #   weapon (pure)     -> hard block (closed absent operator scope).
-        #   weapon + open     -> COMPOUND: the render directive splits it and
-        #                        the delivered body is GRADED. A whole-turn
-        #                        refusal here is a doctrine violation and is
-        #                        logged as one, never praised as caution.
-        # ------------------------------------------------------------------
-        _csplit = None
-        _split_directive = ""
-        try:
-            from ..features.detection import compound_split as _csplit
-        except Exception:  # noqa: BLE001 — grader unavailable -> status quo
-            _csplit = None
-            _hub().logger.debug("compound_split import error", exc_info=True)
-        if _csplit is not None:
-            # M35-14 (§7 item 9): the closed line was read ONCE at the delivery
-            # edge, before this seam ran. No second call here.
-            try:
-                _split_directive = _csplit.split_directive(original_user_message)
-            except Exception:  # noqa: BLE001
-                _split_directive = ""
-            if _split_directive:
-                try:
-                    _delivered_grade = _csplit.grade(original_user_message,
-                                                     response_text)
-                except Exception:  # noqa: BLE001
-                    _delivered_grade = None
-                _hub()._log_route(
-                    "POST", event_detail="compound_ask_split",
-                    closed=",".join(_csplit.closed_lines_in(original_user_message)),
-                    delivered_problem=(_delivered_grade or "split_ok"),
-                    routed=int(bool(matches)), session_id=session_id)
 
         # Loop-guard key: hash of the message being routed. On stash-recovery
         # turns that equals the PRE-recorded hash (identical to the legacy
@@ -3503,16 +3456,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _system_prompt = _hub()._persona_system_prompt(None)
             except Exception:  # noqa: BLE001 — never break delivery on prompt build
                 _system_prompt = ""
-        # M34-03: a compound ask's render is SPLIT by contract — the open part
-        # delivered in full, the closed line declined and NAMED. The directive
-        # is the last instruction the renderer sees.
-        if _split_directive:
-            _system_prompt = ((_system_prompt + "\n\n" + _split_directive)
-                              if _system_prompt else _split_directive)
-            _hub()._log_route("POST", event_detail="compound_split_directive",
-                              closed=",".join(
-                                  _csplit.closed_lines_in(original_user_message)),
-                              session_id=session_id)
         # ------------------------------------------------------------------
         # M41-06 (spec §B S9): THE REPLACEMENT ENTERS THE EXISTING CHAIN.
         # A row the table marks `replace` (rule 1's declared shape, rule 4's
@@ -3697,37 +3640,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # The pre-swap body is what the caller already has. It is not
             # silent: the row says delivered=False and the event is an error.
             return _decl_passthrough()
-        # M34-03: one bounded re-render when the render fails the split (a
-        # whole-turn refusal, an unnamed line, or an invented line). The
-        # escalation restates the split requirement; a second failure is
-        # reported, never re-labelled as success.
-        if _split_directive and rendered and str(rendered).strip():
-            try:
-                _rgrade = _csplit.grade(original_user_message, rendered)
-            except Exception:  # noqa: BLE001
-                _rgrade = None
-            if _rgrade:
-                _hub()._log_route("POST", event_detail="compound_split_rerender",
-                                  reason=_rgrade,
-                                  render_chars=len(str(rendered or "")),
-                                  session_id=session_id)
-                _rerender = _hub().router.call(
-                    original_user_message,
-                    system_prompt=(_system_prompt + "\n\n" + _hub()._dispatcher_pre._substance_directive(
-                        _rgrade, 1)) if _system_prompt else _hub()._dispatcher_pre._substance_directive(
-                            _rgrade, 1),
-                    session_id=session_id)
-                try:
-                    _rgrade2 = _csplit.grade(original_user_message, _rerender)
-                except Exception:  # noqa: BLE001
-                    _rgrade2 = "grade_error"
-                if str(_rerender or "").strip() and _rgrade2 is None:
-                    rendered = _rerender
-                else:
-                    _hub()._log_route(
-                        "POST", event_detail="compound_split_render_failed",
-                        reason=_rgrade2 or "empty", first_reason=_rgrade,
-                        session_id=session_id)
         if not rendered or not str(rendered).strip():
             _hub()._log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
                        refusal_chars=len(response_text), session_id=session_id)

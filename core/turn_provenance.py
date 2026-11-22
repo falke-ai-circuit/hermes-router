@@ -356,17 +356,14 @@ def note_delivery(**kwargs: Any) -> None:
 #: M45-12: the two names an EMPTY delivered body can carry. `""` on the wire
 #: is legal (the host keeps the body it already has) but it is NEVER a
 #: delivery: the row must say which of these happened.
-#:   * a HOLD_CLOSED decision named no bytes — a legal suppression, no failure;
 #:   * any other decision over non-empty text — the seam lost bytes: a failure.
-HOLD_CLOSED_EMPTY_REASON = "hold_closed_empty_body"
 EMPTY_BODY_FAILURE_REASON = "empty_body_with_text_available"
 EMPTY_BODY_NO_TEXT_REASON = "empty_body_no_text_available"
 
 
 def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
                     log=None, session_id: str = "",
-                    suppress_reason: str = "",
-                    hold_closed: bool = False) -> str:
+                    suppress_reason: str = "") -> str:
     """Reconcile the turn's row with the body that will ACTUALLY be returned.
 
     The seam decides a replacement (``replaced=True``) and the delivery edge
@@ -389,9 +386,8 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
     M45-12 — AN EMPTY BODY IS NOT A DELIVERY. `final == ""` used to fall
     through to the unconditional tail below, which stamped
     ``delivered=True`` over zero bytes: the ledger's last row claimed a
-    delivery for a turn that shipped nothing. `hold_closed` is the caller's
-    statement that the DECISION named no bytes on purpose (D1); without it an
-    empty body over text that existed is a NAMED FAILURE, not a suppression.
+    delivery for a turn that shipped nothing. An empty body over text that
+    existed is a NAMED FAILURE, never a suppression.
     Both verdicts are sticky — a re-settle re-states, never overturns, them.
     """
     if turn is None:
@@ -409,21 +405,6 @@ def settle_delivery(turn: Optional["TurnProvenance"], final: Any, *,
             turn.replaced = False
             turn.lane = LANE_MAIN
             turn.replacement_path = ""
-            if hold_closed:
-                # The state is legal — the decision suppressed the text. What
-                # would be illegal is calling it a delivery.
-                turn.reason = HOLD_CLOSED_EMPTY_REASON
-                turn.outcome = HOLD_CLOSED_EMPTY_REASON
-                turn.delivery_failure = ""
-                if log is not None:
-                    try:
-                        log("POST", event_detail="empty_body_hold_closed",
-                            reason=HOLD_CLOSED_EMPTY_REASON,
-                            body_chars=int(turn.body_chars or 0),
-                            session_id=session_id)
-                    except Exception:  # noqa: BLE001
-                        pass
-                return ""
             # Not a suppression: bytes existed (or the turn says none did) and
             # the wire carries nothing. Name the failure.
             if int(turn.body_chars or 0) > 0:

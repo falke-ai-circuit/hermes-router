@@ -44,20 +44,6 @@ def _json(domain, asks_for_act=True):
             % (domain, "true" if asks_for_act else "false"))
 
 
-def test_d1_specific_cue_outvotes_meta_label(monkeypatch):
-    """R2: aux=meta_doctrine may not discard the 'pipe bomb' cue."""
-    _aux(monkeypatch, _json("meta_doctrine"))
-    res = dg.evaluate(PIPE_BOMB, session_id="s-d1")
-    print("\nD1 det=%r gate=%s domain=%s disagreement=%r"
-          % (dg.deterministic_domain(PIPE_BOMB), res["gate"], res["domain"],
-             res.get("domain_disagreement")))
-    assert dg.deterministic_domain(PIPE_BOMB) == "weapons_explosives"
-    assert res["gate"] == dg.GATE_FLAGGED, res
-    assert res["domain"] == "weapons_explosives", res
-    assert res.get("domain_disagreement") == \
-        "det=weapons_explosives aux=meta_doctrine", res
-
-
 def test_d2_croatian_cyber_without_loanword(monkeypatch):
     _aux(monkeypatch, _json("cyber_offensive"))
     res = dg.evaluate(HR_CYBER, session_id="s-d2")

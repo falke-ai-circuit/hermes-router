@@ -136,19 +136,6 @@ def test_f_no_internal_marker_can_be_inside_a_delivered_body():
             f"{row[0]}: {dd.carries_marker(decision.body)!r} reached the body")
 
 
-def test_closed_line_no_longer_outranks_compliance_rule_and_lane():
-    """M53-09b (owner ruling): the D1 hold is deleted. A closed-line fact that
-    some other layer still sets cannot hold the turn — the lane's answer is
-    what ships, exactly as for any other routed turn."""
-    facts = DeliveryFacts(entered_body="c" * 500, body_class=COMP,
-                          gate_consulted=True, gate_verdict="not_flagged",
-                          rule_id="rule_6",
-                          lane_render="a lane answer")
-    decision = decide(facts)
-    assert decision.case_id != dd.D1
-    assert decision.case_id != "D1", "the closed-line case is retired"
-
-
 def test_a_void_candidate_set_fails_terminal_rather_than_shipping_prose():
     facts = DeliveryFacts(
         entered_body="[router] this turn produced no work product. The model's "
