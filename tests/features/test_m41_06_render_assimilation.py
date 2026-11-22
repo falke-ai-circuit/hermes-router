@@ -407,12 +407,18 @@ def test_e2_replacement_is_a_contract_field_resolved_by_token():
 
 def test_e3_no_second_render_entry_point():
     """One render entry point: the replacement wiring names the pre-existing
-    router.call cell and adds no render function of its own."""
+    router.call cell and adds no render function of its own.
+
+    The former boundary marker (# M34-03: one bounded re-render) is gone — that
+    path was deleted with the closed-domain machinery, so the count is asserted
+    over the whole POST handler: 2 sites where the baseline had 3, and no
+    `_rerender` cell at all."""
     src = _post_handler_source()
     start = src.index("M41-06 (spec §B S9): THE REPLACEMENT")
-    end = src.index("# M34-03: one bounded re-render")
-    block = src[start:end]
+    block = src[start:]
     assert block.count(".router.call(") == 1, block
+    assert "_rerender" not in src, "the bounded re-render path must not return"
+    assert src.count(".router.call(") == 2, src.count(".router.call(")
     assert "_render_with_retry_ladder(" not in block, block
     assert "def _render" not in src
     # the resolver modules hold no render call at all

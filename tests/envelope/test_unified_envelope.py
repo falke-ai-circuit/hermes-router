@@ -79,7 +79,7 @@ def test_valid_extras_pass_each_lane():
                     fork_class="generic", slice=[])["extras"]["decision"]["options"]
     assert _request("frontier", paths=["angle"], consult_kind="consultation")
     assert _request("uncensored", leg="post", work_text="done",
-                    voice_mode="voice_stems", close_class="")
+                    voice_mode="voice_stems")
 
 
 def test_bad_input_fails_open_never_raises():

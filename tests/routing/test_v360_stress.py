@@ -44,8 +44,8 @@ def test_one_compiled_alternation_per_family():
     """Exactly ONE combined alternation exists per pattern family. The
     per-group registry holds the named patterns; the hot path evaluates the
     single combined Pattern (plus the doctrine-quote probe)."""
-    assert isinstance(classifier._PRE_COMBINED_RE, type(classifier._DOCTRINE_FRAME_RE))
-    assert isinstance(classifier._REFUSAL_COMBINED_RE, type(classifier._DOCTRINE_FRAME_RE))
+    assert isinstance(classifier._PRE_COMBINED_RE, type(classifier._RULE_LIST_FRAME_RE))
+    assert isinstance(classifier._REFUSAL_COMBINED_RE, type(classifier._RULE_LIST_FRAME_RE))
     # combined matchers cover the full alternative sets
     pre_total = sum(len(classifier.PATTERN_GROUPS[n]) for n in _PRE_GROUPS)
     # _PRE_COMBINED_RE source must contain every per-group alternative body

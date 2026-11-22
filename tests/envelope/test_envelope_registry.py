@@ -55,7 +55,7 @@ def test_request_key_sets_moved_here_verbatim():
     assert U.EXTRAS_KEYS["frontier"] == frozenset({
         "paths", "evidence_refs", "consult_kind", "route_id", "kind"})
     assert U.EXTRAS_KEYS["uncensored"] == frozenset({
-        "leg", "work_text", "voice_mode", "close_class"})
+        "leg", "work_text", "voice_mode"})
 
 
 def test_assimilation_key_sets_match_the_plan():
