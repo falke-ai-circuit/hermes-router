@@ -724,7 +724,7 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # in production: it referenced `session_id` three lines before that
         # local was bound (UnboundLocalError swallowed by the outer handler),
         # so PRE silently passed through every time. Reversal makes removal
-        # the correct fix: a contested class now routes like any other
+        # the correct fix: csam_underage now routes like any contested class
         # (chain renders; substrate refusals pass through unchanged; loop
         # guard prevents loops). No content gate exists in this plugin —
         # boundaries live in the render substrate, not in routing code.
@@ -3256,7 +3256,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # Content gate REMOVED 2026-09-04 (Goran-direct reversal: no
             # code-side filtering; substrate holds its own boundaries and
             # its refusals pass through unchanged). Previously blocked
-            # the class fallback routes here; now every class routes
+            # csam_underage fallback routes here; now every class routes
             # through the fallback identically. Loop guard below prevents
             # render loops.
             pass

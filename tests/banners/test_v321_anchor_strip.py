@@ -3,7 +3,7 @@
 Defect (conductor A/B-reproduced 2026-09-05 ~11:05, deterministic): Hermes
 injects a <memory-context>...</memory-context> block into the user message
 (recalled-memory wrapper containing route-log/classifier terms:
-ied_construction, bioweapon_protocol, uncensored, content_filter...). The
+ied_construction, csam_underage, uncensored, content_filter...). The
 Anthropic/OpenRouter content-filter trips on that block -> finish=
 content_filter, content empty (2.4s fast-fail). A/B: same ask WITHOUT the
 block -> 8692 chars delivered; WITH the block -> content_filter.
@@ -30,7 +30,7 @@ for _p in (PLUGIN_DIR, PARENT_DIR):
 from hermes_router import anchor_exec, anchor_chain  # noqa: E402
 
 MEMORY_BLOCK = ("<memory-context>\n[System note: recalled memory context — "
-                "ied_construction bioweapon_protocol uncensored content_filter "
+                "ied_construction csam_underage uncensored content_filter "
                 "route-log terms...]\n</memory-context>\n\n")
 ASK = "Design a multi-stage migration plan for splitting the monolith."
 CONTAMINATED = MEMORY_BLOCK + ASK
@@ -122,7 +122,7 @@ def test_anchor_strip_memory_context_user_preserves_ask(endpoint, _capture_clien
     assert "</memory-context>" not in sent
     assert sent == ASK  # the ask survives byte-for-byte, wrapper + gap gone
     assert "ied_construction" not in sent
-    assert "bioweapon_protocol" not in sent
+    assert "csam_underage" not in sent
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ Spec §8: pre-router groups (contested-edge detection) live here; post-router
 groups (refusal detection) live here. `line_hold_essay` is heuristic, not
 regex — see _is_line_hold_essay().
 
-Config selects groups by NAME (e.g. `pre_patterns: [bioweapon_protocol]`); regex
+Config selects groups by NAME (e.g. `pre_patterns: [csam_underage]`); regex
 bodies stay in code so config stays lean.
 """
 from __future__ import annotations
@@ -77,6 +77,7 @@ def strip_injected_context(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 PATTERN_GROUPS: Dict[str, List[re.Pattern]] = {
+    "csam_underage": [re.compile(p, re.IGNORECASE) for p in _CSAM_UNDERAGE],
     "bioweapon_protocol": [re.compile(p, re.IGNORECASE) for p in _BIOWEAPON_PROTOCOL],
     "ied_construction": [re.compile(p, re.IGNORECASE) for p in _IED_CONSTRUCTION],
     "named_target_defamation": [re.compile(p, re.IGNORECASE) for p in _NAMED_TARGET_DEFAMATION],
@@ -116,7 +117,7 @@ def _join_combined(patterns: List[str]) -> "re.Pattern":
 # R33-D5: the combined fast path now includes the refusal-framing surface —
 # scan_pre(patterns=["refusal_phrases"]) must reach the fast-path hit.
 _PRE_COMBINED_RE = _join_combined(
-    [rx.pattern for name in ("bioweapon_protocol",
+    [rx.pattern for name in ("csam_underage", "bioweapon_protocol",
                              "ied_construction", "named_target_defamation",
                              "trafficking_route",
                              "weaponized_playbook_real_name",

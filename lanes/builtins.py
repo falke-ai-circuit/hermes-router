@@ -57,7 +57,7 @@ PRE_PATTERNS_DEFAULT = (
     # R33-D5 (Goran-direct binding correction): detection is refusal-framing
     # based, never request-type based. The user turn routes ONLY on
     # refusal-framing echo/continuation. Content-class groups
-    # (bioweapon_protocol, ied_construction, ...) remain in the classifier
+    # (csam_underage, bioweapon_protocol, ...) remain in the classifier
     # registry as inert legacy — selectable by config, never defaults.
     "refusal_phrases",
 )

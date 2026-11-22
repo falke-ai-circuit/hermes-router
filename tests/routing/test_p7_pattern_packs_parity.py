@@ -127,7 +127,8 @@ def _classifier_hits_engine(text, groups):
 
 
 def _group_list_name(group):
-    return {            "bioweapon_protocol": "BIOWEAPON_PROTOCOL",
+    return {"csam_underage": "CSAM_UNDERAGE",
+            "bioweapon_protocol": "BIOWEAPON_PROTOCOL",
             "ied_construction": "IED_CONSTRUCTION",
             "named_target_defamation": "NAMED_TARGET_DEFAMATION",
             "trafficking_route": "TRAFFICKING_ROUTE",

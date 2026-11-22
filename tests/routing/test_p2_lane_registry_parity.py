@@ -132,6 +132,7 @@ def test_consumer_aliases_match_registry():
     import inspect
 
     src = inspect.getsource(knobs._pre_patterns)
+    assert "csam_underage" not in src  # literal no longer in the consumer
     # sentinel function body carries NO marker literals anymore (docstring
     # history text is allowed to keep the phrase reference)
     # R23: dispatcher_pre implementation moved to passes/ — inspect the REAL

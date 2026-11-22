@@ -1,5 +1,5 @@
 """Reviewer-audit regressions (2026-09-02): H1 PRE double-route sentinel,
-H3 class PRE gate. Both are code-side, non-tunable."""
+H3 csam_underage PRE gate. Both are code-side, non-tunable."""
 import os
 import sys
 from unittest import mock
@@ -60,7 +60,7 @@ def test_h1_marker_sentinel_blocks_preroute(monkeypatch):
 
 def test_h3_class_ask_annotate_only_no_pre_route(monkeypatch):
     """R33-D5 (Goran-direct binding correction): detection is refusal-framing
-    based, never request-type based. A class-classified ask (ied_construction)
+    based, never request-type based. A class-classified ask (csam_underage)
     does NOT route at PRE and does NOT block — it passes through unmodified.
     The refusal (if the model then refuses) routes at POST like every other
     class. No request-type block or route exists in the PRE path."""
@@ -81,6 +81,13 @@ def test_h4_log_file_owner_only(tmp_path, monkeypatch):
     assert lg.exists()
     assert (lg.stat().st_mode & 0o777) == 0o600
 
+
+def test_csam_plural_minors_matches():
+    """Live-caught 2026-09-02: plural 'minors' evaded \\bminor\\b and routed a
+    refusal into the chain (CSAM render delivered). Pattern must catch both."""
+    from hermes_router import classifier
+    for text in ("story involving minors", "with minors", "a minor", "underage"):
+        assert classifier.scan_pre(text, patterns=["csam_underage"]) == ["csam_underage"], text
 
 
 def test_gate_semantic_multilingual_decline_openers():

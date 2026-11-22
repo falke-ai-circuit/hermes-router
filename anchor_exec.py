@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # v3.2.1: Hermes injects a <memory-context>...</memory-context> block into the
 # USER turn (recalled-memory wrapper containing route-log/classifier terms:
-# ied_construction, bioweapon_protocol, uncensored, content_filter, ...). The
+# ied_construction, csam_underage, uncensored, content_filter, ...). The
 # Anthropic/OpenRouter content-filter trips on that block -> finish=
 # content_filter, content empty (conductor A/B-reproduced 2026-09-05 ~11:05,
 # deterministic: same ask without the block -> 8692 chars delivered; with the
