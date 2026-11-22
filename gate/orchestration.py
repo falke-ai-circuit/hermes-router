@@ -2494,56 +2494,6 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # ships. The attestation row and the decision row are still written
         # below and after — "detect all" stands: this changes the ACTION only.
         # ------------------------------------------------------------------
-        # M53-03 (R41 item 1): a SAFETY gate must not be conditioned on the
-        # agent cooperating. `_att_state == _ATTESTED_ROUTING` meant an
-        # UNDECLARED turn skipped the guard entirely — i=5 (sarin) and i=44
-        # (pipe bomb) carried no declaration and reached the lane. Gate on the
-        # PROFILE being armed instead: armed -> the guard runs for EVERY turn;
-        # unarmed -> unreachable, so byte-identical.
-        try:
-            from ..passes import dispatcher_pre as _pre_cl
-            _cl_armed = bool(_pre_cl.attestation_armed())
-        except Exception:  # noqa: BLE001 — an unreadable arming reads unarmed
-            _cl_armed = False
-        if _cl_armed:
-            try:
-                from ..features.detection import closed_line as _cl
-
-                # The ask comes from the middleware's recorded user message,
-                # not from `original_user_message`: that name is bound LATER
-                # in this function, and referencing it here raised NameError
-                # inside the fail-open — which fail-closed every turn.
-                try:
-                    _cl_ask = _hub().state.get_last_seen(session_id) or ""
-                except Exception:  # noqa: BLE001 — no ask, no match
-                    _cl_ask = ""
-                # B/D: one verdict per (session, turn). Reuse the seam's own
-                # verdict when one exists; otherwise classify ONCE here and
-                # persist it for the delivery edge to read.
-                _cl_tid = str(context.get("turn_id") or "")
-                _cl_prev = _cl.read_verdict(session_id, _cl_tid)
-                if _cl_prev is not None:
-                    _cl_blocked = bool(_cl_prev.get("blocked"))
-                    _cl_kind = str(_cl_prev.get("kind") or "")
-                    _cl_reason = str(_cl_prev.get("reason") or "")
-                else:
-                    _cl_blocked, _cl_kind, _cl_reason = _cl.classify(
-                        ask=_cl_ask,
-                        domain=_att_parsed.get("domain") or "",
-                        type_=_att_parsed.get("type") or "")
-                    _cl.note_verdict(session_id, _cl_tid, _cl_blocked,
-                                     _cl_kind, _cl_reason,
-                                     "seam_" + _cl.verdict_path(_cl_tid))
-            except Exception:  # noqa: BLE001 — fail CLOSED, never crash
-                _cl_blocked, _cl_kind, _cl_reason = True, "guard_error", "guard_error"
-                try:
-                    _hub()._log_route(
-                        "POST", event_detail="closed_line_guard_error",
-                        reason="guard_error", session_id=session_id)
-                except Exception:  # noqa: BLE001 — telemetry only
-                    pass
-            # M53-09b: no closed-line veto. A closed-shaped ask that the gate
-            # detected routes like any other; the unc model owns that call.
         # ------------------------------------------------------------------
         # M53-02 ENFORCEMENT (spec §2.b). On an ARMED turn a missing or
         # malformed attestation NEVER falls through to the four-class

@@ -1440,7 +1440,6 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
             # so a non-route is observable instead of silent. The classifier
             # is untouched; this only makes its verdict visible.
             if not route_complex:
-                _note_closed_line_verdict(session_id, user_text)
                 try:
                     from .core.telemetry import log_route as _lr_skip  # P1: core telemetry (import cycle broken)
                     _lr_skip("PRE", session_id=session_id,
@@ -1515,7 +1514,6 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 except Exception:  # noqa: BLE001 — fail-open (keep PRE)
                     _imp_ok, _imp_why = True, "impact_unknown"
                 if not _imp_ok:
-                    _note_closed_line_verdict(session_id, user_text)
                     try:
                         from .core.telemetry import log_route as _lr_imp  # P1
 
@@ -1550,7 +1548,6 @@ def dispatch(user_text: str, *, session_id: str, model: str = "",
                 # normalized content hash (declared/manual never reaches here).
                 _cd_log_only = False
                 if _consult_cooldown_active(session_id, user_text):
-                    _note_closed_line_verdict(session_id, user_text)
                     # R34-13: the no-fire cause is visible in the same event
                     # family as every other skip (the classifier verdict is
                     # carried too, so a cooldown skip is distinguishable from
@@ -2280,35 +2277,6 @@ def _test_reset() -> None:
         # real profile home mid-test; the sidecar itself is not deleted.
         global _backoff_sidecar_loaded
         _backoff_sidecar_loaded = True
-
-def _note_closed_line_verdict(session_id, user_text) -> None:
-    """C (M53-03): compute+persist the closed-line verdict BEFORE a complexity
-    or work skip returns, so a skipped turn carries it to the delivery edge.
-    One classifier call, existing store, armed-only. Never raises."""
-    try:
-        from .passes import dispatcher_pre as _pre
-        if not _pre.attestation_armed():
-            return
-        from .features.detection import attestation as _att
-        from .features.detection import closed_line as _cl
-        _tid = ""
-        try:
-            from tools.approval_context import _approval_turn_id
-            _tid = str(_approval_turn_id.get() or "")
-        except Exception:  # noqa: BLE001
-            _tid = ""
-        if _cl.read_verdict(session_id, _tid) is not None:
-            return
-        _decl = _att.read_declaration(session_id, _tid) if _tid else {}
-        _blocked, _kind, _reason = _cl.classify(
-            user_text,
-            str((_decl or {}).get("domain") or ""),
-            str((_decl or {}).get("type") or ""))
-        _cl.note_verdict(session_id, _tid, _blocked, _kind, _reason,
-                         "pre_skip_" + _cl.verdict_path(_tid))
-    except Exception:  # noqa: BLE001
-        pass
-
 
 def _route_independence_armed() -> bool:
     """M53-06 §1: is this profile inside the armed attestation pilot?

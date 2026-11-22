@@ -384,18 +384,7 @@ def on_transform_llm_output_guarded(**kwargs):
             _prov.seam_enter()
         # A HOLD_CLOSED ask never enters the seam: no render, no split, no
         # replacement. The decision below names the entered body unchanged.
-        if _closed_hit:
-            # M45-17: the object the host invokes IS this wrapper. A HOLD_CLOSED
-            # ask returns before the orchestrator, so the seam counter must be
-            # taken here — otherwise a closed-line turn reads as a dead seam.
-            try:
-                from ..core.telemetry import seam_probe_fire as _spf
-
-                _spf("transform_llm_output")
-            except Exception:  # noqa: BLE001 — probe never breaks the seam
-                pass
-        out = (None if _closed_hit
-               else orchestration.on_transform_llm_output(**kwargs))
+        out = orchestration.on_transform_llm_output(**kwargs)
     except Exception:
         try:
             if _prov is not None:
@@ -443,16 +432,6 @@ def on_transform_llm_output_guarded(**kwargs):
                 _entered_dec = out
         except Exception:  # noqa: BLE001 — fail open to the draft
             _entered_dec = _original
-        try:
-            from ..features.detection import closed_line as _cl_g
-            _ge = _cl_g.take_guard_error(
-                str(kwargs.get("session_id") or ""),
-                str(kwargs.get("turn_id") or ""))
-        except Exception:  # noqa: BLE001
-            _ge = False
-        if _ge:
-            # a detector hiccup must never hand the turn to the lane
-            out = None
         try:
             _decl_strip_extra = orchestration.take_decl_strip(
                 str(kwargs.get("session_id") or ""))
@@ -891,7 +870,6 @@ def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 
         gate_verdict=verdict,
         gate_reason=reason,
         rule_id=rule_id,
-        closed_line_hit=str(closed_hit or ""),
         lane_render=(None if lane_render is None else str(lane_render)),
         attempt=int(attempt or 0),
         # M53-02 (round 9): the boundary's counted delta rides the facts.

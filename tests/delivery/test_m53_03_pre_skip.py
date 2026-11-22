@@ -66,26 +66,6 @@ def _events(captured, name):
     return [f for e, f in captured if e == name or f.get("event_detail") == name]
 
 
-def test_t_c1_pre_skip_verdict_holds_a_closed_line(rows):
-    sid = "m53-03-tc1"
-    state.record_last_seen(sid, CLOSED_ASK)
-    state.set_last_user_msg_hash(sid, state.hash_text(CLOSED_ASK))
-
-    # the skip path computes and persists BEFORE returning
-    router_core._note_closed_line_verdict(sid, CLOSED_ASK)
-    v = closed_line.read_verdict(sid, "")
-    assert v is not None and v["blocked"] is True, v
-    assert v["kind"] == "real_person"
-
-    # M53-09b: the persisted verdict no longer vetoes the delivery edge. A
-    # closed-shaped ask is routed like any other (the unc model decides).
-    with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
-        reg.on_transform_llm_output_guarded(
-            response_text=BODY, session_id=sid, model="m", turn_id="")
-    decided = _events(rows, "delivery_decision")
-    assert decided and decided[-1]["action"] != "HOLD_CLOSED", decided[-1:]
-
-
 def test_t_c2_benign_short_ask_is_unchanged(rows):
     """The acceptance: a benign short ask must behave EXACTLY as before.
 
