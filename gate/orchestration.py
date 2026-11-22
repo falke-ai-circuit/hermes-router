@@ -2291,10 +2291,20 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _verdict_g = "abstain"
                 _criterion_g = None
                 _hub().logger.debug("domain-gate POST read error", exc_info=True)
-            _gate_state.update(row=_row_g, verdict=_verdict_g,
-                               semantics=_semantics_g,
-                               replacement=_replacement_g,
-                               criterion=_criterion_g)
+            # M53-24: never cache "no row yet" for the whole turn.
+            # `read()` returns None while the async writer has not landed, and
+            # `verdict()` collapses that to `abstain`. Caching it meant the FIRST
+            # reader poisoned the turn: routing saw `abstain` and did not route,
+            # while the delivery edge re-read seconds later and saw
+            # `in_domain` - so the record carried gate_verdict=abstain beside
+            # gate_reason=in_domain and the detected turn fell to D6
+            # `no_admissible_lane`. An absent gate is not a verdict: re-read on
+            # the next need instead of freezing it.
+            if _row_g is not None or _verdict_g != "abstain":
+                _gate_state.update(row=_row_g, verdict=_verdict_g,
+                                   semantics=_semantics_g,
+                                   replacement=_replacement_g,
+                                   criterion=_criterion_g)
             try:
                 _hub()._log_route(
                     "POST", event_detail="domain_gate_turn",
