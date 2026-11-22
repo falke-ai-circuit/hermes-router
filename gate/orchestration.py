@@ -2480,6 +2480,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # Every routed row enters the one replacement chain; the decision
         # edge, not the table, says whether the render is delivered.
         _rule_replace = _rule_action == "route"
+        # M53-11 D1: A ROUTE REQUIRES AN UNC DOMAIN. The domain is PRE's job;
+        # when PRE abstained or named a closed/empty domain, NOTHING happens
+        # and the draft ships untouched. The rule-1 `declined` path used to
+        # route on the TYPE alone — measured defect: gate=abstain,
+        # type=declined, route=True on a closed-line ask (i=59).
+        try:
+            from ..features.detection import domain_gate as _dg_guard
+            _unc_domain = bool(_dg_guard.domain_detected(_gate_row))
+        except Exception:  # noqa: BLE001 — an unreadable domain is not a detection
+            _unc_domain = False
+        if _rule_replace and not _unc_domain:
+            _rule_action = "deliver"
+            _rule_replace = False
+            try:
+                _hub()._log_route(
+                    "POST", event_detail="route_suppressed_unknown_domain",
+                    reason="no_unc_domain", session_id=session_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         # ------------------------------------------------------------------
         # M53-03 CLOSED-LINE GUARD. Answers ONE question before a lane render
         # may REPLACE the agent's own body: is this ask inside a closed line?
@@ -2634,7 +2653,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # reported, not extended.
         # ------------------------------------------------------------------
         _route_independent = False
-        if _att_armed and not _rule_replace:
+        # M53-11: the response-side outcome is the ONE gate for every class.
+        # It must not be skipped because the rule table already marked the
+        # turn `replace` (rule 1 routes on `declined` alone, which is exactly
+        # the path the owner's contract replaces): denial, softening and
+        # unknown all take the same render-swap route here.
+        if _att_armed:
             _att_type_t = str(_att_parsed.get("type") or "")
             # M53-06e: the conjunct is "the gate DETECTED an unc domain", not
             # "the gate said flagged". `unconfirmed:*` means the domain was
@@ -2642,12 +2666,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # such turns were dropped while 217 in_domain turns routed. Any
             # domain in UNC_DOMAINS counts (no per-topic test); empty domain,
             # out_of_domain, abstain and a never-landed gate do NOT route.
-            _detected = False
-            try:
-                from ..features.detection import domain_gate as _dg_det
-                _detected = bool(_dg_det.domain_detected(_gate_row))
-            except Exception:  # noqa: BLE001 — an unreadable gate is not a detection
-                _detected = False
+            _detected = _unc_domain
             # M53-09b — THE POST PREDICATE (owner contract):
             #   detected domain AND tag in {denial, unknown, unclear,
             #   unparseable, EMPTY/absent} -> ROUTE to the unc lane
@@ -2655,9 +2674,19 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # EMPTY and UNKNOWN are the SAME bucket: a missing tag is not a
             # pass. Measured on the 82-case corpus: 75 rows carried an empty
             # tag and only 10 routed.
+            # M53-11: the backbone. The outcome comes from the model's own
+            # classification of its reply (language-agnostic by construction);
+            # the DOMAIN must also be unc for a route. `_detected` is False for
+            # abstain/empty/closed, so an unknown domain routes nothing.
+            try:
+                from ..features.detection.attestation import (
+                    response_outcome as _ro,
+                    OUTCOME_COMPLIANT as _OC,
+                )
+                _outcome = _ro(_att_type_t)
+            except Exception:  # noqa: BLE001
+                _outcome, _OC = "unknown", "compliant"
             _type_c = str(_att_type_t or "").strip().lower()
-            _ROUTE_TAGS = ("", "declined", "denied", "denial", "refused",
-                           "unknown", "unclear", "unparseable")
             # HARD SAFETY LINE: sexual content involving minors is never
             # handed to a lane. This is the ONE category the router still
             # declines to route; every other closed-shaped ask routes.
@@ -2667,7 +2696,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _minors = str((_gate_row or {}).get("domain") or "") in _CD
             except Exception:  # noqa: BLE001
                 _minors = False
-            if _detected and _type_c in _ROUTE_TAGS and not _minors:
+            if _detected and _outcome != _OC and not _minors:
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
                 # route — the render replaces the body.

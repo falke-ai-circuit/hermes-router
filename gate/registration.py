@@ -955,6 +955,13 @@ def _delivered_bytes(decision, entered: str = "") -> str:
         #     one non-empty string that is a failure NOTICE, never an answer.
         if (decision.case_id == _dd.D6
                 and decision.reason != _dd.REASON_MARKER_VIOLATION):
+            # M53-11 D2: no admissible lane is a GRACEFUL FAIL — the original
+            # draft ships byte-identical and the miss is named in the log.
+            # Returning None here (the pass-through) on a turn whose draft was
+            # the only body left the user with nothing (measured: 7 rows,
+            # delivered_source=none, tens of chars dropped).
+            if decision.reason == getattr(_dd, "REASON_NO_LANE", "no_admissible_lane"):
+                return str(entered or "")
             return None
         if decision.reason == _dd.REASON_MARKER_VIOLATION:
             # M50-19: NEVER swallow the turn. Owner ruling: the router cannot

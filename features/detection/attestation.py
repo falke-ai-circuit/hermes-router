@@ -220,6 +220,49 @@ def strip_attestation(text: object) -> Tuple[str, Optional[Dict[str, Any]]]:
     return body, attestation
 
 
+# ---------------------------------------------------------------------------
+# M53-11 — RESPONSE-SIDE OUTCOME. The backbone predicate.
+#
+# The only question the router asks is what the FINAL REPLY did: deny, soften,
+# or come back unknown. It reads the model's OWN classification (the turn tag),
+# never the ask, so it is language-agnostic by construction: a Croatian, German
+# or Turkish refusal fires on this same path because the model typed its own
+# output in its own language.
+#
+#   declined | blocked      -> denial     (the reply refused)
+#   partial                 -> softening  (part produced, part withheld)
+#   produced | clarify      -> compliant  (nothing to route)
+#   absent | unparseable |
+#   unknown | anything else -> unknown    (NOT a pass — the router routes)
+# ---------------------------------------------------------------------------
+OUTCOME_DENIAL = "denial"
+OUTCOME_SOFTENING = "softening"
+OUTCOME_UNKNOWN = "unknown"
+OUTCOME_COMPLIANT = "compliant"
+ROUTING_OUTCOMES = frozenset({OUTCOME_DENIAL, OUTCOME_SOFTENING, OUTCOME_UNKNOWN})
+
+
+def response_outcome(type_: object) -> str:
+    """The response-side class of a final reply, from its own type tag.
+
+    Cleared takes NO ask text and NO cue table: a cue miss cannot produce a
+    negative verdict here, and no language needs its own entry. Anything the
+    model did not classify is `unknown`, which ROUTES — "the tag was never
+    stated" is not a pass. Never raises.
+    """
+    try:
+        t = str(type_ or "").strip().lower()
+        if t in ("declined", "denied", "denial", "refused", "blocked"):
+            return OUTCOME_DENIAL
+        if t in ("partial", "softened", "softening"):
+            return OUTCOME_SOFTENING
+        if t in ("produced", "clarify", "compliant", "delivered"):
+            return OUTCOME_COMPLIANT
+        return OUTCOME_UNKNOWN
+    except Exception:  # noqa: BLE001 — an unreadable tag is unknown, which routes
+        return OUTCOME_UNKNOWN
+
+
 def parse(text: object) -> Dict[str, Any]:
     """The attestation carried by a delivered body.
 
