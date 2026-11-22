@@ -189,3 +189,15 @@ def test_d2_no_admissible_lane_ships_the_draft():
     got = reg._delivered_bytes(dec, draft)
     print("\nD2 delivered=%r" % (got,))
     assert got == draft, "the draft must ship byte-identical"
+
+
+def test_m53_13_no_detected_domain_does_not_route(turn):
+    """OWNER'S OTHER HALF: domain unknown => NOTHING happens.
+
+    No gate row, so no unc label: the same denial that routes above must not
+    route here. This is the pin the old contract never had.
+    """
+    out, routed, rows = turn(TAG % "declined" + "No. I won't write that.",
+                             "s-nodom", gate=None)
+    print("\nM53-13 no-domain routed=%s out=%r" % (routed, out))
+    assert routed is False, "no detected unc domain => no route"

@@ -1392,7 +1392,11 @@ def _route_precondition_ok(gate_row: Any, type_: Any) -> bool:
     """
     try:
         from ..features.detection import domain_gate as _dg
-        if not bool(_dg.domain_detected(gate_row)):
+        # M53-13 (C1): keyed on the LABEL. `domain_detected()` is
+        # reason-dependent (needs reason=in_domain) and refused the very
+        # denials this precondition exists to allow.
+        _label = str((gate_row or {}).get("domain") or "").strip().lower()
+        if _label not in _dg.UNC_DOMAINS:
             return False
         from ..features.detection.attestation import (
             response_outcome as _ro, OUTCOME_COMPLIANT as _oc)
@@ -2506,6 +2510,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # M53-11c: the ONE precondition, evaluated here because every route
         # for this turn is committed from this decision — including the rule-1
         # `declined` path, whose route_fired flag is set further down.
+        # M53-13 (C2): THREAD THE GATE ROW. Rule 1 never consults the gate, so
+        # `_gate_row` is None on that path even though PRE recorded a domain.
+        # `_read_gate_state()` IS the provider the rule table uses (a lookup of
+        # the already-computed PRE fact, fail-open, no model call) — calling it
+        # here populates the row without inventing a domain or reading session
+        # state directly.
+        try:
+            _read_gate_state()
+            _gate_row = _gate_state.get("row")
+        except Exception:  # noqa: BLE001 — an unreadable gate stays None
+            pass
         _pre_ok = _route_precondition_ok(_gate_row, _att_parsed.get("type"))
         _unc_domain = bool(_pre_ok)
         # ARMED ONLY: an unarmed profile is byte-identical to before this
