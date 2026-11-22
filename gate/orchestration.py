@@ -1392,10 +1392,20 @@ def _route_precondition_ok(gate_row: Any, type_: Any) -> bool:
     """
     try:
         from ..features.detection import domain_gate as _dg
-        # M53-13 (C1): keyed on the LABEL. `domain_detected()` is
-        # reason-dependent (needs reason=in_domain) and refused the very
-        # denials this precondition exists to allow.
-        _label = str((gate_row or {}).get("domain") or "").strip().lower()
+        # M53-14 (N1): "detected" means the gate DETECTED. A labelled row whose
+        # gate abstained is not a detection, and `out_of_domain` is a refusal
+        # of the claim -- both are controls in m53_06 and both win over a bare
+        # label test. An `unconfirmed:*` caveat IS a detection (a domain was
+        # named with a finer-cue caveat), so it is accepted.
+        if not isinstance(gate_row, dict):
+            return False
+        _state = str(gate_row.get("state") or gate_row.get("gate") or "").strip().lower()
+        _reason = str(gate_row.get("reason") or "").strip().lower()
+        if _state == _dg.GATE_ABSTAIN or _reason == "abstain":
+            return False
+        if _reason == "out_of_domain":
+            return False
+        _label = str(gate_row.get("domain") or "").strip().lower()
         if _label not in _dg.UNC_DOMAINS:
             return False
         from ..features.detection.attestation import (
