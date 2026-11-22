@@ -439,8 +439,13 @@ def on_transform_llm_output_guarded(**kwargs):
             # says whether the render was filed under a key POST can derive. A
             # mismatch here is a confidently-wrong "no lane" downstream, not an
             # absent render.
+            # NOTE: `_hub()` does NOT exist in this module (only _hub_log_route /
+            # _hub_dispatcher_armed). Using it here raised NameError into the
+            # enclosing except, so this line logged nothing and "0 events" was
+            # read as "the transform never ran". Use the stdlib logger.
             try:
-                _hub().logger.info(
+                _lg_r = logging.getLogger(__name__)
+                _lg_r.info(
                     "M53-29 scope_read sid=%s scope='%s' found_chars=%d",
                     str(kwargs.get("session_id") or ""),
                     _st_r.scope_for(str(kwargs.get("session_id") or "")) or "",
