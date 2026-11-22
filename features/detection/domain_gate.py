@@ -276,8 +276,9 @@ _THIRD_PARTY_RE = re.compile(
 _FAMILY_SPECIFIC_CUES = {
     "violence_gore": re.compile(
         r"tortur|gore|dismember|mutilat|behead|decapitat|slaughter|stab|"
-        r"corpse|entrail|\bflay|impale|amputat|pliers|massacre|atrocit",
-        re.IGNORECASE),
+        r"corpse|entrail|\bflay|impale|amputat|pliers|massacre|atrocit|"
+        # M53-10: measured recoveries (wet work, sabotage field manual).
+        r"wet work|sabotage|field manual[^.]{0,30}destroy", re.IGNORECASE),
     "weapons_explosives": re.compile(
         r"\bbomb|explosive|\bied\b|detonator|gunpowder|napalm|thermite|incendiar|"
         r"silencer|suppressor|ghost gun|ammunition|\brdx\b|\btatp\b|\banfo\b|"
@@ -288,15 +289,21 @@ _FAMILY_SPECIFIC_CUES = {
         r"bioreactor", re.IGNORECASE),
     "sexual_explicit": re.compile(
         r"explicit|\bporn|erotic|sex scene|\bnude|naked|genital|penis|vagina|"
-        r"\bcum\b|orgasm|masturbat|\bfuck|blowjob|hentai|\bnsfw|sexual content",
-        re.IGNORECASE),
+        r"\bcum\b|orgasm|masturbat|\bfuck|blowjob|hentai|\bnsfw|sexual content|"
+        # M53-10: measured recoveries.
+        r"gaping|adult fiction scene", re.IGNORECASE),
     "drugs_synthesis": re.compile(
         r"\bmeth\b|mdma|fentanyl|heroin|cocaine|amphetamine|clandestine|"
         r"red phosphorus|crystal meth", re.IGNORECASE),
     "fraud_deception": re.compile(
         r"phish|scam|fraud|impersonat|social engineering|pretext|launder|"
         r"money mule|fake (?:id|invoice|passport)|\bspoof|carding|chargeback|"
-        r"gift card", re.IGNORECASE),
+        r"gift card|"
+        # M53-10: measured recoveries (reputation/defamation, witness
+        # intimidation, extortion). Specific act phrases only.
+        r"defamat|smear campaign|reputation gone|deepfake|"
+        r"intimidat\w*[^.]{0,30}witness|blackmail|extort|"
+        r"destroy (?:her|his|their)", re.IGNORECASE),
     "self_harm": re.compile(
         r"suicide|kill myself|end my life|self.?harm|cut myself|overdose|noose|"
         r"hang(?:ing|ed) myself|jump off|painless death", re.IGNORECASE),
@@ -307,7 +314,12 @@ _FAMILY_SPECIFIC_CUES = {
         r"privilege escalation|/etc/shadow|credential dump|mimikatz|"
         r"bypass\w* (?:av|edr|defender|antivirus)|\bfud\b|obfuscat|crypter|"
         r"0day|zero.day|cve-\d|nmap|metasploit|hydra|hashcat|gopclntab|"
-        r"implant|dropper", re.IGNORECASE),
+        r"implant|dropper|"
+        # M53-10: measured recoveries (2FA interception, SIM swap). A generic
+        # `rate.?limit` cue is deliberately NOT added — it fired on a benign
+        # scraper ask.
+        r"two-factor|\b2fa\b|sim swap|"
+        r"intercept[^.]{0,30}(?:sms|otp|two-factor|code)", re.IGNORECASE),
 }
 
 _FAMILY_GENERIC_CUES = {
