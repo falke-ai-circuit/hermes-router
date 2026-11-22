@@ -2282,6 +2282,54 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 from ..features.detection import domain_gate as _dgate
 
                 _row_g = _dgate.read(session_id)
+                if _row_g is None:
+                    # M53-28: PRE left no row (hook skipped, or the async worker
+                    # lost the race). Recompute the SAME deterministic detection
+                    # from the ASK - never from the answer, because refusal
+                    # wording is not a topic signal - and write the row every
+                    # POST consumer expects. No ask => no fallback: the turn
+                    # stays undetected rather than guessed.
+                    # Sources are read-only (session_store / last_seen); the
+                    # destructive pop_pending is never used here.
+                    try:
+                        _ask_fb = ""
+                        try:
+                            _ask_fb = str(
+                                _hub().session_store.get_last_user_message(
+                                    session_id) or "")
+                        except Exception:  # noqa: BLE001
+                            _ask_fb = ""
+                        if not _ask_fb.strip():
+                            _ask_fb = str(
+                                _hub().state.get_last_seen(session_id) or "")
+                        if _ask_fb.strip():
+                            _dom_fb = next(
+                                (d for d in _dgate.deterministic_domains(_ask_fb)
+                                 if d in _dgate.UNC_DOMAINS), "")
+                            if _dom_fb:
+                                from ..core import state as _st_fb
+
+                                _st_fb.mark_pre_domain(
+                                    session_id, _ask_fb,
+                                    gate=_dgate.GATE_FLAGGED,
+                                    state=_dgate.GATE_FLAGGED,
+                                    domain=_dom_fb, reason="det_" + _dom_fb)
+                                _row_g = _dgate.read(session_id)
+                                _hub().logger.info(
+                                    "M53-28 post_detect_fallback dom=%s "
+                                    "ask_chars=%d sid=%s",
+                                    _dom_fb, len(_ask_fb), session_id)
+                            else:
+                                _hub().logger.info(
+                                    "M53-28 post_detect_fallback NO_CUE "
+                                    "ask_chars=%d sid=%s",
+                                    len(_ask_fb), session_id)
+                        else:
+                            _hub().logger.info(
+                                "M53-28 post_detect_fallback NO_ASK sid=%s",
+                                session_id)
+                    except Exception:  # noqa: BLE001 — fallback never breaks
+                        _row_g = _dgate.read(session_id)
                 _verdict_g = _dgate.verdict(_row_g)
                 _semantics_g = tuple((_row_g or {}).get("gate_semantics") or ())
                 _replacement_g = str((_row_g or {}).get("replacement") or "")
