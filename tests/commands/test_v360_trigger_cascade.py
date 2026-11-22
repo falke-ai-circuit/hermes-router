@@ -232,11 +232,11 @@ def test_doctrine_line_ref_only_when_participated():
                               action="route", outcome="ok", trace_id="t-a")
     decisions.record_decision(detector_version="cascade-v1", rule_id="r",
                               action="route", outcome="ok", trace_id="t-b",
-                              doctrine_line_ref="soul.md#closed-lines")
+                              doctrine_line_ref="soul.md#doctrine-rows")
     decisions.flush_for_tests()
     recs = decisions.read_records()
     assert "doctrine_line_ref" not in recs[0]
-    assert recs[1]["doctrine_line_ref"] == "soul.md#closed-lines"
+    assert recs[1]["doctrine_line_ref"] == "soul.md#doctrine-rows"
 
 
 def test_event_seq_correlation():

@@ -27,7 +27,6 @@ from hermes_router.passes import dispatcher_post
 
 SID = "s-m34-02"
 # M34-02 exercises the SUBSTANCE gate in isolation. M34-03 owns compound asks
-# (open content + a weapon line), where a body must also name the closed line;
 # this fixture is therefore the OPEN part only, so a text-only scene is a
 # complete answer here and the compound split rules cannot legitimately change
 # these verdicts.

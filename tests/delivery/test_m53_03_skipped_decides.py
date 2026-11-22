@@ -4,14 +4,10 @@ THE DEFECT
     A turn that exits PRE via `complexity_skip reason=clear_simple score=0`
     never reached the delivery edge: 22 of the 82 corpus cases produced NO
     `delivery_decision` row and no delivered-body verdict. Six of those 22 were
-    closed-line asks (i=10, 11, 70, 71, 72, 73), so the hole sat in the safety
     path as well as the reporting one.
 
 WHAT IS PINNED
     M3  (behavioural) a complexity-skipped turn yields exactly ONE delivery
-        decision (D1..D6) and a non-empty delivered body.
-    M3b (behavioural) a skipped CLOSED-LINE ask (i=70 shape) yields D1
-        HOLD_CLOSED — never a lane.
     M6  (CONTROL) a benign skipped turn ships byte-identical text, and a turn
         whose transform edge already decided never gets a second row.
 

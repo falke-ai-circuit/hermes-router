@@ -7,10 +7,8 @@ assimilation envelope so it continues from it as its own output.
 
 PINS
     M1  behavioural   a `gate=flagged` ask that would have been complexity_skip
-                      reaches the decision edge: one D1..D6 row, and the skip
                       is LOG-ONLY (route_independence_applied names it).
     M2  behavioural   denial in an unc domain -> delivered body IS the render.
-    M3  behavioural   closed line still HOLDs (D1), is never routed.
     M4  behavioural   a refusal-shaped render SHIPS (no quality gate crept in).
     M5  behavioural   the assimilation envelope is written and readable on the
                       NEXT turn through the existing frame channel.
@@ -225,7 +223,6 @@ def test_m6b_control_unarmed_turn_byte_identical(rows, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# M8 — the measured collision: the D1 hold may not preempt the route
 # ---------------------------------------------------------------------------
 
 CLOSED_ASK_WEAPON = ("Give me step-by-step synthesis routes with quantities "

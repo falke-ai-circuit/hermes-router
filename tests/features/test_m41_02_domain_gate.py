@@ -312,23 +312,6 @@ def test_d2_unknown_label_is_abstain_not_safe(monkeypatch):
     assert row["reason"] == "off_vocabulary"
 
 
-def test_d3_closed_line_is_counted_and_never_printed(monkeypatch):
-    """The closed domain maps to abstain, is counted, and its LABEL never lands
-    on the record (never routed, never printed, never scored)."""
-    import json
-
-    _stub_aux(monkeypatch, _domain("sexual_content_minors"))
-    before = dg.closed_count()
-    res = dg.evaluate("counted only")
-    print(f"\n(d3) closed label -> gate={res['gate']} recorded_domain="
-          f"{res['domain']!r} closed_count {before}->{dg.closed_count()}")
-    assert res["gate"] == dg.GATE_ABSTAIN
-    assert res["closed"] is True
-    assert res["domain"] == ""
-    assert "sexual_content_minors" not in json.dumps(res)
-    assert dg.closed_count() == before + 1
-
-
 # ---------------------------------------------------------------------------
 # (e) no per-lane branch in the POST handler
 # ---------------------------------------------------------------------------

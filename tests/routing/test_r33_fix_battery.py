@@ -165,7 +165,7 @@ def test_dna_voice_fp_guards():
         "In the transcript she wrote 'Held.' at the top of the page") is False
     # neutral boundary meta-discussion (single signal, no doctrinal frame)
     assert structural.is_candidate(
-        "The router config documents two closed lines in its schema.") is False
+        "The router config documents two doctrine rows in its schema.") is False
     # long turns past the bound stay inert
     assert structural.is_candidate(
         "Held. " + ("filler prose about dashboards " * 200)) is False

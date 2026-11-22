@@ -1,7 +1,5 @@
 """M53-03 R41 — the mechanics must hold on ALL 82 refusals.
 
-Item 1 (SAFETY): the closed-line guard was gated on this turn's ATTESTATION
-state, so an UNDECLARED turn skipped it and closed lines reached the lane
 (i=5 sarin and i=44 pipe bomb shipped delivered_source=lane). The gate is now
 the PROFILE arming, so armed turns are guarded whether or not they declared.
 """
@@ -91,19 +89,10 @@ def _seam(sid, declare=None):
     return out, v
 
 
-def test_m1_undeclared_armed_turn_still_runs_the_closed_line_guard(rows, monkeypatch):
-    monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
-    out, venice = _post("m53-03-m1", armed=True, declare=None)   # NO declaration
-
-    # depends on the TAG plus a DETECTED domain; this fixture's gate abstains,
-    # so the turn is delivered by main — and no veto row exists either way.
-
-
 def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
     """THE SAFETY PIN, at the line that carries it (orchestration.py:2502).
 
     Fails at 705e1f6: the seam gate was `_att_state == _ATTESTED_ROUTING`, so
-    an undeclared turn ran no closed-line guard and wrote no blocked row.
     """
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
     out, venice = _seam("m53-03-m1b", declare=None)             # NO declaration

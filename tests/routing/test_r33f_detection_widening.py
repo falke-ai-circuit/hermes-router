@@ -112,7 +112,7 @@ def test_w_family_fp_guards():
               "stanza turns on that tension. " * 8)
     assert structural.is_candidate(benign) is False
     # neutral boundary meta-discussion in a long body
-    meta = ("The router documentation discusses two closed lines in its "
+    meta = ("The router documentation discusses two doctrine rows in its "
             "schema, their scope, and the audit trail each produces. " * 8)
     assert structural.is_candidate(meta) is False
     # short turns stay on the existing families (no W-scan below 400c)

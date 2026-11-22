@@ -35,7 +35,7 @@ PROFILES = {
             "## Voice and character\n\n"
             "**Voice:** terse, dry, never theatrical — the wording is the model "
             "of the thought.\n"
-            "**Closed line:** nothing about named dead, no invented victim, "
+            "**Boundary:** nothing about named dead, no invented victim, "
             "ever.\n\n"
             "## Hard Rules\n\n"
             "| Rule | Detail |\n|---|---|\n"

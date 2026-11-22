@@ -1,7 +1,6 @@
 """M45-12 — an EMPTY delivered body is never recorded as delivered.
 
 THE DEFECT
-    `gate/registration.py::_delivered_bytes` returns "" for a D1 HOLD_CLOSED
     decision whose stripped body is empty (the entered text WAS the closed
     line), and `core/turn_provenance.py::settle_delivery` then fell through to
     its unconditional tail and stamped `turn.delivered = True` over that empty
@@ -10,7 +9,6 @@ THE DEFECT
     surviving on the one producer M45-10 did not close.
 
 THE CONTRACT ASSERTED HERE
-    (a) empty body + HOLD_CLOSED (a LEGAL suppression: the decision named no
         bytes) -> delivered=False, the reason named on the row. The state is
         legal; calling it delivered is the lie.
     (b) empty body + text WAS available (any other action) -> delivered=False
@@ -37,14 +35,14 @@ FAILURE_REASON = "empty_body_with_text_available"
 
 def _turn(sid: str, body: str = "No. Policy A7 line: I won't do that.") -> tp.TurnProvenance:
     turn = tp.begin(session_id=sid, model="m45-12", body=body)
-    turn.decision(rule_row=1, rule_predicate="closed_line", action="deliver")
+    turn.decision(rule_row=1, rule_predicate="doctrine", action="deliver")
     return turn
 
 
 def test_bare_settle_over_empty_body_never_claims_delivery():
     """The defect itself, with NO new argument: `settle_delivery(turn, "")`
     used to fall through to its tail and stamp delivered=True."""
-    turn = _turn("m45-12-bare", body="the closed line, and nothing else")
+    turn = _turn("m45-12-bare", body="the doctrine row, and nothing else")
     returned = tp.settle_delivery(turn, "")
     assert turn.delivered is False, "settle_delivery(turn, '') claimed a delivery"
     assert returned in (FAILURE_REASON, "empty_body_no_text_available"), returned
