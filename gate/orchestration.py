@@ -3588,6 +3588,17 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 session_id=session_id)
         except Exception:  # noqa: BLE001 — telemetry only
             pass
+        try:
+            _hub().logger.info(
+                "M53-26 lane_render chars=%d empty=%d refusal_exhausted=%d "
+                "rejected=%d chain=%r sid=%s",
+                len(str(rendered or "")),
+                0 if str(rendered or "").strip() else 1,
+                1 if _rep.get("refusal_exhausted") else 0,
+                len(_rep.get("rejected") or []),
+                str(_render_chain_used or ""), session_id)
+        except Exception:  # noqa: BLE001 — telemetry only
+            pass
         # ------------------------------------------------------------------
         # M53-06 §3/§4 — SWAP RECORDED, ENVELOPE WRITTEN OUT OF BAND.
         #
