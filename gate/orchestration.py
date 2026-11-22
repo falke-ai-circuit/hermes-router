@@ -843,18 +843,6 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # execution stays at on_llm_execution).
         _claim_decision = _hub()._route_gate.claim_pass(
             content, session_id, model, request=request, context=context)
-        # LEG 12 FIX 2 as REKEYED by M34-08: the bare-call guard fires on a
-        # ROUTING REQUEST (turn-claim record / pending declared claim /
-        # emitted request_routing tool call), never on the word "uncensored".
-        # Word evidence is recorded on the row and can never fire alone; no
-        # request -> no fire, logged as reason=no_routing_request. Advisory
-        # only — never routes, never claims.
-        if not _claim_decision.route:
-            try:
-                _hub()._route_gate.bare_call_guard(
-                    content, session_id, str(model or ""), request=request)
-            except Exception:  # noqa: BLE001 — advisory must never break routing
-                _hub().logger.debug("bare-call reminder error", exc_info=True)
         if _claim_decision.route:
             # LEG 8 (blueprint §2): declared SHADOW routes execute on the
             # UNCENSORED RENDER chain (abliteration primary / Venice
