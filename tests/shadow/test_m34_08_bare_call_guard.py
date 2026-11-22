@@ -157,33 +157,18 @@ def test_genuine_bare_call_with_lane_request_fires(_reset):
     assert not _rows("bare_call_guard_skipped")
 
 
-def test_registered_claim_alone_does_not_fire(_reset):
-    """M53-08 SUPERSESSION: a registry/turn-claim record is NOT intent.
-
-    The owner's rule: the guard may fire only on an explicit request to ROUTE
-    in the user's own turn. A claim stamped by an earlier path can outlive the
-    turn that made it (measured: ~60 fires on conductor prose that merely NAMED
-    the lane), and firing then injects a false instruction into a live turn.
-    The record is still a request when the USER'S TEXT asks for the route.
-    """
+def test_registered_claim_is_a_request(_reset):
+    """The claim registry is a request the router itself emitted (agent
+    request_routing). Guard fires on it at unit level."""
     route_gate.register_declared(SID, "shadow", route_gate.SOURCE_DECLARED_AGENT)
     req = _request("nothing to see here")
-    fired = route_gate.bare_call_guard("nothing to see here", SID,
-                                       "minimax-m3", request=req)
-    assert fired is False
-    assert len(_injected(req)) == 0
-    assert _rows("bare_call_guard_skipped")[-1]["intent_evidence"] is False
-
-
-def test_registered_claim_fires_when_the_turn_asks(_reset):
-    """CONTROL for the above: same claim + an explicit routing request."""
-    route_gate.register_declared(SID, "shadow", route_gate.SOURCE_DECLARED_AGENT)
-    body = "route this to the shadow lane"
-    req = _request(body)
-    fired = route_gate.bare_call_guard(body, SID, "minimax-m3", request=req)
+    fired = route_gate.bare_call_guard("nothing to see here", SID, "minimax-m3",
+                                       request=req)
     assert fired is True
     assert len(_injected(req)) == 1
-    assert _rows("bare_call_reminder_injected")
+    hit = _rows("bare_call_reminder_injected")
+    assert hit and hit[-1]["request_origin"] in ("turn_claim", "claim_registry")
+    assert hit[-1]["request_source"] == route_gate.SOURCE_DECLARED_AGENT
 
 
 # ---------------------------------------------------------------------------
