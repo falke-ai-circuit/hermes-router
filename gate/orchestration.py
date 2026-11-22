@@ -2508,7 +2508,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # `declined` path, whose route_fired flag is set further down.
         _pre_ok = _route_precondition_ok(_gate_row, _att_parsed.get("type"))
         _unc_domain = bool(_pre_ok)
-        if _rule_replace and not _pre_ok:
+        # ARMED ONLY: an unarmed profile is byte-identical to before this
+        # unit (a constraint of the brief), so the precondition may not touch
+        # its rule-1 route.
+        if _att_armed and _rule_replace and not _pre_ok:
             _rule_action = "deliver"
             _rule_replace = False
             try:
