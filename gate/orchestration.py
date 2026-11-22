@@ -3659,6 +3659,32 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 str(_render_chain_used or ""), session_id)
         except Exception:  # noqa: BLE001 — telemetry only
             pass
+        # M53-30: HAND THE RENDER OVER. Measured: would_route=1 and the lane
+        # rendered 4k-12k chars on every turn, yet 4 of 6 still decided D6
+        # `no_admissible_lane` - the body existed and the decision was told
+        # there was none. The scope bridge is the channel the delivery edge
+        # already reads (registration:436), but only the DECLARED path wrote
+        # to it (orchestration:886), so `render_note` was 0 and the reader's
+        # `found_chars` was always 0. File the render under the SAME key the
+        # reader derives: scope_for(session_id).
+        if str(rendered or "").strip():
+            try:
+                _scope_w = ""
+                try:
+                    _scope_w = str(_hub().state.scope_for(session_id) or "")
+                except Exception:  # noqa: BLE001
+                    _scope_w = ""
+                if _scope_w:
+                    _hub().state.note_render_for_scope(_scope_w, rendered)
+                    _hub().logger.info(
+                        "M53-30 render_handoff scope=%s chars=%d sid=%s",
+                        _scope_w, len(str(rendered or "")), session_id)
+                else:
+                    _hub().logger.info(
+                        "M53-30 render_handoff NO_SCOPE chars=%d sid=%s",
+                        len(str(rendered or "")), session_id)
+            except Exception:  # noqa: BLE001 — handoff never breaks a turn
+                pass
         # ------------------------------------------------------------------
         # M53-06 §3/§4 — SWAP RECORDED, ENVELOPE WRITTEN OUT OF BAND.
         #
