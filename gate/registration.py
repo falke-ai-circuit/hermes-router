@@ -435,6 +435,18 @@ def on_transform_llm_output_guarded(**kwargs):
             from ..core import state as _st_r
             _scoped_render = _st_r.read_render_for_scope(
                 _st_r.scope_for(str(kwargs.get("session_id") or "")) or "")
+            # M53-29: the READER-side key. Compared against scope_write, this
+            # says whether the render was filed under a key POST can derive. A
+            # mismatch here is a confidently-wrong "no lane" downstream, not an
+            # absent render.
+            try:
+                _hub().logger.info(
+                    "M53-29 scope_read sid=%s scope='%s' found_chars=%d",
+                    str(kwargs.get("session_id") or ""),
+                    _st_r.scope_for(str(kwargs.get("session_id") or "")) or "",
+                    len(str(_scoped_render or "")))
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         except Exception:  # noqa: BLE001 — never breaks delivery
             _scoped_render = ""
         _lane_in = out

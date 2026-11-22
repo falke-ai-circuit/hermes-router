@@ -616,6 +616,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     _ingress_sid, _hub().state.hash_text(_raw_ask or ""),
                     is_continuation=bool(_is_tool_loop)))
             _hub().state.record_scope(_ingress_sid, _scope_id)
+            # M53-29: print the WRITER-side key. The reader derives its key from
+            # kwargs["session_id"], so if ingress_sid differs the render is filed
+            # under a key POST can never compute - indistinguishable in the log
+            # from "the lane never rendered".
+            try:
+                _hub().logger.info("M53-29 scope_write ingress_sid=%s scope=%s",
+                                   _ingress_sid, _scope_id)
+            except Exception:  # noqa: BLE001 — telemetry only
+                pass
         except Exception:  # noqa: BLE001 — identity is best-effort, never binding
             _scope_id = ""
 
@@ -877,6 +886,9 @@ def on_llm_request(*, request, original_request, **context) -> dict:
                     # scope id — the one key POST already computes.
                     try:
                         _hub().state.note_render_for_scope(_scope_id, rendered)
+                        _hub().logger.info(
+                            "M53-29 render_note scope=%s chars=%d sid=%s",
+                            _scope_id, len(str(rendered or "")), session_id)
                     except Exception:  # noqa: BLE001 — capture never breaks
                         pass
                     # R26-2b: whitespace-only render == empty — a route that
