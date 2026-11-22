@@ -1378,6 +1378,29 @@ def _reset_declaration_state() -> None:
     _CONTRACT_DELIVERED_AT.clear()
 
 
+
+def _route_precondition_ok(gate_row: Any, type_: Any) -> bool:
+    """M53-11c — THE ONE ROUTE PRECONDITION.
+
+    route  <=>  the PRE domain is UNC  AND  the reply's own outcome is not
+    compliant (denial | softening | unknown/missing all route).
+
+    This is the ONLY place the rule exists. It is a consequence, not a guard:
+    a closed label or an abstained gate is simply not an unc domain, so it can
+    never satisfy the precondition. No content judgement, no minors branch, no
+    acceptability test, no ask text.
+    """
+    try:
+        from ..features.detection import domain_gate as _dg
+        if not bool(_dg.domain_detected(gate_row)):
+            return False
+        from ..features.detection.attestation import (
+            response_outcome as _ro, OUTCOME_COMPLIANT as _oc)
+        return _ro(type_) != _oc
+    except Exception:  # noqa: BLE001 — unreadable facts are not a precondition
+        return False
+
+
 def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                             model: str = "", platform: str = "", **context) -> Optional[str]:
     try:
@@ -2480,17 +2503,12 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # Every routed row enters the one replacement chain; the decision
         # edge, not the table, says whether the render is delivered.
         _rule_replace = _rule_action == "route"
-        # M53-11 D1: A ROUTE REQUIRES AN UNC DOMAIN. The domain is PRE's job;
-        # when PRE abstained or named a closed/empty domain, NOTHING happens
-        # and the draft ships untouched. The rule-1 `declined` path used to
-        # route on the TYPE alone — measured defect: gate=abstain,
-        # type=declined, route=True on a closed-line ask (i=59).
-        try:
-            from ..features.detection import domain_gate as _dg_guard
-            _unc_domain = bool(_dg_guard.domain_detected(_gate_row))
-        except Exception:  # noqa: BLE001 — an unreadable domain is not a detection
-            _unc_domain = False
-        if _rule_replace and not _unc_domain:
+        # M53-11c: the ONE precondition, evaluated here because every route
+        # for this turn is committed from this decision — including the rule-1
+        # `declined` path, whose route_fired flag is set further down.
+        _pre_ok = _route_precondition_ok(_gate_row, _att_parsed.get("type"))
+        _unc_domain = bool(_pre_ok)
+        if _rule_replace and not _pre_ok:
             _rule_action = "deliver"
             _rule_replace = False
             try:
@@ -2581,9 +2599,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     _rule_action = "deliver"
                     _rule_replace = False
                 elif _att_parsed.get("type") == "declined":
-                    # type=declined IS the boolean trigger; rule 1 has fired
-                    # above and this keeps the row's count honest.
-                    _att_route_fired = 1
+                    # M53-11c: only a permitted route may claim to have routed.
+                    if _pre_ok:
+                        _att_route_fired = 1
                 # disagrees with PRE's verdict on the same ask. Delivery is
                 # unaffected — this is a measurement, never a sanction.
                 try:
@@ -2687,16 +2705,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001
                 _outcome, _OC = "unknown", "compliant"
             _type_c = str(_att_type_t or "").strip().lower()
-            # HARD SAFETY LINE: sexual content involving minors is never
-            # handed to a lane. This is the ONE category the router still
-            # declines to route; every other closed-shaped ask routes.
-            _minors = False
-            try:
-                from ..features.detection.domain_gate import CLOSED_DOMAINS as _CD
-                _minors = str((_gate_row or {}).get("domain") or "") in _CD
-            except Exception:  # noqa: BLE001
-                _minors = False
-            if _detected and _outcome != _OC and not _minors:
+            # M53-11c: no minors branch. CLOSED_DOMAINS is disjoint from
+            # UNC_DOMAINS, so a closed label can never satisfy the
+            # precondition — the safety is a consequence of the predicate.
+            if _detected and _outcome != _OC:
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
                 # route — the render replaces the body.
