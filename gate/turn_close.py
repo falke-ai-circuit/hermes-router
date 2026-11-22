@@ -48,6 +48,19 @@ def on_post_llm_call(*, session_id: str = "", assistant_response: str = "",
                 session_id=sid, body=body, turn_id=str(turn_id or ""))
         except Exception:  # noqa: BLE001 — the decision never blocks the close
             pass
+        # M53-28b: the gate row is TURN-SCOPED state, so close it with the turn.
+        # The only production clear was TTL expiry (900s), and every POST read
+        # calls read(sid) WITHOUT the ask, so ask_sig is never enforced - a row
+        # written at POST (the M53-28 fallback) could be read by a LATER turn
+        # whose PRE hook did not run, letting one turn's detection answer
+        # another. Cleared after the skip-decision so a complexity-skipped turn
+        # still sees its own row.
+        try:
+            from ..core import state as _st_close
+
+            _st_close.clear_pre_domain(sid)
+        except Exception:  # noqa: BLE001 — the close edge never breaks a turn
+            pass
         marker = ""
         try:
             from ..features.detection import declaration as _decl
