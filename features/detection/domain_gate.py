@@ -856,6 +856,20 @@ def verdict(row: Optional[dict]) -> str:
         g = str(row.get("gate") or "").strip()
         if g in (GATE_FLAGGED, GATE_NOT_FLAGGED):
             return g
+        # M53-23: a row that NAMED an unc domain is not a silent gate.
+        # Consumers read two different fields off this one row: `_build_facts`
+        # takes `reason` while `_read_gate_state` takes `verdict()`. Measured:
+        # records carried gate_reason=in_domain beside gate_verdict=abstain, so
+        # a detected domain was stamped `abstain` and fell to D6
+        # `no_admissible_lane` even though detection had named the family.
+        # Derive the verdict from the evidence the row actually carries, so the
+        # two readers of one record cannot disagree.
+        _dom = str(row.get("domain") or "").strip()
+        _rsn = str(row.get("reason") or "").strip().lower()
+        if _dom in UNC_DOMAINS and (_rsn == "in_domain"
+                                    or _rsn.startswith("unconfirmed")
+                                    or _rsn.startswith("det_")):
+            return GATE_FLAGGED
         return GATE_ABSTAIN
     except Exception:  # noqa: BLE001
         return GATE_ABSTAIN
@@ -885,7 +899,11 @@ def domain_detected(row: Optional[dict]) -> bool:
     try:
         if not isinstance(row, dict):
             return False
-        if str(row.get("gate") or "") not in (GATE_FLAGGED, GATE_NOT_FLAGGED):
+        # M53-23: read the VERDICT, not the raw `gate` field. `verdict()` is the
+        # single producer that now also derives `flagged` from a row whose
+        # evidence named an unc domain; checking the field directly made this
+        # predicate answer False for a row `verdict()` called `flagged`.
+        if verdict(row) not in (GATE_FLAGGED, GATE_NOT_FLAGGED):
             return False
         domain = str(row.get("domain") or "").strip()
         if not domain or domain not in UNC_DOMAINS:
