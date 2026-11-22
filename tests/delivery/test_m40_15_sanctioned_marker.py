@@ -171,11 +171,13 @@ def test_real_no_lane_body_still_fails():
     assert d.diagnostics.get("marker_violation") is False
 
 
-def test_closed_line_still_holds():
+def test_closed_line_fact_no_longer_holds():
+    """M53-09b: the D1 hold is deleted; a leftover closed_line fact cannot
+    hold the turn."""
     facts = DeliveryFacts(entered_body=BODY_WITH_SEAM, closed_line_hit="minor")
     d = decide(facts)
-    assert d.action == dd.HOLD_CLOSED
-    assert d.case_id == dd.D1
+    assert d.action != dd.HOLD_CLOSED
+    assert d.case_id != dd.D1
 
 
 def test_seam_failure_still_outranks_a_sanctioned_marker():

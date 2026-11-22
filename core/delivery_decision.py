@@ -630,15 +630,8 @@ def decide(facts: Any) -> Decision:
         body_class = str(facts.body_class or COMPLIANCE)
         rule_id = str(facts.rule_id or "none")
 
-        # ---- P0 D1: a closed line is a property of the ASK --------------
-        # Nothing overrides it: not compliance, not a lane render, not
-        # declined="true", not rule_1, not a config key.
-        if str(facts.closed_line_hit or ""):
-            clean, removed = _strip(entered)
-            diag["closed_line"] = str(facts.closed_line_hit)
-            return Decision(HOLD_CLOSED, D1, REASON_CLOSED_LINE, SOURCE_MAIN,
-                            removed, diag, clean)
-
+        # M53-09b: P0 D1 (CLOSED_LINE_HOLD) is deleted. The router does not
+        # judge content — routing is decided by the response-type tag.
         # ---- P1 D2: no admissible candidate -> the turn fails loudly ------
         entered_clean, entered_strip = _strip(entered)
         lane = facts.lane_render

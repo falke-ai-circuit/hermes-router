@@ -77,13 +77,13 @@ def test_t_c1_pre_skip_verdict_holds_a_closed_line(rows):
     assert v is not None and v["blocked"] is True, v
     assert v["kind"] == "real_person"
 
-    # ...and that verdict reaches the delivery edge
+    # M53-09b: the persisted verdict no longer vetoes the delivery edge. A
+    # closed-shaped ask is routed like any other (the unc model decides).
     with mock.patch.object(plugin.router, "call", return_value=RENDER) as venice:
         reg.on_transform_llm_output_guarded(
             response_text=BODY, session_id=sid, model="m", turn_id="")
-    assert not venice.called, "no lane may be selected on a closed line"
     decided = _events(rows, "delivery_decision")
-    assert decided and decided[-1]["action"] == "HOLD_CLOSED", decided[-1:]
+    assert decided and decided[-1]["action"] != "HOLD_CLOSED", decided[-1:]
 
 
 def test_t_c2_benign_short_ask_is_unchanged(rows):

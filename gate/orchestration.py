@@ -2542,18 +2542,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                         reason="guard_error", session_id=session_id)
                 except Exception:  # noqa: BLE001 — telemetry only
                     pass
-            if _cl_blocked:
-                _rule_replace = False
-                _rule_action = "deliver"
-                try:
-                    _hub()._log_route(
-                        "POST", event_detail="closed_line_blocked",
-                        kind=_cl_kind, reason=_cl_reason,
-                        domain=str(_att_parsed.get("domain") or ""),
-                        replace_ms=0, render_emitted=0,
-                        session_id=session_id)
-                except Exception:  # noqa: BLE001 — telemetry only
-                    pass
+            # M53-09b: no closed-line veto. A closed-shaped ask that the gate
+            # detected routes like any other; the unc model owns that call.
         # ------------------------------------------------------------------
         # M53-02 ENFORCEMENT (spec §2.b). On an ARMED turn a missing or
         # malformed attestation NEVER falls through to the four-class
@@ -2708,7 +2698,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _detected = bool(_dg_det.domain_detected(_gate_row))
             except Exception:  # noqa: BLE001 — an unreadable gate is not a detection
                 _detected = False
-            if not _att_type_t and _detected:
+            # M53-09b — THE POST PREDICATE (owner contract):
+            #   detected domain AND tag in {denial, unknown, unclear,
+            #   unparseable, EMPTY/absent} -> ROUTE to the unc lane
+            #   tag = produced | clarify     -> deliver main, no route
+            # EMPTY and UNKNOWN are the SAME bucket: a missing tag is not a
+            # pass. Measured on the 82-case corpus: 75 rows carried an empty
+            # tag and only 10 routed.
+            _type_c = str(_att_type_t or "").strip().lower()
+            _ROUTE_TAGS = ("", "declined", "denied", "denial", "refused",
+                           "unknown", "unclear", "unparseable")
+            # HARD SAFETY LINE: sexual content involving minors is never
+            # handed to a lane. This is the ONE category the router still
+            # declines to route; every other closed-shaped ask routes.
+            _minors = False
+            try:
+                from ..features.detection.domain_gate import CLOSED_DOMAINS as _CD
+                _minors = str((_gate_row or {}).get("domain") or "") in _CD
+            except Exception:  # noqa: BLE001
+                _minors = False
+            if _detected and _type_c in _ROUTE_TAGS and not _minors:
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
                 # route — the render replaces the body.

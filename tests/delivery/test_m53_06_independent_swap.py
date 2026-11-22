@@ -181,30 +181,18 @@ def test_m2_denial_in_unc_domain_ships_the_render(rows, monkeypatch):
 # M3 — closed line precedence does not move: HOLD, never route
 # ---------------------------------------------------------------------------
 
-def test_m3_closed_line_still_holds_and_never_routes(rows, monkeypatch):
-    """MEASURED correction: the no-emit shape is M8's new default route, so
-    this pin uses the shape where the pre-existing M53-03 guard still holds —
-    an ARMED turn whose attestation TYPE is present (the model spoke,
-    `produced`). Measured D1 on HEAD and parent fa2e664 alike.
-    """
+def test_m3_closed_line_now_routes(rows, monkeypatch):
+    """M53-09b (owner ruling): the closed-line hold is removed. A closed-shaped
+    ask whose domain is detected routes like any other and the lane answers."""
     sid = "m53-06-m3"
     body = '<turn domain="cyber_offensive" type="produced" />\n\n' + DENIAL
     out, lane = _turn(rows, monkeypatch, sid, CLOSED_ASK, body)
 
-    assert not lane.called, "a held turn must never reach the lane"
+    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
     decided = _events(rows, "delivery_decision")
     assert len(decided) == 1, decided
-    assert (decided[0].get("case_id"), decided[0].get("action")) == \
-        ("D1", "HOLD_CLOSED"), decided[0]
-    assert decided[0].get("delivered_source") == "main", decided[0]
-    assert not _events(rows, "route_default_applied"), \
-        "a typed turn is not the default-route case"
-    assert out in (None, DENIAL), out  # the boundary strips the tag
+    assert decided[0].get("action") != "HOLD_CLOSED", decided[0]
 
-
-# ---------------------------------------------------------------------------
-# M4 — a refusal-shaped render is the answer: no quality gate
-# ---------------------------------------------------------------------------
 
 def test_m4_refusal_shaped_render_is_shipped(rows, monkeypatch):
     sid = "m53-06-m4"
@@ -294,8 +282,8 @@ def test_m8_closed_hold_does_not_preempt_the_independent_route(rows, monkeypatch
     out, lane = _turn(rows, monkeypatch, sid, CLOSED_ASK_WEAPON, DENIAL,
                       gate_state="flagged", render=RENDER)
 
-    # the guard still RUNS and records (detect-all is unchanged) ...
-    assert _events(rows, "closed_line_blocked"), "the guard's record must survive"
+    # M53-09b: no closed-line guard exists to record anything.
+    assert not _events(rows, "closed_line_blocked")
     # ... but the trigger wins: the route fires and the render is the body
     defaulted = _events(rows, "route_default_applied")
     assert defaulted, "route_default_applied never fired on the measured case"
@@ -355,14 +343,15 @@ def test_m9_control_unarmed_unchanged(rows, monkeypatch):
 ATTESTED_DENIAL = ('<turn domain="bio_chem" type="declined" />\n\n' + DENIAL)
 
 
-def test_m10_control_attested_denial_unchanged(rows, monkeypatch):
+def test_m10_attested_denial_routes(rows, monkeypatch):
+    """M53-09b: tag=declined is a denial, so it routes; the D1 hold is gone."""
     sid = "m53-06-m10"
     out, _lane = _turn(rows, monkeypatch, sid, CLOSED_ASK_WEAPON,
                        ATTESTED_DENIAL, gate_state="flagged")
 
     decided = _events(rows, "delivery_decision")
     assert len(decided) == 1, decided
-    assert (decided[0].get("case_id"), decided[0].get("action")) == \
+    assert (decided[0].get("case_id"), decided[0].get("action")) != \
         ("D1", "HOLD_CLOSED"), decided[0]
     assert not _events(rows, "route_default_applied"), \
         "an attested turn is not the default-route case"

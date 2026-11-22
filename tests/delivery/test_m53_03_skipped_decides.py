@@ -168,14 +168,15 @@ def test_m3b_skipped_closed_line_still_holds_d1(rows, monkeypatch):
     with mock.patch.object(plugin.router, "call", return_value="LANE RENDER") as lane:
         out = _close(sid, REFUSAL)
 
-    assert not lane.called, "a skipped closed line must never render a lane"
+    # M53-09b: no closed-line hold exists; the skipped turn still decides once.
     decided = _events(rows, "delivery_decision")
     assert len(decided) == 1, decided
     decision = decided[0]
-    assert (decision.get("case_id"), decision.get("action")) == ("D1", "HOLD_CLOSED"), decision
-    assert decision.get("delivered_source") == "main", decision
-    assert int(decision.get("delivered_chars") or 0) == len(REFUSAL), decision
-    assert out is None, out
+    assert (decision.get("case_id"), decision.get("action")) != ("D1", "HOLD_CLOSED"), decision
+    # The pin's subject was the HOLD. With it gone the remaining contract is
+    # that this skipped turn still decides exactly once and is not held by a
+    # closed-line veto (the delivery source depends on whether the lane答ed).
+    assert decision.get("delivered_source") != "closed_line", decision
 
 
 # ---------------------------------------------------------------------------

@@ -209,7 +209,7 @@ def test_a_reprompt_refusal_reaches_the_gate_and_the_lane(monkeypatch, _isolated
     print("\n(A2) provenance:", json.dumps(row, sort_keys=True))
 
 
-def test_a_closed_line_ask_is_not_forced_open_by_the_backstop(monkeypatch, _isolated):
+def test_a_closed_line_ask_now_routes_like_any_other(monkeypatch, _isolated):
     """A forced route must never outrun the closed-line hold."""
     from hermes_router.features.detection import compound_split
 
@@ -227,7 +227,10 @@ def test_a_closed_line_ask_is_not_forced_open_by_the_backstop(monkeypatch, _isol
         user_message=closed_ask)
     out = "" if out is None else str(out)
 
-    assert RENDERED not in out, "a closed-line ask was rendered by the backstop"
+    # M53-09b (owner ruling): the closed-line hold is deleted, so the body
+    # refusal path routes this ask and the lane's answer ships. The router no
+    # longer judges content.
+    assert RENDERED in out, "a closed-shaped ask now routes like any other"
 
 
 # --------------------------------------------------------------------------- #

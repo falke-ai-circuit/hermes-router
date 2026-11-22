@@ -301,24 +301,9 @@ def on_transform_llm_output_guarded(**kwargs):
     # decide() names the render. No kind test, no domain test on the ASK, no
     # acceptability test — the conjunction is the spec's own mechanical rule.
     _route_default_turn = _m5306_default_route(kwargs)
-    _closed_hit = "" if _route_default_turn else _closed_line_hit(kwargs)
-    # M53-03 R20: when the ARMED guard supplied this hit, the wrapper claims the
-    # turn BEFORE orchestration runs, so orchestration's own guard row never
-    # writes. Emit it here: the record must survive the shortcut ("detect all"
-    # — the guard changes the ACTION, never the record).
-    if _closed_hit and _hub_dispatcher_armed():
-        try:
-            from ..features.detection import closed_line as _cl_row
-            _lg_cl = _hub_log_route()
-            if _lg_cl is not None:
-                _lg_cl("POST", event_detail="closed_line_blocked",
-                       kind=_closed_hit,
-                       reason=_cl_row.reason_for(_closed_hit),
-                       domain="", replace_ms=0, render_emitted=0,
-                       where="delivery_edge",
-                       session_id=str(kwargs.get("session_id") or ""))
-        except Exception:  # noqa: BLE001 — telemetry only
-            pass
+    # M53-09b: the closed-line hold is removed from this path. The router
+    # routes on the TAG; the unc model decides what the ask deserves.
+    _closed_hit = ""
     try:
         from ..core import turn_provenance as _prov_mod
 
@@ -847,97 +832,6 @@ def _m5306_default_route(kwargs) -> bool:
         return False
 
 
-def _closed_line_hit(kwargs) -> str:
-    """THE single call to `compound_split.hard_closed_class` (spec §5).
-
-    Membership of the line list is untouched — this only collapses the two
-    call sites (routed edge + benign edge) into one fact read before delivery.
-    A grader gap returns "" and the turn proceeds; the decision then carries
-    `unjudged` and the ledger counts it. Never raises.
-    """
-    try:
-        from ..passes import dispatcher_pre as _pre
-
-        _armed = bool(_pre.attestation_armed())
-    except Exception:  # noqa: BLE001 — an unreadable arming reads as unarmed
-        _armed = False
-
-    if not _armed:
-        # UNARMED: byte-identical behaviour. No verdict store is consulted and
-        # no guard exception can ever claim a turn.
-        try:
-            from ..features.detection import compound_split as _cs
-            from ..features.detection import closed_line as _cl_u
-
-            _hard = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
-            return _cl_u.canonical_kind(_hard) if _hard else ""
-        except Exception:  # noqa: BLE001
-            return ""
-
-    from ..features.detection import closed_line as _cl
-
-    _sid = str(kwargs.get("session_id") or "")
-    _tid = str(kwargs.get("turn_id") or "")
-
-    # B: ONE verdict per turn. If the seam already classified, read it — do not
-    # classify again from a different ask-recovery path.
-    _prev = _cl.read_verdict(_sid, _tid)
-    if _prev is not None:
-        return str(_prev.get("kind") or "") if _prev.get("blocked") else ""
-
-    # ABSENCE IS LOUD: a missing verdict must be a readable counter, never a
-    # silent reopen of the D5 lane hole.
-    try:
-        _lg_a = _hub_log_route()
-        if _lg_a is not None:
-            _lg_a("POST", event_detail="closed_line_verdict_absent",
-                  reason=_cl.absence_reason(_sid, _tid),
-                  key_path=_cl.verdict_path(_tid),
-                  session_id=_sid)
-    except Exception:  # noqa: BLE001 — telemetry only
-        pass
-
-    # hard_closed_class is an ADDITIONAL contributor — a hit is still a hit —
-    # never the only source: it fires on 6 of the 28 closed lines.
-    try:
-        from ..features.detection import compound_split as _cs
-
-        _hard = str(_cs.hard_closed_class(_ask_for(kwargs)) or "")
-    except Exception:  # noqa: BLE001
-        _hard = ""
-    _kind_h = _cl.canonical_kind(_hard) if _hard else ""
-
-    try:
-        from ..features.detection import attestation as _attm
-
-        _decl = _attm.read_declaration(_sid, _tid) if _tid else {}
-        _blocked, _kind, _reason = _cl.classify(
-            _ask_for(kwargs),
-            str((_decl or {}).get("domain") or ""),
-            str((_decl or {}).get("type") or ""))
-        if _kind_h and not _blocked:
-            # a hard-detector hit can only ADD a hold, never remove one
-            _blocked, _kind, _reason = True, _kind_h, _cl.reason_for(_kind_h)
-        # D: the key contract is explicit — session-only when turn_id is empty,
-        # never silently reported as an attested-turn verdict.
-        _cl.note_verdict(_sid, _tid, _blocked, _kind, _reason,
-                         "edge_" + _cl.verdict_path(_tid))
-        return str(_kind or "") if _blocked else ""
-    except Exception:  # noqa: BLE001 — fail SAFE in both directions, not by
-        # claiming: do not let the lane substitute, do not skip the record.
-        _cl.note_guard_error(_sid, _tid)
-        try:
-            _lg_e = _hub_log_route()
-            if _lg_e is not None:
-                _lg_e("POST", event_detail="closed_line_guard_error",
-                      reason="guard_error", where="delivery_edge",
-                      key_path=_cl.verdict_path(_tid),
-                      session_id=_sid)
-        except Exception:  # noqa: BLE001 — telemetry only
-            pass
-        return ""          # no D1 claim: delivery MAIN still records
-
-
 def _build_facts(entered, kwargs, turn, lane_render, closed_hit, attempt: int = 0,
                  prior_strip_bytes: int = 0):
     """Build the frozen facts record ONCE at the delivery edge (spec §1.1).
@@ -1207,7 +1101,7 @@ def decide_skipped_turn(*, session_id: str, body: str, turn_id: str = "") -> str
 
     M53-03 item 2: a turn that exits PRE via `complexity_skip` (and any turn
     whose transform pass the host skips) is observed only by the turn-close
-    edge. This calls the SAME path the delivery edge uses — `_closed_line_hit`
+    edge. This calls the SAME path the delivery edge uses — the facts builder
     -> `_build_facts` -> `_decide` -> `_log_decision` — so the turn gets one
     D1..D6 row and a definite delivered body. The ask is recovered through
     `_ask_for`, whose `state.get_last_seen` fallback is the only source at this
@@ -1224,7 +1118,7 @@ def decide_skipped_turn(*, session_id: str, body: str, turn_id: str = "") -> str
             return ""
         kwargs = {"session_id": sid, "turn_id": str(turn_id or ""),
                   "response_text": entered}
-        closed_hit = _closed_line_hit(kwargs)
+        closed_hit = ""
         facts = _build_facts(entered, kwargs, None, None, closed_hit)
         decision = _decide(facts)
         if decision is not None and decision.action == _dd.CONSULT_REENTER:

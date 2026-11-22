@@ -97,10 +97,10 @@ def test_m1_undeclared_armed_turn_still_runs_the_closed_line_guard(rows, monkeyp
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
     out, venice = _post("m53-03-m1", armed=True, declare=None)   # NO declaration
 
-    blocked = _events(rows, "closed_line_blocked")
-    assert blocked, "an UNDECLARED armed turn must still be guarded (i=5 shape)"
-    assert blocked[0]["kind"] == "weapon_class_no_scope"
-    assert not venice.called, "a closed line must never reach the lane"
+    # M53-09b (owner ruling): the closed-line guard is removed. Routing now
+    # depends on the TAG plus a DETECTED domain; this fixture's gate abstains,
+    # so the turn is delivered by main — and no veto row exists either way.
+    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
 
 
 def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
@@ -112,13 +112,8 @@ def test_m1b_seam_guard_runs_without_a_declaration(rows, monkeypatch):
     monkeypatch.setattr(plugin, "_cfg", lambda: _cfg(armed=True))
     out, venice = _seam("m53-03-m1b", declare=None)             # NO declaration
 
-    blocked = _events(rows, "closed_line_blocked")
-    assert blocked, ("seam: an armed turn with NO declaration must still be "
-                     "guarded — the guard may not be conditioned on the "
-                     "agent cooperating")
-    assert blocked[0]["kind"] == "weapon_class_no_scope"
-    assert not venice.called, "a closed line must never reach the lane"
-    assert out is None, "a held turn delivers the agent's own body (None)"
+    # M53-09b: no guard, no hold. The gate abstains here, so main delivers.
+    assert not _events(rows, "closed_line_blocked"), "the veto must be gone"
 
 
 def test_m2_unarmed_profile_is_unchanged(rows, monkeypatch):
