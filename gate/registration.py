@@ -615,34 +615,6 @@ def on_transform_llm_output_guarded(**kwargs):
                 _turn.withhold("marker_survived_boundary_strip")
             except Exception:  # noqa: BLE001
                 pass
-            # M53-25 DIAGNOSTICS. The withhold records carried marker=None and
-            # reason='' so 15 detected turns were attributed to "no viable lane"
-            # with no evidence about WHICH marker survived or where it sat. Log
-            # the marker (bounded), its position, the pre-withhold size and the
-            # gate row, so a withhold can be told apart from a routing miss
-            # without guessing. Structural fields only - never the body text.
-            try:
-                _pre = str(final or "")
-                try:
-                    from ..features.detection import domain_gate as _dg_w
-
-                    _roww = _dg_w.read(str(kwargs.get("session_id") or ""))
-                except Exception:  # noqa: BLE001 — diagnostics never block
-                    _roww = None
-                _lgw = _hub_log_route()
-                if _lgw is not None:
-                    _lgw("POST", event_detail="withhold_diagnostics",
-                         marker=str(locals().get("_marker_text")
-                                    or locals().get("_orig_marker") or "")[:48],
-                         pre_chars=len(_pre),
-                         turn_tag_count=_pre.lower().count("<turn"),
-                         first_line_tag=1 if _pre.strip().lower().startswith(
-                             "<turn") else 0,
-                         gate_domain=str((_roww or {}).get("domain") or ""),
-                         gate_reason=str((_roww or {}).get("reason") or ""),
-                         session_id=str(kwargs.get("session_id") or ""))
-            except Exception:  # noqa: BLE001
-                pass
     except Exception:  # noqa: BLE001 — the boundary never breaks delivery
         pass
     # M53-02 (round 6): BOUNDARY ATTESTATION FALLBACK. When POST classification
