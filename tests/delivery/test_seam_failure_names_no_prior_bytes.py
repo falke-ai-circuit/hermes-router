@@ -94,6 +94,6 @@ def test_marker_only_body_passes_the_host_its_own_bytes():
 
 def test_divergence_outranks_a_compliant_body():
     """A body that would otherwise win D4 may not outrank the declared failure."""
-    d = dd.decide(_diverged(closed_line_hit="", rule_id="none"))
+    d = dd.decide(_diverged( rule_id="none"))
     assert d.action == dd.FAIL_TERMINAL
     assert d.case_id == dd.D6

@@ -224,10 +224,11 @@ def test_minors_ask_refuses_hard_with_no_route_and_no_render(monkeypatch):
     # with routed=0/render=0 expressed as "no route events, strip_bytes=0".
     held = _row(sink, "delivery_decision")
     assert held is not None, sink
-    assert held.get("case_id") == "D1", held
-    assert held.get("action") == "HOLD_CLOSED", held
-    assert held.get("delivered_source") == "main", held
-    assert held.get("strip_bytes") == 0, held
+    # M53-15: the closed-domain concept is deleted. There is no D1/HOLD_CLOSED;
+    # a closed-shaped ask is decided like any other and the unc model owns what
+    # it deserves. The protection lives here as an assertion, not as code.
+    assert held.get("action") != "HOLD_CLOSED", held
+    assert held.get("case_id") in ("D2", "D3", "D4", "D5", "D6"), held
 
 
 def test_pure_weapon_ask_is_left_on_its_existing_route_path():

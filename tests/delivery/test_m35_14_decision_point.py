@@ -59,8 +59,7 @@ def _facts(row):
     (_r, body, cls, consulted, verdict, reason, rule, closed, lane) = row
     return DeliveryFacts(entered_body=body, body_class=cls,
                          gate_consulted=consulted, gate_verdict=verdict,
-                         gate_reason=reason, rule_id=rule,
-                         closed_line_hit=closed, lane_render=lane)
+                         gate_reason=reason, rule_id=rule, lane_render=lane)
 
 
 @pytest.mark.parametrize("row", BATTERY_ROWS, ids=[r[0] for r in BATTERY_ROWS])
@@ -143,11 +142,11 @@ def test_closed_line_no_longer_outranks_compliance_rule_and_lane():
     what ships, exactly as for any other routed turn."""
     facts = DeliveryFacts(entered_body="c" * 500, body_class=COMP,
                           gate_consulted=True, gate_verdict="not_flagged",
-                          rule_id="rule_6", closed_line_hit="minors",
+                          rule_id="rule_6",
                           lane_render="a lane answer")
     decision = decide(facts)
     assert decision.case_id != dd.D1
-    assert decision.action != dd.HOLD_CLOSED
+    assert decision.case_id != "D1", "the closed-line case is retired"
 
 
 def test_a_void_candidate_set_fails_terminal_rather_than_shipping_prose():

@@ -303,7 +303,6 @@ def on_transform_llm_output_guarded(**kwargs):
     _route_default_turn = _m5306_default_route(kwargs)
     # M53-09b: the closed-line hold is removed from this path. The router
     # routes on the TAG; the unc model decides what the ask deserves.
-    _closed_hit = ""
     try:
         from ..core import turn_provenance as _prov_mod
 
@@ -449,7 +448,7 @@ def on_transform_llm_output_guarded(**kwargs):
         if not (isinstance(_lane_in, str) and _lane_in.strip()) and _scoped_render.strip():
             _lane_in = _scoped_render
         _facts = _build_facts(
-            _entered_dec, kwargs, _turn, _lane_in, _closed_hit,
+            _entered_dec, kwargs, _turn, _lane_in, "",
             attempt=_pre_attempt,
             # M53-02 (round 9): the strip count is carried, not recomputed.
             # The boundary already knows what it deleted (51 bytes); re-running

@@ -125,7 +125,6 @@ def test_closed_line_turn_still_counts_the_turn_end_seam(monkeypatch):
     from hermes_router.gate import registration as R
 
     T.seam_probe_register(None)
-    monkeypatch.setattr(R, "_closed_line_hit", lambda kw: ("closed",))
     ctx = _registered_ctx()
     ctx.hooks["transform_llm_output"](response_text="body", session_id="s1")
     assert T.seam_fires().get("transform_llm_output", 0) == 1

@@ -16,7 +16,6 @@ WHY IT EXISTS (M35-12 spec, M35-14 implementation)
     precedence with one ordered, closed case set.
 
 THE CLOSED CASE SET (first match wins; D6 is the else)
-    P0  D1 CLOSED_LINE_HOLD      closed_line_hit != ""          -> HOLD_CLOSED
     P1  D2 MARKER_VOID           no admissible candidate         -> FAIL_TERMINAL
     P2  D3 GATE_UNCONSULTED      gate unread + replaceable + a0  -> CONSULT_REENTER
     P3  D4 COMPLIANT_DELIVER     body_class == compliance        -> DELIVER_ENTERED
@@ -61,17 +60,16 @@ FAIL_TERMINAL = "FAIL_TERMINAL"
 ACTIONS = (DELIVER_ENTERED, DELIVER_LANE, HOLD_CLOSED, CONSULT_REENTER,
            FAIL_TERMINAL)
 
-D1 = "D1"  # CLOSED_LINE_HOLD
+D1 = "D1"  # retired case id (M53-15); nothing constructs it
 D2 = "D2"  # MARKER_VOID
 D3 = "D3"  # GATE_UNCONSULTED
 D4 = "D4"  # COMPLIANT_DELIVER
 D5 = "D5"  # NONCOMPLIANT_REPLACE
 D6 = "D6"  # NONCOMPLIANT_NO_LANE
 
-CASES = (D1, D2, D3, D4, D5, D6)
+CASES = (D2, D3, D4, D5, D6)
 
 CASE_NAMES = {
-    D1: "CLOSED_LINE_HOLD",
     D2: "MARKER_VOID",
     D3: "GATE_UNCONSULTED",
     D4: "COMPLIANT_DELIVER",
@@ -473,7 +471,6 @@ class DeliveryFacts:
     gate_verdict: str = "abstain"
     gate_reason: str = "not_consulted"
     rule_id: str = "none"
-    closed_line_hit: str = ""
     lane_render: Optional[str] = None
     attempt: int = 0
     #: A failure the SEAM ITSELF declared (delivery integrity). Not a body
@@ -630,7 +627,7 @@ def decide(facts: Any) -> Decision:
         body_class = str(facts.body_class or COMPLIANCE)
         rule_id = str(facts.rule_id or "none")
 
-        # M53-09b: P0 D1 (CLOSED_LINE_HOLD) is deleted. The router does not
+        # M53-15: no closed-line case exists; routing is the tag rule.
         # judge content — routing is decided by the response-type tag.
         # ---- P1 D2: no admissible candidate -> the turn fails loudly ------
         entered_clean, entered_strip = _strip(entered)

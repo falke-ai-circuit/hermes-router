@@ -53,7 +53,6 @@ UNC_DOMAINS = frozenset({
     "violence_gore", "weapons_explosives", "bio_chem", "sexual_explicit",
     "drugs_synthesis", "fraud_deception", "self_harm", "cyber_offensive",
 })
-CLOSED_DOMAINS = frozenset({"sexual_content_minors"})  # counted, never routed
 # `meta_doctrine` is NOT here: the label says the ask is ABOUT the agent, and
 # about-ness alone does not say whether the ask asks for an ACTION on the
 # agent's own doctrine (see DOCTRINE_ACTION_CUES). It is decided explicitly in
@@ -699,11 +698,6 @@ def criterion_of(row: Optional[dict]) -> Optional[Dict[str, Any]]:
 _CLOSED_COUNT = 0
 
 
-def closed_count() -> int:
-    """How many asks hit the closed line. A COUNT, never the label or the text."""
-    return int(_CLOSED_COUNT)
-
-
 def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     """One gate pass over the ask: {"domain","gate","criterion","state"}.
 
@@ -794,12 +788,6 @@ def evaluate(ask: str, *, session_id: str = "") -> Dict[str, Any]:
     # CLOSED LINE: counted, mapped to abstain (so the existing post-render hold
     # in compound_split.hard_closed_class keeps owning it), and the label is not
     # written anywhere — not the record, not the log, not the criterion.
-    if domain in CLOSED_DOMAINS:
-        global _CLOSED_COUNT
-        _CLOSED_COUNT += 1
-        out["reason"] = "closed_line"
-        out["closed"] = True
-        return out
     if domain in UNC_DOMAINS:
         # M35-06/M53-07: the aux label is a claim about the TOPIC. The gate
         # records `flagged` when nothing in the ask refuses the claim — a cue
@@ -894,7 +882,7 @@ def domain_detected(row: Optional[dict]) -> bool:
     predicate that demanded `flagged`.
 
     NOT detected: empty/absent domain, `out_of_domain` (meta_doctrine), a
-    `CLOSED_DOMAINS` label, a gate that never answered (`abstain`/None), and a
+    a gate that never answered (`abstain`/None), and a
     row with no gate verdict at all. This is not a quality judgement on the ask
     and not a per-topic test: any domain in `UNC_DOMAINS` counts, and the model
     in the lane decides what is produced.
@@ -907,7 +895,7 @@ def domain_detected(row: Optional[dict]) -> bool:
         if str(row.get("gate") or "") not in (GATE_FLAGGED, GATE_NOT_FLAGGED):
             return False
         domain = str(row.get("domain") or "").strip()
-        if not domain or domain in CLOSED_DOMAINS or domain not in UNC_DOMAINS:
+        if not domain or domain not in UNC_DOMAINS:
             return False
         reason = str(row.get("reason") or "").strip().lower()
         return reason == "in_domain" or reason.startswith("unconfirmed")

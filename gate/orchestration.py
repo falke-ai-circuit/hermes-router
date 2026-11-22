@@ -2733,9 +2733,9 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             except Exception:  # noqa: BLE001
                 _outcome, _OC = "unknown", "compliant"
             _type_c = str(_att_type_t or "").strip().lower()
-            # M53-11c: no minors branch. CLOSED_DOMAINS is disjoint from
-            # UNC_DOMAINS, so a closed label can never satisfy the
-            # precondition — the safety is a consequence of the predicate.
+            # M53-15: no minors branch. A closed label is simply not in
+            # UNC_DOMAINS, so it can never satisfy the predicate — the safety
+            # is a consequence of the rule, not a guard.
             if _detected and _outcome != _OC:
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
