@@ -129,6 +129,34 @@ _PRE_COMBINED_RE = _join_combined(
 _REFUSAL_COMBINED_RE = _join_combined(_REFUSAL_PHRASES)
 
 
+# Rule-listing exclusion (2026-09-02): a message that QUOTES the doctrine's rule
+# rows (a session summary listing prohibited classes, a policy dump, a ruling
+# record) must not classify as a request for those classes. Live false-fire: a
+# pasted summary naming a prohibited class matched the content group and the
+# router generated the very thing the rules forbid.
+# Detection = explicit list-frame markers, never bare keyword presence: the text
+# must name the rule system itself. Conservative direction: only ever NARROWS
+# pre-routing; POST paths and the classifier registry are unaffected.
+_RULE_LIST_FRAME_RE = re.compile(
+    r"settled[- ]lines?|"
+    r"\bCLOSED=\{|no-bottom|"
+    r"ruling \d{4}-\d{2}-\d{2}|"
+    r"lines? i hold|prohibited classes|hard rules|"
+    r"doctrine.{0,40}(settled|prohibited|line)|"
+    r"(settled|prohibited).{0,40}doctrine",
+    re.IGNORECASE,
+)
+
+
+def is_doctrine_quote(content: str) -> bool:
+    """True when the message frames itself as quoting/listing the doctrine's rule
+    rows rather than requesting content. Used ONLY to narrow pre-router
+    classification."""
+    if not content:
+        return False
+    return bool(_RULE_LIST_FRAME_RE.search(content))
+
+
 def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False) -> List[str]:
     """Return list of matched pre-router pattern group names. Empty = no match.
     Doctrine-quote framing (is_doctrine_quote) suppresses PRE matches — a
@@ -141,6 +169,10 @@ def scan_pre(content: str, *, patterns: List[str], case_sensitive: bool = False)
     for attribution (honors the config-selected subset)."""
     # Injected-context strip (2026-09-08): platform metadata blocks are not
     content = strip_injected_context(content)
+    # Rule-listing exclusion: a document DESCRIBING the rules is not an ask for
+    # them. PRE-only by design; POST matching is never narrowed.
+    if is_doctrine_quote(content):
+        return []
     if case_sensitive:
         return _scan(content, patterns)
     try:

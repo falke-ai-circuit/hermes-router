@@ -109,7 +109,7 @@ def test_mtime_cache_invalidation(tmp_path, monkeypatch):
     c1 = refusal_doctrine.build_doctrine_card(str(tmp_path))
     import time
     time.sleep(0.02)
-    _write_dna(tmp_path, soul=SOUL + "\n- new doctrine row: doxxing is out.\n")
+    _write_dna(tmp_path, soul=SOUL + "\n- new doctrine row: doxxing is out of scope.\n")
     os.utime(tmp_path / "SOUL.md", (time.time() + 1, time.time() + 1))
     c2 = refusal_doctrine.build_doctrine_card(str(tmp_path))
     assert c2 != c1 and "doxxing" in c2

@@ -31,7 +31,7 @@ RENDER = "· router · lane render text that must never replace an answer.\n" * 
 
 def _delivered_for(entered, lane):
     """Run the seam's real decision path: facts -> decide -> delivered bytes."""
-    facts = _build_facts(entered, {}, None, lane, False, attempt=0)
+    facts = _build_facts(entered, {}, None, lane, attempt=0)
     dec = _decide(facts)
     return dec, _delivered_bytes(dec, DRAFT)
 

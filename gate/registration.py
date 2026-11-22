@@ -441,7 +441,7 @@ def on_transform_llm_output_guarded(**kwargs):
         if not (isinstance(_lane_in, str) and _lane_in.strip()) and _scoped_render.strip():
             _lane_in = _scoped_render
         _facts = _build_facts(
-            _entered_dec, kwargs, _turn, _lane_in, "",
+            _entered_dec, kwargs, _turn, _lane_in,
             attempt=_pre_attempt,
             # M53-02 (round 9): the strip count is carried, not recomputed.
             # The boundary already knows what it deleted (51 bytes); re-running
