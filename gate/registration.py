@@ -882,7 +882,12 @@ def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
         # M53-32: the agent's OWN attestation, read from the body the seam was
         # handed. Empty when the body carried none - in which case the lexical
         # classifier keeps its existing authority.
-        att_type=_att_type_of(entered),
+        # M53-32: read the attestation from the RAW body in `kwargs`. `entered`
+        # is the boundary-CLEANED copy (the tag is stripped there — the log line
+        # is `boundary_tag_stripped`), so parsing it finds nothing and the guard
+        # silently never engages. Measured: a 4516-char render was produced,
+        # swapped and persisted, then D4 shipped main anyway.
+        att_type=_att_type_of(kwargs.get("response_text") or entered),
         # M53-02 (round 9): the boundary's counted delta rides the facts.
         prior_strip_bytes=int(prior_strip_bytes or 0),
     )
