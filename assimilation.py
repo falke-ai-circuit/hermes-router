@@ -273,7 +273,13 @@ def _frame_log(session_id: str, event: str, text: str = "", **fields: Any) -> No
 #                         this arm every rate above is unattributed.
 KNOB_PLACEMENT = "assimilation_placement"
 DEFAULT_PLACEMENT = "pre_frame"
-PLACEMENTS = ("pre_frame", "post_meta", "both", "none")
+#: YAML NULL TRAP (measured 2026-11-23): `hermes config set ... none` is parsed
+#: as Python None and lands as a YAML null, so `config get` returns nothing and
+#: the reader falls back to the DEFAULT - i.e. the intended CONTROL arm silently
+#: ran as the TREATMENT arm. The control keyword is therefore "off": quoted by
+#: no YAML scalar resolver, so it survives the round trip. "none" stays accepted
+#: for callers that pass it programmatically.
+PLACEMENTS = ("pre_frame", "post_meta", "both", "off", "none")
 #: Marker for the post-meta note. Deliberately carries NO origin/sha/lane: the
 #: measured disown script was quoted out of the metadata block ("the envelope on
 #: that block even says 'automated render/swap'"), so this text says only what
@@ -376,7 +382,7 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
         _swap_env = read_swap_envelope(sid)
         _swap_clause = swap_envelope_clause(_swap_env) if _swap_env else ""
         _placement = frame_placement()
-        if _placement == "none":
+        if _placement in ("none", "off"):
             # CONTROL ARM: the mark is consumed and NOTHING is delivered. This
             # arm is what makes every other rate attributable - without it the
             # frame's contribution is assumed, never measured.
