@@ -2741,6 +2741,16 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _hub()._log_route(
                     "POST", event_detail="attestation_turn",
                     armed=1, **_rec, session_id=session_id)
+                # M53-32c: carry the attested type to the delivery edge. The
+                # attestation arrives OUT OF BAND (channel=tool_call), so the
+                # decision cannot read it from the body it is handed - without
+                # this stamp D4 `compliance_outranks_rule` kept shipping main
+                # while a 4798-char render sat ready.
+                try:
+                    _hub().state.mark_att_type(
+                        session_id, _att_parsed.get("type") or "")
+                except Exception:  # noqa: BLE001 — the stamp never blocks
+                    pass
             except Exception:  # noqa: BLE001 — the metric never blocks
                 pass
         # ------------------------------------------------------------------

@@ -755,6 +755,45 @@ def reset_render_scopes() -> None:
         pass
 
 
+#: M53-32c: the turn's OUT-OF-BAND attestation type, per session. The attestation
+#: arrives through a tool_call (`attestation_out_of_band channel=tool_call`), not
+#: as a tag in the body, so the delivery edge cannot parse it from the bytes it
+#: is handed. Bounded FIFO, same discipline as the scope stamp; the write and the
+#: read belong to the same turn.
+_ATT_TYPE: Dict[str, str] = {}
+_ATT_TYPE_MAX = 512
+
+
+def mark_att_type(session_id: str, att_type: str) -> None:
+    """Record this turn's attested type for `session_id`. Never raises."""
+    try:
+        if session_id:
+            _ATT_TYPE[str(session_id)] = str(att_type or "")
+            while len(_ATT_TYPE) > _ATT_TYPE_MAX:
+                _ATT_TYPE.pop(next(iter(_ATT_TYPE)))
+    except Exception:  # noqa: BLE001 — a stamp never breaks a turn
+        pass
+
+
+def read_att_type(session_id: str) -> str:
+    """The attested type for `session_id`, or "" when nothing was stamped."""
+    try:
+        return str(_ATT_TYPE.get(str(session_id or ""), "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def clear_att_type(session_id: Optional[str] = None) -> None:
+    """Test/recovery hook. Never raises."""
+    try:
+        if session_id is None:
+            _ATT_TYPE.clear()
+        else:
+            _ATT_TYPE.pop(str(session_id or ""), None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def scope_for(session_id: str) -> Optional[str]:
     """Read the stamped scope for the session, or None when nothing was stamped."""
     with _SCOPE_STAMP_LOCK:

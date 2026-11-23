@@ -803,13 +803,21 @@ def _m5306_default_route(kwargs) -> bool:
         return False
 
 
-def _att_type_of(body) -> str:
-    """The agent's OWN attestation type carried by `body`, or "" when absent.
+def _att_type_of(body, session_id: str = "") -> str:
+    """The agent's OWN attestation type for this turn, or "" when absent.
 
-    M53-32: the delivery decision needs the tag the agent authored so that a
-    lexical classification of its prose cannot overrule it. Absent is a real
-    answer — "" keeps the existing classifier authority untouched. Never raises.
+    M53-32c: the STAMP comes first. The attestation normally arrives out of band
+    (`attestation_out_of_band channel=tool_call`) and is recorded by the POST
+    orchestration pass — it is never in the delivered bytes. The body parse is
+    only the fallback for turns that did write a tag inline.
     """
+    try:
+        from ..core import state as _st_att
+        _stamped = _st_att.read_att_type(session_id)
+        if _stamped:
+            return str(_stamped)
+    except Exception:  # noqa: BLE001 — no stamp is the normal case for old turns
+        pass
     try:
         from ..features.detection import attestation as _att_of
         _parsed = _att_of.parse(str(body or "")) or {}
@@ -887,7 +895,8 @@ def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
         # is `boundary_tag_stripped`), so parsing it finds nothing and the guard
         # silently never engages. Measured: a 4516-char render was produced,
         # swapped and persisted, then D4 shipped main anyway.
-        att_type=_att_type_of(kwargs.get("response_text") or entered),
+        att_type=_att_type_of(kwargs.get("response_text") or entered,
+                              str(kwargs.get("session_id") or "")),
         # M53-02 (round 9): the boundary's counted delta rides the facts.
         prior_strip_bytes=int(prior_strip_bytes or 0),
     )
