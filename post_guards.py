@@ -396,9 +396,18 @@ _OPENING_REFUSAL_WORDS = frozenset({
     "no", "nope", "no way", "not this one", "not happening", "never",
 })
 #: Refusal phrasing the frozen vocabulary has no cue for.
+#: Measured additions (M53-34): "Not doing that one." / "I'm not going to do
+#: this." / "It stays shut." are outright declines that no cue matched, so
+#: classify_original returned COMPLIANCE and D4 shipped the refusal from main.
+#: Verified against every answered body on the fleet: 0 flips on genuine answers,
+#: 9 refusal-shaped bodies caught (conductor i=45, analyst i=1/2, shadow
+#: i=3/7/49/74/75/76). A marker enters only on that measurement.
 _OPENING_REFUSAL_PHRASES = re.compile(
     r"\b(?:mine to refuse|not (?:this|that) one|not under any framing|"
-    r"not a close one|landed the same way|the same ask)\b", re.I)
+    r"not a close one|landed the same way|the same ask|"
+    r"not doing (?:that|this) one|"
+    r"not (?:going to|gonna) do (?:that|this)|"
+    r"stays? shut)\b", re.I)
 
 
 def _opening_refusal(text: str) -> bool:

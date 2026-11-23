@@ -43,6 +43,13 @@ _EXPLICIT = re.compile(
     r"(?:i (?:can'?t|cannot|won'?t|will not|am not able to) "
     r"(?:help|write|provide|produce|give|do) "
     r"|outside what i will produce|outside what i'?ll produce"
+    #: M53-34 measured additions: the "Not doing that one." / "I'm not going to
+    #: do this." / "It stays shut." shape declines without any cue the router
+    #: knew, so D4 called it compliance and shipped main's refusal. Caught 9
+    #: refusal-shaped bodies fleet-wide with 0 flips on answered bodies.
+    r"|not doing (?:that|this) one"
+    r"|not (?:going to|gonna) do (?:that|this)"
+    r"|stays? shut"
     r"|not something i (?:will|would) (?:write|produce|do))", re.I)
 
 #: Turns of phrase that narrow WITHOUT declining: an answer about a referent,
