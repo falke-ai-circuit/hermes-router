@@ -390,6 +390,42 @@ def _is_compliant_body(text: str) -> bool:
     )
 
 
+#: Opening units that ARE a refusal on their own. Whole-unit match only, so
+#: "No such thing exists" and "No, it isn't - that's overhead" stay answers.
+_OPENING_REFUSAL_WORDS = frozenset({
+    "no", "nope", "no way", "not this one", "not happening", "never",
+})
+#: Refusal phrasing the frozen vocabulary has no cue for.
+_OPENING_REFUSAL_PHRASES = re.compile(
+    r"\b(?:mine to refuse|not this one|not under any framing|not a close one|"
+    r"landed the same way|the same ask)\b", re.I)
+
+
+def _opening_refusal(text: str) -> bool:
+    """True when the body DECLINES in its opening without naming a cue.
+
+    M53-31: historical bodies predate the attestation contract, so they carry
+    no type tag and the frozen cue vocabulary cannot name the bare "No." form.
+    Measured on the shadow corpus: 8 rows opened with a plain refusal and still
+    classified COMPLIANCE, so D4 `compliance_outranks` won and threw away the
+    lane's render. The discriminator is narrow on purpose - a standalone "No"
+    UNIT (never "No such codebase...", never "No, it isn't - ...", which are
+    answers that disagree) plus the refusal phrases the vocabulary misses.
+    """
+    units = _units(text)
+    if not units:
+        return False
+    first = re.sub(r"[^a-z ]+", " ", str(units[0]).lower()).strip()
+    # A standalone "No" is only a decline when the body ALSO carries a decline
+    # cue. Measured counter-example: "No. Nobody can, and anyone who does is
+    # selling you something" answers the question factually - a bare no is not
+    # a refusal on its own.
+    if first in _OPENING_REFUSAL_WORDS:
+        return _has_decline_cue(text) or bool(
+            _OPENING_REFUSAL_PHRASES.search(" ".join(units)))
+    return bool(_OPENING_REFUSAL_PHRASES.search(" ".join(units)))
+
+
 def classify_original(body: str) -> str:
     """Classify the ORIGINAL (entered) body.
 
@@ -417,6 +453,12 @@ def classify_original(body: str) -> str:
         return UNCLASSIFIED
     if _is_planner_scaffold(text):
         return SCAFFOLD
+    # M53-31: an opening refusal is a decline even when the frozen cue
+    # vocabulary cannot name it - bare "No." followed by the reasoning behind
+    # it. Without this, 8 measured rows classified COMPLIANCE, D4 outranked the
+    # rule, and the lane's render was discarded.
+    if _opening_refusal(text):
+        return HEDGE if _delivers_substance(text) else REFUSAL
     if not _has_decline_cue(text):
         if _is_non_answer(text):
             return HEDGE
