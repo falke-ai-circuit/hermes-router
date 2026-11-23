@@ -2599,7 +2599,31 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             _gate_row = _gate_state.get("row")
         except Exception:  # noqa: BLE001 — an unreadable gate stays None
             pass
-        _pre_ok = _route_precondition_ok(_gate_row, _att_parsed.get("type"))
+        # M53-33: A SOFTENING THAT DOES NOT DECLARE ITSELF STILL NEEDS THE LANE.
+        # Measured: a body tagged `clarify` narrowed scope away from the ask and
+        # substituted another artefact ("the only exploitation runbook on disk is
+        # the SIP one ... not a third-party attack plan"). The tag said produced,
+        # so no route fired and the substitution shipped from main.
+        # It is reclassified BEFORE the precondition because a delivery-edge
+        # override would find no render to deliver. The agent's own attestation is
+        # NOT overwritten - telemetry keeps saying `clarify`; a separate flag
+        # carries the routing consequence, so no reader is fed a false tag.
+        _att_soft = False
+        try:
+            from ..features.detection import softening as _soft_rc
+            _att_was = str(_att_parsed.get("type") or "")
+            if _att_was != "declined" and _soft_rc.is_softening(response_text):
+                _att_soft = True
+                _hub()._log_route(
+                    "POST", event_detail="softening_reclassified",
+                    was=_att_was,
+                    reason=str(_soft_rc.classify(response_text)[1]),
+                    chars=len(str(response_text or "")),
+                    session_id=session_id)
+        except Exception:  # noqa: BLE001 — a detector never blocks a delivery
+            _att_soft = False
+        _pre_ok = _route_precondition_ok(
+            _gate_row, "declined" if _att_soft else _att_parsed.get("type"))
         _unc_domain = bool(_pre_ok)
         # ARMED ONLY: an unarmed profile is byte-identical to before this
         # unit (a constraint of the brief), so the precondition may not touch
@@ -2748,7 +2772,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 # while a 4798-char render sat ready.
                 try:
                     _hub().state.mark_att_type(
-                        session_id, _att_parsed.get("type") or "")
+                        session_id,
+                        # M53-33: the routing consequence rides the stamp, so D4
+                        # cannot suppress the render this gate just triggered.
+                        ("softened" if _att_soft
+                         else (_att_parsed.get("type") or "")))
                 except Exception:  # noqa: BLE001 — the stamp never blocks
                     pass
             except Exception:  # noqa: BLE001 — the metric never blocks
