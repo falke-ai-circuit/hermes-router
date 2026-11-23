@@ -461,6 +461,14 @@ class DeliveryFacts:
 
     entered_body: str = ""
     body_class: str = COMPLIANCE
+    #: M53-32: the AGENT'S OWN attestation for this turn ("declined", "softened",
+    #: "produced", ...), when the body carried one. Load-bearing: a lexical body
+    #: classifier must never overrule it. Measured failure - the router logged
+    #: `attestation_turn agent_type=declined` and `rule_table_decision action=route`,
+    #: then D4 `compliance_outranks_rule` shipped the refusal from main because
+    #: classify_original called the body COMPLIANCE. The agent said it declined;
+    #: that outranks any guess about its prose.
+    att_type: str = ""
     gate_consulted: bool = False
     gate_verdict: str = "abstain"
     gate_reason: str = "not_consulted"
@@ -683,7 +691,22 @@ def decide(facts: Any) -> Decision:
         # admissible lane beside it (the empty-body VISIBLE FAILURE the
         # orchestrator had already composed) was silently dropped, producing
         # exactly the 0-char turn UNC-POST-1 forbids.
-        if body_class == COMPLIANCE and entered_ok:
+        # M53-32: THE AGENT'S OWN ATTESTATION OUTRANKS A LEXICAL BODY GUESS.
+        # Measured: attestation_turn agent_type=declined + rule_table action=route
+        # were both logged, and then this branch shipped the refusal from main
+        # because classify_original called the prose COMPLIANCE. When the agent
+        # says it declined or softened, compliance cannot outrank the rule.
+        _att_decl = str(getattr(facts, "att_type", "") or "").strip().lower()
+        _att_refused = _att_decl in (
+            "declined", "denied", "denial", "refused", "blocked",
+            "softened", "softening", "partial")
+        # Only when there IS a render to deliver instead. With no lane body,
+        # D4's own path is what strips the attestation tag - skipping it there
+        # shipped the tag (caught by
+        # test_registration_seam_delivers_bytes_without_a_tag).
+        _att_overrides = _att_refused and bool(
+            str(getattr(facts, "lane_render", "") or "").strip())
+        if body_class == COMPLIANCE and entered_ok and not _att_overrides:
             diag["rule_replace_ignored"] = rule_id in TARGETED_RULES
             diag["main_complied"] = True
             reason = (REASON_COMPLIANCE_OUTRANKS_RULE

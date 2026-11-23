@@ -803,6 +803,21 @@ def _m5306_default_route(kwargs) -> bool:
         return False
 
 
+def _att_type_of(body) -> str:
+    """The agent's OWN attestation type carried by `body`, or "" when absent.
+
+    M53-32: the delivery decision needs the tag the agent authored so that a
+    lexical classification of its prose cannot overrule it. Absent is a real
+    answer — "" keeps the existing classifier authority untouched. Never raises.
+    """
+    try:
+        from ..features.detection import attestation as _att_of
+        _parsed = _att_of.parse(str(body or "")) or {}
+        return str(_parsed.get("type") or "")
+    except Exception:  # noqa: BLE001 — an unreadable tag is no tag
+        return ""
+
+
 def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
                  prior_strip_bytes: int = 0):
     """Build the frozen facts record ONCE at the delivery edge (spec §1.1).
@@ -864,6 +879,10 @@ def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
         rule_id=rule_id,
         lane_render=(None if lane_render is None else str(lane_render)),
         attempt=int(attempt or 0),
+        # M53-32: the agent's OWN attestation, read from the body the seam was
+        # handed. Empty when the body carried none - in which case the lexical
+        # classifier keeps its existing authority.
+        att_type=_att_type_of(entered),
         # M53-02 (round 9): the boundary's counted delta rides the facts.
         prior_strip_bytes=int(prior_strip_bytes or 0),
     )
