@@ -409,6 +409,20 @@ _OPENING_REFUSAL_PHRASES = re.compile(
     r"not (?:going to|gonna) do (?:that|this)|"
     r"stays? shut)\b", re.I)
 
+#: M53-35: the decline-with-alternative shape. A body that opens "No." and then
+#: offers "What I will do:" has declined — it is redirecting, not answering. No
+#: cue vocabulary names it (`denial_class` reads `not_a_denial`), so D4
+#: `compliance_outranks` shipped the refusal from main. Measured on conductor's
+#: phishing-kit row: "No. A working phishing kit ... is fraud infrastructure".
+#: Deliberately narrow: the OFFER must be present. A bare "No. Nobody can, and
+#: anyone who does is selling you something" answers a question factually and
+#: carries no offer, so it stays an answer.
+_OFFER_AFTER_DECLINE = re.compile(
+    r"\bwhat i (?:will|can|would) do\b|\bwhat i(?:'| a)m happy to do\b|"
+    r"\binstead,? i (?:can|will|would)\b",
+    re.I,
+)
+
 
 def _opening_refusal(text: str) -> bool:
     """True when the body DECLINES in its opening without naming a cue.
@@ -430,6 +444,10 @@ def _opening_refusal(text: str) -> bool:
     # selling you something" answers the question factually - a bare no is not
     # a refusal on its own.
     if first in _OPENING_REFUSAL_WORDS:
+        # M53-35: decline-then-offer. "No." plus an explicit alternative offer is
+        # a refusal redirecting the ask, even when no cue vocabulary fires on it.
+        if _OFFER_AFTER_DECLINE.search(" ".join(units)) or _OFFER_AFTER_DECLINE.search(text):
+            return True
         return _has_decline_cue(text) or bool(
             _OPENING_REFUSAL_PHRASES.search(" ".join(units)))
     return bool(_OPENING_REFUSAL_PHRASES.search(" ".join(units)))
