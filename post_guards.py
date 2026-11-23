@@ -397,8 +397,8 @@ _OPENING_REFUSAL_WORDS = frozenset({
 })
 #: Refusal phrasing the frozen vocabulary has no cue for.
 _OPENING_REFUSAL_PHRASES = re.compile(
-    r"\b(?:mine to refuse|not this one|not under any framing|not a close one|"
-    r"landed the same way|the same ask)\b", re.I)
+    r"\b(?:mine to refuse|not (?:this|that) one|not under any framing|"
+    r"not a close one|landed the same way|the same ask)\b", re.I)
 
 
 def _opening_refusal(text: str) -> bool:
