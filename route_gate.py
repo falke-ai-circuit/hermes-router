@@ -915,24 +915,88 @@ def stamp_turn_claim_if_absent(session_id: str, lane: str, source: str,
         pass
 
 
-def mark_shadow_rendered(session_id: str) -> None:
+_RENDER_MIN_CHARS = 1200
+
+
+def is_render_body(body: Any, min_chars: int = _RENDER_MIN_CHARS) -> bool:
+    """True when these bytes ARE a lane render — M53-38 (D).
+
+    A lane that returns ten words has not rendered a turn, and the claim record
+    may not say it did: the measured defect was `rendered=True` on 506-1069
+    char bodies (shadow i=32,47,60,65,73,75,77) and on coder i=16, whose
+    "render" of 1009 chars sat next to a 524-char persisted body reading
+    \"the code you're referring to didn't come through ... Paste the actual
+    text\". Those are notices and drafts, and they inflated render counts
+    fleet-wide.
+
+    Two conjuncts, both mechanical:
+      * length — a sub-1200-char body is not a render (the shortest real
+        render measured on this fleet is well past it);
+      * signature — a graceful-fail notice (`FAILURE_PREFIX`) is a report
+        ABOUT a render that never happened, never the render.
+
+    Never raises: an unreadable body is not a render (False), which is the
+    conservative direction — the flag is a claim, and absence costs a
+    diagnostic row, never a turn.
+    """
+    try:
+        text = str(body or "")
+        if len(text.strip()) < int(min_chars or 0):
+            return False
+        try:
+            from .core import delivery_integrity as _dint
+
+            if text.lstrip().startswith(str(_dint.FAILURE_PREFIX)):
+                return False
+        except Exception:  # noqa: BLE001 — the length conjunct still stands
+            pass
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def mark_shadow_rendered(session_id: str, body: Any = None) -> None:
     """R9-3 (rider 9): annotate the session's current shadow claim as
     RENDERED (both the pending declared claim and the turn-window record).
     The middleware's claim-standdown path reads this flag: a shadow-lane
     claim consumed WITHOUT a render row is a route_failed (provenance
-    contract), not a silent stand-down. Never raises."""
+    contract), not a silent stand-down. Never raises.
+
+    M53-38 (D): `body` is the lane's returned bytes. When supplied, the flag
+    is set only for a REAL render (`is_render_body`: >=1200 chars and not a
+    graceful-fail notice); a short notice leaves the claim unrendered and
+    emits `render_flag_suppressed` with the reason and the byte count, so the
+    honest fact is visible instead of a false claim. A caller that supplies no
+    body keeps the legacy unconditional contract (there is nothing to judge).
+    """
     try:
+        _real = True
+        if body is not None:
+            _real = is_render_body(body)
+            if not _real:
+                try:
+                    _pkg_fn("_log_route")(
+                        "PRE", event_detail="render_flag_suppressed",
+                        reason=("too_short" if len(str(body or "").strip()) <
+                                _RENDER_MIN_CHARS else "failure_notice"),
+                        body_chars=len(str(body or "").strip()),
+                        min_chars=_RENDER_MIN_CHARS,
+                        session_id=str(session_id or ""))
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
         now = time.time()
         with _CLAIM_LOCK:
             _gc_claims_locked(now)
             rec = _DECLARED_CLAIMS.get(str(session_id or ""))
             # §5.1: the render lane is the lane whose contract names a
             # replacement — same accessor as the claim branches above.
-            if rec is not None and _contract_replacement(rec.get("lane")) != "":
+            if (rec is not None and _real
+                    and _contract_replacement(rec.get("lane")) != ""):
                 rec["rendered"] = True
             key = _turn_claim_key(str(session_id or ""))
             trec = _TURN_CLAIMED.get(key)
-            if trec is not None and _contract_replacement(trec.get("lane")) != "":
+            if (trec is not None and _real
+                    and _contract_replacement(trec.get("lane")) != ""):
                 trec["rendered"] = True
     except Exception:  # noqa: BLE001 — observability never breaks routing
         pass

@@ -167,7 +167,7 @@ class TurnProvenance:
                  "replacement_path", "outcome", "body_chars", "_emitted",
                  "_predicate", "_action", "delivered", "delivery_failure",
                  "deferred", "deferred_reason", "skip_reason", "reason",
-                 "_empty_settled")
+                 "evidence_text", "_empty_settled")
 
     def __init__(self, session_id: str = "", model: str = "", turn_id: str = ""):
         self.session_id = str(session_id or "")
@@ -210,6 +210,7 @@ class TurnProvenance:
         # satisfied the ask); "guard_identity" / "post_guard_suppressed" = a
         # guard blocked a lane render.
         self.reason = ""
+        self.evidence_text = ""
 
     def route_declared(self) -> bool:
         """True when the table's action declared a ROUTE (not a plain deliver).
@@ -219,6 +220,18 @@ class TurnProvenance:
         an ordinary benign delivery, whose row keeps its `delivered` outcome.
         """
         return str(self._action or "").startswith("route")
+
+    def note_evidence(self, text: str) -> None:
+        """The evidence this turn's decision actually consumed (M53-38 B).
+
+        The delivery row's `evidence_ref` is a DIGEST of this text; the raw
+        text never persists (`core.decisions.evidence_ref`). Without it every
+        swap row carried sha256("")[:16] = e3b0c44298fc1c14 — a placeholder
+        wearing the name of evidence. Callers pass the identifier pair that
+        names the evidence (render sha + ask sha), never the body: the row
+        must be checkable without storing render content.
+        """
+        self.evidence_text = str(text or "")[:400]
 
     # -- facts the seam supplies ------------------------------------------
     def decision(self, *, rule_row: int = 0, rule_predicate: str = "",
@@ -339,6 +352,17 @@ def note_decision(**kwargs: Any) -> None:
     try:
         turn.decision(**kwargs)
     except Exception:  # noqa: BLE001 — instrumentation never breaks a turn
+        pass
+
+
+def note_evidence(text: str) -> None:
+    """Fail-quiet shorthand for `current().note_evidence(text)` (M53-38 B)."""
+    turn = _CURRENT.get()
+    if turn is None:
+        return
+    try:
+        turn.note_evidence(text)
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -573,6 +597,7 @@ def finish(turn: Optional[TurnProvenance], *, delivered: Any = None,
             detector_version="post-seam",
             rule_id=str(facts.get("rule") or "none"),
             action=str(facts.get("action") or "deliver"),
+            evidence_text=str(getattr(turn, "evidence_text", "") or ""),
             outcome=str(facts.get("outcome") or ""),
             session_id=str(facts.get("session_id") or ""),
             latency_ms=float(facts.get("latency_ms") or 0.0),

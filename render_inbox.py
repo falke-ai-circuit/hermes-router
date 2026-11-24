@@ -85,6 +85,58 @@ def record_render(stage: str, session_id: str, trigger_chars: int, render: str,
         return False
 
 
+def update_last_post_render(session_id: str, render: str) -> bool:
+    """Amend the newest POST row for this session to the DELIVERED bytes.
+
+    M53-38 (A): `record_render("POST", ...)` runs BEFORE the lane banner is
+    merged into the body, so the inbox holds the PRE-banner render — and the
+    NEXT turn's `_history_reconcile_pass` rewrites state.db FROM that row,
+    putting the banner-less render back over the delivered body. Measured:
+    `banner_render_captured` at 22:22:55 and `history_reconciled
+    rendered_chars=1199` at 22:23:50, after which the persisted row carried
+    neither 'shadow-self (uncensored)' nor '@ api.venice.ai'.
+
+    One row per delivered turn stays true: this REPLACES the bytes of the row
+    `record_render` wrote, it never appends a second one (an extra POST row
+    would mispair older refusals in the reconcile walk). Never raises.
+    """
+    try:
+        if not session_id or not str(render or "").strip():
+            return False
+        path = _inbox_path()
+        if not os.path.exists(path):
+            return False
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i].strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("session_id") or "") != str(session_id):
+                continue
+            if rec.get("stage") != "POST":
+                continue
+            rec["render"] = str(render)[:MAX_RENDER_CHARS]
+            rec["render_chars"] = len(str(render))
+            rec["delivered_amended"] = True
+            lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.writelines(lines)
+            os.replace(tmp, path)
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001 — capture never breaks delivery
+        logger.warning("uncensored-router render-inbox amend failed: %s", exc)
+        return False
+
+
 def record_pre_frame(session_id: str, trigger_chars: int, frame: str,
                      seam: str) -> bool:
     """THE pre-seam capture point (M15): journal a frame the PRE seam injected.

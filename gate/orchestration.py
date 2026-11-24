@@ -2944,14 +2944,48 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
 
             _gate_read = "verdict" in _gate_state
             _intent_row_p = _intent_state.get("row") or {}
+            _cls_p = str(_intent_state.get("intent") or "")
+            _src_p = str((_intent_row_p or {}).get("source") or "")
+            # M53-38 (C): the swap path CONSULTS a classification and says so.
+            # Rule 1 routes on the declaration alone, so the intent judge is
+            # never called and the row read `not_consulted` — but the
+            # deterministic cue layer (`denial_class.classify`, run above on
+            # every POST body) has already classified this body. It is free,
+            # synchronous and the same class the routing precondition's
+            # `response_outcome` arm is built on, so a routed turn records it
+            # rather than denying that any classification exists.
+            #
+            # It cannot WIDEN the route: the decision was already taken by the
+            # ordered table plus `_route_precondition_ok` (domain AND
+            # classification), and the owner's rule is unchanged — denial,
+            # softening and missing all route; an attested compliant reply
+            # still ships from main. This block records, it never decides.
+            if str(_denial_class or "") and (
+                    _rule_replace or _route_independent
+                    or _att_route_fired or _pre_ok):
+                # The judge may also have been consulted and come back
+                # ungraded (`unknown`/`failed`) — that is not a classification,
+                # it is the absence of one. The deterministic layer named this
+                # body's class synchronously and for free, so the row records
+                # THAT rather than reporting an empty answer as an answer.
+                if _cls_p in ("", "unknown", "failed") and _src_p != "aux":
+                    _cls_p, _src_p = str(_denial_class), "deterministic"
+                    try:
+                        _hub()._log_route(
+                            "POST", event_detail="intent_deterministic_consulted",
+                            cls=_cls_p,
+                            rule=("rule_%d" % _rule_row) if _rule_row else "none",
+                            session_id=session_id)
+                    except Exception:  # noqa: BLE001 — telemetry only
+                        pass
             _prov_d.note_decision(
                 rule_row=_rule_row,
                 rule_predicate=str(_rule.get("predicate") or ""),
                 action=_rule_action,
                 gate=(_gate_verdict if _gate_read else None),
                 gate_reason=str((_gate_state.get("row") or {}).get("reason") or ""),
-                intent_class=str(_intent_state.get("intent") or ""),
-                intent_source=str((_intent_row_p or {}).get("source") or ""),
+                intent_class=_cls_p,
+                intent_source=_src_p,
                 declaration=str(_declaration or "UNKNOWN"),
                 body_chars=len(response_text or ""))
         except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
@@ -4005,6 +4039,25 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — must never break delivery
             _rewrote = False
             _hub().logger.debug("uncensored-router canonical commit error", exc_info=True)
+        # M53-38 (B): the swap row's `evidence_ref` must name the evidence this
+        # decision actually consumed. It was sha256("")[:16] = e3b0c44298fc1c14
+        # on every replaced row — a placeholder wearing the name of evidence.
+        # The evidence is the pair (render digest, ask digest): checkable by a
+        # reader, and still content-free (only digests are handed to the sink,
+        # which hashes them again and never stores the text).
+        try:
+            import hashlib as _hl_ev
+
+            _ev_render = _hl_ev.sha256(
+                str(rendered or "").encode("utf-8", "replace")).hexdigest()[:16]
+            _ev_ask = _hl_ev.sha256(
+                str(original_user_message or "").encode(
+                    "utf-8", "replace")).hexdigest()[:16]
+            from ..core import turn_provenance as _prov_ev
+
+            _prov_ev.note_evidence("render:%s|ask:%s" % (_ev_render, _ev_ask))
+        except Exception:  # noqa: BLE001 — provenance never breaks delivery
+            _hub().logger.debug("swap evidence ref error", exc_info=True)
         # R31 defect-1 (inverse delivery): fail-loud decision seam. The
         # invariant — if this hook renders (rendered_chars > 0), the
         # delivered/persisted turn MUST be the render. Previously the
@@ -4198,7 +4251,41 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # banner, parked merge missed its rewrite, settle re-emit) is
         # captured here — render inbox + persisted-turn round-trip, the same
         # contract the benign/audit_sync/empty-body edges already honor.
-        if rendered != _persisted_render_text:
+        #
+        # M53-38 (A) closes the two holes this block left open:
+        #   1. it only ran when `rendered` MOVED. A banner append that did not
+        #      change the local variable (the composer had already produced the
+        #      line, the merge was skipped) left the persisted row pre-banner
+        #      with no round-trip at all — the R26-3 class, measured 236x;
+        #   2. it never verified. `rewrite_persisted_turn` returning True is a
+        #      claim about a row, not about THESE bytes; the banner-less render
+        #      could still be what state.db held (and, one turn later, the
+        #      reconcile pass re-wrote it from the PRE-banner POST row).
+        # So: re-append if the banner is missing, amend the POST inbox row to
+        # the DELIVERED bytes (the reconcile pass reads it), rewrite, then
+        # READ BACK and say which of the two happened.
+        _banner_line_final = ""
+        try:
+            from .. import debug_banner as _dbf_env
+            from ..features.banners import turn_record as _turnf_env
+
+            _banner_line_final = str(_turnf_env.compose_line(session_id)
+                                     or "").strip()
+            if (_banner_line_final
+                    and str(_dbf_env.BANNER_HEAD) not in str(rendered or "")):
+                _reapp = _turnf_env.compose_onto_delivery(
+                    session_id, rendered, allow_lane_render=True)
+                if isinstance(_reapp, str) and _reapp != str(rendered or ""):
+                    rendered = _reapp
+                    _hub()._log_route(
+                        "POST", event_detail="banner_reappended",
+                        edge="uncensored-render-banner",
+                        banner_chars=max(0, len(rendered)
+                                         - len(str(_persisted_render_text))),
+                        session_id=session_id)
+        except Exception:  # noqa: BLE001 — re-append never breaks delivery
+            _banner_line_final = ""
+        if rendered != _persisted_render_text or _banner_line_final:
             try:
                 from .. import render_inbox as _rib_final
                 from .. import canonical as _cc_final
@@ -4206,11 +4293,40 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _rib_final.record_render("UNCENSORED_RENDER_BANNER",
                                          session_id, len(response_text),
                                          rendered)
-                if _cc_final.rewrite_persisted_turn(
-                        session_id, _persisted_render_text, rendered):
+                # The reconcile pass rewrites state.db from the POST row; it
+                # must hold the bytes the user read, banner included.
+                _rib_final.update_last_post_render(session_id, rendered)
+                _wrote = False
+                if rendered != _persisted_render_text:
+                    _wrote = bool(_cc_final.rewrite_persisted_turn(
+                        session_id, _persisted_render_text, rendered))
+                    if not _wrote:
+                        _wrote = bool(_cc_final.rewrite_persisted_turn(
+                            session_id, "", rendered, allow_empty_match=True))
+                if _wrote:
                     _hub()._log_route(
                         "POST", event_detail="banner_render_captured",
                         edge="uncensored-render-banner",
+                        session_id=session_id)
+                _ok_final = bool(_cc_final.verify_persisted_turn(
+                    session_id, rendered))
+                if _ok_final:
+                    _persisted_render_text = rendered
+                    _hub()._log_route(
+                        "POST", event_detail="banner_persist_verified",
+                        edge="uncensored-render-banner",
+                        delivered_chars=len(str(rendered or "")),
+                        has_banner=int(bool(_banner_line_final)),
+                        session_id=session_id)
+                else:
+                    # Fail LOUD: delivered bytes and the transcript disagree.
+                    _hub()._log_route(
+                        "POST", event_detail="banner_persist_missing",
+                        edge="uncensored-render-banner",
+                        severity="error",
+                        delivered_chars=len(str(rendered or "")),
+                        has_banner=int(bool(_banner_line_final)),
+                        rewritten=int(bool(_wrote)),
                         session_id=session_id)
             except Exception:  # noqa: BLE001 — capture never breaks delivery
                 _hub().logger.debug("render banner final capture error",
