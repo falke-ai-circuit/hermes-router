@@ -234,6 +234,10 @@ def _history_reconcile_pass(*args: Any, **kwargs: Any) -> None:
     return _hub()._dispatcher_pre._history_reconcile_pass(*args, **kwargs)
 
 
+def _read_scrub_pass(*args: Any, **kwargs: Any) -> bool:
+    return _hub()._dispatcher_pre._read_scrub_pass(*args, **kwargs)
+
+
 def _strip_memory_context(*args: Any, **kwargs: Any) -> str:
     return _hub()._dispatcher_pre._strip_memory_context(*args, **kwargs)
 
@@ -325,6 +329,18 @@ def on_llm_request(*, request, original_request, **context) -> dict:
     """
     if _hub() is None:  # hub unresolvable (no package context) — fail-open
         return {}
+    # M53-36 — READ-TIME SCRUB (before anything else reads this payload).
+    # The banner + provenance footer stay in the delivered body and in
+    # state.db (owner ruling: the banner is visible on ANY router-billed
+    # call). They are stripped ONLY from the outgoing assistant turns, so the
+    # main model stops reading its own history as someone else's text.
+    # In-place on the outgoing copy: every return path below (including the
+    # `{}` pass-through) then carries the scrubbed messages. Fail-open.
+    try:
+        _hub()._read_scrub_pass(
+            request, session_id=_hub()._session_id_from_context(**context))
+    except Exception:  # noqa: BLE001 — the read scrub never blocks a call
+        pass
     _hs_rule_injected = _hub()._hs_inject_pass(
         request, session_id=_hub()._session_id_from_context(**context))  # rider 22
 
@@ -780,6 +796,15 @@ def on_llm_request(*, request, original_request, **context) -> dict:
         # FIX 1 shim (2026-09-02): reconcile trailing refusals to delivered
         # renders — see _history_reconcile_pass.
         _hub()._history_reconcile_pass(request, session_id)
+
+        # M53-36 — the reconciler above can rewrite an assistant turn to the
+        # DELIVERED text, which carries the banner/footer. Scrub again here so
+        # the read path stays clean no matter which pass put the decoration
+        # into history. Idempotent: an already-scrubbed list is a no-op.
+        try:
+            _hub()._read_scrub_pass(request, session_id=session_id)
+        except Exception:  # noqa: BLE001 — the read scrub never blocks a call
+            pass
 
 
         # Record last-seen user message BEFORE the complexity dispatcher —

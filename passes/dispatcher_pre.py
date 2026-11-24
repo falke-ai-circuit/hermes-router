@@ -453,6 +453,82 @@ def _history_reconcile_pass(request: Any, session_id: str) -> None:
         logger.debug("uncensored-router history reconciliation failed", exc_info=True)
 
 
+#: M53-36: a read-scrub exception is logged ONCE per process. The scrub runs
+#: before EVERY model call, so a per-call row on a persistent fault would flood
+#: the ledger; the defect it guards against (undecodable history text) is static.
+_READ_SCRUB_FAILED_LOGGED = False
+
+
+def _read_scrub_pass(request: Any, session_id: str = "") -> bool:
+    """M53-36 — hide DELIVERY decoration from the model, never from Goran.
+
+    The banner and the provenance footer ride every router-billed delivery and
+    MUST stay in the delivered body and in state.db (owner ruling). The main
+    model reading its own transcript, however, takes those strings as proof the
+    turn was authored elsewhere and disowns it (measured: assimilation
+    58% -> 95% once both were hidden from the READ path).
+
+    So this is a READ-path scrub. The outgoing ``messages`` list is walked and
+    ONLY assistant-role content loses its LEAD/TAIL decoration, using
+    ``delivery_integrity.strip_decoration`` — the same grammar the delivery
+    audit uses, so a banner-looking line in the MIDDLE of a body stays content.
+
+    Persisted rows, the canonical commit and the delivered body are never
+    touched: each scrub happens on a COPY of the message dict and the fresh
+    list is assigned to the request only after the whole walk succeeds. The
+    caller's original dicts keep their bytes.
+
+    Fail-open: any exception leaves the request byte-identical, writes ONE lazy
+    ``read_scrub_failed`` row, and lets the call through. Returns True when at
+    least one message was scrubbed. Never raises.
+    """
+    global _READ_SCRUB_FAILED_LOGGED
+    try:
+        if not isinstance(request, dict):
+            return False
+        msgs = request.get("messages")
+        if not isinstance(msgs, list) or not msgs:
+            return False
+        from ..core import delivery_integrity as _di
+
+        out: List[Any] = []
+        scrubbed = 0
+        for msg in msgs:
+            if not (isinstance(msg, dict)
+                    and str(msg.get("role") or "") == "assistant"):
+                out.append(msg)          # user/system/tool: never touched
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str) or not content:
+                out.append(msg)
+                continue
+            clean = _di.strip_decoration(content)
+            if clean == content:
+                out.append(msg)
+                continue
+            new_msg = dict(msg)
+            new_msg["content"] = clean
+            out.append(new_msg)
+            scrubbed += 1
+        if not scrubbed:
+            return False
+        # The ONLY write to the request: a fresh list of copied dicts. Nothing
+        # already in the store is reachable from it.
+        request["messages"] = out
+        return True
+    except Exception as exc:  # noqa: BLE001 — the read path never blocks a call
+        try:
+            if not _READ_SCRUB_FAILED_LOGGED:
+                _READ_SCRUB_FAILED_LOGGED = True
+                _plugin()._log_route(
+                    "PRE", event_detail="read_scrub_failed",
+                    reason=type(exc).__name__,
+                    session_id=str(session_id or ""))
+        except Exception:  # noqa: BLE001 — telemetry never blocks either
+            pass
+        return False
+
+
 _MEMORY_TAIL_MARKER = "\n[ \t]*\n[ \t]*$"
 _MEMORY_TAIL_RE = re.compile(_MEMORY_TAIL_MARKER)
 
