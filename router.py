@@ -365,6 +365,41 @@ def call(prompt: str, *, max_tokens: Optional[int] = None, temperature: Optional
     if not prompt or not prompt.strip():
         logger.info("route_failed reason=empty_prompt")
         return ""
+    # M53-38: EVERY lane render funnels through this function — the five
+    # call sites (orchestration 2067 empty-body, orchestration 3705 delivery,
+    # dispatcher_pre 976/1000/1012 consult) all pass their harness text in
+    # here. So this is the one place a scrub is structural rather than
+    # per-call-site: the main model never calls router.call, it goes through
+    # the LLM middleware, so the primary path is untouched by construction.
+    #
+    # Measured why: the lane is handed the same system prompt as the main
+    # model, platform rule blocks and router reading included, and one render
+    # in the 82 historical denials enumerated turn_attestation_contract /
+    # reflex_1 / reflex_3 while containing none of the asked material — the
+    # lane rendered an audit of the harness instead of an answer.
+    #
+    # ONLY the system prompt is scrubbed. `prompt` is the user's ask and stays
+    # byte-identical even in on-mode: a user who literally types a platform
+    # marker must not lose their own words to a stripper.
+    #
+    # Log-only at landing: nothing is removed unless SCRUB_MODE is "on"; the
+    # counts say what WOULD go.
+    try:
+        from .core import lane_payload as _lpm
+
+        _lp_mode = _lpm.SCRUB_MODE
+        _lp_sys_bytes = 0
+        _lp_ask_hit = _lpm.has_scaffolding(prompt)
+        if _lpm.has_scaffolding(system_prompt):
+            _lp_stripped = _lpm.strip_scaffolding(system_prompt)
+            _lp_sys_bytes = max(0, len(system_prompt) - len(_lp_stripped))
+            if _lp_mode == _lpm.MODE_ON:
+                system_prompt = _lp_stripped
+        logger.info(
+            "lane_payload_scrubbed site=router.call sys_bytes=%d ask_marker=%d mode=%s",
+            _lp_sys_bytes, 1 if _lp_ask_hit else 0, _lp_mode)
+    except Exception as exc:  # noqa: BLE001 — a scrub must never break a render
+        logger.info("lane_payload_scrub_failed %s", exc)
     # M35-14 (spec §7 item 2): the PRE-SPEND pre-call window is DELETED. It was
     # a third suppression site with its own order (DECLARATION before SHAPE),
     # decided before the render and invisible to the case ladder. The delivery
