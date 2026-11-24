@@ -148,3 +148,62 @@ def strip_messages(messages: Any) -> "tuple[list, int]":
         out.append(fresh)
         scrubbed += 1
     return out, scrubbed
+
+
+# ---------------------------------------------------------------------------
+# Wiring: the lane dispatch seam
+# ---------------------------------------------------------------------------
+
+# The uncensored lane answers to several names (the lane id, the route value,
+# the provider family). All of them mean "this payload goes to the lane".
+_UNC_LANE_VALUES = frozenset({"shadow", "uncensored", "shadow-self", "shadow_self"})
+
+# Rollout stage. "log" counts what WOULD be stripped and sends the payload
+# unchanged; "on" sends the scrubbed payload; "off" does nothing. Landing in
+# "log" is deliberate: the scrubber's correctness on real traffic is proved
+# before a single byte of a live request changes.
+MODE_OFF = "off"
+MODE_LOG = "log"
+MODE_ON = "on"
+SCRUB_MODE = MODE_LOG
+
+
+def is_unc_lane(lane: Any) -> bool:
+    """True when this lane value routes to the uncensored model."""
+    try:
+        return str(lane or "").strip().lower() in _UNC_LANE_VALUES
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def scrub_for_lane(payload: Any, lane: Any, mode: Any = None) -> "tuple[Any, int]":
+    """Scrub the payload for the unc lane only. Returns (payload, count).
+
+    The lane is the gate, not the path: platform rule blocks are load-bearing
+    for the primary model (the turn declaration contract among them), so a
+    scrub on the main path is a behaviour edit, not a measurement fix.
+
+    In MODE_LOG the payload is returned BYTE-IDENTICAL and the count says what
+    would have gone. The caller's payload dict is never mutated in place.
+    """
+    try:
+        m = str(mode or SCRUB_MODE or MODE_LOG).strip().lower()
+    except Exception:  # noqa: BLE001
+        m = MODE_LOG
+    if m == MODE_OFF or not is_unc_lane(lane):
+        return payload, 0
+    try:
+        if isinstance(payload, dict):
+            msgs = payload.get("messages")
+            scrubbed, n = strip_messages(msgs)
+            if not n or m != MODE_ON:
+                return payload, n
+            fresh = dict(payload)
+            fresh["messages"] = scrubbed
+            return fresh, n
+        if isinstance(payload, list):
+            scrubbed, n = strip_messages(payload)
+            return (scrubbed if (n and m == MODE_ON) else payload), n
+    except Exception:  # noqa: BLE001 — never break a dispatch over a stripper
+        return payload, 0
+    return payload, 0

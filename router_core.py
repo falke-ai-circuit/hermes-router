@@ -1889,6 +1889,29 @@ def stage_model_swap(session_id: str, decision: RouteDecision,
     staged/consumed marker wins). Returns None on skip; a NEW ask (different
     task_id) stages fresh. Never raises."""
     try:
+        # M53-37: the lane reads the SAME payload as the main model, platform
+        # scaffolding included, and renders commentary on the harness instead
+        # of the asked content (measured on the 82 historical denials: one
+        # body enumerated turn_attestation_contract / reflex_1 / reflex_3 and
+        # contained none of the asked material). Scrub it HERE, where the lane
+        # is known and the payload is in hand — not in a pass that runs before
+        # the lane is classified, and never on the main path, where those
+        # blocks are load-bearing (the turn declaration contract among them).
+        #
+        # Log-only at landing: the payload is returned byte-identical and the
+        # count says what WOULD have gone. Flip lane_payload.SCRUB_MODE to
+        # "on" once the log rows prove it sees the right shapes live.
+        try:
+            from .core import lane_payload as _lpm
+            payload, _lp_n = _lpm.scrub_for_lane(
+                payload, getattr(decision, "lane", ""), _lpm.SCRUB_MODE)
+            if _lp_n:
+                logger.info(
+                    "lane_payload_scrubbed lane=%s rows=%d mode=%s",
+                    str(getattr(decision, "lane", "") or ""), _lp_n,
+                    _lpm.SCRUB_MODE)
+        except Exception:  # noqa: BLE001 — the scrub must never break a swap
+            pass
         key = (str(session_id or ""), str(decision.task_id or ""))
         now = time.time()
         # R78U M45-25 (contract RULE 1/2/3): the per-task consult budget is

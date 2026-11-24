@@ -116,3 +116,71 @@ def test_strip_messages_counts_only_touched_rows():
 def test_has_scaffolding_negative_on_real_prose():
     assert LP.has_scaffolding(ASK) is False
     assert LP.has_scaffolding(PLATFORM_BLOCK) is True
+
+
+# --- the wiring: lane-gated, log-first -------------------------------------
+
+
+def _payload():
+    return {"model": "x", "messages": [
+        {"role": "system", "content": "you are an agent"},
+        {"role": "user", "content": PLATFORM_BLOCK + "\n" + ASK},
+    ]}
+
+
+def test_unc_lane_is_recognised_by_every_alias():
+    for lane in ("shadow", "uncensored", "shadow-self", "shadow_self", "SHADOW"):
+        assert LP.is_unc_lane(lane) is True
+    for lane in ("main", "", None, "decision", "higher-pre"):
+        assert LP.is_unc_lane(lane) is False
+
+
+def test_main_lane_payload_is_never_touched_even_in_on_mode():
+    """The prove-the-negative: the primary model keeps its platform rules."""
+    p = _payload()
+    out, n = LP.scrub_for_lane(p, "main", LP.MODE_ON)
+    assert n == 0
+    assert out is p
+    assert "PLATFORM RULE" in out["messages"][1]["content"]
+
+
+def test_log_mode_counts_but_ships_the_payload_byte_identical():
+    p = _payload()
+    before = p["messages"][1]["content"]
+    out, n = LP.scrub_for_lane(p, "shadow", LP.MODE_LOG)
+    assert n == 1
+    assert out is p                                  # same object shipped
+    assert out["messages"][1]["content"] == before    # bytes unchanged
+    assert "PLATFORM RULE" in out["messages"][1]["content"]
+
+
+def test_on_mode_scrubs_the_lane_payload_without_mutating_the_caller():
+    p = _payload()
+    before = p["messages"][1]["content"]
+    out, n = LP.scrub_for_lane(p, "shadow", LP.MODE_ON)
+    assert n == 1
+    assert out is not p                              # fresh dict
+    assert p["messages"][1]["content"] == before     # caller untouched
+    assert "PLATFORM RULE" not in out["messages"][1]["content"]
+    assert ASK in out["messages"][1]["content"]
+    assert out["model"] == "x"                       # other keys preserved
+
+
+def test_off_mode_does_nothing():
+    p = _payload()
+    out, n = LP.scrub_for_lane(p, "shadow", LP.MODE_OFF)
+    assert n == 0
+    assert out is p
+
+
+def test_wiring_never_raises_on_odd_payloads():
+    assert LP.scrub_for_lane(None, "shadow", LP.MODE_ON) == (None, 0)
+    assert LP.scrub_for_lane({"messages": None}, "shadow", LP.MODE_ON)[1] == 0
+    assert LP.scrub_for_lane({"messages": "not-a-list"}, "shadow", LP.MODE_ON)[1] == 0
+    out, n = LP.scrub_for_lane(["plain", {"role": "user", "content": ASK}], "shadow", LP.MODE_ON)
+    assert n == 0
+
+
+def test_default_mode_is_log_not_on():
+    """Landing default must never change a live request."""
+    assert LP.SCRUB_MODE == LP.MODE_LOG
