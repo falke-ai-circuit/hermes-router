@@ -3668,9 +3668,43 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # refusal must not masquerade as a render; here the owner ruling
             # makes the render authoritative whatever its shape.
             _reject_render = None
+        # M53-38: the lane is handed the SAME system prompt as the main model,
+        # so the platform's own rule blocks and the router reading ride into
+        # the render. Measured on the 82 historical denials: one lane body
+        # enumerated turn_attestation_contract / reflex_1 / reflex_3 and
+        # contained none of the asked material — the lane rendered an audit of
+        # the harness instead of an answer. Scrub HERE: this call IS the lane,
+        # so the match is structural and the main path is untouched by
+        # construction (those blocks are load-bearing there — the turn
+        # declaration contract among them).
+        #
+        # Log-only at landing: `_lane_sys` is byte-identical to `_system_prompt`
+        # and the count says what WOULD have gone. Flip lane_payload.SCRUB_MODE
+        # to "on" once the log rows prove it sees real shapes.
+        _lane_sys = _system_prompt
+        _lp_sys_n = 0
+        try:
+            from ..core import lane_payload as _lpm_sys
+
+            _lp_mode = _lpm_sys.SCRUB_MODE
+            if _lpm_sys.has_scaffolding(_lane_sys):
+                _would = _lpm_sys.strip_scaffolding(_lane_sys)
+                _lp_sys_n = max(0, len(_lane_sys) - len(_would))
+                if _lp_mode == _lpm_sys.MODE_ON:
+                    _lane_sys = _would
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="lane_payload_scrubbed",
+                        reason="sysprompt_%s" % (_lp_mode,),
+                        render_lane="shadow", session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
+        except Exception:  # noqa: BLE001 — scrub must never break the lane
+            _lane_sys = _system_prompt
+            _lp_sys_n = 0
         rendered = _hub().router.call(
             original_user_message,
-            system_prompt=_system_prompt,
+            system_prompt=_lane_sys,
             session_id=session_id,
             reject=_reject_render,
         )
