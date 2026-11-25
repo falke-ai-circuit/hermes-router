@@ -199,6 +199,18 @@ def test_a_banner_lands_in_both_the_wire_body_and_the_persisted_row(seam,
                                  "the exact measured defect", row[-400:])
     assert row == out, ("persisted row must be the delivered bytes",
                         len(row), len(out))
+    # The operator-readable proof row: the SAME banner line quoted from both
+    # byte surfaces, plus both digests. Printed under -s; the assertions above
+    # are what pins it.
+    _head = "\u00b7 router \u00b7"
+    print("\nM53-38-A delivered_chars=%d persisted_chars=%d equal=%s"
+          % (len(out), len(row), row == out))
+    print("M53-38-A delivered_sha256=%s"
+          % hashlib.sha256(out.encode()).hexdigest())
+    print("M53-38-A persisted_sha256=%s"
+          % hashlib.sha256(row.encode()).hexdigest())
+    print("M53-38-A DELIVERED_BANNER: %s" % out[out.find(_head):].strip())
+    print("M53-38-A PERSISTED_BANNER: %s" % row[row.find(_head):].strip())
 
 
 def test_a_banner_lands_with_a_full_render_signature(seam, monkeypatch):
