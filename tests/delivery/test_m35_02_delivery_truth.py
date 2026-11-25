@@ -31,6 +31,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import types
 
 import pytest
 
@@ -60,6 +61,7 @@ B3_ELAPSED_S = 44.683
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     state.clear()
+    tp._reset_enforced_kill_cache_for_tests()
     monkeypatch.setattr(plugin, "_cfg", lambda: {
         "enabled": True,
         "classification": {"pre_classify": True, "post_classify": True,
@@ -69,6 +71,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(plugin, "_dry_run", lambda: False)
     yield
     state.clear()
+    tp._reset_enforced_kill_cache_for_tests()
 
 
 def _events(monkeypatch):
@@ -172,6 +175,31 @@ def test_a_replaced_turn_body_is_the_render(monkeypatch):
     assert written[-1] == out, store
 
 
+def _stub_host_deadline(monkeypatch, value):
+    """Pin the host's enforced hook kill to a value the TEST owns.
+
+    The test process resolves ``hermes_cli`` from the interpreter's tree
+    (/opt/hermes), which is not the tree the gateway runs and does not carry
+    the private ``_resolve_hook_callback_timeout`` symbol — importing it here
+    measured ``sys.path`` and collapsed the deadline to the 30 s fallback.
+    A stub module in ``sys.modules`` leaves the plugin's own import path
+    intact while making the value deterministic.
+
+    ``value=None`` installs a module WITHOUT the symbol: the unreadable-host
+    case, which must degrade to ``HOST_HOOK_KILL_DEFAULT_S``.
+    """
+    parent = sys.modules.get("hermes_cli")
+    if parent is None:
+        parent = types.ModuleType("hermes_cli")
+        monkeypatch.setitem(sys.modules, "hermes_cli", parent)
+    module = types.ModuleType("hermes_cli.plugins")
+    if value is not None:
+        setattr(module, "_resolve_hook_callback_timeout", lambda: float(value))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", module)
+    monkeypatch.setattr(parent, "plugins", module, raising=False)
+    tp._reset_enforced_kill_cache_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # (b) a render the edge cannot ship: named failure, delivered=False, no silence
 # ---------------------------------------------------------------------------
@@ -183,31 +211,52 @@ def test_a_replaced_turn_body_is_the_render(monkeypatch):
 # fixtures in tests/delivery/test_m35_14_decision_point.py.
 
 
-def test_c_b3_shape_late_render_is_not_claimed_as_delivered(monkeypatch):
+@pytest.mark.parametrize("host_deadline_s", [None, tp.HOST_HOOK_KILL_S],
+                         ids=["host-unreadable", "host-raised"])
+def test_c_b3_shape_late_render_is_not_claimed_as_delivered(
+        monkeypatch, host_deadline_s):
     """A render settling PAST the host's deadline — the host has already given
     up on the callback, so the response surface carries the pre-swap refusal.
     This is B3's shape, reproduced through the real seam: same wrapper, same
     orchestrator, same ledger writer. The render exists; the wire must not be
     described as it.
 
-    m53-39: the window was raised 30 -> 60 s, so B3's own measured 44.683 s is
-    now INSIDE it (asserted below — that render would have been delivered).
-    The refusal shape is therefore driven past the CURRENT deadline."""
+    m53-39 raised the window 30 -> 60 s, so B3's own measured 44.683 s must be
+    INSIDE it — but only when the host's config was actually raised. Both
+    sides are pinned off the SAME elapsed time, with the enforced value owned
+    by the test: an unreadable host degrades to the honest refusal, a raised
+    host delivers the render.
+    """
     sid = "s-m35-02-c"
     sink = _events(monkeypatch)
     rows = _rows(monkeypatch)
     store = _store_spy(monkeypatch)
     _prime(sid)
     _declared_refusal(monkeypatch)
+    _stub_host_deadline(monkeypatch, host_deadline_s)
 
-    # the raise's own evidence: the render that B3 lost is now deliverable
-    assert tp.render_is_deliverable(B3_ELAPSED_S) is True
+    enforced = (float(tp.HOST_HOOK_KILL_DEFAULT_S) if host_deadline_s is None
+                else float(host_deadline_s))
+    effective = tp.effective_host_hook_kill_s()
+    # the claim the seam may make is the TIGHTER of prediction and host
+    assert effective == min(tp.HOST_HOOK_KILL_S, enforced)
+
+    late = B3_ELAPSED_S >= effective
+    # B3's render: deliverable exactly when the host actually waited for it
+    assert tp.render_is_deliverable(B3_ELAPSED_S) is (not late)
+    if host_deadline_s is None:
+        assert late is True, (
+            "an unreadable host must not inherit the widened prediction")
+    else:
+        assert tp.HOST_HOOK_KILL_S > B3_ELAPSED_S, (
+            "m53-39's whole point is that the raised window covers B3")
+        assert late is False, "a raised host must deliver B3's 44.683 s render"
 
     def _burn_b3_time():
         turn = tp.current()
         assert turn is not None, "the seam must own a turn at render time"
-        # one second past the enforced deadline, not B3's old 44.7 s
-        turn.started -= (tp.HOST_HOOK_KILL_S + 1.0)
+        # B3's measured seam time itself: inside a raised window, past a 30 s one
+        turn.started -= B3_ELAPSED_S
 
     _chain(monkeypatch, before=_burn_b3_time)
 
@@ -215,29 +264,40 @@ def test_c_b3_shape_late_render_is_not_claimed_as_delivered(monkeypatch):
     out = plugin.on_transform_llm_output(response_text=body_in,
                                          session_id=sid, model="m1")
 
-    # the wire body is the pre-swap refusal (that is what the host emitted)
-    assert out is None or RENDERED not in (out or ""), out
-    assert out is not None and DENIAL in out, out
-
-    ev = _row(sink, "render_not_delivered")
-    assert ev is not None, sink
-    assert ev["reason"] == "render_settled_after_host_hook_kill", ev
-    assert ev["severity"] == "error" and ev["turn_failed"] == 1, ev
-    assert ev["render_chars"] == len(RENDERED), ev
-    assert ev["elapsed_s"] >= tp.HOST_HOOK_KILL_S, ev
-
     row = rows[0]
     assert row["lane"] == "shadow", row
     assert row["replaced"] is True, row       # the seam DID decide to replace
-    assert row["delivered"] is False, row     # the wire did not carry it
-    assert row["outcome"] == "render_not_delivered", row
-    assert row["delivered_chars"] == len(out), row
+    if late:
+        # the wire body is the pre-swap refusal (that is what the host emitted)
+        assert out is not None and DENIAL in out, out
+        assert RENDERED not in (out or ""), out
 
-    # NO store rewrite to the render: the transcript keeps what the user read.
-    # (The declaration-tag strip legitimately rewrote the row earlier; what
-    # must never happen is the RENDER landing in state.db for a turn whose
-    # response surface carried the refusal.)
-    assert all(RENDERED not in new for _old, new in store), store
+        ev = _row(sink, "render_not_delivered")
+        assert ev is not None, sink
+        assert ev["reason"] == "render_settled_after_host_hook_kill", ev
+        assert ev["severity"] == "error" and ev["turn_failed"] == 1, ev
+        assert ev["render_chars"] == len(RENDERED), ev
+        assert ev["elapsed_s"] >= B3_ELAPSED_S, ev
+
+        assert row["delivered"] is False, row     # the wire did not carry it
+        assert row["outcome"] == "render_not_delivered", row
+
+        # NO store rewrite to the render: the transcript keeps what the user
+        # read. (The declaration-tag strip legitimately rewrote the row
+        # earlier; what must never happen is the RENDER landing in state.db
+        # for a turn whose response surface carried the refusal.)
+        assert all(RENDERED not in new for _old, new in store), store
+    else:
+        # the raised window is real: the wire carries the render
+        assert out is not None and RENDERED in out, out
+        assert DENIAL not in out, out
+
+        assert row["delivered"] is True, row
+        assert row["outcome"] == "replaced", row
+        written = [new for _old, new in store if new]
+        assert written and written[-1] == out, store
+
+    assert row["delivered_chars"] == len(out), (row, len(out))
 
 
 def test_c2_b3_row_would_have_been_falsifiable(monkeypatch):
