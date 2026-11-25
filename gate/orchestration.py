@@ -1207,6 +1207,36 @@ def _report_original_delivery(session_id: str, reason: str,
         pass
 
 
+_ENVELOPE_SKIP_REASONS = frozenset({"no_render", "not_replaced", "exception"})
+
+
+def _envelope_skipped_row(session_id: str, reason: str,
+                          render_chars: int = 0,
+                          route_reason: str = "") -> None:
+    """M53-42: one countable row when a render did NOT become an envelope.
+
+    CALLER CONTRACT
+        reason     one of no_render / not_replaced / exception (closed set;
+                   an unknown value is coerced to ``exception`` so a typo
+                   cannot silently invent a fourth category)
+        render_chars  the render that existed, if any
+
+    The companion row ``assimilation_envelope_written`` is emitted at the
+    delivery seam; together they make the feature's reach countable per turn
+    instead of inferable from absence. Never raises — telemetry only.
+    """
+    try:
+        _hub()._log_route(
+            "POST", event_detail="assimilation_envelope_skipped",
+            reason=(reason if reason in _ENVELOPE_SKIP_REASONS
+                    else "exception"),
+            render_chars=int(render_chars or 0),
+            route_reason=str(route_reason or "")[:40],
+            session_id=session_id)
+    except Exception:  # noqa: BLE001 — telemetry only
+        pass
+
+
 def _recover_orphan_anchor_swap(session_id: str) -> None:
     """R16-2c (rider 16): POST-edge orphan recovery. A staged anchor swap
     that is STILL pending when a delivery edge runs means no llm_execution
@@ -3860,52 +3890,14 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # the envelope channel and NEVER in the body (M53-05). `swapped=1` is
         # what makes the feature's rate countable per turn.
         # ------------------------------------------------------------------
-        _env_written = 0
-        if _rule_replace and str(rendered or "").strip():
-            try:
-                _render_is_refusal = bool(
-                    _hub()._dispatcher_post._refusal_shaped_post(str(rendered)))
-            except Exception:  # noqa: BLE001 — an unreadable shape is not a refusal
-                _render_is_refusal = False
-            _swap_domain = ((str((_gate_row or {}).get("domain") or "")
-                             if isinstance(_gate_row, dict) else "")
-                            or str(_att_parsed.get("domain") or ""))
-            try:
-                from .. import assimilation as _assim_swap
-
-                _env = _assim_swap.note_swap_envelope(
-                    session_id,
-                    turn_id=str((context or {}).get("turn_id") or ""),
-                    lane="uncensored",
-                    route_reason=("denial_in_unc_domain" if _route_independent
-                                  else ("declared_refusal" if _att_route_fired
-                                        else "gate_flagged")),
-                    domain=_swap_domain,
-                    render=str(rendered),
-                    swapped=True,
-                    render_is_refusal=_render_is_refusal)
-                _env_written = 1 if _env else 0
-            except Exception:  # noqa: BLE001 — an envelope never blocks delivery
-                _env_written = 0
-            try:
-                _task_swap = str(
-                    _hub()._tap_task_identity(session_id, model)[0] or "")
-            except Exception:  # noqa: BLE001 — a missing join key is not fatal
-                _task_swap = ""
-            try:
-                _hub()._log_route(
-                    "POST", event_detail="assimilation_swap",
-                    swapped=1, route_independent=int(bool(_route_independent)),
-                    render_is_refusal=int(bool(_render_is_refusal)),
-                    render_sha256=hashlib.sha256(
-                        str(rendered).encode("utf-8")).hexdigest(),
-                    render_chars=len(str(rendered)),
-                    draft_chars=len(str(response_text or "")),
-                    envelope_written=_env_written,
-                    domain=_swap_domain, task_id=_task_swap,
-                    session_id=session_id)
-            except Exception:  # noqa: BLE001 — telemetry only
-                pass
+        # M53-42: the swap record + envelope MOVED to the delivery seam (the
+        # block that says "the delivered body came from the LANE", below).
+        # It used to live here, gated on `_rule_replace` — the rule table's
+        # `route` action — while this same seam replaces the body on a plain
+        # lane swap too. Measured at 478cba1: 0 envelope rows across 6,234+
+        # lane rows, 0 of 32,547 messages naming the envelope, and a render
+        # that shipped while the model was never told the body was hers.
+        # The write is now conditioned on the SWAP FACT, not the table.
         # E: the attestation row is written BEFORE the render exists, so on a
         # replaced turn it could only measure the draft. Once the shipped
         # render is known, re-emit the row with the ACTUAL delivered length
@@ -3984,6 +3976,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 pass
             # The pre-swap body is what the caller already has. It is not
             # silent: the row says delivered=False and the event is an error.
+            # M53-42: the render existed and did NOT become the body — the
+            # envelope is skipped by NAME so the reach count has no silent gap.
+            _envelope_skipped_row(session_id, "not_replaced",
+                                  len(str(rendered or "")))
             return _decl_passthrough()
         if not rendered or not str(rendered).strip():
             _hub()._log_route("POST", event_detail="route_failed", pattern_groups=",".join(matches),
@@ -3999,6 +3995,8 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             # M3.3: chain answered empty — the ORIGINAL refusal stands.
             _report_original_delivery(session_id, "chain_returned_nothing",
                                       answer=response_text)
+            # M53-42: no bytes, no envelope — counted, never silent.
+            _envelope_skipped_row(session_id, "no_render", 0)
             return _decl_passthrough()
 
         # v3.2.2 render delivery cap — applied at the delivery seam BEFORE
@@ -4173,6 +4171,85 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 outcome=("replaced" if _rewrote else "replaced_unpersisted"))
         except Exception:  # noqa: BLE001 — instrumentation never breaks delivery
             pass
+        # ------------------------------------------------------------------
+        # M53-42 — THE ENVELOPE IS WRITTEN WHERE THE RENDER BECOMES THE BODY.
+        #
+        # This is the seam that states "the delivered body came from the LANE"
+        # on EVERY producer: the rule-table replacement and the plain lane swap
+        # alike (the latter records outcome=replaced with `_rule_replace` FALSE).
+        # The write used to sit 250 lines above, gated on `_rule_replace`, so
+        # exactly that plain swap shipped a render and told nobody: 0 envelope
+        # rows across 6,234+ lane rows, 0 of 32,547 messages carrying the
+        # envelope. The render was delivered; the model was never told the body
+        # was hers, and she disowned it.
+        #
+        # The predicate is therefore the SWAP FACT — a non-empty render that IS
+        # the body this hook returns — and can no longer drift from delivery.
+        # Attribution names a part of the AGENT ("shadow_self"), never an
+        # external lane the model can quote back as licence to disown.
+        #
+        # One row per turn either way (`_written` here, `_skipped` at every
+        # exit above), so reach is COUNTABLE rather than inferred from absence.
+        # Fail-quiet: this never blocks, alters or enters the delivered body.
+        # ------------------------------------------------------------------
+        if str(rendered or "").strip():          # the swap fact: body == render
+            try:
+                try:
+                    _render_is_refusal = bool(
+                        _hub()._dispatcher_post._refusal_shaped_post(
+                            str(rendered)))
+                except Exception:  # noqa: BLE001 — unreadable shape != refusal
+                    _render_is_refusal = False
+                _swap_domain = (
+                    (str((_gate_row or {}).get("domain") or "")
+                     if isinstance(_gate_row, dict) else "")
+                    or str(_att_parsed.get("domain") or ""))
+                _swap_reason = ("denial_in_unc_domain" if _route_independent
+                                else ("declared_refusal" if _att_route_fired
+                                      else "gate_flagged"))
+                from .. import assimilation as _assim_swap
+
+                _env = _assim_swap.note_swap_envelope(
+                    session_id,
+                    turn_id=str((context or {}).get("turn_id") or ""),
+                    lane="shadow_self",
+                    route_reason=_swap_reason,
+                    domain=_swap_domain,
+                    render=str(rendered),
+                    swapped=True,
+                    render_is_refusal=_render_is_refusal)
+            except Exception:  # noqa: BLE001 — an envelope never blocks delivery
+                _env = {}
+            if not isinstance(_env, dict) or not _env:
+                _envelope_skipped_row(session_id, "exception",
+                                      len(str(rendered or "")), _swap_reason)
+            else:
+                try:
+                    _task_swap = str(
+                        _hub()._tap_task_identity(session_id, model)[0] or "")
+                except Exception:  # noqa: BLE001 — a missing join key is not fatal
+                    _task_swap = ""
+                try:
+                    _hub()._log_route(
+                        "POST", event_detail="assimilation_swap",
+                        swapped=1,
+                        route_independent=int(bool(_route_independent)),
+                        render_is_refusal=int(bool(_render_is_refusal)),
+                        render_sha256=_env.get("render_sha") or "",
+                        render_chars=len(str(rendered)),
+                        draft_chars=len(str(response_text or "")),
+                        envelope_written=1,
+                        domain=_swap_domain, task_id=_task_swap,
+                        session_id=session_id)
+                    _hub()._log_route(
+                        "POST", event_detail="assimilation_envelope_written",
+                        swapped=1, render_sha256=_env.get("render_sha") or "",
+                        chars=len(str(rendered)),
+                        route_reason=_swap_reason, domain=_swap_domain,
+                        origin=str(_env.get("origin") or "shadow_self"),
+                        session_id=session_id)
+                except Exception:  # noqa: BLE001 — telemetry only
+                    pass
         if semantic_verdict:
             # Auditable residual (reviewer §B.1): a SEMANTIC verdict routed a
             # response that stage-1's regexes did NOT consider a refusal.
