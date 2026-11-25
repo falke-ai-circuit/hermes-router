@@ -2024,10 +2024,11 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         except Exception:  # noqa: BLE001 — marker guard never breaks delivery
             pass
         _hook_t0 = _hub().time.monotonic()
+        from ..core.turn_provenance import HOOK_WORK_BUDGET_S as _hook_budget_s
 
         def _hook_remaining() -> float:
-            # seconds left of the runner-safe budget on THIS hook invocation
-            return max(0.0, 25.0 - (_hub().time.monotonic() - _hook_t0))
+            # seconds left of the runner-safe work budget on THIS hook invocation
+            return max(0.0, _hook_budget_s - (_hub().time.monotonic() - _hook_t0))
         if not isinstance(response_text, str) or not response_text.strip():
             # SPEC §1 EMPTY-BODY RULE (Goran 2026-10-28). A blank turn is a
             # DEFECT, not politeness: read the last ask, and

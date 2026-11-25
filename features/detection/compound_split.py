@@ -65,13 +65,11 @@ LANE_MAIN = "main"
 #: it; this row only renders it.
 from .delivery_decision import REASON_MAIN_COMPLIED as MAIN_COMPLIED
 
-#: The host plugin runner abandons an in-flight ``transform_llm_output`` at
-#: 30 s ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3).
-#: A render that settles at or after that wall time cannot reach the response
-#: surface: the host has already emitted the pre-hook body. Measured, not
-#: assumed — B3's render settled at 44.7 s and the wire carried the refusal.
-#: Patchable for tests; the value is the host's contract, not a preference.
-HOST_HOOK_KILL_S = 30.0
+#: MIRROR of core/turn_provenance.py (this file has no importers — kept in
+#: sync per m53-39). The host plugin runner abandons an in-flight
+#: transform_llm_output callback at ``plugins.hook_callback_timeout``: 30 s
+#: shipped default, raised to 60 s after 31.2-40.3 s renders were discarded.
+HOST_HOOK_KILL_S = 60.0
 
 # ---------------------------------------------------------------------------
 # M35-04 TOTALITY — a turn cannot leave the seam without a row.

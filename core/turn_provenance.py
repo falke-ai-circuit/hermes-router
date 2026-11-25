@@ -43,6 +43,7 @@ TOTALITY
 """
 from __future__ import annotations
 
+import math
 import threading
 import time
 from contextvars import ContextVar
@@ -65,13 +66,73 @@ LANE_MAIN = "main"
 #: it; this row only renders it.
 from .delivery_decision import REASON_MAIN_COMPLIED as MAIN_COMPLIED
 
-#: The host plugin runner abandons an in-flight ``transform_llm_output`` at
-#: 30 s ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3).
+#: The host plugin runner abandons an in-flight ``transform_llm_output``
+#: callback at ``plugins.hook_callback_timeout`` — 30 s for the shipped
+#: default ("timed out after 30s — skipping", live 2026-11-02 23:55:32Z, B3),
+#: raised to 60 s after m53-39 measured 6 of 37 renders paid for and discarded
+#: at 31.2-40.3 s (10,890-18,515 chars each).
 #: A render that settles at or after that wall time cannot reach the response
 #: surface: the host has already emitted the pre-hook body. Measured, not
 #: assumed — B3's render settled at 44.7 s and the wire carried the refusal.
-#: Patchable for tests; the value is the host's contract, not a preference.
-HOST_HOOK_KILL_S = 30.0
+#:
+#: This constant is the PREDICTION. Every use clamps it to the host's ENFORCED
+#: value (``effective_host_hook_kill_s``), so a deployment that never raised
+#: the config keeps the honest `render_not_delivered` instead of promoting it
+#: to a false `replaced` (the B3 inverse-delivery defect).
+HOST_HOOK_KILL_S = 60.0
+
+#: The host default when the config key is absent — what the seam must assume
+#: when it cannot read the runner's own budget.
+HOST_HOOK_KILL_DEFAULT_S = 30.0
+
+#: Budgeted work inside the callback (sync consult + revision) must stop this
+#: far before the deadline: consume/capture and the banner write still run
+#: after the last budgeted step.
+HOOK_WORK_MARGIN_S = 15.0
+HOOK_WORK_BUDGET_S = HOST_HOOK_KILL_S - HOOK_WORK_MARGIN_S
+
+_ENFORCED_KILL_CACHE: Optional[float] = None
+
+
+def enforced_host_hook_kill_s(
+        default: float = HOST_HOOK_KILL_DEFAULT_S) -> float:
+    """The host's ACTUAL hook-callback kill, or ``default`` when unreadable.
+
+    Reads the runner's own resolver (``plugins.hook_callback_timeout``) rather
+    than trusting a copied literal, so the prediction follows the deployment.
+    The host treats ``<= 0`` as "no threaded kill" — reported here as
+    ``math.inf`` so the clamp cannot narrow an unbounded callback.
+    Never raises.
+    """
+    global _ENFORCED_KILL_CACHE
+    if _ENFORCED_KILL_CACHE is not None:
+        return _ENFORCED_KILL_CACHE
+    try:
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        value = float(_resolve_hook_callback_timeout())
+    except Exception:  # noqa: BLE001 — a prediction never breaks delivery
+        return float(default)
+    _ENFORCED_KILL_CACHE = math.inf if value <= 0 else value
+    return _ENFORCED_KILL_CACHE
+
+
+def effective_host_hook_kill_s() -> float:
+    """The deadline the seam may CLAIM delivery against.
+
+    The TIGHTER of this plugin's prediction and the host's enforced kill: a
+    widened prediction can never outlive a narrower host deadline. Never
+    raises.
+    """
+    try:
+        return min(float(HOST_HOOK_KILL_S), enforced_host_hook_kill_s())
+    except Exception:  # noqa: BLE001
+        return float(HOST_HOOK_KILL_DEFAULT_S)
+
+
+def _reset_enforced_kill_cache_for_tests() -> None:
+    """Drop the memoised host deadline (tests that move the config)."""
+    global _ENFORCED_KILL_CACHE
+    _ENFORCED_KILL_CACHE = None
 
 # ---------------------------------------------------------------------------
 # M35-04 TOTALITY — a turn cannot leave the seam without a row.
@@ -128,17 +189,22 @@ _INFLIGHT: Dict[int, float] = {}
 
 
 def render_is_deliverable(elapsed_s: float,
-                          budget_s: float = HOST_HOOK_KILL_S) -> bool:
+                          budget_s: Optional[float] = None) -> bool:
     """True when a render settling after ``elapsed_s`` can still be delivered.
 
     False means the host has already given up on this hook invocation, so the
     body it returned to the caller is the PRE-swap text. Calling that a
     replacement is the defect (B3): the render exists in the store, the user
-    read the refusal. Never raises — an unreadable clock is treated as
-    deliverable so a broken clock cannot suppress a good render.
+    read the refusal. ``budget_s`` defaults to the EFFECTIVE deadline — the
+    tighter of this plugin's prediction and the host's enforced kill — so a
+    deployment that never raised ``plugins.hook_callback_timeout`` cannot be
+    told a replacement was delivered. Never raises — an unreadable clock is
+    treated as deliverable so a broken clock cannot suppress a good render.
     """
     try:
-        return float(elapsed_s) < float(budget_s)
+        budget = (effective_host_hook_kill_s() if budget_s is None
+                  else float(budget_s))
+        return float(elapsed_s) < float(budget)
     except Exception:  # noqa: BLE001
         return True
 
@@ -664,7 +730,8 @@ def seam_blocked(now: Optional[float] = None) -> bool:
     """
     try:
         stamp = time.monotonic() if now is None else float(now)
-        return any(stamp - started >= HOST_HOOK_KILL_S
+        deadline = effective_host_hook_kill_s()
+        return any(stamp - started >= deadline
                    for started in list(_INFLIGHT.values()))
     except Exception:  # noqa: BLE001
         return False

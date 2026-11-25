@@ -184,10 +184,15 @@ def test_a_replaced_turn_body_is_the_render(monkeypatch):
 
 
 def test_c_b3_shape_late_render_is_not_claimed_as_delivered(monkeypatch):
-    """44.683 s of synchronous seam time — the host killed the hook at 30 s, so
-    the response surface already carries the pre-swap refusal. This is B3,
-    reproduced through the real seam: same wrapper, same orchestrator, same
-    ledger writer. The render exists; the wire must not be described as it."""
+    """A render settling PAST the host's deadline — the host has already given
+    up on the callback, so the response surface carries the pre-swap refusal.
+    This is B3's shape, reproduced through the real seam: same wrapper, same
+    orchestrator, same ledger writer. The render exists; the wire must not be
+    described as it.
+
+    m53-39: the window was raised 30 -> 60 s, so B3's own measured 44.683 s is
+    now INSIDE it (asserted below — that render would have been delivered).
+    The refusal shape is therefore driven past the CURRENT deadline."""
     sid = "s-m35-02-c"
     sink = _events(monkeypatch)
     rows = _rows(monkeypatch)
@@ -195,11 +200,14 @@ def test_c_b3_shape_late_render_is_not_claimed_as_delivered(monkeypatch):
     _prime(sid)
     _declared_refusal(monkeypatch)
 
+    # the raise's own evidence: the render that B3 lost is now deliverable
+    assert tp.render_is_deliverable(B3_ELAPSED_S) is True
+
     def _burn_b3_time():
         turn = tp.current()
         assert turn is not None, "the seam must own a turn at render time"
-        # The render chain itself consumed 44.683 s (measured live on B3).
-        turn.started -= B3_ELAPSED_S
+        # one second past the enforced deadline, not B3's old 44.7 s
+        turn.started -= (tp.HOST_HOOK_KILL_S + 1.0)
 
     _chain(monkeypatch, before=_burn_b3_time)
 

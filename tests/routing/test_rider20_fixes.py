@@ -25,7 +25,8 @@ R20-D3 (valmet, park-without-capture): a billed anchor consult parked its
   ran. The router's own hook budget (sync audit consult 45s + revision
   pass 60s + 20s decision wait) guaranteed the trip. Fix: the sync
   consult, revision pass, and pre-consume waits are budgeted under the
-  runner timeout (HOOK_SYNC_CAP 25s; hook_budget passed from the hook;
+  runner timeout (HOOK_SYNC_CAP = shared work budget, below the host's
+  deadline; hook_budget passed from the hook;
   wait budget capped), so a slow consult can never orphan the hook.
 
 Live evidence pinned per item; graded from disk truth (raw.jsonl, valmet
@@ -48,6 +49,7 @@ import hermes_router as plugin  # noqa: E402
 from hermes_router import (debug_banner as DB, render_inbox,  # noqa: E402
                            router_core, route_gate, usage_ledger)
 from hermes_router import completion_audit as ca  # noqa: E402
+from hermes_router.core import turn_provenance as tp  # noqa: E402
 
 SID = "s-rider20"
 
@@ -164,20 +166,22 @@ def test_b6_gate_fail_open_on_helper_errors(r20_reset, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_d3_sync_consult_hard_capped_below_runner_budget(r20_reset, monkeypatch):
-    """HOOK_SYNC_CAP: the configured sync budget is clamped below the
-    plugin runner's 30s transform-hook kill — the 45s default tripped the
-    runner timeout and every later transform invocation got skipped
-    ("skipped after previous timeout or while still running"), leaving
-    the billed consult's parked banner with no consume edge."""
+    """HOOK_SYNC_CAP: the configured sync budget is clamped to the SHARED work
+    budget, which must stay below the host's transform-hook deadline — an
+    uncapped 45s consult tripped the old 30s runner timeout and every later
+    transform invocation got skipped ("skipped after previous timeout or while
+    still running"), leaving the billed consult's parked banner with no
+    consume edge."""
     from hermes_router import router_core as rc
     monkeypatch.setattr(rc, "_complexity_cfg",
                         lambda: {"audit_sync_seconds": 45})
-    assert ca.audit_sync_seconds() == ca.HOOK_SYNC_CAP <= 25.0
+    assert ca.audit_sync_seconds() == ca.HOOK_SYNC_CAP
+    assert ca.HOOK_SYNC_CAP == tp.HOOK_WORK_BUDGET_S < tp.HOST_HOOK_KILL_S
     monkeypatch.setattr(rc, "_complexity_cfg",
                         lambda: {"audit_sync_seconds": 10})
     assert ca.audit_sync_seconds() == 10.0
     monkeypatch.setattr(rc, "_complexity_cfg", lambda: {})
-    assert ca.audit_sync_seconds() == ca.HOOK_SYNC_CAP  # 45s default clamps
+    assert ca.audit_sync_seconds() == ca.HOOK_SYNC_CAP  # unset -> the cap
 
 
 def test_d3_hook_budget_clamps_sync_and_revision_sum(r20_reset, monkeypatch):
@@ -295,7 +299,7 @@ def test_d3_preconsume_waits_capped_by_budget(r20_reset, monkeypatch):
 
 def test_d3_hook_passes_budget_to_audit_gate(r20_reset, monkeypatch):
     """The transform hook budgets itself: audit_gate receives a positive
-    hook_budget at or under the 25s cap, and _deliver_parked_at_edge
+    hook_budget at or under the shared work budget, and _deliver_parked_at_edge
     passes the same budget to the pre-consume waits."""
     got = {}
 
@@ -320,8 +324,8 @@ def test_d3_hook_passes_budget_to_audit_gate(r20_reset, monkeypatch):
     plugin.on_transform_llm_output(response_text="clean benign body text "
                                                "for the rider-20 hook pin",
                                    session_id=SID, model="m")
-    assert 0 < got.get("hook_budget", 0) <= 25.0
-    assert 0 <= got_wait.get("budget", 0) <= 25.0
+    assert 0 < got.get("hook_budget", 0) <= tp.HOOK_WORK_BUDGET_S
+    assert 0 <= got_wait.get("budget", 0) <= tp.HOOK_WORK_BUDGET_S
 
 
 def test_d3_edge_helper_forwards_budget_to_waits(r20_reset, monkeypatch):

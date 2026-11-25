@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import anchor_chain, anchor_exec, router_core, state
 from .frames import HS_COMPLETION_AUDIT_MARKER as _HS_AUDIT_MARKER  # R8h single source
+from .core.turn_provenance import HOOK_WORK_BUDGET_S
 
 # M37-06 D4: the lane id logged on the spend row is resolved through the lane
 # registry rather than pasted as a literal, so a registry that no longer carries
@@ -55,14 +56,15 @@ _POST_AUDIT_LANE_ID = _lane_from_registry(_lane_builtins.LANE_HIGHER_POST).id
 
 # R20-D3 (rider 20): hard cap for the sync audit consult (and the pre-consume
 # decision/anchor waits) inside on_transform_llm_output. The host plugin
-# runner kills the hook callback at 30s ("timed out after 30s — skipping")
+# runner kills the hook callback at plugins.hook_callback_timeout (30s shipped
+# default, raised to 60s after m53-39 measured 31.2-40.3s renders discarded)
 # and then skips subsequent invocations ("skipped after previous timeout or
 # while still running") — a skip leaves a billed consult's parked banner
 # with NO consume edge (park-without-capture: live valmet D3 ledger rows
-# 148+149 billed, banner parked 06:03:37Z, zero consume events). Cap below
-# the runner budget, leaving margin for consume/capture work after the
-# consult returns.
-HOOK_SYNC_CAP = 25.0
+# 148+149 billed, banner parked 06:03:37Z, zero consume events). The cap is
+# the SHARED work budget (deadline minus the consume/capture margin), so it
+# can never drift from the host contract it is protecting.
+HOOK_SYNC_CAP = HOOK_WORK_BUDGET_S
 
 logger = logging.getLogger(__name__)
 try:  # R34-19k: which COPY is live? deploy ambiguity cost hours.
