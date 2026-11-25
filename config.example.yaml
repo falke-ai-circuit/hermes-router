@@ -4,12 +4,14 @@
 # Regenerate:      python3 scripts/gen_config.py --emit-example
 # Verify in sync:  python3 scripts/gen_config.py --check
 #
+# The plugin reads ONE section: `hermes_router` (core/config_access.py).
+#
 # Copy the `router:` block into a profile's config.yaml, or apply it directly:
 #   python3 scripts/gen_config.py --apply <profile_home>
 # Environment-specific values (log paths, render/anchor chains, provider keys)
 # do not belong here — pass them with --overrides so this file stays portable.
 
-router:
+hermes_router:
   detection:
     enabled: true
     model: auto

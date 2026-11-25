@@ -39,12 +39,20 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLE = os.path.join(REPO, "config.example.yaml")
 
+#: The single config section the plugin reads (core/config_access.py —
+#: ``_SECTION_KEYS = ("hermes_router",)``). The legacy ``router`` section and
+#: its key-merge fallback were DELETED fleet-wide, so writing to any other key
+#: produces a config the plugin never reads — indistinguishable from no config.
+SECTION = "hermes_router"
+
 HEADER = """\
 # hermes-router — canonical configuration example (GENERATED, do not hand-edit)
 #
 # Source of truth: core/schema.py ({} parameters).
 # Regenerate:      python3 scripts/gen_config.py --emit-example
 # Verify in sync:  python3 scripts/gen_config.py --check
+#
+# The plugin reads ONE section: `hermes_router` (core/config_access.py).
 #
 # Copy the `router:` block into a profile's config.yaml, or apply it directly:
 #   python3 scripts/gen_config.py --apply <profile_home>
@@ -133,12 +141,12 @@ def flatten(d, prefix=""):
 def emit_example(S):
     yaml = yaml_safe()
     block = build_block(S)
-    body = yaml.safe_dump({"router": block}, sort_keys=False,
+    body = yaml.safe_dump({SECTION: block}, sort_keys=False,
                           default_flow_style=False, allow_unicode=True)
     text = HEADER.format(len(S.SCHEMA)) + "\n" + body
     with open(EXAMPLE, "w") as f:
         f.write(text)
-    print(f"  wrote {EXAMPLE} ({len(S.SCHEMA)} schema keys)")
+    print(f"  wrote {EXAMPLE} ({len(S.SCHEMA)} keys, section {SECTION!r})")
 
 
 def leaf_paths(S):
@@ -163,7 +171,8 @@ def check(S):
         return 1
     with open(EXAMPLE) as f:
         doc = yaml.safe_load(f) or {}
-    have = set(flatten(doc.get("router") or {}))
+    have = set(flatten(doc.get(SECTION) or {}))
+
     want = leaf_paths(S)
     missing = sorted(want - have)
     extra = sorted(have - want)
@@ -174,8 +183,26 @@ def check(S):
         for p in extra[:10]:
             print(f"    extra:   {p}")
         return 1
-    print(f"  in sync: {len(want)} keys")
+    print(f"  in sync: {len(want)} keys (section {SECTION!r})")
     return 0
+
+
+def merge_preserving(existing, generated):
+    """Fill gaps from the schema WITHOUT overwriting anything already set.
+
+    Existing leaves always win: a profile's hand-tuned render chain, key_file
+    paths, caps and pricing are operational decisions, not defaults to correct.
+    Only keys the profile is missing get added, which is exactly what closes a
+    schema-violation count without changing behaviour.
+    """
+    added = 0
+    for k, v in generated.items():
+        if k not in existing:
+            existing[k] = v
+            added += 1
+        elif isinstance(existing[k], dict) and isinstance(v, dict):
+            added += merge_preserving(existing[k], v)
+    return added
 
 
 def apply(S, profile_home, overrides_file):
@@ -186,18 +213,27 @@ def apply(S, profile_home, overrides_file):
     overrides = {}
     if overrides_file:
         with open(overrides_file) as f:
-            overrides = (yaml.safe_load(f) or {}).get("router") or {}
-    block = build_block(S, overrides)
+            doc = yaml.safe_load(f) or {}
+        overrides = doc.get(SECTION) or doc.get("router") or {}
+    generated = build_block(S, overrides)
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f) or {}
+    existing = cfg.get(SECTION)
     backup = cfg_path + ".bak-routergen-" + time.strftime("%Y%m%d-%H%M%S")
     shutil.copy2(cfg_path, backup)
-    cfg["router"] = block
+    if isinstance(existing, dict) and existing:
+        before = len(flatten(existing))
+        added = merge_preserving(existing, generated)
+        cfg[SECTION] = existing
+        print(f"  mode:    MERGE (preserved {before} existing key(s), added {added})")
+    else:
+        cfg[SECTION] = generated
+        print(f"  mode:    CREATE (no existing section)")
     with open(cfg_path, "w") as f:
         yaml.safe_dump(cfg, f, sort_keys=False, default_flow_style=False,
                        allow_unicode=True)
     print(f"  backup:  {backup}")
-    print(f"  applied: {cfg_path} ({len(S.SCHEMA)} keys, "
+    print(f"  applied: {cfg_path} (section {SECTION!r}, {len(S.SCHEMA)} schema keys, "
           f"{len(overrides)} override(s))")
 
 

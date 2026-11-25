@@ -47,12 +47,18 @@ def test_example_is_in_sync_with_schema():
 
 
 def test_example_defines_router_block_only():
-    """The example carries one portable block — never per-install values."""
+    """The example carries one portable block — never per-install values.
+
+    Section name matters: the plugin reads `hermes_router` (core/config_access.py
+    _SECTION_KEYS). An example under any other key is config nothing reads.
+    """
     import yaml
     with open(os.path.join(REPO, "config.example.yaml")) as f:
         doc = yaml.safe_load(f) or {}
-    assert set(doc) == {"router"}, f"example should only carry a router block, got {sorted(doc)}"
-    router = doc["router"]
+    assert set(doc) == {"hermes_router"}, (
+        f"example must carry exactly one `hermes_router` block, got {sorted(doc)}"
+    )
+    router = doc["hermes_router"]
     # environment-specific keys must ship neutral so the file stays portable
     for path, expected in (("log_path", ""), ("paths.state_dir", "")):
         node = router
