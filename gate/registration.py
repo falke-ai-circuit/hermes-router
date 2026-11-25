@@ -482,20 +482,38 @@ def on_transform_llm_output_guarded(**kwargs):
             from ..features.banners import turn_record as _tr_fx
             from .. import debug_banner as _db_fx
 
-            from .. import assimilation as _as_fx
-
+            _sid_fx = str(kwargs.get("session_id") or "")
+            # m53-40 — THIS is the predicate that decides whether a delivered
+            # render keeps its banner.
+            #
+            # It used to be `read_swap_envelope(session)`: a proxy for "this is
+            # the M53-06 swapped render". An envelope is written by ONE producer
+            # (the independent assimilation swap). The POST render-substitution
+            # path produces the SAME delivery — SOURCE_LANE bytes — and writes
+            # no envelope, so the fold was skipped while the decision had
+            # already stripped the banner head (`· router · …`) from the lane
+            # body as marker bytes (delivery_decision.strip_markers ->
+            # _FOOTER_RE, which matches the head LINE only). Measured architect
+            # i=11 2026-11-25T08:33:17Z: banner_attached 5154 chars and
+            # banner_persist_verified 5154, then delivery_decision strip_bytes
+            # 174 and shipped/persisted 5033 — lane label and endpoint gone,
+            # the `impulse (decision)` continuation left as an orphan.
+            #
+            # The real invariant is mechanical: the decision delivered the LANE
+            # render and those bytes carry no banner head => compose the turn's
+            # ONE line onto THEM from the same record. A record with no line
+            # (emit knob off) composes nothing, which stays correct; the head
+            # test already forbids a second block.
             if (isinstance(final, str) and final.strip()
                     and _decision is not None
                     and _decision.delivered_source == _dd.SOURCE_LANE
                     and _db_fx.BANNER_HEAD not in final
                     and _db_fx.debug_banner_enabled()
-                    # ONLY the M53-06 swapped render: other lane deliveries
-                    # carry their own block on their own edge (M35-17/M48),
-                    # and composing there produced malformed double blocks.
-                    and bool(_as_fx.read_swap_envelope(
-                        str(kwargs.get("session_id") or "")))):
+                    # There must be a line to compose: the record's own
+                    # composition, not a banner invented here.
+                    and bool(str(_tr_fx.compose_line(_sid_fx) or "").strip())):
                 _fx = _tr_fx.compose_onto_delivery(
-                    str(kwargs.get("session_id") or ""), final,
+                    _sid_fx, final,
                     allow_lane_render=True)
                 if isinstance(_fx, str) and _fx != final:
                     final = _fx
