@@ -469,6 +469,11 @@ class DeliveryFacts:
     #: classify_original called the body COMPLIANCE. The agent said it declined;
     #: that outranks any guess about its prose.
     att_type: str = ""
+    #: M53-41: the turn's POST CLASSIFICATION (intent_judge class) when one
+    #: landed — `softened` / `failed` outrank a lexical COMPLIANCE guess exactly
+    #: as the agent's own attestation does. Kept SEPARATE from `att_type` so the
+    #: tag the agent wrote is never overwritten by a judge's reading of it.
+    route_class: str = ""
     gate_consulted: bool = False
     gate_verdict: str = "abstain"
     gate_reason: str = "not_consulted"
@@ -700,11 +705,18 @@ def decide(facts: Any) -> Decision:
         _att_refused = _att_decl in (
             "declined", "denied", "denial", "refused", "blocked",
             "softened", "softening", "partial")
+        # M53-41 (owner ruling 2026-11-25): the judged CLASSIFICATION carries
+        # the same force. `softened` and a FAILURE (`failed` = missing) are the
+        # routable classes; a lexical body guess may not ship them from main
+        # just because it reads as compliance. `declined` is included so a
+        # judged decline on a lane render is not outranked either.
+        _class_decl = str(getattr(facts, "route_class", "") or "").strip().lower()
+        _class_refused = _class_decl in ("declined", "softened", "failed")
         # Only when there IS a render to deliver instead. With no lane body,
         # D4's own path is what strips the attestation tag - skipping it there
         # shipped the tag (caught by
         # test_registration_seam_delivers_bytes_without_a_tag).
-        _att_overrides = _att_refused and bool(
+        _att_overrides = (_att_refused or _class_refused) and bool(
             str(getattr(facts, "lane_render", "") or "").strip())
         if body_class == COMPLIANCE and entered_ok and not _att_overrides:
             diag["rule_replace_ignored"] = rule_id in TARGETED_RULES

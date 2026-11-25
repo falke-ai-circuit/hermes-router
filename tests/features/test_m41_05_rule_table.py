@@ -95,17 +95,29 @@ def test_a4_rule4_gate_flag_routes_and_replaces_whatever_the_body_claims():
     assert d["trigger_kind"] == "pre_gate"
 
 
-def test_a5_rule5_softened_without_gate_flag_delivers():
+def test_a5_rule5_softened_without_gate_flag_routes():
+    # M53-41 (owner ruling 2026-11-25): softening routes exactly like denial.
+    # The domain AND conjunct is `_route_precondition_ok`'s job, not row 5's.
     d = _fire(gate="not_flagged", intent="softened")
     assert (d["row"], d["predicate"], d["action"]) == (
-        5, "intent_softened", "deliver")
+        5, "intent_softened", "route")
+    assert d["trigger_kind"] == "post_intent"
 
 
 def test_a6_rule6_else_delivers():
-    for intent in ("delivered", "deflected", "failed"):
+    for intent in ("delivered", "deflected"):
         d = _fire(gate="not_flagged", intent=intent)
         assert (d["row"], d["predicate"], d["action"]) == (
             6, "else", "deliver"), intent
+
+
+def test_a6b_a_classification_failure_is_missing_and_routes():
+    # M53-41: `failed` is the MISSING class — not a not-a-denial. It matched no
+    # row before this fix and fell to row 6 (deliver main).
+    d = _fire(gate="not_flagged", intent="failed")
+    assert (d["row"], d["predicate"], d["action"]) == (
+        5, "intent_softened", "route")
+    assert d["trigger_kind"] == "post_intent"
 
 
 def test_a0_rows_are_the_contract_not_a_copy():
@@ -122,7 +134,8 @@ def test_a0_rows_are_the_contract_not_a_copy():
         # row 4). M35-14 §7 item 8 deleted the route/route_replace
         # distinction — the delivery decision point (core/delivery_decision)
         # now owns keep-vs-replace, so the table action is the one "route".
-        "route", "route", "defer", "route", "deliver", "deliver"]
+        # M53-41: row 5 is "route" — softening routes like denial.
+        "route", "route", "defer", "route", "route", "deliver"]
     assert rt.POST_QUESTION == intent_judge.POST_QUESTION
 
 

@@ -794,6 +794,44 @@ def clear_att_type(session_id: Optional[str] = None) -> None:
         pass
 
 
+#: M53-41: the turn's ROUTABLE classification (the intent class, after the
+#: "ungraded failure is not a class" normalization). Separate from _ATT_TYPE so
+#: the agent's own tag is never overwritten, and bounded the same way: the POST
+#: pass stamps it, the delivery edge reads it in the same turn.
+_ROUTE_CLASS: Dict[str, str] = {}
+_ROUTE_CLASS_MAX = 512
+
+
+def mark_route_class(session_id: str, route_class: str) -> None:
+    """Record this turn's routable classification for `session_id`."""
+    try:
+        if session_id:
+            _ROUTE_CLASS[str(session_id)] = str(route_class or "")
+            while len(_ROUTE_CLASS) > _ROUTE_CLASS_MAX:
+                _ROUTE_CLASS.pop(next(iter(_ROUTE_CLASS)))
+    except Exception:  # noqa: BLE001 — a stamp never breaks a turn
+        pass
+
+
+def read_route_class(session_id: str) -> str:
+    """The routable classification for `session_id`, or "" when none landed."""
+    try:
+        return str(_ROUTE_CLASS.get(str(session_id or ""), "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def clear_route_class(session_id: Optional[str] = None) -> None:
+    """Test/recovery hook. Never raises."""
+    try:
+        if session_id is None:
+            _ROUTE_CLASS.clear()
+        else:
+            _ROUTE_CLASS.pop(str(session_id or ""), None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def scope_for(session_id: str) -> Optional[str]:
     """Read the stamped scope for the session, or None when nothing was stamped."""
     with _SCOPE_STAMP_LOCK:

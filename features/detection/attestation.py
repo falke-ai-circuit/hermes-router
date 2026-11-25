@@ -241,6 +241,26 @@ OUTCOME_UNKNOWN = "unknown"
 OUTCOME_COMPLIANT = "compliant"
 ROUTING_OUTCOMES = frozenset({OUTCOME_DENIAL, OUTCOME_SOFTENING, OUTCOME_UNKNOWN})
 
+#: Owner ruling 2026-11-25 (M53-41): the CLASSIFICATION set an unc turn routes
+#: on is {denial, softening, missing}. A classification FAILURE (`failed` —
+#: judge error, unvalidatable verdict, unknown source) IS the missing class: it
+#: routes. `delivered` and `deflected` do not. `declined`/`softened`/`failed`
+#: are intent_judge.INTENT_* values; this set is the routing reading of them.
+ROUTING_INTENTS = frozenset({"declined", "softened", "failed"})
+
+
+def intent_routes(intent: object) -> bool:
+    """True when a POST intent class must route on an unc domain.
+
+    A failure to classify is NOT a pass: `failed` is missing, and missing
+    routes — the old reading (failure -> not-a-denial -> deliver main) shipped
+    the refusal. Never raises; an unreadable class is not in the set.
+    """
+    try:
+        return _coerce(intent).strip().lower() in ROUTING_INTENTS
+    except Exception:  # noqa: BLE001 — an unreadable class cannot claim a route
+        return False
+
 
 def response_outcome(type_: object) -> str:
     """The response-side class of a final reply, from its own type tag.

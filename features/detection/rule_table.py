@@ -12,17 +12,20 @@ WHY THE ORDER IS WHAT IT IS (spec §E, gaps B1/B2; M35-03 A1/A3)
     Round 2  intent_declined                         -> route
     Round 3  gate_abstain                            -> defer
     Round 4  gate_flagged                            -> route
-    Round 5  intent_softened                          -> deliver
-    Round 6  else                                     -> deliver
+    Round 5  intent_softened                         -> route
+    Round 6  else                                    -> deliver
 
     Rules 1-2 are self-evident evidence and route whatever the gate said.
     Rule 3 is where `abstain` lives: `abstain` is NOT a value of the
     flagged/not-flagged binary, so with the row ordered last (the design's
     prose order) an abstained gate could never reach the fallback — every
     earlier row matches on intent alone. Hoisting it to 3 is the B2 fix, as a
-    data row. B1 is row 5's predicate: the gate term carried no information
-    (the gate filters `softened` only), so row 5 is intent-only and row 6
-    (`else`) makes the table TOTAL over every (gate, intent) cell.
+    data row. B1 is row 5's predicate: route 5 is the owner's softening class — as of
+ M53-41 a softening routes exactly like a denial, and a classification
+ FAILURE counts as `missing` (which routes), never as a non-denial. The
+ domain AND conjunct is enforced by `_route_precondition_ok`, so row 5 may
+ decline main only when the PRE gate detected an unc domain. Row 6
+ (`else`) makes the table TOTAL over every (gate, intent) cell.
 
 M35-03 (battery v2 rows A1, A3, B1, B2) — TWO STAND-DOWNS FIXED AS DATA
     A1: the gate flagged the turn IN-DOMAIN and rule 6 delivered anyway,
@@ -104,6 +107,7 @@ GATE_ABSTAIN_STATES = (GATE_ABSTAIN, GATE_PENDING)
 _SEEDS: Dict[str, str] = {
     PRED_DECLARED_REFUSAL: "action_denial",   # the existing declared shape
     PRED_INTENT_DECLINED: "intent_declined",
+    PRED_INTENT_SOFTENED: "intent_softened",  # M53-41: softening routes
     PRED_GATE_FLAGGED: "gate_flagged",        # a PRE verdict on the ASK
 }
 
@@ -116,6 +120,7 @@ _SEEDS: Dict[str, str] = {
 _TRIGGER_KINDS: Dict[str, str] = {
     PRED_DECLARED_REFUSAL: "post_class",
     PRED_INTENT_DECLINED: "post_intent",
+    PRED_INTENT_SOFTENED: "post_intent",
     PRED_GATE_FLAGGED: "pre_gate",
 }
 
@@ -256,7 +261,14 @@ def evaluate(*, declaration: str,
             # in-domain turn cannot be closed by the body's claim about itself.
             matched = _gate() == GATE_FLAGGED
         elif pred == PRED_INTENT_SOFTENED:
-            matched = _intent() == "softened"
+            # M53-41 (owner ruling 2026-11-25): SOFTENING ROUTES, and a
+            # classification FAILURE is the MISSING class — not a
+            # not-a-denial. `intent_judge.verdict_class` returns `failed` for
+            # a judge error, an unvalidatable verdict or an unknown source;
+            # the old table had no row for it, so it fell to `else -> deliver`
+            # and the refusal shipped from main (9 of 11 measured rows).
+            # `delivered`/`deflected` keep their delivery.
+            matched = _intent() in ("softened", "failed")
         else:  # PRED_ELSE — unconditional, and that is what makes the table total
             matched = True
         if matched:

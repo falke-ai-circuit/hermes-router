@@ -821,6 +821,23 @@ def _m5306_default_route(kwargs) -> bool:
         return False
 
 
+def _route_class_of(session_id: str) -> str:
+    """The POST classification that landed for this turn, or "" when none did.
+
+    M53-41: the delivery decision reads the CLASSIFICATION, not only the tag —
+    a judged softening (or a classification failure = missing) may not be
+    outranked by a lexical COMPLIANCE guess. Read from the intent worker's
+    turn record; a deferred/absent verdict is "" and changes nothing. Never
+    raises.
+    """
+    try:
+        from ..core import state as _st_cls
+
+        return str(_st_cls.read_route_class(str(session_id or "")) or "").strip().lower()
+    except Exception:  # noqa: BLE001 — an unreadable class is no class
+        return ""
+
+
 def _att_type_of(body, session_id: str = "") -> str:
     """The agent's OWN attestation type for this turn, or "" when absent.
 
@@ -915,6 +932,9 @@ def _build_facts(entered, kwargs, turn, lane_render, attempt: int = 0,
         # swapped and persisted, then D4 shipped main anyway.
         att_type=_att_type_of(kwargs.get("response_text") or entered,
                               str(kwargs.get("session_id") or "")),
+        # M53-41: the judged class rides beside the tag; the decision's D4
+        # branch reads both and lets either outrank a lexical guess.
+        route_class=_route_class_of(str(kwargs.get("session_id") or "")),
         # M53-02 (round 9): the boundary's counted delta rides the facts.
         prior_strip_bytes=int(prior_strip_bytes or 0),
     )

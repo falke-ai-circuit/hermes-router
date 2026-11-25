@@ -1415,6 +1415,29 @@ def _reset_declaration_state() -> None:
 
 
 
+def _route_intent_of(intent: Any, row: Any) -> Optional[str]:
+    """The classification that may ROUTE this turn, or None when none may.
+
+    M53-41 (owner ruling 2026-11-25): `failed` is the MISSING class — but only
+    when the judge actually GRADED the reply (source `deterministic` / `aux`:
+    the reply was empty, truncated or errored). An UNGRADED `failed` — source
+    `unknown`, `why=no_criterion`, or the reader's own exception — means the
+    classifier never applied to this body. Reading that as missing would route
+    every compliant reply on a profile whose judge has no criterion, which is
+    exactly what M53-11's T4/T8 controls forbid.
+    """
+    cls = str(intent or "").strip().lower()
+    if not cls:
+        return None
+    if cls != "failed":
+        return cls
+    try:
+        _src = str((row or {}).get("source") or "").strip().lower()
+    except Exception:  # noqa: BLE001 — an unreadable row is an ungraded failure
+        _src = ""
+    return cls if _src in ("deterministic", "aux") else None
+
+
 def _route_precondition_ok(gate_row: Any, type_: Any) -> bool:
     """M53-11c — THE ONE ROUTE PRECONDITION.
 
@@ -2435,7 +2458,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             routes on: it falls through to the body path.
             """
             if "intent" in _intent_state:
-                return _intent_state["intent"]
+                return _intent_state.get("route_intent")
             _read_gate_state()
             _intent_verdict_g: Optional[str] = None
             _intent_row_g: Optional[dict] = None
@@ -2456,7 +2479,18 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                 _intent_verdict_g = "failed"
                 _hub().logger.debug("intent judge POST error", exc_info=True)
             _intent_state.update(intent=_intent_verdict_g, row=_intent_row_g,
-                                 deferred=_deferred_g)
+                                 deferred=_deferred_g,
+                                 route_intent=_route_intent_of(
+                                     _intent_verdict_g, _intent_row_g))
+            # M53-41: carry the ROUTABLE class to the delivery edge, the same
+            # way M53-32c carries the attested type. Without this stamp the
+            # decision cannot tell a judged softening/failure from a compliant
+            # body, and D4 ships the refusal from main.
+            try:
+                _hub().state.mark_route_class(
+                    session_id, str(_intent_state.get("route_intent") or ""))
+            except Exception:  # noqa: BLE001 — the stamp never blocks
+                pass
             try:
                 _hub()._log_route(
                     "POST", event_detail="intent_judge_turn",
@@ -2471,7 +2505,7 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     session_id=session_id)
             except Exception:  # noqa: BLE001 — observability never breaks delivery
                 pass
-            return _intent_state["intent"]
+            return _intent_state.get("route_intent")
 
         # M41-02 (§C S6) read contract kept: `_gate_row` / `_gate_criterion`
         # are the SAME single read, surfaced for the rows below.
@@ -2635,6 +2669,10 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
         # NOT overwritten - telemetry keeps saying `clarify`; a separate flag
         # carries the routing consequence, so no reader is fed a false tag.
         _att_soft = False
+        # M53-41: the classification of record, read only when a verdict LANDED
+        # (`_intent_state["row"]` is set). `failed` from the reader's exception
+        # path is an unavailable judge, not a class — see the gate below.
+        _intent_cls_p = ""
         try:
             from ..features.detection import softening as _soft_rc
             _att_was = str(_att_parsed.get("type") or "")
@@ -2648,8 +2686,28 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
                     session_id=session_id)
         except Exception:  # noqa: BLE001 — a detector never blocks a delivery
             _att_soft = False
+        try:
+            if isinstance(_intent_state.get("row"), dict):
+                _intent_cls_p = str(
+                    _intent_state.get("route_intent") or "").strip().lower()
+        except Exception:  # noqa: BLE001 — an unreadable class is no class
+            _intent_cls_p = ""
         _pre_ok = _route_precondition_ok(
-            _gate_row, "declined" if _att_soft else _att_parsed.get("type"))
+            _gate_row,
+            # M53-41: the precondition is asked of the CLASSIFICATION, not of
+            # the attestation tag alone. A judged softening is `partial` and a
+            # judged failure is missing (empty) — both are non-compliant, so an
+            # unc domain routes. Reading only the tag let row 5 deliver main on
+            # a tag the judge had already outvoted.
+            #
+            # GATED ON A LANDED ROW: `_read_intent` stores `failed` when the
+            # judge CALL raised (infrastructure), which is not a grade of the
+            # reply. Only a verdict that actually landed may speak here — an
+            # unavailable judge must not route the fleet.
+            "declined" if _att_soft else (
+                "partial" if _intent_cls_p == "softened"
+                else "" if _intent_cls_p == "failed"
+                else _att_parsed.get("type")))
         _unc_domain = bool(_pre_ok)
         # ARMED ONLY: an unarmed profile is byte-identical to before this
         # unit (a constraint of the brief), so the precondition may not touch
@@ -2907,15 +2965,26 @@ def on_transform_llm_output(*, response_text: str = "", session_id: str = "",
             try:
                 from ..features.detection.attestation import (
                     response_outcome as _ro,
+                    intent_routes as _iro,
                     OUTCOME_COMPLIANT as _OC,
                 )
                 _outcome = _ro(_att_type_t)
             except Exception:  # noqa: BLE001
                 _outcome, _OC = "unknown", "compliant"
+                _iro = lambda _t: False  # noqa: E731 — a missing vocabulary routes nothing new
             _type_c = str(_att_type_t or "").strip().lower()
+            # M53-41 (owner ruling 2026-11-25): route iff PRE detected an unc
+            # domain AND the classification is in {denial, softening, missing}.
+            # The INTENT judge is the classification of record; when it landed,
+            # its own class decides — a failure is MISSING (routes), never a
+            # not-a-denial that ships main. Without a landed class the
+            # attestation outcome keeps the decision exactly as it was.
+            _intent_cls_r = str(_intent_state.get("route_intent") or "").strip().lower() \
+                if isinstance(_intent_state.get("row"), dict) else ""
+            _class_routes = bool(_intent_cls_r) and bool(_iro(_intent_cls_r))
             # UNC_DOMAINS, so it can never satisfy the predicate — the safety
             # is a consequence of the rule, not a guard.
-            if _detected and _outcome != _OC:
+            if _detected and (_outcome != _OC or _class_routes):
                 # No attestation type: the model did not speak to its own
                 # output. PRE detected an unc domain, so the default is to
                 # route — the render replaces the body.
