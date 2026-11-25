@@ -1,0 +1,232 @@
+# hermes-router — canonical configuration example (GENERATED, do not hand-edit)
+#
+# Source of truth: core/schema.py (200 parameters).
+# Regenerate:      python3 scripts/gen_config.py --emit-example
+# Verify in sync:  python3 scripts/gen_config.py --check
+#
+# Copy the `router:` block into a profile's config.yaml, or apply it directly:
+#   python3 scripts/gen_config.py --apply <profile_home>
+# Environment-specific values (log paths, render/anchor chains, provider keys)
+# do not belong here — pass them with --overrides so this file stays portable.
+
+router:
+  detection:
+    enabled: true
+    model: auto
+  envelope:
+    chars_cap: 8000
+    drop_order:
+    - slice
+    - agent_card.history
+    - context.session_context
+  budgets:
+    consult:
+      max_tokens: 512
+    verdict:
+      max_tokens: 512
+    completion_audit:
+      max_tokens: 12000
+    render:
+      max_tokens: 2048
+    probe:
+      max_tokens: 256
+    readout: {}
+  complexity:
+    pov_mode: auto
+    stage1: true
+    consult_cooldown_turns: 5
+    aux_consult_min_interval_sec: 300
+  frontier:
+    pov_mode: auto
+    consult_cooldown_turns: 5
+    aux_consult_min_interval_sec: 300
+    ttl_s: 0
+    base_s: 0
+    max_s: 0
+    banner_capture_fallback_wait: 45
+    debug_banner: false
+  decision:
+    miner_max_records: 200
+    miner_scan_days: 14
+    post_audit: true
+    mode: ''
+    frame_context_chars: 0
+    confidence_threshold: 0.5
+    model: ''
+    endpoint: ''
+    api_key_env: ''
+    pre: {}
+    post: {}
+    enabled: false
+    seam: midturn_prellm
+    backend: jev_native
+  anchor_chain:
+    primary: {}
+    models: {}
+    pricing: {}
+    judge: {}
+    daily_cap_usd: 0.0
+    max_history_turns: 12
+    failover: []
+    reasoning_effort: ''
+    summary_header: ''
+    threshold: 0.0
+    enabled: true
+    model: ''
+    endpoint: ''
+    api_key_env: ''
+    on_demand: false
+    caps: {}
+  decision_head:
+    mode: ''
+    enabled: true
+    level: 0
+    slice: ''
+    confidence_threshold: 0.5
+  classification:
+    semantic_gate: false
+    pre_patterns: []
+    aux_classify: {}
+  risk:
+    enabled: true
+    endpoint: ''
+    chain: []
+    on_demand: false
+  reflex:
+    pov_mode: auto
+    enabled: false
+    timeout_s: 8
+    min_top: 0.45
+    min_margin: 0.1
+    weights: {}
+  operator:
+    enabled: true
+    dry_run: false
+    pending_routes_ttl_seconds: 300
+    slash_command: true
+  render:
+    chain: []
+    max_chars: 0
+    method_spec: ''
+    refusal_doctrine: always_route
+    substance_frame: ''
+    provenance_footer: false
+    key_ref: ''
+  classify:
+    pre_enabled: true
+    post_enabled: true
+    mode: route
+    match_threshold: 1.0
+    pre_patterns: []
+    post_patterns: []
+    semantic_gate: false
+    aux:
+      enabled: true
+      provider: nous
+      endpoint: ''
+      model: ''
+      key_ref: ''
+      timeout_s: 45
+      calls_per_hour: 20
+      breaker_failures: 3
+      breaker_cooldown_s: 600
+  anchor:
+    enabled: true
+    primary: ''
+    judge: ''
+    failover: []
+    overflow: pass_through
+    daily_cap_usd: 2.0
+    reasoning_effort: ''
+    max_history_turns: 12
+    complexity_level: 2
+    models: {}
+    pricing: {}
+  persona:
+    mode: voice_stems
+    card_chars: 2500
+    shadow_integration_frame: impulse
+    higher_self_integration_frame: internal-observer
+  paths:
+    state_dir: ''
+    log_path: ''
+    log_max_bytes: 10485760
+    log_routes: true
+  providers:
+    nous:
+      base_url: ''
+      chat_path: /chat/completions
+      models_path: /models
+      key_env: NOUS_API_KEY
+      hosts: []
+    openrouter:
+      base_url: ''
+      chat_path: /chat/completions
+      key_env: OPENROUTER_API_KEY
+      hosts: []
+    typesafe:
+      key_env: TYPESAFE_API_KEY
+      hosts: []
+    venice:
+      key_env: VENICE_API_KEY
+      hosts: []
+    minimax:
+      key_env: MINIMAX_API_KEY
+    abliteration:
+      hosts: []
+  closure_pass:
+    enabled: true
+  enabled: true
+  refusal_doctrine: always_route
+  dry_run: false
+  pending_routes_ttl_seconds: 300
+  render_max_chars: 0
+  log_path: ''
+  log_routes: true
+  log_max_bytes: 10485760
+  substance_frame: ''
+  render_method_spec: ''
+  debug_banner: false
+  chain: []
+  persona_card_chars: 2500
+  on_demand_routing: false
+  on_demand_aux_classify: false
+  orientation_ask_cap: 4000
+  routing_daily_cap_usd: 0.0
+  thread_digest_chars: 3000
+  thread_digest_asks: 6
+  flinch_reason_gate: true
+  post_banner_cap_per_run: 3
+  banner_capture_fallback_wait: 45
+  pov_mode: auto
+  jev_native_model: ''
+  stage1: true
+  rescan_dedupe: true
+  embedding_endpoint: ''
+  weights_path: ''
+  decision_mode: ''
+  jev_model: ''
+  openrouter_endpoint: ''
+  api_key_env: ''
+  typesafe_endpoint: ''
+  typesafe_api_key_env: ''
+  backend: nous
+  backend_timeout_seconds: 15.0
+  score_timeout_seconds: 45.0
+  confidence_threshold: 0.5
+  breaker_fails: 3
+  breaker_cooldown_s: 600
+  calls_per_hour: 20
+  misfire_confidence: 0.3
+  max_frame_chars: 8000
+  max_snippet_chars: 400
+  max_precedent_age_days: 30
+  provenance_window_chars: 3000
+  enum_min_chars: 40
+  enum_min_items: 3
+  evol_tail_lines: 30
+  extract_cap: 8000
+  bounded_replay: false
+  uncensored_router: {}
+  pricing: {}
+  unknown_route: route
