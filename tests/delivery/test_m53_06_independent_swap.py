@@ -342,8 +342,11 @@ def test_m20_detected_domain_empty_lane_ships_the_draft(rows, monkeypatch):
 # never "the lane" and never "not your content" — the old strings were the
 # model's disown script, quoted back verbatim in a live turn.
 CONTENT_CLAUSE = "this body is what your uncensored chain produced for this turn"
-REFUSAL_CLAUSE = ("this body was produced by the uncensored chain your stack "
-                  "routes to, and the banner on it says so")
+# M53-45: the refusal clause no longer cites a banner (the read-scrub removes it,
+# so a clause pointing at it was an unverifiable claim the model disowned). The
+# pin keeps the DISCRIMINATOR — the stable prefix names the refusal kind — and
+# the "no banner/ledger" invariant is pinned in test_m53_45_frame_no_banner_ref.
+REFUSAL_CLAUSE = "this body was produced by the uncensored chain your stack routes to"
 
 
 def _next_frame_text(sid):
