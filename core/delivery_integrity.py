@@ -56,6 +56,45 @@ _BANNER_LINE_RE = re.compile(r"^[ \t]*\u00b7[ \t]*router[ \t]*\u00b7")
 #: (debug_banner.format_banner L2/L3: "task ... | sess ... | gate ...", "full: ...").
 _BANNER_CONT_PREFIXES = ("task ", "full: lane=")
 
+#: M53-44 — the STACKED tail shape that is actually persisted.
+#:
+#: `features/banners/turn_record.compose_line` renders one head plus one line
+#: per ADDITIONAL lane segment, and only the first segment carries the head::
+#:
+#:     · router · shadow-self (uncensored) | ... | tok 1152/816 | $0.0006
+#:       impulse (decision) | 1 lead | jev @ typesafe | tok 0/0 | $0.0001
+#:
+#: The banner is therefore not the final block whenever a second lane fired,
+#: and a grammar that keys on "banner head is the last block" is a no-op on
+#: live traffic (measured: 18 of 268 outgoing requests still carried it).
+#:
+#: These are the lane labels `debug_banner.lane_label` can render: the three
+#: identity labels plus the first-token fallback the renderer uses for a lane
+#: key it does not table (`lane.split("-", 1)[0]`). A label the scrub does not
+#: know means NO strip — the fail-open direction, never a body edit.
+_BANNER_SEGMENT_LABELS = (
+    "impulse (decision)",
+    "higher-self (frontier)",
+    "shadow-self (uncensored)",
+    "higher",
+    "consult",
+    "decision",
+    "frontier",
+    "reflex",
+    "shadow",
+    "uncensored",
+    "router",
+)
+
+#: A segment line IS banner grammar only when it carries BOTH usage cells:
+#: `tok <in>/<out>` and `$<cost>`. That pair is what `_render_cells` emits for
+#: every lane line, and it is the difference between a stacked decoration line
+#: and a body line that merely mentions a token count.
+_BANNER_SEGMENT_RE = re.compile(
+    r"^(?:%s)\s*\|.*\btok\s+\d+\s*/\s*\d+\s*\|\s*\$[0-9]*\.?[0-9]+\*?"
+    r"(?:\s*\|.*)?$" % "|".join(re.escape(_l) for _l in _BANNER_SEGMENT_LABELS),
+    re.IGNORECASE)
+
 #: obligation ids already audited, per session. The audit runs once per
 #: delivered turn: a divergence fails ONE turn, it does not fail every turn
 #: that follows while the same bad row sits in the store.
@@ -102,42 +141,95 @@ class Divergence:
 # never masquerade as divergence.
 # ---------------------------------------------------------------------------
 
-def strip_banner(text: Any) -> str:
-    """Remove a router banner block from a body (leading or trailing).
+def _is_decoration_line(line: str, saw_head: bool) -> bool:
+    """True when one line belongs to a banner block (M53-44 grammar).
 
-    The block is: an L1 line starting with ``· router ·`` plus any contiguous
-    L2/L3 continuation lines. A banner in the MIDDLE of a body is left alone —
-    it is not a delivery banner then, it is content. Never raises.
+    Three shapes count: a banner HEAD, a STACKED SEGMENT line (a lane line the
+    composer rendered below the head), and — only once a head has been seen —
+    a blank or an L2/L3 continuation. A bare ``task ...`` line with no head
+    above it is body text and does not join a block.
+    """
+    if _BANNER_LINE_RE.match(line):
+        return True
+    s = line.strip()
+    if _BANNER_SEGMENT_RE.match(s):
+        return True
+    return saw_head and (s == "" or any(s.startswith(p) for p in _BANNER_CONT_PREFIXES))
+
+
+def _strip_banner_once(text: str) -> str:
+    """One strip pass: the leading block, else the trailing one.
+
+    Trailing is tried first because a persisted row's decoration lives at the
+    end. Both branches recognise the stacked segment grammar, so a block that
+    is followed by a second lane line is still a block.
+    """
+    lines = text.split("\n")
+
+    # --- trailing block: head and/or stacked segments run to the last
+    # non-blank line. The region is decoration only when it holds a HEAD or a
+    # SEGMENT — a body that merely ends in a "task ..." prose line is not.
+    k = len(lines) - 1
+    while k >= 0 and lines[k].strip() == "":
+        k -= 1
+    end = k
+    saw_head = False
+    saw_segment = False
+    while k >= 0:
+        line = lines[k]
+        if _BANNER_LINE_RE.match(line):
+            saw_head = True
+        elif _BANNER_SEGMENT_RE.match(line.strip()):
+            saw_segment = True
+        elif not _is_decoration_line(line, saw_head):
+            break
+        k -= 1
+    if (saw_head or saw_segment) and end >= 0:
+        start = k + 1
+        while start > 0 and lines[start - 1].strip() == "":
+            start -= 1
+        return "\n".join(lines[:start]).rstrip()
+
+    # --- leading block: banner-first bodies (delivery appends, so this is the
+    # rarer shape, kept for callers that hand a rendered block back).
+    idxs = [i for i, line in enumerate(lines) if _BANNER_LINE_RE.match(line)]
+    if idxs and idxs[0] == 0:
+        k = 0
+        saw_head = False
+        while k < len(lines) and _is_decoration_line(lines[k], saw_head):
+            if _BANNER_LINE_RE.match(lines[k]):
+                saw_head = True
+            k += 1
+        return "\n".join(lines[k:]).lstrip("\n")
+
+    return text
+
+
+def strip_banner(text: Any) -> str:
+    """Remove router banner block(s) from a body (leading or trailing).
+
+    A block is: an L1 line starting with ``· router ·``, the stacked lane
+    lines the composer renders below it (``  impulse (decision) | … | tok i/o
+    | $c``), and any contiguous L2/L3 continuation lines — plus an ORPHANED
+    stacked lane line, which is what a block looks like once its head has
+    already been cut from the row. A banner in the MIDDLE of a body is left
+    alone: it is not a delivery banner then, it is content.
+
+    M53-44: the strip runs to a FIXPOINT. The persisted shape carries more
+    than one decoration region (a footer between them, an orphan segment above
+    the head block), so a single pass removes one and exposes the next. Each
+    pass strictly shortens the text, so the loop terminates. Never raises.
     """
     try:
         t = text if isinstance(text, str) else ""
         if not t:
             return ""
-        lines = t.split("\n")
-        idxs = [i for i, line in enumerate(lines) if _BANNER_LINE_RE.match(line)]
-        if not idxs:
-            return t
-
-        def _is_cont(line: str) -> bool:
-            s = line.strip()
-            return s == "" or any(s.startswith(p) for p in _BANNER_CONT_PREFIXES)
-
-        # Trailing block: the banner head plus everything after it is banner.
-        last = idxs[-1]
-        if all(_is_cont(x) or _BANNER_LINE_RE.match(x) for x in lines[last + 1:]):
-            start = last
-            while start > 0 and lines[start - 1].strip() == "":
-                start -= 1
-            return "\n".join(lines[:start]).rstrip()
-
-        # Leading block: banner first, body after.
-        if idxs[0] == 0:
-            k = 0
-            while k < len(lines) and (_is_cont(lines[k])
-                                      or _BANNER_LINE_RE.match(lines[k])):
-                k += 1
-            return "\n".join(lines[k:]).lstrip("\n")
-
+        prev = None
+        guard = len(t.splitlines()) + 2
+        while t != prev and guard > 0:
+            prev = t
+            t = _strip_banner_once(t)
+            guard -= 1
         return t
     except Exception:  # noqa: BLE001 — comparison input shaping never raises
         return str(text or "")
