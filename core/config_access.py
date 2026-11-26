@@ -287,6 +287,41 @@ def agent_model() -> str:
         return ""
 
 
+def agent_provider() -> str:
+    """m57: the host's OWN active main-model provider — model.provider from
+    the profile's top-level Hermes config, resolved at call time (same
+    freshness contract as agent_model()). '' on any miss (callers fail-open
+    to their own default). Never raises."""
+    try:
+        import os
+        import yaml
+
+        path = _coLocatedPath()
+        if not path or not os.path.exists(path):
+            # process-level config (hermes_cli) as the fresh-host fallback
+            try:
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                if isinstance(cfg, dict):
+                    m = cfg.get("model")
+                    if isinstance(m, dict):
+                        return str(m.get("provider") or "").strip()
+                    if isinstance(m, str):
+                        return ""
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
+        with open(path, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        m = cfg.get("model")
+        if isinstance(m, dict):
+            return str(m.get("provider") or "").strip()
+        return ""
+    except Exception:  # noqa: BLE001 — fail-open empty
+        return ""
+
+
 def sub_block_alias(*names: str) -> Dict[str, Any]:
     """R19.13 reflex modularization: FIRST non-empty named sub-block wins —
     used so hermes_router.reflex may alias the legacy decision block

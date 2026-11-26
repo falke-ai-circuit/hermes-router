@@ -352,30 +352,45 @@ def resolve_model(cfg: Optional[Dict[str, Any]] = None) -> str:
 
 
 def _fallback_client() -> Optional[Any]:
-    """OpenAI-compatible client on the profile's provider base
-    (providers.nous.base_url, NOUS_API_KEY key — mirrors completion_audit's
-    resolution). None when unresolvable (fail-open, no egress)."""
+    """OpenAI-compatible client on the host's own provider
+    (m57-B auto-derivation: providers.<active>.base_url + model.default from
+    the HOST config — no vendor literal, no loopback). None when unresolvable
+    (fail-open, no egress)."""
     try:
         from ...core import config_access as _ca
+        from ...core.provider_derivation import host_provider_endpoint
 
-        base = str(_ca.get("providers.nous.base_url", "") or "").strip() or \
-            "https://inference-api.nousresearch.com/v1"
+        base, _model, provider_name = host_provider_endpoint()
+        if not base:
+            return None
         import os
 
         api_key = ""
-        # M24-03: the nous key-env NAME is providers.nous.key_env, literal default.
-        for env_name in (_ca.provider_key_env("nous", "NOUS_API_KEY"),):
+        # Key-env precedence: providers.<active>.key_env when the host names
+        # one; 'nous' + NOUS_API_KEY stays the literal default so an existing
+        # silent profile resolves the exact name it resolved before m57.
+        env_names = []
+        if provider_name:
+            try:
+                named = str(_ca.get(f"providers.{provider_name}.key_env", None)
+                             or "").strip()
+            except Exception:  # noqa: BLE001 — never break client build
+                named = ""
+            if named:
+                env_names.append(named)
+        env_names.append(_ca.provider_key_env("nous", "NOUS_API_KEY"))
+        for env_name in env_names:
             val = os.environ.get(env_name, "").strip()
             if val and val.lower() not in ("placeholder", "testkey", "changeme"):
                 api_key = val
                 break
-        if not api_key:
             try:
                 from ...anchor_exec import _profile_env_value, _PLACEHOLDER_VALUES
 
                 val = _profile_env_value(env_name)
                 if val and val.lower() not in _PLACEHOLDER_VALUES:
                     api_key = val
+                    break
             except Exception:  # noqa: BLE001
                 pass
         if not api_key:

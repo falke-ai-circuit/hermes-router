@@ -2851,8 +2851,18 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         # burned the 4k budget → content=null), not a model problem —
         # fixed with budget, not by lobotomizing the pass.
         model = str(sec.get("model") or "") or _REVISION_MODEL_FALLBACK
-        base = (str(_cac.get("providers.nous.base_url", "")) or "").strip() \
-            or "https://inference-api.nousresearch.com/v1"
+        # m57-B: derive the base from the HOST's own provider when the plugin
+        # section is silent — never a vendor literal, never loopback. The
+        # explicit providers.nous.base_url override (all deployed profiles)
+        # still wins first, byte-identical to before.
+        base = (str(_cac.get("providers.nous.base_url", "")) or "").strip()
+        if not base:
+            try:
+                from .core.provider_derivation import host_provider_endpoint as _hpe
+
+                base = str(_hpe()[0] or "").strip()
+            except Exception:  # noqa: BLE001 — derivation never breaks the pass
+                base = ""
         # R34-19j: the revision IS the frontier lane — it must follow the
         # configured anchor chain, never a hardcoded model. Left hardcoded, an
         # anchor swap moved the consult and left the revision behind on
