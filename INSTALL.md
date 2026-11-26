@@ -132,6 +132,20 @@ mechanical fallback. Behavior knobs are chat-settable at runtime — see the
 `/router config` whitelist (`/router config list`) including
 `classification.two_vote_confirm`, `anchor_chain.primary`, and `chain.*` entries.
 
+## Fresh install (m57, virgin host — no .secrets files, no OAuth)
+
+1. Provider: pick ANY key-billed provider; main model = `model.provider: custom:<name>` +
+   `providers: {<name>: {base_url: …, key_env: <VAR>}}` (a keyed custom provider is the one
+   main-model path that needs no OAuth and no unfunded vendor account).
+2. Key: env only — put `<VAR>` in the `--env-file` (process environment); no `.secrets/` file needed.
+3. Enable: `plugins.enabled: [hermes-router]` (hyphen form) in `config.yaml`, plugin copied to
+   `<hermes_home>/plugins/hermes_router`.
+4. Gateway: `hermes gateway restart`.
+5. AppArmor: docker users add `security_opt: [apparmor=unconfined]` (plugin shells out to curl).
+6. Verify: send a denial ask — banner line `shadow-self (uncensored) | …` + render in
+   `<hermes_home>/uncensored-router-renders.jsonl` proves LANES 1 fires.
+   Lane keys also accept `key_env:` on each render-chain entry (env > key_file > provider env).
+
 ## 3. Restart gateway
 
 ```bash
