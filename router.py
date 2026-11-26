@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_URL = "https://api.venice.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "qwen-3-8-27b"
 # Profile-neutral default (architect P0-1, 2026-09-02): no hardcoded profile literal.
-# Key resolution: entry key_file → entry key_env → VENICE_API_KEY env → unset (fail-open pass-through).
+# Key resolution (m57-A): entry key_env → providers.venice.key_env env
+# → entry key_file → unset (fail-open pass-through). Env FIRST: a fresh host
+# must need NO .secrets file — the key arrives via the process environment.
 DEFAULT_KEY_FILE = ""
 DEFAULT_MAX_TOKENS = 12000
 DEFAULT_TEMPERATURE = 0.95
@@ -99,12 +101,29 @@ def _as_float(value: Any, default: float) -> float:
 
 
 def _read_key(key_file: str, key_env: str = "") -> str:
-    """Hybrid key resolution (architect §5, 2026-09-02).
+    """Hybrid key resolution (m57-A precedence change: key_env FIRST).
 
-    Order: key_file (belt — 0600 secret file, multi-tenant discipline)
-           → key_env / VENICE_API_KEY env (suspenders — outside-install UX).
-    Empty on both → "" (caller logs key_unreadable, fail-open pass-through).
+    Order: entry key_env / providers.venice.key_env env (suspenders —
+           outside-install UX; a fresh host needs NO .secrets file, the key
+           arrives via the process environment / --env-file)
+           → key_file (belt — 0600 secret file, multi-tenant discipline).
+    Empty on both → "" (caller logs key_unconfigured, fail-open pass-through).
+    Backward compatible: an existing profile whose env var is unset resolves
+    the key file exactly as before.
     """
+    # M24-03: the venice key-env NAME is providers.venice.key_env — the literal
+    # below is only the DEFAULT. Read here, not at module import, so a profile
+    # that names its own env var wins and a silent profile is unchanged.
+    try:
+        from .core import config_access as _ca
+
+        env_name = key_env or _ca.provider_key_env("venice", "VENICE_API_KEY")
+    except Exception:  # noqa: BLE001 — key lookup never raises
+        env_name = key_env or "VENICE_API_KEY"
+    if env_name:
+        env_val = os.environ.get(env_name, "").strip()
+        if env_val:
+            return env_val
     path = os.path.expanduser(key_file or DEFAULT_KEY_FILE)
     if path:
         try:
@@ -115,18 +134,6 @@ def _read_key(key_file: str, key_env: str = "") -> str:
             logger.error("Venice key file is empty: %s", path)
         except OSError as exc:
             logger.error("Could not read Venice key file %s: %s", path, exc)
-    # M24-03: the venice key-env NAME is providers.venice.key_env — the literal
-    # below is only the DEFAULT. Read here, not at module import, so a profile
-    # that names its own env var wins and a silent profile is unchanged.
-    try:
-        from .core import config_access as _ca
-
-        env_name = key_env or _ca.provider_key_env("venice", "VENICE_API_KEY")
-    except Exception:  # noqa: BLE001 — key lookup never raises
-        env_name = key_env or "VENICE_API_KEY"
-    env_val = os.environ.get(env_name, "").strip()
-    if env_val:
-        return env_val
     return ""
 
 
