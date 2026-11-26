@@ -27,6 +27,13 @@ Knob: hermes_router.assimilation_frame_wording = "mechanism" | "shadow".
 Missing, empty, or unrecognised value resolves to "mechanism" SILENTLY — the
 frame is never empty and this path never raises (spec item 3).
 
+M53-46 EXPERIMENT ARM: the same knob also accepts "none", which injects NO
+frame at all — not an empty system message, zero bytes added to the request.
+It is a WORDING value because the wording is what the model reads, but it is
+deliberately NOT a key in WORDINGS: every entry there is model-facing text
+that must carry the three clauses, and this arm carries no text at all. The
+default wording is unchanged by this arm.
+
 ONE injection point: frames.inject_platform_rule, role="system", at most one
 message per turn (marker dedupe + per-turn latch live there), and it is fed
 once per rendered turn by the mark/inject pair below:
@@ -145,6 +152,23 @@ WORDINGS: Dict[str, str] = {
     ),
 }
 
+#: M53-46 EXPERIMENT ARM. "none" = no frame is injected at all. The mark is
+#: still consumed (the arm must not leak a frame into a later turn) and nothing
+#: is appended or attached: the request the model reads is byte-identical to
+#: the no-frame baseline. Rationale, measured: with the banner scrubbed and the
+#: frame's banner references removed, the model still disowned and cited the
+#: FRAME ITSELF as its evidence ("it sits in the transcript in the position of
+#: my previous turn, but I didn't author it... a framing assertion attached to
+#: the turn"). The frame's own assertion is therefore the last receipt, and the
+#: untested arm is its absence.
+#: It is NOT a WORDINGS entry — WORDINGS holds text that every wording must be
+#: able to carry the three clauses in (see CLAUSE_MARKERS); this arm carries no
+#: text, and adding it there would make the clause contract meaningless.
+NO_FRAME_WORDING = "none"
+#: Everything the knob accepts: the text wordings plus the no-frame arm. An
+#: unknown value still resolves to DEFAULT_WORDING (never a silent no-frame).
+WORDING_VALUES = frozenset(WORDINGS) | {NO_FRAME_WORDING}
+
 # Clause markers — the three clauses, asserted as markers rather than prose so
 # rewording does not break the test and a missing clause does.
 CLAUSE_MARKERS = {
@@ -181,21 +205,40 @@ def _config_section() -> Dict[str, Any]:
 def frame_wording() -> str:
     """Knob read: hermes_router.assimilation_frame_wording.
 
-    'mechanism' (default) | 'shadow'. Missing, blank or unrecognised values
-    resolve to the default SILENTLY — never raise, never leave the frame
-    empty (spec item 3)."""
+    Any WORDINGS key, or 'none' (M53-46: no frame at all). A key that is
+    ABSENT, blank, or an unrecognised string resolves to the default SILENTLY
+    — never raise, and never a silent no-frame.
+
+    A key that is PRESENT but null resolves to the 'none' arm: `none` is a YAML
+    scalar, so `assimilation_frame_wording: none` parses to None under
+    yaml.safe_load. Treating null as "missing" would run the experiment's
+    control arm as the default treatment and the measurement would describe the
+    wrong arm — the same trap already recorded for PLACEMENTS below."""
     try:
-        raw = _config_section().get(KNOB, DEFAULT_WORDING)
-        val = str(raw or "").strip().lower()
-        return val if val in WORDINGS else DEFAULT_WORDING
+        section = _config_section()
+        if KNOB not in section:
+            return DEFAULT_WORDING
+        raw = section.get(KNOB)
+        if raw is None:
+            return NO_FRAME_WORDING
+        val = str(raw).strip().lower()
+        return val if val in WORDING_VALUES else DEFAULT_WORDING
     except Exception:  # noqa: BLE001
         return DEFAULT_WORDING
 
 
 def frame_text() -> str:
-    """The frame in the ACTIVE wording. Total: always a non-empty string."""
+    """The frame in the ACTIVE wording.
+
+    Total: a non-empty string for every text wording. For the M53-46 no-frame
+    arm it is "" — there is no text to send, and 0 is the honest char count in
+    the telemetry row (a frame size that was never built must not be logged as
+    if it had been)."""
     try:
-        return WORDINGS[frame_wording()]
+        wording = frame_wording()
+        if wording == NO_FRAME_WORDING:
+            return ""
+        return WORDINGS[wording]
     except Exception:  # noqa: BLE001
         return MECHANISM_FRAME_TEXT
 
@@ -375,6 +418,19 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
             # No mark in THIS process. It may never have existed, or a bounce
             # may have dropped it — only the durable render trail can tell.
             _note_lost_mark(sid)
+            return False
+        if frame_wording() == NO_FRAME_WORDING:
+            # M53-46 EXPERIMENT ARM: NO frame is delivered. This is not an
+            # empty system message — nothing is appended, nothing is attached
+            # to the render row, and no swap clause rides along, so the request
+            # stays byte-identical to the no-frame baseline. It sits before the
+            # placement branches on purpose: a "no frame" arm that still
+            # delivered a post-meta note would be two arms measured as one.
+            # The mark was already consumed above, so the arm cannot leak a
+            # frame into the next turn. chars=0 in this row is the measurement.
+            _frame_log(sid, "assimilation_frame_skipped", "",
+                       reason="wording_none", turn=turn_no,
+                       wording=NO_FRAME_WORDING)
             return False
         text = frame_text()
         # M53-06 §3: a SWAPPED turn carries its provenance into the next
