@@ -2858,9 +2858,9 @@ def _flash_revision_call(session_id: str, ask: str, draft: str,
         base = (str(_cac.get("providers.nous.base_url", "")) or "").strip()
         if not base:
             try:
-                from .core.provider_derivation import host_provider_endpoint as _hpe
+                from .core.aux_endpoint import fallback_base_url as _fb
 
-                base = str(_hpe()[0] or "").strip()
+                base = str(_fb() or "").strip()
             except Exception:  # noqa: BLE001 — derivation never breaks the pass
                 base = ""
         # R34-19j: the revision IS the frontier lane — it must follow the

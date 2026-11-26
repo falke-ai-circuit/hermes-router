@@ -353,31 +353,51 @@ def resolve_model(cfg: Optional[Dict[str, Any]] = None) -> str:
 
 def _fallback_client() -> Optional[Any]:
     """OpenAI-compatible client on the host's own provider
-    (m57-B auto-derivation: providers.<active>.base_url + model.default from
-    the HOST config — no vendor literal, no loopback). None when unresolvable
-    (fail-open, no egress)."""
+    (m57-B auto-derivation via core/aux_endpoint.fallback_base_url — the ONE
+    derivation seam: explicit provider > host model.base_url > host provider
+    block > custom providers > NOUS_API_KEY-conditioned resolution; no vendor
+    literal as a DEFAULT, no loopback). None when unresolvable (fail-open,
+    no egress)."""
     try:
         from ...core import config_access as _ca
-        from ...core.provider_derivation import host_provider_endpoint
+        from ...core.aux_endpoint import fallback_base_url as _fb
 
-        base, _model, provider_name = host_provider_endpoint()
+        base = str(_fb() or "").strip()
         if not base:
             return None
         import os
 
+        from urllib.parse import urlparse as _urlparse
+
+        _host = str(_urlparse(base).hostname or "").lower()
         api_key = ""
-        # Key-env precedence: providers.<active>.key_env when the host names
-        # one; 'nous' + NOUS_API_KEY stays the literal default so an existing
-        # silent profile resolves the exact name it resolved before m57.
+        # Key-env precedence (mirrors the base layers): when the derived base
+        # IS a provider block the host named, that provider's key_env wins;
+        # otherwise 'nous' + NOUS_API_KEY stays the literal default so an
+        # existing silent profile resolves the exact name it resolved before.
         env_names = []
-        if provider_name:
-            try:
-                named = str(_ca.get(f"providers.{provider_name}.key_env", None)
-                             or "").strip()
-            except Exception:  # noqa: BLE001 — never break client build
-                named = ""
-            if named:
-                env_names.append(named)
+        try:
+            from ...core import provider_derivation as _pd
+
+            cfg = _pd._host_full_config()
+            name = str((cfg.get("model") or {}).get("provider") or "").strip() \
+                if isinstance(cfg.get("model"), dict) else ""
+            if name:
+                providers = cfg.get("providers")
+                entry = providers.get(name) if isinstance(providers, dict) else None
+                entry = entry if isinstance(entry, dict) else None
+                host_entry_host = ""
+                if entry:
+                    from urllib.parse import urlparse
+
+                    host_entry_host = str(urlparse(
+                        str(entry.get("base_url") or "")).hostname or "").lower()
+                if entry and host_entry_host and host_entry_host == _host:
+                    named = str(entry.get("key_env") or "").strip()
+                    if named:
+                        env_names.append(named)
+        except Exception:  # noqa: BLE001 — never break client build
+            pass
         env_names.append(_ca.provider_key_env("nous", "NOUS_API_KEY"))
         for env_name in env_names:
             val = os.environ.get(env_name, "").strip()

@@ -50,7 +50,13 @@ logger = logging.getLogger(__name__)
 # behaviour for every deployed profile).
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
-NOUS_BASE = "http://127.0.0.1:8680/v1"
+# m57 portability: NOUS has NO literal default — a vendor URL or the fleet's
+# old loopback proxy (127.0.0.1:8680 was OUR topology) is unusable on a
+# virgin host. The default DERIVES from the host's own provider via
+# core/aux_endpoint (never 127.0.0.1:8680, never a vendor hostname);
+# unresolvable -> endpoint None + explicit scheme_failure naming the
+# openrouter:// fallback. Explicit config (providers.nous.base_url / the
+# legacy hermes_router.base_url alias) still wins byte-for-byte.
 NOUS_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_DAILY_CAP_USD = 2.0
 
@@ -109,6 +115,19 @@ def _custom_providers() -> Dict[str, Dict[str, Any]]:
         return config_access.providers_custom()
     except Exception:  # noqa: BLE001
         return {}
+
+
+def nous_base_url() -> str:
+    """m57: the derived NOUS default — hosts' own provider via
+    core/aux_endpoint — used when providers.nous.base_url and the legacy
+    alias are both silent. '' when nothing derives (callers fail with a
+    named reason, never a loopback/vendor literal). Never raises."""
+    try:
+        from .core.aux_endpoint import fallback_base_url
+
+        return str(fallback_base_url() or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _provider_base(name: str, default: str) -> str:
@@ -174,9 +193,21 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                 role=role,
             )
         if scheme == "nous":
+            base = _provider_base("nous", "") or nous_base_url()
+            if not base:
+                # m57: nothing derives and nothing is configured — fail with
+                # the explicit scheme failure (never a loopback/vendor
+                # literal, never a silent pass-through that looks like a
+                # model error).
+                from .core.aux_endpoint import FALLBACK_HINT, scheme_failure
+
+                reason, _ = scheme_failure("nous://" + model, role)
+                logger.error("anchor_scheme_failed reason=%s hint=%s",
+                             reason, FALLBACK_HINT)
+                return None
             return AnchorEndpoint(
                 scheme="nous", model=model,
-                base_url=_provider_base("nous", NOUS_BASE),
+                base_url=base,
                 api_key_env=_provider_key_env("nous", NOUS_KEY_ENV), role=role,
             )
         custom = _custom_providers().get(scheme)
