@@ -260,3 +260,20 @@ def test_model_attempt_reports_key_unconfigured_without_any_key(monkeypatch):
     assert content == ""
     # named reason, and NOT a silent pass-through
     assert reason in ("key_unconfigured", "key_unreadable")
+
+
+def test_derived_nous_base_pairs_its_providers_key_env(monkeypatch):
+    """m57 coherence: a nous:// base derived from a HOST custom provider
+    authenticates as THAT provider (venice-derived base bills VENICE_API_KEY,
+    not NOUS_API_KEY) — base and key always come from the same origin."""
+    monkeypatch.setenv("HERMES_HOME", "/nonexistent-hermes-home-m57")
+    monkeypatch.delenv("NOUS_API_KEY", raising=False)
+    monkeypatch.setattr(ca, "providers_custom", lambda: {
+        "venice": {"base_url": "https://api.venice-derived.test/api/v1",
+                   "key_env": "DERIVED_KEY"},
+    })
+    monkeypatch.setenv("DERIVED_KEY", "k")
+    ep = anchor_chain.parse_anchor_uri("nous://tier-1/model-x", "primary")
+    assert ep is not None
+    assert _host_of(ep.base_url) == "api.venice-derived.test"
+    assert ep.api_key_env == "DERIVED_KEY"

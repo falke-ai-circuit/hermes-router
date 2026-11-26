@@ -193,7 +193,8 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                 role=role,
             )
         if scheme == "nous":
-            base = _provider_base("nous", "") or nous_base_url()
+            explicit = _provider_base("nous", "")
+            base = explicit or nous_base_url()
             if not base:
                 # m57: nothing derives and nothing is configured — fail with
                 # the explicit scheme failure (never a loopback/vendor
@@ -205,10 +206,26 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                 logger.error("anchor_scheme_failed reason=%s hint=%s",
                              reason, FALLBACK_HINT)
                 return None
+            api_key_env = _provider_key_env("nous", NOUS_KEY_ENV)
+            if not explicit:
+                # m57 coherence: the base DERIVED from a host custom provider
+                # must authenticate as THAT provider — pair the key_env with
+                # the base's origin (a venice-derived base bills VENICE_API_KEY,
+                # not NOUS_API_KEY).
+                try:
+                    for _n, _e in (_custom_providers() or {}).items():
+                        if (isinstance(_e, dict)
+                                and str(_e.get("base_url") or "").strip().rstrip("/")
+                                == str(base).rstrip("/")
+                                and str(_e.get("key_env") or "").strip()):
+                            api_key_env = str(_e["key_env"]).strip()
+                            break
+                except Exception:  # noqa: BLE001 — pairing is best-effort
+                    pass
             return AnchorEndpoint(
                 scheme="nous", model=model,
                 base_url=base,
-                api_key_env=_provider_key_env("nous", NOUS_KEY_ENV), role=role,
+                api_key_env=api_key_env, role=role,
             )
         custom = _custom_providers().get(scheme)
         if isinstance(custom, dict) and custom.get("base_url"):
