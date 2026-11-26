@@ -50,13 +50,13 @@ logger = logging.getLogger(__name__)
 # behaviour for every deployed profile).
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
-# m57 portability: NOUS has NO literal default — a vendor URL or the fleet's
-# old loopback proxy (127.0.0.1:8680 was OUR topology) is unusable on a
-# virgin host. The default DERIVES from the host's own provider via
-# core/aux_endpoint (never 127.0.0.1:8680, never a vendor hostname);
-# unresolvable -> endpoint None + explicit scheme_failure naming the
-# openrouter:// fallback. Explicit config (providers.nous.base_url / the
-# legacy hermes_router.base_url alias) still wins byte-for-byte.
+# m57 portability: NOUS has NO literal default — a vendor URL or a loopback
+# proxy address baked into code is unusable on a virgin host. The default
+# DERIVES from the host's own provider via core/aux_endpoint (no loopback,
+# no vendor hostname); unresolvable -> endpoint None + explicit
+# scheme_failure naming the openrouter:// fallback. Explicit config
+# (providers.nous.base_url / the legacy hermes_router.base_url alias)
+# still wins byte-for-byte.
 NOUS_KEY_ENV = "NOUS_API_KEY"
 DEFAULT_DAILY_CAP_USD = 2.0
 

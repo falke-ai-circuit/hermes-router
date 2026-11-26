@@ -322,6 +322,24 @@ def agent_provider() -> str:
         return ""
 
 
+def provider_overlay_base_url(name: str) -> str:
+    """m57: the host's own provider OVERLAY base for `name` — the SAME
+    resolution Hermes core itself applies (hermes_cli.providers overlays are
+    the one sanctioned hermes_cli import surface in this tree; this module
+    owns it, callers never import hermes_cli directly — P4 gate A2).
+    '' when the overlay table is unavailable or the provider has no
+    base_url_override. Never raises."""
+    try:
+        from hermes_cli.providers import HERMES_OVERLAYS
+
+        overlay = HERMES_OVERLAYS.get(str(name or "").strip().lower())
+        if overlay is None:
+            return ""
+        return str(getattr(overlay, "base_url_override", "") or "").strip()
+    except Exception:  # noqa: BLE001 — resolution must never raise
+        return ""
+
+
 def sub_block_alias(*names: str) -> Dict[str, Any]:
     """R19.13 reflex modularization: FIRST non-empty named sub-block wins —
     used so hermes_router.reflex may alias the legacy decision block

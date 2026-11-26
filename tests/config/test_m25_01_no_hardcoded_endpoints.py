@@ -79,10 +79,10 @@ CATEGORIES = {"url", "host_port", "abs_path", "provider_host"}
 # these are the gate's visible dynamic surface at M25-01. Extend the pin only
 # after reviewing the new join — that review is the whole point of the pin.
 DYNAMIC_CONFIG_REFS = {
-    "anchor_chain.py:124",          # providers.{name}.base_url
-    "core/config_access.py:346",    # providers.{name}.{field}
-    "core/config_access.py:382",    # providers.{name}.key_env
-    "core/config_access.py:425",    # providers.{name}.hosts
+    "anchor_chain.py:143",          # providers.{name}.base_url (m57 shifted)
+    "core/config_access.py:399",    # providers.{name}.{field}
+    "core/config_access.py:435",    # providers.{name}.key_env
+    "core/config_access.py:478",    # providers.{name}.hosts
 }
 # An f-string segment is a config-path join when its static text looks like a
 # dotted key chain that terminates in a config field name.

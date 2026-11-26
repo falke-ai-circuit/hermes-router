@@ -27,8 +27,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-_EXPLICIT_PATHS = ("providers.nous.base_url", "base_url")
-
 # m57-D: the detection-safe fallback named on every scheme failure — the ONE
 # scheme that always authenticates via env (OPENROUTER_API_KEY), or any
 # configured providers.<name> custom scheme.
@@ -44,14 +42,17 @@ def _ca():
 
 
 def _explicit_base() -> str:
-    """Layer 1: the plugin's own provider base (m57-C alias included)."""
+    """Layer 1: the plugin's own provider base (m57-C alias included).
+
+    ONE static literal read: the schema declares providers.nous.base_url
+    with legacy_of="base_url", so get() walks BOTH spellings (grouped path
+    first, the deployed old alias second). The old _EXPLICIT_PATHS loop
+    passed a variable to get() — an unresolvable pass-through the M25-02
+    gate rightly refuses — and was redundant besides.
+    """
     try:
         ca = _ca()
-        for path in _EXPLICIT_PATHS:
-            value = str(ca.get(path, "") or "").strip()
-            if value:
-                return value
-        return ""
+        return str(ca.get("providers.nous.base_url", "") or "").strip()
     except Exception:  # noqa: BLE001 — config read must never raise
         return ""
 

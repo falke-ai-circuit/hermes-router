@@ -93,16 +93,14 @@ def _host_provider_entry(name: str) -> Dict[str, Any]:
 
 
 def _overlay_base_url(name: str) -> str:
-    """The host's own provider overlay base (hermes_cli.providers) — the SAME
-    resolution Hermes core itself applies to the active provider. '' when the
-    overlay table is unavailable or the provider has no override."""
+    """The host's own provider overlay base — resolved THROUGH
+    config_access.provider_overlay_base_url (the tree's single sanctioned
+    hermes_cli surface; this module never imports hermes_cli directly,
+    P4 gate A2). '' when unresolvable."""
     try:
-        from hermes_cli.providers import HERMES_OVERLAYS
+        from . import config_access as _ca
 
-        overlay = HERMES_OVERLAYS.get(str(name or "").strip().lower())
-        if overlay is None:
-            return ""
-        return str(getattr(overlay, "base_url_override", "") or "").strip()
+        return _ca.provider_overlay_base_url(name)
     except Exception:  # noqa: BLE001
         return ""
 
