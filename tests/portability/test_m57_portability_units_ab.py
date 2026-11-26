@@ -144,14 +144,15 @@ def test_derived_defaults_never_contain_loopback_or_vendor_hosts():
 
 
 def test_semantic_judge_fallback_fails_open_without_derivation(monkeypatch):
+    from hermes_router.core import aux_endpoint as ae
     from hermes_router.features.detection import semantic_judge as sj
 
-    monkeypatch.setattr(pd, "host_provider_endpoint",
-                        lambda: ("", "", ""), raising=False)
+    monkeypatch.setattr(ae, "fallback_base_url", lambda: "", raising=False)
     assert sj._fallback_client() is None
 
 
 def test_semantic_judge_fallback_uses_host_base(monkeypatch):
+    from hermes_router.core import aux_endpoint as ae
     from hermes_router.features.detection import semantic_judge as sj
 
     captured = {}
@@ -161,14 +162,9 @@ def test_semantic_judge_fallback_uses_host_base(monkeypatch):
             captured["base_url"] = base_url
             captured["api_key"] = api_key
 
-    monkeypatch.setattr(pd, "host_provider_endpoint",
-                        lambda: ("https://host-own.example/v1", "m", "acme"),
-                        raising=False)
-    monkeypatch.setenv("ACME_API_KEY", "host-own-key")
-    monkeypatch.setattr(
-        "hermes_router.core.config_access.get",
-        lambda path, default=None: "ACME_API_KEY"
-        if path == "providers.acme.key_env" else default, raising=False)
+    monkeypatch.setattr(ae, "fallback_base_url",
+                        lambda: "https://host-own.example/v1", raising=False)
+    monkeypatch.setenv("NOUS_API_KEY", "host-own-key")
     monkeypatch.setattr("openai.OpenAI", _FakeOpenAI, raising=False)
     assert sj._fallback_client() is not None
     assert captured["base_url"] == "https://host-own.example/v1"
