@@ -79,7 +79,7 @@ CATEGORIES = {"url", "host_port", "abs_path", "provider_host"}
 # these are the gate's visible dynamic surface at M25-01. Extend the pin only
 # after reviewing the new join — that review is the whole point of the pin.
 DYNAMIC_CONFIG_REFS = {
-    "anchor_chain.py:143",          # providers.{name}.base_url (m57 shifted)
+    "anchor_chain.py:150",          # providers.{name}.base_url (m58-B pairing shifted)
     "core/config_access.py:445",    # providers.{name}.{field} (m58 yaml shim + m58-CORRECTION shifted)
     "core/config_access.py:481",    # providers.{name}.key_env (m58 yaml shim + m58-CORRECTION shifted)
     "core/config_access.py:524",    # providers.{name}.hosts (m58 yaml shim + m58-CORRECTION shifted)
