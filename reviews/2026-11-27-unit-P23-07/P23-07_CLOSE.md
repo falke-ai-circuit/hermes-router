@@ -1,6 +1,6 @@
 # P23-07 — CLOSE (E2E T7 encryption falsification, OVH/T1-scope; parent-authored after child hit the iteration cap post-delivery)
 
-**Commit:** 6fcb1cc1d433 (hermes_router reviews pointer chain ENDING AT THIS SHA — unit record 7b6afcae4766 -> 2b02096830ec header bind -> this commit; NOT a v119wt product sha)
+**Commit:** 106309349b3c (hermes_router reviews pointer chain terminal — see Bind for product-tree sha)
 **Bind:** v119wt @ e16f52f1f018c5d1760e8908f5edb8fb8d766ca0 (the tree the probes ran against; falsification is live-infrastructure, no source change — reviews-pointer commit is the unit record, NOT repo product code)
 
 reviewed_by: parent-of-record (child self-review recorded in artefact; this close = parent re-gate + the commit the cap swallowed)
