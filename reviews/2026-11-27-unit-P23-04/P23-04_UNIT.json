@@ -1,0 +1,39 @@
+{
+  "agents": {
+    "author": "operative",
+    "planner": "parent",
+    "reviewer": "parent-of-record"
+  },
+  "branch": "main",
+  "claims": {
+    "blueprint_refs": [],
+    "did_not_touch": [
+      "operator-op01-probe-1 (OVH prod, read-only, zero flags)",
+      "probe-v119-test (T1 infra, read-only, only negative-test handshake noise in logs)",
+      "probe-relayd (Radxa, never touched — zero commands beyond reads)",
+      "probe-radxa (Radxa prod, read-only, zero writes)"
+    ]
+  },
+  "close_artefact": "/opt/data/tmp/probe123/P23-04_T4_PEERS.md",
+  "files_touched": [],
+  "head_sha": "e16f52f1f018c5d1760e8908f5edb8fb8d766ca0",
+  "head_sha_resolved": true,
+  "lines_added": 0,
+  "lines_removed": 0,
+  "parent_sha": null,
+  "pushed": false,
+  "pushed_refs": [],
+  "repo": "/opt/data/projects/PROBE_UPGRADE/v119wt",
+  "reviewed_by": "parent-of-record",
+  "rounds": null,
+  "suite": {
+    "failed": null,
+    "passed": null,
+    "skipped": null,
+    "source": "absent"
+  },
+  "unit_id": "P23-04",
+  "verdict": "FAIL-BLOCKED",
+  "verdict_sha_of_head": "e16f52f1f018c5d1760e8908f5edb8fb8d766ca0",
+  "blocked_reason": "Radxa substrate death mid-unit: root fs /dev/mmcblk1p3 remounted read-only, staged files vanished, docker ps/dmesg/journalctl all time out. No peer container ever started; no DNAT pair applied; /api/v1/servers never contained a T4 peer row. A1-A4 not exercised. Radxa residue (image probe-t4-arm64:e16f52f 16MB + /tmp staged bytes incl. t4relay identity cert) unreachable-removable behind ro fs; OVH/CT100 side cleaned and quoted. Fleet-level finding banked for parent."
+}
