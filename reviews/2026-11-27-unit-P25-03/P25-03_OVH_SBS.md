@@ -2,7 +2,7 @@
 
 Reviewed_by: (pending parent)
 Verdict: PASS
-Verdict_sha_of_head: ebb24831c98c8d97e8846f7077932a3b34e03747
+Verdict_sha_of_head: 14eed1b (hermes_router close-pointer commit, HEAD-of-record; artefact-side record commit ebb2483 in probe125 — fixed-point limit documented per P23-07)
 Unit: P25-03 (OVH leg; probe agent, CT100 10.10.10.100 on KS-3 139.99.209.235)
 research_leg: NONE (no dependency bump, no new library)
 
