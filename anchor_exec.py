@@ -215,6 +215,13 @@ def _read_env_file(path: str, env: str) -> str:
 
 def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
     try:
+        # m58-CORRECTION: the key AS CORE RESOLVED IT rides the endpoint when
+        # the base came from core's runtime (env-contract/direct-alias hosts
+        # name no env var) — same-provider by construction, preferred over
+        # the env name. masked() never renders it.
+        core_val = str(getattr(endpoint, "api_key_value", "") or "").strip()
+        if core_val and core_val.lower() not in _PLACEHOLDER_VALUES:
+            return core_val
         env = (endpoint.api_key_env or "").strip()
         if env:
             val = os.environ.get(env, "").strip()

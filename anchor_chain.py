@@ -77,6 +77,12 @@ class AnchorEndpoint:
     base_url: str
     api_key_env: str
     role: str  # primary | judge
+    # m58-CORRECTION: the credential AS CORE RESOLVED it (same resolution
+    # that produced base_url — base+key from one provider by construction).
+    # Carried when the host's env-contract/direct-alias shape names NO env
+    # var the anchor reader could find; _resolve_key prefers it over the env
+    # name. Never rendered by masked().
+    api_key_value: str = ""
 
     def masked(self) -> Dict[str, Any]:
         return {
@@ -85,6 +91,7 @@ class AnchorEndpoint:
             "model": self.model,
             "base_url": self.base_url,
             "key_env": self.api_key_env,
+            "key_resolved": bool(self.api_key_value),
         }
 
 
@@ -207,6 +214,7 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                              reason, FALLBACK_HINT)
                 return None
             api_key_env = _provider_key_env("nous", NOUS_KEY_ENV)
+            anchor_key_value = ""
             if not explicit:
                 # m58-CORRECTION: the scheme is `nous://` but the BASE can be
                 # the host's own provider (derived through Hermes core). The
@@ -251,12 +259,21 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                             _ke = _provider_key_env(_req, "")
                         if _ke:
                             api_key_env = _ke
+                        # core's runtime carries the api_key VALUE it
+                        # resolved for THIS base — ride it (no env var name
+                        # exists on direct-alias shapes). Same-provider by
+                        # construction: base+key from ONE core resolution.
+                        try:
+                            anchor_key_value = str(_rt.get("api_key") or "")
+                        except Exception:  # noqa: BLE001
+                            anchor_key_value = ""
                 except Exception:  # noqa: BLE001 — pairing is best-effort
                     pass
             return AnchorEndpoint(
                 scheme="nous", model=model,
                 base_url=base,
                 api_key_env=api_key_env, role=role,
+                api_key_value=anchor_key_value,
             )
         custom = _custom_providers().get(scheme)
         if isinstance(custom, dict) and custom.get("base_url"):

@@ -238,3 +238,25 @@ def test_nous_scheme_without_core_resolution_fails_named(monkeypatch):
     monkeypatch.setattr(anchor_chain, "_custom_providers", lambda: {},
                         raising=False)
     assert anchor_chain._resolve_scheme("nous", "m", "primary") is None
+
+
+def test_nous_scheme_carries_core_resolved_key(monkeypatch):
+    """m58-CORRECTION D-pin: on a direct-alias host shape core names no env
+    var (source=direct-alias) — the core-resolved api_key VALUE rides the
+    endpoint and _resolve_key prefers it (base+key same provider, 401
+    impossible by construction). masked() never renders the value."""
+    _silent_host(monkeypatch)
+    monkeypatch.setattr(pd, "_core_runtime", lambda: {
+        "provider": "custom", "requested_provider": "custom",
+        "base_url": ENV_BASE, "api_key": "core-resolved-key",
+        "api_mode": "chat_completions", "source": "direct-alias",
+    }, raising=False)
+    monkeypatch.setattr(anchor_chain, "_custom_providers", lambda: {},
+                        raising=False)
+    ep = anchor_chain._resolve_scheme("nous", "m", "primary")
+    assert ep is not None
+    assert ep.api_key_value == "core-resolved-key"
+    assert "core-resolved-key" not in str(ep.masked())
+    from hermes_router import anchor_exec
+
+    assert anchor_exec._resolve_key(ep) == "core-resolved-key"
