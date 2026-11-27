@@ -214,21 +214,42 @@ def _read_env_file(path: str, env: str) -> str:
 
 
 def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
-    """m60 mandate #1/#3: the key is the one CORE resolved for THIS base —
-    the FRESH read rides the endpoint's api_key_value and, when absent,
-    is re-read from the SAME core runtime dict that produced base_url.
-    NO env chase on the anchor path: os.environ / profile-dotenv lookups
-    produce the m60 base-vs-key mismatch (401 Authentication failed).
-    The env name remains a diagnostic field only. Never raises."""
+    """m61: PROCESS ENV IS AUTHORITATIVE where the resolved endpoint names a
+    key_env (conductor m61 fix #1). Resolution order:
+      1. os.environ[api_key_env] — the runtime the operator actually set
+         (the container env: `docker exec printenv` proves it). PRIMARY.
+      2. endpoint.api_key_value — the value core resolved alongside this
+         base (m58-CORRECTION ride).
+      3. core-runtime api_key re-ask, base-paired (m60 pairing) — now a
+         MIDDLE source, no longer a gate that cancels step 1 on a base
+         mismatch.
+      4. profile dotenv (_profile_env_value) — SECONDARY source only.
+    m61 live catch: m60's "NO env chase" deleted step 1, so a container with
+    NOUS_API_KEY in its env and no base match in core's runtime dict fell
+    through to "" -> anchor_route_failed reason=key_unavailable while the
+    var was demonstrably set. Never raises."""
+    return _resolve_key_sourced(endpoint)[0]
+
+
+def _resolve_key_sourced(endpoint: anchor_chain.AnchorEndpoint
+                         ) -> Tuple[str, str]:
+    """m61: the key AND the source that supplied it. ("", "") when nothing
+    resolved. Source ∈ {process_env, core_endpoint, core_runtime_pair,
+    profile_dotenv, process_env_placeholder}. Order mirrors _resolve_key.
+    Never raises."""
     try:
+        env = (getattr(endpoint, "api_key_env", "") or "").strip()
+        if env:
+            val = os.environ.get(env, "").strip()
+            if val and val.lower() not in _PLACEHOLDER_VALUES:
+                return val, "process_env"
         # m58-CORRECTION ride: the key core resolved alongside this base.
         core_val = str(getattr(endpoint, "api_key_value", "") or "").strip()
         if core_val and core_val.lower() not in _PLACEHOLDER_VALUES:
-            return core_val
-        # m60: base and key must come from ONE resolution — re-ask core
-        # and pair the api_key with THIS endpoint's base_url. A base that
-        # does not match core's resolution gets NO key: fail loud (empty)
-        # rather than send a stranger's credential to a stranger's host.
+            return core_val, "core_endpoint"
+        # m60 base-pairing stays as a MIDDLE source, not a gate: a base
+        # mismatch between core's runtime and the endpoint no longer cancels
+        # an operator-set process env (step 1 already returned above).
         try:
             from .core import provider_derivation as _pd
 
@@ -238,12 +259,22 @@ def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
             if _rt_base and _ep_base and _rt_base == _ep_base:
                 _rt_key = str(_rt.get("api_key") or "").strip()
                 if _rt_key and _rt_key.lower() not in _PLACEHOLDER_VALUES:
-                    return _rt_key
+                    return _rt_key, "core_runtime_pair"
         except Exception:  # noqa: BLE001 — pairing is best-effort, fail open
             pass
-        return ""
+        # m60 regression guard: dotenv is a SECONDARY source again.
+        pval = _profile_env_value(env)
+        if pval and pval.lower() not in _PLACEHOLDER_VALUES:
+            return pval, "profile_dotenv"
+        # keep a process-env placeholder only if nothing better exists
+        # (the caller logs the 401) — pre-m60 behavior.
+        if env:
+            val = os.environ.get(env, "").strip()
+            if val:
+                return val, "process_env_placeholder"
+        return "", ""
     except Exception:  # noqa: BLE001
-        return ""
+        return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -935,14 +966,23 @@ def anchored_call(endpoint: anchor_chain.AnchorEndpoint, api_kwargs: Dict[str, A
         from openai import OpenAI
 
         clear_last_failure()
+        # m61: _resolve_key stays THE patchable seam (tests pin contract by
+        # monkeypatching it); the source label is derived separately and
+        # only consulted on the success path.
         api_key = _resolve_key(endpoint)
         if not api_key:
-            logger.error("anchor_route_failed reason=key_unavailable key_env=%s",
+            logger.error("anchor_route_failed reason=key_unavailable "
+                         "key_env=%s key_source=unresolved",
                          endpoint.api_key_env)
             _set_last_failure("key_unavailable",
                               key_env=str(endpoint.api_key_env or ""),
                               model=str(getattr(endpoint, "model", "") or ""))
             return None, None, None, None
+        # m61 fix #1: name WHICH source supplied the key (acceptance a).
+        _key_src = _resolve_key_sourced(endpoint)[1] or "unknown"
+        logger.info("anchor_key_resolved source=%s key_env=%s model=%s",
+                    _key_src, endpoint.api_key_env,
+                    str(getattr(endpoint, "model", "") or ""))
 
         payload = copy.deepcopy(api_kwargs)
         payload.pop("stream", None)

@@ -44,6 +44,7 @@ Every public entry is fail-open and never raises.
 """
 import json
 import re
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,6 +82,72 @@ def _strip_injection_clause(text: str) -> str:
 import logging
 
 logger = logging.getLogger("hermes_router.decision_midturn")
+
+
+# --- m61 fix #2: the arm/skip line must be visible on the CONTAINER'S
+# stdout/stderr, not only inside agent.log. hermes_logging.setup_logging
+# attaches FILE handlers only (agent.log at INFO, errors.log at WARNING);
+# nothing forwards INFO records to the process stderr, so `docker logs`
+# (which captures only stderr/stdout) never saw decision.armed/skipped —
+# the virgin-canary "0 decision lines on EVERY turn" measurement. The stdlib
+# lastResort handler routes WARNING+ to stderr, which is exactly why ERROR
+# lines (anchor_route_failed) ARE visible while the INFO arm line is not.
+# Fix: one dedicated StreamHandler on THIS logger, stderr, level DEBUG,
+# filter matching ONLY the two decision events, propagate left alone (the
+# agent.log copy keeps flowing). One line per turn, two channels — the
+# docker-logs channel is the one the m60 acceptance harness greps.
+class _DecisionArmFilter(logging.Filter):
+    _PREFIXES = ("decision.armed", "decision.skipped")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            return record.getMessage().startswith(self._PREFIXES)
+        except Exception:  # noqa: BLE001 — a filter must never raise
+            return False
+
+
+_ARM_STDERR_HANDLER: Optional[logging.Handler] = None
+_ARM_STDERR_LOCK = threading.Lock()
+
+
+def _arm_stderr_handler() -> Optional[logging.Handler]:
+    """Idempotent, never-raises accessor for the stderr arm-line handler."""
+    global _ARM_STDERR_HANDLER
+    try:
+        if _ARM_STDERR_HANDLER is not None:
+            return _ARM_STDERR_HANDLER
+        with _ARM_STDERR_LOCK:
+            if _ARM_STDERR_HANDLER is not None:
+                return _ARM_STDERR_HANDLER
+            _h = logging.StreamHandler(sys.stderr)
+            _h.setLevel(logging.INFO)
+            _h.setFormatter(
+                logging.Formatter("%(asctime)s %(message)s",
+                                  datefmt="%Y-%m-%d %H:%M:%S"))
+            _h.addFilter(_DecisionArmFilter())
+            logger.addHandler(_h)
+            logger.setLevel(logging.INFO)
+            _ARM_STDERR_HANDLER = _h
+            return _h
+    except Exception:  # noqa: BLE001 — a log handler must never break the lane
+        return None
+
+
+def _arm_log(fmt: str, *args: Any) -> None:
+    """Emit the m59/m60 arm/skip line. The stderr handler is attached to the
+    logger itself, so ONE logger.info call reaches BOTH channels (stderr via
+    _arm_stderr_handler, agent.log via the root file handlers). NO explicit
+    second handle() — the live m61 catch: handler + explicit handle() wrote
+    the same line to stderr twice, breaking the exactly-one-line-per-turn
+    contract. Never raises."""
+    try:
+        _arm_stderr_handler()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        logger.info(fmt, *args)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _provider_host_pairs() -> tuple:
@@ -1405,22 +1472,16 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
         if _reason:
             _log(str(_sess or "active-session"), "decision_skipped",
                  seam=_seam_name, reason=_reason)
-            try:
-                logger.info("decision.skipped seam=%s reason=%s",
-                            _seam_name, _reason)
-            except Exception:  # noqa: BLE001
-                pass
+            _arm_log("decision.skipped seam=%s reason=%s",
+                     _seam_name, _reason)
         else:
             _log(str(_sess or "active-session"), "decision_armed",
                  seam=_seam_name, backend=str(_arm_cfg.get("backend") or ""),
                  model=str(_dec._jev_dispatch_model(_arm_cfg) or ""),
                  arm_mode=_arm_mode)
-            try:
-                logger.info("decision.armed seam=%s backend=%s model=%s",
-                            _seam_name, str(_arm_cfg.get("backend") or ""),
-                            str(_dec._jev_dispatch_model(_arm_cfg) or ""))
-            except Exception:  # noqa: BLE001
-                pass
+            _arm_log("decision.armed seam=%s backend=%s model=%s",
+                     _seam_name, str(_arm_cfg.get("backend") or ""),
+                     str(_dec._jev_dispatch_model(_arm_cfg) or ""))
         key = _sess or "active-session"
         sweep_turn_start(key, request)
         return flush(key)
@@ -1434,8 +1495,8 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
             _log(str(_sess2 or "active-session"), "decision_skipped",
                  seam="midturn_prellm", reason="internal_error",
                  detail=str(_exc)[:160])
-            logger.info("decision.skipped seam=midturn_prellm "
-                        "reason=internal_error detail=%s", str(_exc)[:160])
+            _arm_log("decision.skipped seam=midturn_prellm "
+                     "reason=internal_error detail=%s", str(_exc)[:160])
         except Exception:  # noqa: BLE001 — never raise from the banner
             pass
         return []
