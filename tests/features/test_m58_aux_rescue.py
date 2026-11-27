@@ -101,10 +101,54 @@ def test_no_client_rescue_produces_firing_aux_when_core_resolves(monkeypatch):
 
 
 def test_no_client_still_declared_when_core_resolves_nothing(monkeypatch):
-    """When core also resolves nothing, the cause stays exactly no_client —
-    the named failure contract is preserved."""
+    """m60 mandate #2: when core resolves NOTHING, the failure is NAMED —
+    cause token resolver_empty + a lane-banner log line — never a bare
+    silent no_client. The lane name rides the log."""
     _silent_host(monkeypatch)
     monkeypatch.setattr(sc, "_hermes_aux_call", sc._original_hermes_aux)
+    import logging as _logging
+
+    oline = []
+
+    class _Collect(_logging.Handler):
+        def emit(self, record):
+            oline.append(record.getMessage())
+
+    root = _logging.getLogger("hermes_router.semantic_classifier")
+    handler = _Collect()
+    root.addHandler(handler)
+    try:
+        body = sc._hermes_aux_call(
+            '{"messages": [{"role": "user", "content": "x"}], "max_tokens": 10}',
+            5)
+    finally:
+        root.removeHandler(handler)
+    assert body is None
+    assert sc.aux_failure_cause() == "resolver_empty"
+    hits = [h for h in oline if "resolver_empty"
+            in h and "semantic_classifier" in h]
+    assert hits, "resolver_empty must log a lane-named banner"
+
+
+def test_no_client_retained_when_core_resolves_but_client_build_fails(
+        monkeypatch):
+    """m60: `no_client` remains the cause token for the REAL
+    resolved-but-unbuildable case — core resolved a base but
+    fallback_client still returns None."""
+    _silent_host(monkeypatch)
+    monkeypatch.setattr(pd, "_core_runtime",
+                        lambda: {"provider": "openai-api",
+                                 "base_url": ENV_BASE,
+                                 "api_key": "env-key-456",
+                                 "api_mode": "chat_completions"},
+                        raising=False)
+    monkeypatch.setattr(pd, "_core_client", lambda: (None, ""),
+                        raising=False)
+    monkeypatch.setattr(
+        "agent.auxiliary_client.resolve_provider_client",
+        lambda *a, **kw: (None, ""), raising=False)
+    monkeypatch.setattr(sc, "_hermes_aux_call", sc._original_hermes_aux)
+    monkeypatch.setattr(ca, "get", lambda *a, **kw: None, raising=False)
     body = sc._hermes_aux_call(
         '{"messages": [{"role": "user", "content": "x"}], "max_tokens": 10}',
         5)

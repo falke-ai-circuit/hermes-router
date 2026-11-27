@@ -1271,6 +1271,21 @@ def register(ctx) -> None:
         except Exception:  # noqa: BLE001 — diagnostics never break registration
             pass
 
+    # m60 mandate #3: the ONE-at-init base/key pairing check. Logs
+    # endpoint_pair_check pair_ok=true/false exactly once per process —
+    # pair_ok=true proves base+key came from ONE core resolution (the m60
+    # 401 was a base from one lookup paired with a key from another).
+    # best-effort inside _reg isolation — a diagnostics failure never
+    # breaks registration.
+    def _reg_pair_check() -> None:
+        try:
+            from ..core.endpoint_authority import pair_check_once
+
+            pair_check_once()
+        except Exception:  # noqa: BLE001 — diagnostics never break registration
+            pass
+
+    _reg("register.pair_check", _reg_pair_check)
     _reg("register.endpoint_banner", _reg_endpoint_banner)
     _reg("register.router_tools", _reg_tools)
     # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated

@@ -68,17 +68,28 @@ def fallback_base_url() -> str:
 
 
 def fallback_client(timeout_seconds: float = 30.0):
-    """m58-CORRECTION: the ONE aux client builder — built by Hermes core
-    itself. Order: core's own aux surface (get_text_auxiliary_client — same
+    """m60: the ONE aux client builder — base AND key from ONE resolution.
+
+    Order: core's own aux client (get_text_auxiliary_client — same
     provider/auth/api_mode the agent uses for side-calls), then core's MAIN
-    runtime resolution shaped into a client (covers host shapes core's aux
-    auto-detect does not resolve, e.g. env-declared OPENAI base). Plugin
-    explicit base override (providers.nous.base_url) pairs with the core
-    runtime's own api_key so base+key stay same-provider by construction.
-    None when core resolves nothing — callers fail open, no egress. Never
-    raises. Consumers: semantic_judge._fallback_client (delegates),
+    runtime resolution shaped into a client via core's own builder. The
+    plugin-explicit base override (providers.nous.base_url) pairs with the
+    SAME core runtime dict's api_key — base+key from one dict, never one
+    from config and the other from an env chase (the m60 401 was exactly
+    that split). NO env or dotenv contract is re-implemented here; key
+    discovery is core's job alone (m60 mandate #1).
+
+    Pair check (mandate #3): pair_check_once() logs pair_ok exactly once
+    per process on the first build.
+
+    None when core resolves nothing — callers fail open AND LOG
+    resolver_empty (named empty, mandate #2), never a bare silent None.
+    Never raises. Consumers: semantic_judge._fallback_client (delegates),
     semantic_classifier._hermes_aux_call (no_client rescue)."""
     try:
+        from .endpoint_authority import pair_check_once
+
+        pair_check_once()
         from . import provider_derivation as pd
 
         # 1. core's own aux client (the exact surface the agent itself uses)
@@ -86,7 +97,8 @@ def fallback_client(timeout_seconds: float = 30.0):
         if client is not None:
             return client
 
-        # 2. core's MAIN runtime resolution -> client via core's builder
+        # 2. core's MAIN runtime resolution -> client via core's builder;
+        #    explicit_api_key=RIDE THE SAME DICT the base came from.
         rt = pd._core_runtime()
         if not rt:
             return None
@@ -105,9 +117,9 @@ def fallback_client(timeout_seconds: float = 30.0):
         if client2 is not None:
             return client2
 
-        # 3. plugin explicit base override + the runtime's OWN key (m58-B:
-        # base and key always from the same provider — core's runtime dict
-        # carries the api_key its base authenticates with)
+        # 3. plugin explicit base override + the runtime's OWN key — base
+        #    and key always from the same provider dict (m60: NO separate
+        #    key lookup, the override never re-resolves a credential).
         explicit = _explicit_base()
         api_key = rt.get("api_key")
         if explicit and api_key:

@@ -512,8 +512,27 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
             except Exception:  # noqa: BLE001 — rescue must never raise
                 client = None
         if client is None:
+            # m60 mandate #2: an EMPTY resolution fails LOUD with the lane
+            # name and the actual resolution state — the undiagnosable
+            # no_client x6 is dead. `no_client` survives only as the
+            # cause token for the (real) case core RESOLVED but no client
+            # could be BUILT.
+            try:
+                from .core.aux_endpoint import missing_input_report as _mir
+
+                _state = _mir()
+            except Exception:  # noqa: BLE001 — diagnostics never break the lane
+                _state = ""
+            if _state:
+                _note_cause("resolver_empty")
+                logger.error("hermes_aux_failed lane=semantic_classifier "
+                             "reason=resolver_empty detail=%s",
+                             _state[:220])
+                return None
             _note_cause("no_client")
-            logger.error("hermes_aux_failed reason=no_client")
+            logger.error("hermes_aux_failed lane=semantic_classifier "
+                         "reason=no_client (core resolved an endpoint but "
+                         "no usable aux client could be built)")
             return None
         payload = json.loads(payload_json)
         kwargs: Dict[str, Any] = {

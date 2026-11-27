@@ -1424,7 +1424,20 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
         key = _sess or "active-session"
         sweep_turn_start(key, request)
         return flush(key)
-    except Exception:  # noqa: BLE001
+    except Exception as _exc:  # noqa: BLE001
+        # m60 mandate #4: EVERY turn emits decision.armed or
+        # decision.skipped — the except arm is NOT exempt. A crash here
+        # used to swallow the observability contract wholesale (silent
+        # return); the failure is now a NAMED skip with the lane banner.
+        try:
+            _sess2 = _sanitize_session_key(session_id)
+            _log(str(_sess2 or "active-session"), "decision_skipped",
+                 seam="midturn_prellm", reason="internal_error",
+                 detail=str(_exc)[:160])
+            logger.info("decision.skipped seam=midturn_prellm "
+                        "reason=internal_error detail=%s", str(_exc)[:160])
+        except Exception:  # noqa: BLE001 — never raise from the banner
+            pass
         return []
 
 

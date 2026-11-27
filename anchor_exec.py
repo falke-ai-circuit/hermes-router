@@ -214,26 +214,33 @@ def _read_env_file(path: str, env: str) -> str:
 
 
 def _resolve_key(endpoint: anchor_chain.AnchorEndpoint) -> str:
+    """m60 mandate #1/#3: the key is the one CORE resolved for THIS base —
+    the FRESH read rides the endpoint's api_key_value and, when absent,
+    is re-read from the SAME core runtime dict that produced base_url.
+    NO env chase on the anchor path: os.environ / profile-dotenv lookups
+    produce the m60 base-vs-key mismatch (401 Authentication failed).
+    The env name remains a diagnostic field only. Never raises."""
     try:
-        # m58-CORRECTION: the key AS CORE RESOLVED IT rides the endpoint when
-        # the base came from core's runtime (env-contract/direct-alias hosts
-        # name no env var) — same-provider by construction, preferred over
-        # the env name. masked() never renders it.
+        # m58-CORRECTION ride: the key core resolved alongside this base.
         core_val = str(getattr(endpoint, "api_key_value", "") or "").strip()
         if core_val and core_val.lower() not in _PLACEHOLDER_VALUES:
             return core_val
-        env = (endpoint.api_key_env or "").strip()
-        if env:
-            val = os.environ.get(env, "").strip()
-            if val and val.lower() not in _PLACEHOLDER_VALUES:
-                return val
-            # placeholder/missing in process env → read the profile dotenv before giving up
-            pval = _profile_env_value(env)
-            if pval and pval.lower() not in _PLACEHOLDER_VALUES:
-                logger.info("anchor_key_resolved source=profile_dotenv key_env=%s", env)
-                return pval
-            if val:  # keep placeholder only if nothing better exists (caller logs the 401)
-                return val
+        # m60: base and key must come from ONE resolution — re-ask core
+        # and pair the api_key with THIS endpoint's base_url. A base that
+        # does not match core's resolution gets NO key: fail loud (empty)
+        # rather than send a stranger's credential to a stranger's host.
+        try:
+            from .core import provider_derivation as _pd
+
+            _rt = _pd._core_runtime() or {}
+            _rt_base = str(_rt.get("base_url") or "").strip().rstrip("/")
+            _ep_base = str(getattr(endpoint, "base_url", "") or "").strip().rstrip("/")
+            if _rt_base and _ep_base and _rt_base == _ep_base:
+                _rt_key = str(_rt.get("api_key") or "").strip()
+                if _rt_key and _rt_key.lower() not in _PLACEHOLDER_VALUES:
+                    return _rt_key
+        except Exception:  # noqa: BLE001 — pairing is best-effort, fail open
+            pass
         return ""
     except Exception:  # noqa: BLE001
         return ""
