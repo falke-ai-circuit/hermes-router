@@ -1378,14 +1378,50 @@ def flush_and_scan(session_id: str, request: Dict[str, Any]) -> List[str]:
     in-flight request. Shadow mode: sweep logs + ledgers only, flush
     returns []. Session key is sanitized (FIX 3) — invalid keys fall back
     to the shared active-session bucket with a debug log of the raw key.
-    Never raises."""
+    Never raises.
+
+    m59 (owner ruling: the jev decision must work ALL the time):
+    arming is now OBSERVABLE on every mid-turn LLM call. One line per turn,
+    ALWAYS: `decision.armed seam=... backend=... model=...` when the lane
+    runs, or `decision.skipped reason=<exact missing input>` when it does
+    not — silence is the defect this line kills (the virgin-canary m59
+    defect was a silent no-op: zero decision lines on a real tool-loop
+    turn). Emitted BEFORE any early return inside the sweep, from the ONE
+    seam the lane fires at (midturn / pre-LLM)."""
     try:
-        key = _sanitize_session_key(session_id)
-        if not key:
-            logger.debug(
-                "decision_midturn: unsanitized session key fallback"
-                " raw=%r", str(session_id)[:200])
-            key = "active-session"
+        _arm_cfg = _cfg()
+        _arm_mode = _mode(_arm_cfg)
+        _sess = _sanitize_session_key(session_id)
+        _reason = ""
+        if _arm_mode == "off":
+            _reason = "mode_off"
+        elif not str(session_id or "") and not _sess:
+            _reason = "no_session_id"
+        _seam_name = "midturn_prellm"
+        try:
+            _seam_name = str(_arm_cfg.get("seam") or "midturn_prellm")
+        except Exception:  # noqa: BLE001 — name is cosmetic
+            _seam_name = "midturn_prellm"
+        if _reason:
+            _log(str(_sess or "active-session"), "decision_skipped",
+                 seam=_seam_name, reason=_reason)
+            try:
+                logger.info("decision.skipped seam=%s reason=%s",
+                            _seam_name, _reason)
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            _log(str(_sess or "active-session"), "decision_armed",
+                 seam=_seam_name, backend=str(_arm_cfg.get("backend") or ""),
+                 model=str(_dec._jev_dispatch_model(_arm_cfg) or ""),
+                 arm_mode=_arm_mode)
+            try:
+                logger.info("decision.armed seam=%s backend=%s model=%s",
+                            _seam_name, str(_arm_cfg.get("backend") or ""),
+                            str(_dec._jev_dispatch_model(_arm_cfg) or ""))
+            except Exception:  # noqa: BLE001
+                pass
+        key = _sess or "active-session"
         sweep_turn_start(key, request)
         return flush(key)
     except Exception:  # noqa: BLE001

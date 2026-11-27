@@ -223,13 +223,16 @@ def _cfg() -> Dict[str, Any]:
     (reflex wins when present; decision is the fallback) — no config
     migration required of existing profiles. Never raises."""
     try:
-        # NOTE (R34-12): this relative import does not resolve (the canonical
-        # reader lives at hermes_router/core/config_access.py), so _cfg()
-        # falls back to DEFAULTS. Left byte-identical ON PURPOSE: flipping
-        # the whole decision block live is a semantics change outside this
-        # brief. The FRAME key is resolved separately through the canonical
-        # reader in decision_midturn._cfg (single-key overlay).
-        from . import config_access
+        # m59 FIX (owner ruling: the jev decision must work ALL the time):
+        # this read used `from . import config_access`, which does not resolve
+        # (the canonical reader lives at hermes_router/core/config_access.py),
+        # so the pinned decision block — enabled, seam, midturn, backend, jev
+        # models — NEVER reached the lane: _mode() fell back to "off" and the
+        # whole lane was a silent no-op on a fully pinned host (measured on the
+        # virgin canary m59: zero decision|jev|midturn|impulse lines on a real
+        # tool-loop turn). The single sane fix is reading the block the lane
+        # actually has: the canonical reader.
+        from .core import config_access
 
         block = config_access.sub_block_alias("reflex", "decision")
         if isinstance(block, dict) and block:
@@ -4037,6 +4040,111 @@ def _provider_key_env(provider: str, default: str) -> str:
         return default
 
 
+def _jev_dispatch_model(cfg: Dict[str, Any]) -> str:
+    """m59 (owner ruling): resolve the jev DECISION MODEL through the host.
+
+    jev is a MODEL, not an external service the plugin must locate. ONE
+    authority — Hermes core resolution, exactly as the m58 aux seam now does:
+      1. an explicitly configured model id (cfg 'model' / 'jev_model' /
+         'jev_native_model') wins — a profile that pins one is authoritative;
+      2. otherwise the HOST's declared model (core's runtime resolver —
+         config_access.agent_model()), i.e. the model the agent itself runs
+         on. A host that declares no jev model gets the host main model.
+    Zero plugin-side jev endpoint/key config is required: the DISPATCH rides
+    the profile's aux path (_hermes_aux_call), which m58-CORRECTION already
+    resolves (core aux client -> core runtime-shaped client), so base+key
+    pairing is core's job, never ours. Never raises; '' -> caller fails open.
+    """
+    for key in ("jev_dispatch_model", "jev_native_model", "jev_model",
+                "model"):
+        try:
+            v = str(cfg.get(key) or "").strip()
+        except Exception:  # noqa: BLE001 — cfg is caller-supplied
+            v = ""
+        if v and str(DEFAULTS.get(key) or "") != v:
+            return v
+    try:
+        from .core import config_access
+
+        host = str(config_access.agent_model() or "").strip()
+        if host:
+            return host
+    except Exception:  # noqa: BLE001 — fail open to ''
+        pass
+    # Last resort (matches the nous branch): let the aux client pick.
+    return ""
+
+
+def _call_jev_host(envelope: Dict[str, Any], prompt: str,
+                   cfg: Dict[str, Any], timeout: float
+                   ) -> Tuple[Optional[str], Dict[str, Any], str]:
+    """m59 (owner ruling requirement 1): jev THE MODEL dispatched through the
+    profile's aux path — the ONE Hermes-core resolution seam (m58-CORRECTION:
+    core aux client -> core runtime-shaped client -> plugin explicit base +
+    the runtime's own key). No plugin-side jev endpoint, no api_key_env
+    probing, no second resolver. Falls back to the transport-level helpers
+    (_call_jev / the typesafe path) ONLY via cfg, at the caller's discretion.
+    Returns the same (content|None, meta, reason) contract as every adapter.
+    Never raises."""
+    meta: Dict[str, Any] = {}
+    try:
+        from . import semantic_classifier as _sc
+        from .core import budgets as _budgets
+
+        model = _jev_dispatch_model(cfg)
+        meta = {"model": model, "endpoint": "hermes-auxiliary",
+                "tokens_in": None, "tokens_out": None,
+                "latency_s": 0.0, "backend": "jev_host"}
+        payload = json.dumps({
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": _budgets.budget("verdict")["max_tokens"],
+            "temperature": 0.0,
+            # an explicit per-call model — the resolved jev/host model —
+            # overrides the profile's aux dispatch model (M34-16 contract).
+            "model": model,
+        })
+        t0 = time.time()
+        body = _sc._hermes_aux_call(payload, int(timeout))
+        meta["latency_s"] = round(time.time() - t0, 2)
+        if body is None:
+            # cause-named abstain: map the aux cause onto the lane's reason
+            # vocabulary so the skip never reads as a silent no-op.
+            cause = ""
+            try:
+                cause = str(_sc.aux_failure_cause() or "")
+            except Exception:  # noqa: BLE001
+                cause = ""
+            reason = (REASON_BACKEND_QUOTA if cause == "http_402"
+                      else REASON_BACKEND_AUTH if cause == "http_401"
+                      else ("backend_http_%s" % cause[5:]
+                            if cause.startswith("http_")
+                            else REASON_BACKEND_ERROR))
+            return None, dict(meta, backend="jev_host"), reason
+        data: Dict[str, Any] = {}
+        try:
+            data = json.loads(body)
+        except Exception:  # noqa: BLE001 — parse fail, not transport
+            return None, meta, REASON_PARSE_FAIL
+        try:
+            meta["tokens_in"], meta["tokens_out"] = \
+                _sc._usage_from_response(data)
+        except Exception:  # noqa: BLE001
+            pass
+        content = None
+        try:
+            content = _sc._extract_content(data)
+        except Exception:  # noqa: BLE001
+            content = None
+        if not content or not str(content).strip():
+            return None, meta, REASON_PARSE_FAIL
+        extracted = _robust_json_content(str(content))
+        if extracted:
+            return extracted, meta, "ok"
+        return str(content), meta, "ok"
+    except Exception:  # noqa: BLE001 — fail-open like every adapter
+        return None, meta, REASON_BACKEND_ERROR
+
+
 def _call_jev(envelope: Dict[str, Any], prompt: str, cfg: Dict[str, Any],
               timeout: float, t0: float
               ) -> Tuple[Optional[str], Dict[str, Any], str]:
@@ -4172,6 +4280,28 @@ def call_backend(envelope: Dict[str, Any], cfg: Dict[str, Any]
         if not prompt:
             return None, dict(meta, no_call=True), REASON_PARSE_FAIL
         t0 = time.time()
+        # m59 (owner ruling req 1): jev is a MODEL resolved through Hermes
+        # core — dispatch by model id through the profile's aux path. The
+        # legacy endpoint+key adapters still own the path ONLY when an
+        # operator actually DECLARED a plugin-side key env (a value that
+        # differs from the shipped DEFAULTS — a merged cfg always carries
+        # the defaults, so equality means "nobody chose a direct
+        # transport"). Every other shape — including the pinned canary
+        # (jev_native_model=jev, no key env declared) and a host with NO jev
+        # model at all — resolves through the model chain and dials the aux
+        # seam with zero plugin-side endpoint/key config.
+        _model = _jev_dispatch_model(cfg)
+        if backend in ("jev", "jev_native"):
+            _operator_wired = (
+                str(cfg.get("typesafe_api_key_env")
+                    or "") not in ("", DEFAULTS["typesafe_api_key_env"])
+                or str(cfg.get("api_key_env")
+                       or "") not in ("", DEFAULTS["api_key_env"]))
+            if not _operator_wired:
+                content_h, meta_h, reason_h = _call_jev_host(
+                    envelope, prompt, cfg, timeout)
+                return content_h, dict(meta_h, backend=(
+                    "jev" if backend == "jev" else "jev_host")), reason_h
         if backend == "jev":
             return _call_jev(envelope, prompt, cfg, timeout, t0)
         if backend == "jev_native":
