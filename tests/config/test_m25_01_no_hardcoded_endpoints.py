@@ -80,9 +80,9 @@ CATEGORIES = {"url", "host_port", "abs_path", "provider_host"}
 # after reviewing the new join — that review is the whole point of the pin.
 DYNAMIC_CONFIG_REFS = {
     "anchor_chain.py:143",          # providers.{name}.base_url (m57 shifted)
-    "core/config_access.py:399",    # providers.{name}.{field}
-    "core/config_access.py:435",    # providers.{name}.key_env
-    "core/config_access.py:478",    # providers.{name}.hosts
+    "core/config_access.py:445",    # providers.{name}.{field} (m58 yaml shim + m58-CORRECTION shifted)
+    "core/config_access.py:481",    # providers.{name}.key_env (m58 yaml shim + m58-CORRECTION shifted)
+    "core/config_access.py:524",    # providers.{name}.hosts (m58 yaml shim + m58-CORRECTION shifted)
 }
 # An f-string segment is a config-path join when its static text looks like a
 # dotted key chain that terminates in a config field name.

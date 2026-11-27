@@ -1255,6 +1255,23 @@ def register(ctx) -> None:
 
         router_tools.register(ctx)
 
+    # m58-C: fail loud at startup when a lane's endpoint resolves to nothing
+    # — ONE explicit line naming the lane-agnostic derivation state and the
+    # missing input (config providers block vs env). The every-lane-silent
+    # signature (aux reason=no_client x8, no banner) is undiagnosable from a
+    # transcript; this line is the banner that names it. Empty on healthy
+    # hosts (the derivation resolves) — never sent twice.
+    def _reg_endpoint_banner() -> None:
+        try:
+            from ..core.aux_endpoint import missing_input_report as _mir
+
+            report = _mir() or ""
+            if report:
+                logger.error("%s", report)
+        except Exception:  # noqa: BLE001 — diagnostics never break registration
+            pass
+
+    _reg("register.endpoint_banner", _reg_endpoint_banner)
     _reg("register.router_tools", _reg_tools)
     # v3.5.0: /router chat command surface — LCM 3-branch pattern, env-gated
     # (HERMES_ROUTER_ENABLE_SLASH_COMMAND, default off). commands.

@@ -1,27 +1,22 @@
-"""m57-B/D: aux endpoint auto-derivation + explicit scheme failure contract.
+"""m57-B/D → m58-CORRECTION: aux endpoint asked through Hermes core.
 
-FRESH-INSTALL CONTRACT (m57): on a virgin Hermes install the plugin's aux and
-anchor lanes must not depend on any .secrets file, any loopback address, or
-any hardcoded vendor inference hostname. When the plugin's own provider
-config is silent, the endpoint DERIVES from what the host itself is
-configured to run.
+FRESH-INSTALL CONTRACT (m57 + m58-CORRECTION): on ANY virgin Hermes install
+the plugin's aux and anchor lanes work without any plugin-side provider
+knowledge — no .secrets file, no loopback, no vendor hostname, no env
+contract reimplementation. The plugin ASKS Hermes core:
 
-Layer order for fallback_base_url():
-  1. explicit plugin provider base — providers.nous.base_url (the m57-C
-     legacy alias `base_url` resolves through the same schema key)
-  2. host model.base_url (custom-endpoint config shape)
-  3. host providers.<model.provider>.base_url
-  4. host custom providers (first entry that carries a base_url)
-  5. "" — FAIL-OPEN: no endpoint is invented, callers make no egress
+  agent.auxiliary_client.get_text_auxiliary_client   (core's own aux client)
+  hermes_cli.runtime_provider.resolve_runtime_provider (core's main runtime)
+  agent.auxiliary_client.resolve_provider_client      (client build)
 
-NEITHER a loopback address NOR a vendor hostname appears in any layer:
-every value is read from the host's own configuration.
+One authority: if Hermes can call a model, the plugin's aux can. Explicit
+plugin lane config (providers.nous.base_url) still wins FIRST — that is a
+plugin-lane override, not a reimplementation of host resolution.
 
 scheme_failure() is the D half: a lane URI whose scheme cannot authenticate
-or resolve returns a NAMED reason plus a detection-safe fallback hint
-(openrouter:// with OPENROUTER_API_KEY, or any configured providers.<name>
-custom scheme) — never a bare None that downstream renders as an ordinary
-model error. Never raises.
+or resolve returns a NAMED reason plus a detection-safe fallback hint —
+never a bare None that downstream renders as an ordinary model error.
+Never raises.
 """
 from __future__ import annotations
 
@@ -46,9 +41,7 @@ def _explicit_base() -> str:
 
     ONE static literal read: the schema declares providers.nous.base_url
     with legacy_of="base_url", so get() walks BOTH spellings (grouped path
-    first, the deployed old alias second). The old _EXPLICIT_PATHS loop
-    passed a variable to get() — an unresolvable pass-through the M25-02
-    gate rightly refuses — and was redundant besides.
+    first, the deployed old alias second).
     """
     try:
         ca = _ca()
@@ -57,75 +50,74 @@ def _explicit_base() -> str:
         return ""
 
 
-def _host_layers() -> str:
-    """Layers 2-4: derive from the HOST's own provider configuration."""
+def fallback_base_url() -> str:
+    """The resolved aux base: explicit plugin provider override first, then
+    whatever Hermes CORE's runtime resolver yields for the host's own
+    provider. '' when nothing resolves — callers fail open (no egress).
+    Never raises. Never contains an invented endpoint: the only URL this
+    function can return from the core path is the base core itself dials."""
+    try:
+        explicit = _explicit_base()
+        if explicit:
+            return explicit
+        from hermes_router.core import provider_derivation as pd
+
+        return str(pd.host_provider_endpoint()[0] or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def fallback_client(timeout_seconds: float = 30.0):
+    """m58-CORRECTION: the ONE aux client builder — built by Hermes core
+    itself. Order: core's own aux surface (get_text_auxiliary_client — same
+    provider/auth/api_mode the agent uses for side-calls), then core's MAIN
+    runtime resolution shaped into a client (covers host shapes core's aux
+    auto-detect does not resolve, e.g. env-declared OPENAI base). Plugin
+    explicit base override (providers.nous.base_url) pairs with the core
+    runtime's own api_key so base+key stay same-provider by construction.
+    None when core resolves nothing — callers fail open, no egress. Never
+    raises. Consumers: semantic_judge._fallback_client (delegates),
+    semantic_classifier._hermes_aux_call (no_client rescue)."""
     try:
         from hermes_router.core import provider_derivation as pd
 
-        cfg = pd._host_full_config()
-        model = cfg.get("model")
-        name = ""
-        model_base = ""
-        if isinstance(model, dict):
-            name = str(model.get("provider") or "").strip()
-            model_base = str(model.get("base_url") or "").strip()
-        # layer 2: host model.base_url
-        if model_base:
-            return model_base
-        # layer 3: host providers.<model.provider>.base_url
-        if name:
-            providers = cfg.get("providers")
-            if isinstance(providers, dict):
-                entry = providers.get(name)
-                if isinstance(entry, dict):
-                    base = str(entry.get("base_url") or "").strip()
-                    if base:
-                        return base
-        # layer 4: host custom providers — first entry with a base_url,
-        # deterministic order (sorted keys; the host config is a mapping)
-        try:
-            ca = _ca()
-            custom = ca.providers_custom() or {}
-        except Exception:  # noqa: BLE001 — probe must never raise
-            custom = {}
-        if isinstance(custom, dict):
-            for key in sorted(custom.keys()):
-                entry = custom.get(key)
-                if isinstance(entry, dict):
-                    base = str(entry.get("base_url") or "").strip()
-                    if base:
-                        return base
-        # layer 5 (m57-D, key-conditioned): a NOUS_API_KEY credential in the
-        # host's environment IS host configuration — it names the one provider
-        # the host can authenticate against without OAuth. Only when that
-        # credential EXISTS does the Nous API base resolve here; absent the
-        # key this layer returns "" (no invention, the D explicit failure
-        # names openrouter:// instead). This is why the vendor literal is not
-        # a DEFAULT: unset key -> "" (never nousresearch.com).
-        try:
-            ca = _ca()
-            key_env_name = ca.provider_key_env("nous", "NOUS_API_KEY")
-        except Exception:  # noqa: BLE001 — signal read must never raise
-            key_env_name = "NOUS_API_KEY"
-        import os as _os
+        # 1. core's own aux client (the exact surface the agent itself uses)
+        client, _model = pd._core_client()
+        if client is not None:
+            return client
 
-        key_val = str(_os.environ.get(key_env_name, "") or "").strip()
-        if key_val and key_val.lower() not in ("placeholder", "changeme",
-                                               "not-needed", "testkey"):
-            return "https://inference-api.nousresearch.com/v1"
-        return ""
-    except Exception:  # noqa: BLE001 — derivation must never raise into a lane
-        return ""
+        # 2. core's MAIN runtime resolution -> client via core's builder
+        rt = pd._core_runtime()
+        if not rt:
+            return None
+        provider = str(rt.get("provider") or "").strip()
+        if not provider:
+            return None
+        from agent.auxiliary_client import resolve_provider_client
 
+        client2, _m = resolve_provider_client(
+            provider,
+            model=str(rt.get("model") or "") or None,
+            explicit_base_url=str(rt.get("base_url") or "") or None,
+            explicit_api_key=rt.get("api_key") or None,
+            api_mode=str(rt.get("api_mode") or "") or None,
+        )
+        if client2 is not None:
+            return client2
 
-def fallback_base_url() -> str:
-    """The resolved aux base: explicit plugin provider > host derivation.
-    '' when the host gives nothing to derive from — callers fail open
-    (no egress). Never raises. Never contains an invented endpoint."""
-    try:
-        return _explicit_base() or _host_layers()
-    except Exception:  # noqa: BLE001
-        return ""
+        # 3. plugin explicit base override + the runtime's OWN key (m58-B:
+        # base and key always from the same provider — core's runtime dict
+        # carries the api_key its base authenticates with)
+        explicit = _explicit_base()
+        api_key = rt.get("api_key")
+        if explicit and api_key:
+            from openai import OpenAI
+
+            return OpenAI(base_url=explicit, api_key=str(api_key),
+                          timeout=float(timeout_seconds), max_retries=0)
+        return None
+    except Exception:  # noqa: BLE001 — client build must never raise into a lane
+        return None
 
 
 def derived_aux_endpoint() -> Optional[Dict[str, Any]]:
@@ -148,9 +140,50 @@ def derived_aux_endpoint() -> Optional[Dict[str, Any]]:
         return None
 
 
+def missing_input_report() -> str:
+    """m58-C: ONE explicit line naming WHY a lane has no endpoint — what
+    Hermes core resolved and what was missing. The every-lane-silent
+    signature (aux reason=no_client x8, no banner) is undiagnosable from a
+    transcript; this line names the state. '' when the resolution works, so
+    healthy hosts stay silent. Never raises."""
+    try:
+        if fallback_base_url():
+            return ""
+        parts = []
+        try:
+            from hermes_router.core import provider_derivation as _pd
+
+            rt = _pd._core_runtime()
+            if rt:
+                parts.append("core runtime resolved provider=%r base=%r "
+                             "but no usable aux client could be built"
+                             % (rt.get("provider"), rt.get("base_url")))
+            else:
+                cfg = _pd._host_full_config()
+                if cfg:
+                    parts.append("hermes core resolved NO runtime provider "
+                                 "(model=%r, providers=%s — core could not "
+                                 "authenticate the host provider)"
+                                 % (cfg.get("model"),
+                                    "yes" if isinstance(cfg.get("providers"),
+                                                        dict)
+                                    and cfg.get("providers") else "absent"))
+                else:
+                    parts.append("hermes core resolved NO runtime provider "
+                                 "(host config unreadable/empty)")
+        except Exception as _exc:  # noqa: BLE001 — the report must never raise
+            parts.append("core resolution probe errored: %s" % str(_exc)[:120])
+        return ("router_endpoint_unresolved — no lane endpoint available: "
+                + "; ".join(parts)
+                + ". Configure the host provider so Hermes core can resolve "
+                "it (hermes model / providers block / provider credentials) "
+                "for the aux+anchor lanes to fire.")
+    except Exception:  # noqa: BLE001 — diagnostics never raise
+        return ""
+
+
 def scheme_failure(uri: str, role: str = "") -> Tuple[str, str]:
     """Why a lane URI cannot be used, with its detection-safe fallback hint.
-
     Returns (reason, hint). reason == "" when the URI resolves normally.
     An unresolvable scheme is a NAMED failure carrying the fallback hint —
     it must never present downstream as an ordinary model error. Never

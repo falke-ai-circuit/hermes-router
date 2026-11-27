@@ -14,7 +14,11 @@ ALLOWLIST = os.path.join(PKG_ROOT, "tests", "config", "allowed_literals.json")
 
 # Frozen at M24-06 (HEAD 4c0951b). NEVER raise this to admit a new literal —
 # an addition needs an explicit gate exception; shrink it when literals go.
-BASELINE = 50
+# m58-CORRECTION: 50 -> 47 — the last-key-conditioned vendor literal
+# (core/aux_endpoint.py) left the shipping tree with the plugin-side env
+# contract (the aux seam now asks Hermes core), and three config_access
+# provider rows are line-drift repositions, not admissions.
+BASELINE = 47
 
 CATEGORIES = {"url", "host_port", "abs_path", "provider_host"}
 

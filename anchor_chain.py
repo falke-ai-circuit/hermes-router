@@ -208,18 +208,49 @@ def _resolve_scheme(scheme: str, model: str, role: str) -> Optional[AnchorEndpoi
                 return None
             api_key_env = _provider_key_env("nous", NOUS_KEY_ENV)
             if not explicit:
-                # m57 coherence: the base DERIVED from a host custom provider
-                # must authenticate as THAT provider — pair the key_env with
-                # the base's origin (a venice-derived base bills VENICE_API_KEY,
-                # not NOUS_API_KEY).
+                # m58-CORRECTION: the scheme is `nous://` but the BASE can be
+                # the host's own provider (derived through Hermes core). The
+                # key env name pairs with the BASE's origin by asking core
+                # WHICH provider it resolved (requested_provider) and reading
+                # THAT provider's key_env from the host config — no hostname
+                # heuristics, no env parsing. Core's runtime dict carries the
+                # api_key itself, so a base+key mismatch (the canary 401) is
+                # impossible by construction for the core-resolved case; this
+                # env-name path covers the anchor_exec env reader contract.
                 try:
-                    for _n, _e in (_custom_providers() or {}).items():
-                        if (isinstance(_e, dict)
-                                and str(_e.get("base_url") or "").strip().rstrip("/")
-                                == str(base).rstrip("/")
-                                and str(_e.get("key_env") or "").strip()):
-                            api_key_env = str(_e["key_env"]).strip()
-                            break
+                    from .core import provider_derivation as _pd
+
+                    _rt = _pd._core_runtime()
+                    _req = str(_rt.get("requested_provider")
+                               or _rt.get("provider") or "").strip()
+                    _src = str(_rt.get("source") or "").strip()
+                    if (_req and _rt.get("base_url")
+                            and str(_rt["base_url"]).strip().rstrip("/")
+                            == str(base).rstrip("/")
+                            and not _req.startswith("nous")):
+                        # core names the env its key came from
+                        # (source="env:<NAME>") — the pairing name without
+                        # any plugin-side discovery.
+                        if _src.startswith("env:"):
+                            _ke = _src[len("env:"):].strip()
+                        elif _src.startswith("custom_provider:"):
+                            # a NAMED custom provider: the key-env NAME is
+                            # config DATA on the host's own provider entry
+                            # (read, not resolved — M24 surface).
+                            _cname = _src.split(":", 1)[1].strip()
+                            _ke = ""
+                            for _n, _e in ((_custom_providers() or {}).items()):
+                                if (isinstance(_e, dict)
+                                        and (_n == _cname
+                                             or str(_e.get("base_url") or "").strip().rstrip("/")
+                                             == str(base).rstrip("/"))):
+                                    _ke = str(_e.get("key_env") or "").strip()
+                                    if _ke:
+                                        break
+                        else:
+                            _ke = _provider_key_env(_req, "")
+                        if _ke:
+                            api_key_env = _ke
                 except Exception:  # noqa: BLE001 — pairing is best-effort
                     pass
             return AnchorEndpoint(

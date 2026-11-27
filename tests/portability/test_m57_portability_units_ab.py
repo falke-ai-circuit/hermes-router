@@ -88,38 +88,49 @@ def _patch_host(monkeypatch, cfg):
     monkeypatch.setattr(pd, "_host_full_config", lambda: cfg, raising=False)
 
 
-def test_derivation_from_host_provider_block(monkeypatch):
-    _patch_host(monkeypatch, {
-        "model": {"default": "upstage/solar-mini-4-5", "provider": "acme"},
-        "providers": {"acme": {"base_url": "https://api.acme.example/v1"}},
+def _patch_core(monkeypatch, rt: dict):
+    """Pin the CORE resolution seam — under m58-CORRECTION the plugin's
+    endpoint comes from hermes_cli.runtime_provider via core/config_access,
+    so unit pins fake core's answer, not a config parse."""
+    monkeypatch.setattr(pd, "_core_runtime", lambda: rt, raising=False)
+
+
+def test_derivation_from_core_runtime(monkeypatch):
+    """THE corrected contract: endpoint == what Hermes core resolved for the
+    host's own provider; the model id comes from the host config."""
+    _patch_host(monkeypatch, {"model": {"default": "upstage/solar-mini-4-5"}})
+    _patch_core(monkeypatch, {
+        "provider": "custom", "requested_provider": "custom:acme",
+        "base_url": "https://api.acme.example/v1", "api_key": "k",
+        "source": "custom_provider:acme",
     })
     base, model, name = pd.host_provider_endpoint()
     assert base == "https://api.acme.example/v1"
     assert model == "upstage/solar-mini-4-5"
-    assert name == "acme"
+    assert name == "custom"
 
 
-def test_derivation_prefers_host_provider_block_over_model_base(monkeypatch):
-    _patch_host(monkeypatch, {
-        "model": {"default": "m", "provider": "acme",
-                  "base_url": "https://model-base.example/v1"},
-        "providers": {"acme": {"base_url": "https://provider-base.example/v1"}},
-    })
-    assert pd.host_provider_endpoint()[0] == "https://provider-base.example/v1"
-
-
-def test_derivation_uses_model_base_url_when_provider_block_absent(monkeypatch):
+def test_plugin_never_overrides_core_base(monkeypatch):
+    """m58-CORRECTION precedence pin: a host model.base_url in config does
+    NOT override core's runtime base — the plugin holds no second resolver
+    that can disagree with the host."""
     _patch_host(monkeypatch, {
         "model": {"default": "m", "provider": "acme",
                   "base_url": "https://model-base.example/v1"},
     })
-    assert pd.host_provider_endpoint()[0] == "https://model-base.example/v1"
+    _patch_core(monkeypatch, {
+        "provider": "custom", "base_url": "https://core-resolved.example/v1",
+        "api_key": "k", "source": "custom_provider:acme",
+    })
+    assert pd.host_provider_endpoint()[0] == "https://core-resolved.example/v1"
 
 
-def test_derivation_empty_when_host_silent(monkeypatch):
-    """THE no-invention pin: a host with no provider info derives NOTHING —
-    no loopback, no vendor hostname. Callers fail open (no egress)."""
+def test_derivation_empty_when_core_resolves_nothing(monkeypatch):
+    """THE no-invention pin: core resolves nothing -> the plugin derives
+    NOTHING — no loopback, no vendor hostname, no env-contract fallback.
+    Callers fail open (no egress)."""
     _patch_host(monkeypatch, {"model": {"default": "m", "provider": "ghost"}})
+    _patch_core(monkeypatch, {})
     base, model, name = pd.host_provider_endpoint()
     assert base == ""
     assert "127.0.0.1" not in base and "localhost" not in base
@@ -147,28 +158,22 @@ def test_semantic_judge_fallback_fails_open_without_derivation(monkeypatch):
     from hermes_router.core import aux_endpoint as ae
     from hermes_router.features.detection import semantic_judge as sj
 
-    monkeypatch.setattr(ae, "fallback_base_url", lambda: "", raising=False)
+    monkeypatch.setattr(ae, "fallback_client", lambda *a, **kw: None,
+                        raising=False)
     assert sj._fallback_client() is None
 
 
-def test_semantic_judge_fallback_uses_host_base(monkeypatch):
+def test_semantic_judge_fallback_delegates_to_core_builder(monkeypatch):
     from hermes_router.core import aux_endpoint as ae
     from hermes_router.features.detection import semantic_judge as sj
 
-    captured = {}
+    class _CoreClient:
+        base_url = "https://core-resolved.example/v1"
 
-    class _FakeOpenAI:
-        def __init__(self, base_url=None, api_key=None, **kw):
-            captured["base_url"] = base_url
-            captured["api_key"] = api_key
-
-    monkeypatch.setattr(ae, "fallback_base_url",
-                        lambda: "https://host-own.example/v1", raising=False)
-    monkeypatch.setenv("NOUS_API_KEY", "host-own-key")
-    monkeypatch.setattr("openai.OpenAI", _FakeOpenAI, raising=False)
-    assert sj._fallback_client() is not None
-    assert captured["base_url"] == "https://host-own.example/v1"
-    assert captured["api_key"] == "host-own-key"
+    marker = _CoreClient()
+    monkeypatch.setattr(ae, "fallback_client", lambda *a, **kw: marker,
+                        raising=False)
+    assert sj._fallback_client() is marker
 
 
 def test_completion_audit_revision_base_derives_from_host(monkeypatch):

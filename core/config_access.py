@@ -135,13 +135,37 @@ def _coLocatedPath() -> Optional[str]:
         return None
 
 
+def _yaml_mod():
+    """m58 canary portability: the yaml module under EITHER import name.
+    Hermes containers ship `hermes_yaml` (the ruamel 1.1-policy shim) and no
+    pyyaml, so `import yaml` fails there and every yaml-reading accessor
+    silently returned {} — the canary's `agent_model()` read '' while the
+    config carried model.default. stdlib pyyaml first (dev machines), the
+    hermes shim second (containers has the same safe_load contract).
+    None when neither exists. Never raises."""
+    try:
+        import yaml  # type: ignore[import-untyped]
+
+        return yaml
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import hermes_yaml  # type: ignore[import-untyped]
+
+        return hermes_yaml
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _read_yaml(path: str) -> Dict[str, Any]:
     """Parse a yaml config file, return the router section or {}. Never raises.
     mtime-keyed cache: edits land on the next read with no bounce."""
     try:
         import os
-        import yaml
 
+        yaml = _yaml_mod()
+        if yaml is None:
+            return {}
         st = os.stat(path)
         if (_cache["path"] == path and _cache["mtime"] == st.st_mtime
                 and isinstance(_cache["section"], dict) and _cache["section"]):
@@ -238,13 +262,14 @@ def legacy_router_section() -> Dict[str, Any]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        import yaml
-
+        _y = _yaml_mod()
+        if _y is None:
+            return {}
         p = _coLocatedPath()
         if not p:
             return {}
         with open(p, "r", encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
+            cfg = _y.safe_load(fh) or {}
         sec = cfg.get("uncensored_router") if isinstance(cfg, dict) else None
         return dict(sec) if isinstance(sec, dict) and sec else {}
     except Exception:  # noqa: BLE001
@@ -270,13 +295,15 @@ def agent_model() -> str:
     Never raises; "" on any miss (callers fail-open)."""
     try:
         import os
-        import yaml
 
+        _y = _yaml_mod()
+        if _y is None:
+            return ""
         path = _coLocatedPath()
         if not path or not os.path.exists(path):
             return ""
         with open(path, "r", encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
+            cfg = _y.safe_load(fh) or {}
         m = cfg.get("model")
         if isinstance(m, dict):
             return str(m.get("default") or m.get("model") or "").strip()
@@ -294,8 +321,10 @@ def agent_provider() -> str:
     to their own default). Never raises."""
     try:
         import os
-        import yaml
 
+        _y = _yaml_mod()
+        if _y is None:
+            return ""
         path = _coLocatedPath()
         if not path or not os.path.exists(path):
             # process-level config (hermes_cli) as the fresh-host fallback
@@ -313,7 +342,7 @@ def agent_provider() -> str:
                 pass
             return ""
         with open(path, "r", encoding="utf-8") as fh:
-            cfg = yaml.safe_load(fh) or {}
+            cfg = _y.safe_load(fh) or {}
         m = cfg.get("model")
         if isinstance(m, dict):
             return str(m.get("provider") or "").strip()
@@ -338,6 +367,23 @@ def provider_overlay_base_url(name: str) -> str:
         return str(getattr(overlay, "base_url_override", "") or "").strip()
     except Exception:  # noqa: BLE001 — resolution must never raise
         return ""
+
+
+def core_runtime_provider() -> Dict[str, Any]:
+    """m58-CORRECTION: the host's resolved MAIN runtime from Hermes core —
+    hermes_cli.runtime_provider.resolve_runtime_provider, the exact seam the
+    agent itself uses to dial. Owned HERE (config_access is the one
+    sanctioned hermes_cli import surface, P4 gate A2); callers
+    (core/provider_derivation, aux_endpoint, anchor_chain) never import
+    hermes_cli directly. {} when core resolves nothing or core is absent.
+    Never raises."""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        rt = resolve_runtime_provider()
+        return rt if isinstance(rt, dict) else {}
+    except Exception:  # noqa: BLE001 — core absent/failed -> fail open
+        return {}
 
 
 def sub_block_alias(*names: str) -> Dict[str, Any]:

@@ -9,8 +9,9 @@
       "abs_path",
       "provider_host"
     ],
-    "count": 48,
-    "generator": "/opt/data/tmp/r78u/scan.py (scan is reproducible; this file is the committed baseline)"
+    "count": 47,
+    "generator": "/opt/data/tmp/r78u/scan.py (scan is reproducible; this file is the committed baseline)",
+    "note": ""
   },
   "allowlist": {
     "anchor_chain.py:19": "url+provider_host: doc comment describing the openrouter:// URI scheme; the dialable base is the constant on line 51.",
@@ -56,10 +57,9 @@
     "reflex_lane.py:1022": "provider_host: host-recognition table entry — classification only.",
     "reflex_lane.py:1023": "provider_host: host-recognition table entry — classification only.",
     "router.py:41": "url+provider_host: non-configurable constant — DEFAULT_URL is the shipped venice fallback; hermes_router.endpoint config overrides it (spec §4).",
-    "core/aux_endpoint.py:115": "url+provider_host: key-conditioned host-signal resolution - returns the vendor base ONLY when a live NOUS_API_KEY credential exists in the host environment; never a default (unset key resolves empty string, pinned by tests/portability).",
-    "core/config_access.py:448": "provider_host: host-recognition table entry - used to classify a provider from text, never dialed.",
-    "core/config_access.py:449": "provider_host: classification only.",
-    "core/config_access.py:450": "provider_host: classification only.",
-    "core/config_access.py:451": "provider_host: classification only."
+    "core/config_access.py:494": "provider_host: host-recognition table entry - used to classify a provider from text, never dialed.",
+    "core/config_access.py:495": "provider_host: classification only.",
+    "core/config_access.py:496": "provider_host: classification only.",
+    "core/config_access.py:497": "provider_host: classification only."
   }
 }

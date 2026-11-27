@@ -1,22 +1,24 @@
-"""m57-B: derive the aux/model endpoint from the HOST's own provider.
+"""m57-B + m58-CORRECTION: the host's provider, asked through Hermes core.
 
-Portability contract (m57): on a virgin Hermes install the plugin must never
-fall back to any vendor inference hostname or a loopback address baked into
-plugin code. When a lane needs an endpoint and its explicit config is silent,
-it DERIVES the endpoint from what the host itself is configured to run:
+Portability contract (m57 + m58-CORRECTION): on ANY virgin Hermes install
+the plugin's aux and anchor lanes work without any plugin-side provider
+knowledge. The plugin does NOT parse the host's provider declaration — not
+config blocks, not env vars, not endpoint literals. It asks Hermes core's
+own runtime resolver (hermes_cli.runtime_provider.resolve_runtime_provider —
+the exact path the agent itself uses for its LLM calls). One authority: if
+Hermes can call a model, the plugin's aux can.
 
-    host model.provider (:name)  ->  providers.<name>.base_url  (host config)
-                                 ->  model.base_url             (custom endpoint form)
-                                 ->  hermes_cli overlay override (host's own resolver)
-    host model.default           ->  the model id
+    resolve_runtime_provider()  ->  {provider, base_url, api_key, model, api_mode}
+    model:  host aux model config if the host declares one, else model.default
+            (read through the host config, NOT re-derived here)
 
-Precedence at every call site: explicit lane config > this derivation.
-Derivation failure -> ("" , "", "") and the caller fails open (no egress) —
-NEITHER a loopback NOR a vendor hostname is invented here.
+Precedence at every call site: explicit plugin lane config > this adapter.
+Resolution failure -> ("", "", "") and the caller fails open (no egress) —
+NEITHER a loopback NOR a vendor hostname is invented here. Any credential
+handling (env vars, key files, OAuth state, provider pools) is HERMES
+CORE's job; this module holds no endpoint literals and no env contracts.
 
-Read-only over the host config (plugin section via core.config_access for the
-explicit layers; the host config itself is read fresh, never cached — the
-gateway may rewrite it between turns). Never raises.
+Read-only. Never raises.
 """
 from __future__ import annotations
 
@@ -25,7 +27,9 @@ from typing import Any, Dict, Optional, Tuple
 
 def _host_full_config() -> Dict[str, Any]:
     """The HOST Hermes config (top-level model/providers blocks). Fresh read;
-    hermes_cli first, the profile-co-located yaml as rescue. {} on miss."""
+    hermes_cli first, the profile-co-located yaml as rescue. {} on miss.
+    Kept for the model-id reader and diagnostics only — provider/endpoint
+    RESOLUTION does not parse this (m58-CORRECTION)."""
     try:
         from . import config_access as _ca
 
@@ -49,24 +53,73 @@ def _host_full_config() -> Dict[str, Any]:
     return {}
 
 
-def host_provider_provider() -> str:
-    """The host's active provider label (model.provider). '' on any miss."""
+def _core_runtime() -> Dict[str, Any]:
+    """The host's resolved MAIN runtime, straight from Hermes core —
+    hermes_cli.runtime_provider.resolve_runtime_provider (the seam the agent
+    itself uses to dial). Empty dict when core resolves nothing or core is
+    absent (bare-python unit tests). Never raises.
+
+    The import goes through core/config_access — the tree's ONE sanctioned
+    hermes_cli seam (P4 gate A2). The api_key value is deliberately NOT
+    inspected here: key discovery (env, OAuth, pools) belongs to core, and
+    pairing base+key from the SAME resolution is what makes a 401
+    impossible by construction.
+    """
     try:
-        cfg = _host_full_config()
-        model = cfg.get("model")
-        if isinstance(model, dict):
-            return str(model.get("provider") or "").strip()
-        if isinstance(model, str):
-            return ""
-        return ""
+        from .config_access import core_runtime_provider
+
+        rt = core_runtime_provider()
+        if isinstance(rt, dict) and rt:
+            return rt
+    except Exception:  # noqa: BLE001 — core absent/failed -> fail open
+        pass
+    return {}
+
+
+def _core_client():
+    """The host's own aux client, built by Hermes core itself:
+    agent.auxiliary_client.get_text_auxiliary_client (the ONE aux surface
+    the agent uses for its own side-calls — same provider, same auth, same
+    api_mode). Returns (client, model) or (None, None). Never raises.
+
+    NOTE (m58-CORRECTION finding): core's aux auto-detect chain returns
+    (None, None) on some host shapes core's MAIN runtime resolves fine
+    (an env-declared OpenAI-compatible base with a generic provider label).
+    Callers fall back to the _core_runtime() shape when this returns
+    nothing — still core's resolution, never plugin-side parsing."""
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+
+        client, model = get_text_auxiliary_client()
+        if client is not None:
+            return client, (str(model or "").strip())
+        return None, ""
     except Exception:  # noqa: BLE001
-        return ""
+        return None, ""
+
+
+def host_provider_provider() -> str:
+    """The host's active provider label as CORE resolved it (aliases
+    normalized: openai -> openai-api etc.). '' on any miss."""
+    return str(_core_runtime().get("provider") or "").strip()
 
 
 def host_provider_model() -> str:
-    """The host's active model id (model.default / model.model / model str)."""
+    """The host's active model id: the host's aux model config when it
+    declares one, else model.default (read through the host config — the
+    model ID is host config data, not a resolution question). '' on miss."""
     try:
         cfg = _host_full_config()
+        if not isinstance(cfg, dict):
+            return ""
+        aux = cfg.get("auxiliary")
+        if isinstance(aux, dict):
+            for task in ("router", "aux", "classifier", "curator"):
+                task_cfg = aux.get(task)
+                if isinstance(task_cfg, dict):
+                    m = str(task_cfg.get("model") or "").strip()
+                    if m:
+                        return m
         model = cfg.get("model")
         if isinstance(model, dict):
             return str(model.get("default") or model.get("model") or "").strip()
@@ -77,66 +130,20 @@ def host_provider_model() -> str:
         return ""
 
 
-def _host_provider_entry(name: str) -> Dict[str, Any]:
-    """The host providers block entry for `name` (verbatim key match — the
-    label in model.provider IS the providers key, e.g. 'custom:nousinf')."""
-    try:
-        cfg = _host_full_config()
-        providers = cfg.get("providers")
-        if isinstance(providers, dict):
-            entry = providers.get(name)
-            if isinstance(entry, dict):
-                return entry
-    except Exception:  # noqa: BLE001
-        pass
-    return {}
-
-
-def _overlay_base_url(name: str) -> str:
-    """The host's own provider overlay base — resolved THROUGH
-    config_access.provider_overlay_base_url (the tree's single sanctioned
-    hermes_cli surface; this module never imports hermes_cli directly,
-    P4 gate A2). '' when unresolvable."""
-    try:
-        from . import config_access as _ca
-
-        return _ca.provider_overlay_base_url(name)
-    except Exception:  # noqa: BLE001
-        return ""
-
-
 def host_provider_endpoint() -> Tuple[str, str, str]:
-    """Derive (base_url, model, provider_name) from the HOST's own provider.
+    """(base_url, model, provider_name) — asked through Hermes core.
 
-    base_url candidates, in order:
-      1. host providers.<model.provider>.base_url (explicit host provider block)
-      2. host model.base_url (custom-endpoint config shape)
-      3. hermes_cli overlay base_url_override for the provider (the host's own
-         resolver — this is what Hermes core itself would dial)
-    model: host model.default. Returns ("", "", "") on any miss — callers
-    fail open, no endpoint is invented. Never raises.
+    base_url/api_key: whatever core's runtime resolver yields for the
+    host's own provider (config blocks, env contracts, OAuth state, pools —
+    all of it is core's to interpret). model: host aux model config if
+    present, else model.default. ("", "", "") when core resolves nothing —
+    callers fail open, no endpoint is invented. Never raises.
     """
     try:
-        name = host_provider_provider()
+        rt = _core_runtime()
+        base = str(rt.get("base_url") or "").strip()
         model = host_provider_model()
-        if not name and not model:
-            return "", "", ""
-        base = ""
-        if name:
-            entry = _host_provider_entry(name)
-            base = str(entry.get("base_url") or "").strip()
-        if not base:
-            try:
-                cfg = _host_full_config()
-                model_block = cfg.get("model")
-                if isinstance(model_block, dict):
-                    base = str(model_block.get("base_url") or "").strip()
-            except Exception:  # noqa: BLE001
-                base = ""
-        if not base and name:
-            base = _overlay_base_url(name)
-        if not base:
-            return "", model, name
+        name = str(rt.get("provider") or "").strip()
         return base, model, name
     except Exception:  # noqa: BLE001 — derivation must never raise into a lane
         return "", "", ""
@@ -144,9 +151,9 @@ def host_provider_endpoint() -> Tuple[str, str, str]:
 
 def derived_aux_endpoint() -> Optional[Dict[str, Any]]:
     """The derivation shaped as an aux-endpoint block ({url, model}) for the
-    classification lane, or None when the host gives nothing to derive from.
-    Never contains a loopback address or a vendor hostname BY CONSTRUCTION —
-    every value comes from the host's own configuration."""
+    classification lane, or None when core resolves nothing. Never contains
+    a loopback address or a vendor hostname BY CONSTRUCTION — every value
+    comes from Hermes core's own resolution."""
     try:
         base, model, _name = host_provider_endpoint()
         if not base:

@@ -352,74 +352,17 @@ def resolve_model(cfg: Optional[Dict[str, Any]] = None) -> str:
 
 
 def _fallback_client() -> Optional[Any]:
-    """OpenAI-compatible client on the host's own provider
-    (m57-B auto-derivation via core/aux_endpoint.fallback_base_url — the ONE
-    derivation seam: explicit provider > host model.base_url > host provider
-    block > custom providers > NOUS_API_KEY-conditioned resolution; no vendor
-    literal as a DEFAULT, no loopback). None when unresolvable (fail-open,
-    no egress)."""
+    """OpenAI-compatible client on the host's own provider (m57-B
+    auto-derivation via core/aux_endpoint — the ONE derivation seam, and
+    since m58-D the ONE client BUILDER: aux_endpoint.fallback_client owns
+    base+key pairing incl. the m58-A env contract; this wrapper keeps the
+    judge's timeout binding). None when unresolvable (fail-open, no
+    egress)."""
     try:
-        from ...core import config_access as _ca
-        from ...core.aux_endpoint import fallback_base_url as _fb
+        from ...core.aux_endpoint import fallback_client as _fc
 
-        base = str(_fb() or "").strip()
-        if not base:
-            return None
-        import os
-
-        from urllib.parse import urlparse as _urlparse
-
-        _host = str(_urlparse(base).hostname or "").lower()
-        api_key = ""
-        # Key-env precedence (mirrors the base layers): when the derived base
-        # IS a provider block the host named, that provider's key_env wins;
-        # otherwise 'nous' + NOUS_API_KEY stays the literal default so an
-        # existing silent profile resolves the exact name it resolved before.
-        env_names = []
-        try:
-            from ...core import provider_derivation as _pd
-
-            cfg = _pd._host_full_config()
-            name = str((cfg.get("model") or {}).get("provider") or "").strip() \
-                if isinstance(cfg.get("model"), dict) else ""
-            if name:
-                providers = cfg.get("providers")
-                entry = providers.get(name) if isinstance(providers, dict) else None
-                entry = entry if isinstance(entry, dict) else None
-                host_entry_host = ""
-                if entry:
-                    from urllib.parse import urlparse
-
-                    host_entry_host = str(urlparse(
-                        str(entry.get("base_url") or "")).hostname or "").lower()
-                if entry and host_entry_host and host_entry_host == _host:
-                    named = str(entry.get("key_env") or "").strip()
-                    if named:
-                        env_names.append(named)
-        except Exception:  # noqa: BLE001 — never break client build
-            pass
-        env_names.append(_ca.provider_key_env("nous", "NOUS_API_KEY"))
-        for env_name in env_names:
-            val = os.environ.get(env_name, "").strip()
-            if val and val.lower() not in ("placeholder", "testkey", "changeme"):
-                api_key = val
-                break
-            try:
-                from ...anchor_exec import _profile_env_value, _PLACEHOLDER_VALUES
-
-                val = _profile_env_value(env_name)
-                if val and val.lower() not in _PLACEHOLDER_VALUES:
-                    api_key = val
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-        if not api_key:
-            return None
-        from openai import OpenAI
-
-        return OpenAI(base_url=base, api_key=api_key,
-                      timeout=float(JUDGE_TIMEOUT_SECONDS), max_retries=0)
-    except Exception:  # noqa: BLE001
+        return _fc(timeout_seconds=float(JUDGE_TIMEOUT_SECONDS))
+    except Exception:  # noqa: BLE001 — judge never raises into a turn
         return None
 
 

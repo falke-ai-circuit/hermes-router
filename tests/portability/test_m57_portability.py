@@ -110,19 +110,23 @@ def _virgin_host(monkeypatch):
     ("https://llm.example-provider.test/v1", "vendor-xoub-v1-xlarge"),
     ("https://api.myownhost.dev/openai/v1", "myownhost-large"),
 ])
-def test_aux_base_derives_from_host_provider(custom_base, default_model,
-                                             monkeypatch):
-    """No explicit nous base: the aux fallback base must DERIVE from the
-    host's own provider (providers custom entry + model.default)."""
-    monkeypatch.setattr(ca, "providers_custom", lambda: {
-        "venice": {"base_url": custom_base, "key_env": "VENERE_KEY"},
-    })
-    monkeypatch.setenv("VENERE_KEY", "k")
+def test_aux_base_derives_from_core_runtime(custom_base, default_model,
+                                            monkeypatch):
+    """No explicit nous base: the aux fallback base is what Hermes CORE
+    resolved for the host's own provider (m58-CORRECTION — the plugin holds
+    no second resolver)."""
+    from hermes_router.core import provider_derivation as _pd
+
+    monkeypatch.setattr(_pd, "_core_runtime", lambda: {
+        "provider": "custom", "requested_provider": "custom:venice",
+        "base_url": custom_base, "api_key": "k",
+        "source": "custom_provider:venice",
+    }, raising=False)
+    monkeypatch.setattr(ca, "agent_model", lambda: default_model)
     from hermes_router.core import aux_endpoint
 
-    monkeypatch.setattr(ca, "agent_model", lambda: default_model)
     base = aux_endpoint.fallback_base_url()
-    assert base, "derivation must produce a base"
+    assert base, "core resolution must yield a base"
     assert _host_of(base) == _host_of(custom_base)
 
 
@@ -196,17 +200,24 @@ def test_legacy_base_url_alias_resolves_and_is_optional():
 # ---------------------------------------------------------------------------
 
 def test_nous_scheme_resolves_with_env_key_only(monkeypatch):
-    """nous:// must resolve to a real base + NOUS_API_KEY env name with NO
-    OAuth and NO .secrets file (the origin-evidence shape: OAuth absent,
-    key arrives via --env-file). With the credential present, the base
-    resolves; host = the nous API the key authenticates against."""
+    """nous:// must resolve to a real base + NOUS_API_KEY env name when the
+    HOST's core runtime resolved a nous credential from env (the
+    origin-evidence shape: OAuth absent, key arrives via --env-file; m58-
+    CORRECTION — the plugin asks core, it does not scan env itself)."""
     monkeypatch.setenv("HERMES_HOME", "/nonexistent-hermes-home-m57")
     monkeypatch.setenv("NOUS_API_KEY", "sk-nous-m57-fresh-host-key")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    from hermes_router.core import provider_derivation as _pd
+
+    monkeypatch.setattr(_pd, "_core_runtime", lambda: {
+        "provider": "nous", "requested_provider": "nous",
+        "base_url": "https://inference-api.nousresearch.example/v1",
+        "api_key": "sk-nous-m57-fresh-host-key", "source": "env:NOUS_API_KEY",
+    }, raising=False)
     monkeypatch.setattr(ca, "providers_custom", lambda: {})
     ep = anchor_chain.parse_anchor_uri("nous://any-provider/any-model",
                                        "primary")
-    assert ep is not None, "nous:// must resolve with the env credential"
+    assert ep is not None, "nous:// must resolve with the core runtime"
     host = _host_of(ep.base_url)
     assert host not in _LOOPBACK_HOSTS, f"nous default is loopback: {ep.base_url}"
     assert ep.api_key_env == "NOUS_API_KEY"
@@ -263,9 +274,10 @@ def test_model_attempt_reports_key_unconfigured_without_any_key(monkeypatch):
 
 
 def test_derived_nous_base_pairs_its_providers_key_env(monkeypatch):
-    """m57 coherence: a nous:// base derived from a HOST custom provider
-    authenticates as THAT provider (venice-derived base bills VENICE_API_KEY,
-    not NOUS_API_KEY) — base and key always come from the same origin."""
+    """m57 coherence, corrected shape: a nous:// base resolved by core from
+    a NAMED host custom provider authenticates as THAT provider ( core
+    source=custom_provider:venice -> the entry's key_env bills, base and
+    key always from the same origin)."""
     monkeypatch.setenv("HERMES_HOME", "/nonexistent-hermes-home-m57")
     monkeypatch.delenv("NOUS_API_KEY", raising=False)
     monkeypatch.setattr(ca, "providers_custom", lambda: {
@@ -273,6 +285,13 @@ def test_derived_nous_base_pairs_its_providers_key_env(monkeypatch):
                    "key_env": "DERIVED_KEY"},
     })
     monkeypatch.setenv("DERIVED_KEY", "k")
+    from hermes_router.core import provider_derivation as _pd
+
+    monkeypatch.setattr(_pd, "_core_runtime", lambda: {
+        "provider": "custom", "requested_provider": "custom:venice",
+        "base_url": "https://api.venice-derived.test/api/v1",
+        "api_key": "k", "source": "custom_provider:venice",
+    }, raising=False)
     ep = anchor_chain.parse_anchor_uri("nous://tier-1/model-x", "primary")
     assert ep is not None
     assert _host_of(ep.base_url) == "api.venice-derived.test"

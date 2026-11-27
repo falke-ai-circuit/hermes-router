@@ -491,6 +491,27 @@ def _hermes_aux_call(payload_json: str, timeout: int) -> Optional[str]:
         # cannot price a different model, and '' when the client reports none.
         _set_dispatched_aux_model(model)
         if client is None:
+            # m58-D no_client rescue: the aux fallback contract (auxiliary
+            # missing + no fallback client) is the m58 defect signature —
+            # every lane silent, no_client x8, no banner. Before declaring
+            # no_client, try the ONE derived client (m57 derivation seam +
+            # m58-A env contract): an env-only host now egresses instead of
+            # failing every lane. The derived client carries NO aux model —
+            # pin the host's own main model (NOT the deferred '' that made
+            # the first live call die on "Expected either ('messages' and
+            # 'model')"); openai-compatible endpoints require a model id.
+            try:
+                from .core.aux_endpoint import fallback_client as _fb
+
+                client = _fb(timeout_seconds=float(timeout))
+                if client is not None and not str(model or "").strip():
+                    from .core import config_access as _ca
+
+                    model = str(_ca.agent_model() or "").strip()
+                    _set_dispatched_aux_model(model)
+            except Exception:  # noqa: BLE001 — rescue must never raise
+                client = None
+        if client is None:
             _note_cause("no_client")
             logger.error("hermes_aux_failed reason=no_client")
             return None
