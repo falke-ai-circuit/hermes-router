@@ -31,7 +31,7 @@ FALLBACK_HINT = ("detection-safe fallback: openrouter://<model> with "
 
 
 def _ca():
-    from hermes_router.core import config_access as _ca
+    from . import config_access as _ca
 
     return _ca
 
@@ -60,7 +60,7 @@ def fallback_base_url() -> str:
         explicit = _explicit_base()
         if explicit:
             return explicit
-        from hermes_router.core import provider_derivation as pd
+        from . import provider_derivation as pd
 
         return str(pd.host_provider_endpoint()[0] or "").strip()
     except Exception:  # noqa: BLE001
@@ -79,7 +79,7 @@ def fallback_client(timeout_seconds: float = 30.0):
     raises. Consumers: semantic_judge._fallback_client (delegates),
     semantic_classifier._hermes_aux_call (no_client rescue)."""
     try:
-        from hermes_router.core import provider_derivation as pd
+        from . import provider_derivation as pd
 
         # 1. core's own aux client (the exact surface the agent itself uses)
         client, _model = pd._core_client()
@@ -151,7 +151,7 @@ def missing_input_report() -> str:
             return ""
         parts = []
         try:
-            from hermes_router.core import provider_derivation as _pd
+            from .core import provider_derivation as _pd
 
             rt = _pd._core_runtime()
             if rt:
@@ -191,14 +191,18 @@ def scheme_failure(uri: str, role: str = "") -> Tuple[str, str]:
     reason = ""
     hint = ""
     try:
-        from hermes_router import anchor_chain
+        from .. import anchor_chain
 
         ep = anchor_chain.parse_anchor_uri(str(uri or ""), str(role or "primary"))
-        if ep is None:
-            reason = "unresolvable_scheme"
-            hint = (FALLBACK_HINT + " — the scheme must resolve via "
-                    "anchor_chain schemes or providers.custom")
     except Exception as _exc:  # noqa: BLE001 — named failure, never raise
-        reason = "scheme_resolution_error"
-        hint = FALLBACK_HINT + " (error: %s)" % str(_exc)[:80]
+        # The import cycle (anchor_chain's empty-base path imports this
+        # module, which imports anchor_chain back) can surface as an
+        # ImportError here WITHOUT being a scheme defect — the URI itself
+        # failed to resolve either way. Name it unresolvable, never a
+        # pseudo-resolution error.
+        ep = None
+    if ep is None:
+        reason = "unresolvable_scheme"
+        hint = (FALLBACK_HINT + " — the scheme must resolve via "
+                "anchor_chain schemes or providers.custom")
     return reason, hint
