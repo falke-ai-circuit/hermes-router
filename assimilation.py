@@ -420,18 +420,60 @@ def inject_frame(request: Any, session_id: str = "") -> bool:
             _note_lost_mark(sid)
             return False
         if frame_wording() == NO_FRAME_WORDING:
-            # M53-46 EXPERIMENT ARM: NO frame is delivered. This is not an
-            # empty system message — nothing is appended, nothing is attached
-            # to the render row, and no swap clause rides along, so the request
-            # stays byte-identical to the no-frame baseline. It sits before the
-            # placement branches on purpose: a "no frame" arm that still
-            # delivered a post-meta note would be two arms measured as one.
-            # The mark was already consumed above, so the arm cannot leak a
-            # frame into the next turn. chars=0 in this row is the measurement.
-            _frame_log(sid, "assimilation_frame_skipped", "",
-                       reason="wording_none", turn=turn_no,
-                       wording=NO_FRAME_WORDING)
-            return False
+            # M53-46 EXPERIMENT ARM: no STATIC frame is delivered — not an
+            # empty system message and no pinned wording text.
+            #
+            # M62 (measured on the production reviewer profile, 2026-11-27/28):
+            # this arm used to swallow the SWAP CLAUSE too. Her route log shows
+            # the seam doing its job — 152 assimilation_swap rows, envelopes
+            # written (`envelope_written=1`) — while EVERY frame attempt in the
+            # same window landed as `assimilation_frame_skipped
+            # reason=wording_none wording=none`. The swapped render shipped
+            # with no ownership frame, she disowned it and reverts to refusing.
+            # The arm removes the static wording; it does not lift the swap's
+            # ownership duty: a turn whose delivered body IS the swap still
+            # tells the model the body is hers, via the envelope clause alone.
+            # The mark stays consumed either way — the arm cannot leak.
+            if frame_placement() in ("none", "off", "control"):
+                _frame_log(sid, "assimilation_frame_skipped", "",
+                           reason="placement_none", turn=turn_no)
+                return False
+            _none_env = read_swap_envelope(sid)
+            _none_clause = swap_envelope_clause(_none_env) if _none_env else ""
+            if not _none_clause or frame_placement() != "pre_frame":
+                # (a) no swap envelope -> the M53-46 control stands: the static
+                # frame is the only thing this arm removes and there is nothing
+                # else to say. (b) post_meta/both under wording=none: the
+                # clause-only channel is the pre_frame system message; other
+                # placements keep the arm's silent-skip (counted below).
+                _frame_log(sid, "assimilation_frame_skipped", "",
+                           reason="wording_none", turn=turn_no,
+                           wording=NO_FRAME_WORDING)
+                return False
+            # M62: clause-only frame. dedupe="call": one shot per rendered
+            # turn, owned by the one-shot mark — same contract as the main
+            # frame below. Fail-quiet journalling identical to the main path.
+            ok = bool(inject_platform_rule(
+                request, ASSIMILATION_RULE_ID, _none_clause, session_id=sid,
+                role="system", dedupe="call"))
+            if ok:
+                try:
+                    from . import render_inbox as _rin_none
+
+                    _rin_none.record_pre_frame(sid, 0, _none_clause,
+                                               "assimilation_frame")
+                except Exception:  # noqa: BLE001 — capture never breaks a turn
+                    pass
+                _frame_log(sid, "assimilation_frame_injected", _none_clause,
+                           turn=turn_no, wording=NO_FRAME_WORDING,
+                           swap_clause=1)
+            else:
+                # frames.inject_platform_rule refused (marker dedupe / latch):
+                # the mark was consumed and the clause did not land.
+                _frame_log(sid, "assimilation_mark_dropped", _none_clause,
+                           reason="not_appended", turn=turn_no,
+                           wording=NO_FRAME_WORDING)
+            return ok
         text = frame_text()
         # M53-06 §3: a SWAPPED turn carries its provenance into the next
         # request on the SAME frame channel — the model continues from a body
