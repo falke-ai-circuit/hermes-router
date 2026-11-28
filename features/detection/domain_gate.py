@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 UNC_DOMAINS = frozenset({
     "violence_gore", "weapons_explosives", "bio_chem", "sexual_explicit",
     "drugs_synthesis", "fraud_deception", "self_harm", "cyber_offensive",
+    "intimate_consent",
 })
 # `meta_doctrine` is NOT here: the label says the ask is ABOUT the agent, and
 # about-ness alone does not say whether the ask asks for an ACTION on the
@@ -342,6 +343,66 @@ _FAMILY_GENERIC_CUES = {
 # The full table per family, kept as the single public name the gate and its pins
 # already use: `set(_FAMILY_CUES) == set(UNC_DOMAINS)` is asserted, and a family
 # with no table is claimed on the aux label alone.
+# ---------------------------------------------------------------------------
+# m63 — OWNER RULING: "getting intimate info or modeling without consent is a
+# domain." The distinguishing feature is CONSENT, not content: a named (or
+# named-by-role) individual's intimate/private data — or a model of them —
+# obtained or built WITHOUT their consent. Fits no prior label, which is why
+# the researcher refusals shipped gate=not_flagged.
+#
+# Cue vocabulary derived from the 25 personal-shape refusal rows in the frozen
+# 874-row detcorpus (674 refusal / 200 benign, /opt/data/tmp/detcorpus), then
+# MEASURED before landing (m63 harness /opt/data/tmp/m63/):
+#   specific table: 874-row replay -> 0/200 benign fires, 8 refusal rows
+#   caught (analyst:17208/17210/17212, researcher:52216/52221/52365/52401/
+#   66480), all shaped "dossier / psych profile / vulnerability-pattern /
+#   dirty-details / personal tracking about a person".
+#   Deliberately NOT a cue (measured over-fires): bare `osint` (caught
+#   shadow-library / dark-web / wargame rows = wrong label), bare names
+#   (legal-ops dossier asks name companies too; acts-and-artifacts, not
+#   names, per M53-10), `psychological profile` alone (fires on consented
+#   clinical work). The consent carve-out lives in the aux label, not the
+#   cue table — a cue miss is absence of evidence (M53-07).
+#   aux-layer follow-ups ("find ways to research that about her") come
+#   through the M53-07b prior-turn context, not this layer.
+# ---------------------------------------------------------------------------
+_FAMILY_SPECIFIC_CUES["intimate_consent"] = re.compile(
+    r"(?:"
+    # intimate traits attached by possessive pronoun ("her sexual
+    # preferences", "his intimate life", "their dating history")
+    r"\b(?:her|his|my|their)\s+(?:sexual|romantic|dating|intimate)[- ]?"
+    r"(?:preferences?|life|history|orientation|behaviou?rs?|habits|fantas\w+)"
+    r"|"
+    # intimate traits of/about a person noun ("sexual preferences of the
+    # girl in study X" is caught; Drosophila is a drosophila, not a person)
+    r"\b(?:sexual|intimate)[ -]?(?:preferences?|life|history|orientation|"
+    r"behaviou?rs?|habits|fantas\w+)"
+    r"[^.\n]{0,40}?\b(?:of|for|about|from)\b[^.\n]{0,40}?"
+    r"\b(?:individual|person|user|employee|colleague|coworker|partner|"
+    r"woman|man|girl|boy|subject|target|client|friend|neighbou?r|"
+    r"someone|her|him|them)\b"
+    r"|"
+    # dossier / personal file / background check about a person noun
+    r"\b(?:dossier|personal file|intelligence dossier|background check)\b"
+    r"[^.\n]{0,120}?"
+    r"\b(?:on|of|for|about|against)\b[^.\n]{0,60}?"
+    r"\b(?:private individual|private person|individual|person|woman|man|"
+    r"girl|boy|user|employee|colleague|partner|friend|neighbou?r|"
+    r"subject|target|client|someone|her|him|them)\b"
+    r"|"
+    # private-individual tracking / personal-life enrichment
+    r"\b(?:personal track\w+|private life|vulnerabilit\w+ pattern|"
+    r"dirty details|profile enrichment)\b"
+    r"|"
+    # anaphoric research verb pointed back at a person ("find ways to
+    # research that about her"). Measured: 0/200 benign on the 874-row
+    # replay; the person pronoun is what keeps legitimate "research the
+    # paper about them" prose out.
+    r"\b(?:research|look into|dig into|investigate)\b[^.\n]{0,50}"
+    r"\babout (?:her|him|them)\b"
+    r")",
+    re.IGNORECASE)
+
 _FAMILY_CUES = {
     fam: re.compile("(?:%s)|(?:%s)" % (
         _FAMILY_SPECIFIC_CUES.get(fam, re.compile(r"(?!)")).pattern,
@@ -466,7 +527,7 @@ def confirm_in_domain(ask: str, domain: str, *,
 # not deterministic.
 _DETERMINISTIC_ORDER = ("violence_gore", "weapons_explosives", "bio_chem",
                         "sexual_explicit", "drugs_synthesis", "fraud_deception",
-                        "self_harm", "cyber_offensive")
+                        "self_harm", "cyber_offensive", "intimate_consent")
 
 
 def deterministic_domains(ask: str) -> tuple:
