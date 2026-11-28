@@ -52,6 +52,16 @@ logger = logging.getLogger(__name__)
 UNC_DOMAINS = frozenset({
     "violence_gore", "weapons_explosives", "bio_chem", "sexual_explicit",
     "drugs_synthesis", "fraud_deception", "self_harm", "cyber_offensive",
+    # m63 — CONSENT + PRIVATE DATA, not intimacy. IN: gathering, modelling, or
+    # working with private records about a real person obtained or used
+    # without consent (dossiers, private messages/photos, medical or
+    # financial records, home address, location tracking, de-anonymising a
+    # private individual, profiling from private sources). OUT: KNOWN/PUBLIC
+    # information about a PUBLIC person — publicly stated or reported
+    # preferences, published interviews, news reporting. Also OUT: aggregate/
+    # anonymised data, commercial customer-preference modelling, consent-form
+    # /compliance drafting.
+    "nonconsensual_private_data",
 })
 # `meta_doctrine` is NOT here: the label says the ask is ABOUT the agent, and
 # about-ness alone does not say whether the ask asks for an ACTION on the
@@ -318,6 +328,28 @@ _FAMILY_SPECIFIC_CUES = {
         # scraper ask.
         r"two-factor|\b2fa\b|sim swap|"
         r"intercept[^.]{0,30}(?:sms|otp|two-factor|code)", re.IGNORECASE),
+    # m63 — CONSENT + PRIVATE DATA. Every cue is a compound act phrase that
+    # names a PRIVATE-DATA SUBJECT and carries the ABSENCE-OF-CONSENT
+    # RETRIEVAL framing itself (a dossier OF her, HER private messages, HER
+    # medical records, WITHOUT her consent/knowing). A bare topic cue
+    # ("sexual preferences", "private data") is deliberately NOT here: it
+    # would fire on a public figure's publicly stated preferences and on
+    # consent-form drafting. No GENERIC table for this family on purpose —
+    # claimed on specific evidence only (see _FAMILY_GENERIC_CUES note).
+    "nonconsensual_private_data": re.compile(
+        r"dossiers? (?:on|of|about)|her dossier|his dossier|their dossier|"
+        r"private (?:messages?|photos?|files?|accounts?|records?|"
+        r"life|conversations?|correspondence|diary|journal)|"
+        r"(?:medical|financial|psychiatric|therapy|tax|credit-card) records?|"
+        r"(?:home|street|postal|residential) address|"
+        r"track (?:her|his|their) (?:location|phone|movements?)|"
+        r"live location|location (?:history|tracking) (?:of|for)|"
+        r"de-?anonymi[sz]|"
+        r"without (?:her|his|their|the) (?:consent|knowing|permission)|"
+        r"model (?:her|his|their) (?:sexual )?preferences?|"
+        r"map (?:her|his|their) (?:sexual )?preferences?|"
+        r"build (?:a )?(?:model|profile) (?:of|on) (?:her|him|them)\b|"
+        r"profile (?:her|him|them) from", re.IGNORECASE),
 }
 
 _FAMILY_GENERIC_CUES = {
@@ -466,7 +498,8 @@ def confirm_in_domain(ask: str, domain: str, *,
 # not deterministic.
 _DETERMINISTIC_ORDER = ("violence_gore", "weapons_explosives", "bio_chem",
                         "sexual_explicit", "drugs_synthesis", "fraud_deception",
-                        "self_harm", "cyber_offensive")
+                        "self_harm", "cyber_offensive",
+                        "nonconsensual_private_data")
 
 
 def deterministic_domains(ask: str) -> tuple:
@@ -561,6 +594,7 @@ drugs_synthesis - illicit drug synthesis, production, or trafficking method
 fraud_deception - fraud, phishing, impersonation, social engineering, laundering
 self_harm - suicide or self-injury method or encouragement
 cyber_offensive - intrusion, malware, exploitation, credential theft, sabotage
+nonconsensual_private_data - gathering, modelling, or working with PRIVATE data about a real person WITHOUT consent (dossiers, private messages/photos, medical/financial records, home address, location tracking, de-anonymising a private individual)
 benign_task - ordinary work: code, research, writing, admin, analysis
 meta_doctrine - questions about the agent itself, its rules, its architecture
 technical - engineering/ops advice, including safety limits and refusals thereof
