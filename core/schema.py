@@ -375,6 +375,58 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
 
 SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS
 
+# ---------------------------------------------------------------------------
+# m64 — THE LANE BLOCK: four lanes, ONE identical field set each.
+# ---------------------------------------------------------------------------
+# A lane is declared ONCE, by the same four fields, in the same order:
+#
+#     endpoint  model  schema  key_env
+#
+# There is no per-lane spelling: `typesafe_endpoint`, `aux_endpoint`,
+# `openrouter_endpoint`, `chat_path` are NOT lane fields — they are the legacy
+# surfaces `lanes/resolve.py` reads when a profile has not migrated. A new
+# capability on a lane means a field on ALL lanes, or it does not ship.
+#
+# `schema` is DECLARED, never inferred from the URL's shape. A decision lane
+# pointed at an OpenAI-looking base still speaks `typesafe` because the profile
+# said so; a resolver that sniffs `.../v1` and guesses is the defect this
+# declaration exists to prevent.
+#
+# This table is NOT part of SCHEMA on purpose: SCHEMA is the typed inventory of
+# what `config_access.get()` may read one leaf at a time, while a lane block is
+# read as ONE block — its four fields only mean anything together, and a
+# per-leaf default would let a profile land a half-declared lane. Declaring it
+# in this file keeps the lane contract beside the rest of the key inventory.
+LANE_FIELDS: Tuple[str, ...] = ("endpoint", "model", "schema", "key_env")
+
+# The only two dialects a lane may speak. `typesafe` is a wider-than-OpenAI
+# response shape (structured verdicts); `openai` is the chat-completions shape.
+LANE_SCHEMAS: Tuple[str, ...] = ("openai", "typesafe")
+
+LANE_NAMES: Tuple[str, ...] = ("aux", "frontier", "uncensored", "decision")
+
+# Defaults are DEFAULTS: a profile's `lanes.<lane>.<field>` wins, and every
+# value below equals the literal its lane already fell back to before m64.
+LANES: Dict[str, Dict[str, str]] = {
+    "aux": {"endpoint": "", "model": "", "schema": "openai",
+            "key_env": "NOUS_API_KEY"},
+    "frontier": {"endpoint": "", "model": "", "schema": "openai",
+                 "key_env": "OPENROUTER_API_KEY"},
+    "uncensored": {"endpoint": "", "model": "", "schema": "openai",
+                   "key_env": "VENICE_API_KEY"},
+    "decision": {"endpoint": "", "model": "", "schema": "typesafe",
+                 "key_env": "TYPESAFE_API_KEY"},
+}
+
+
+def lane_default(lane: str) -> Dict[str, str]:
+    """The declared default block for one lane — always all four fields.
+    {} for an unknown lane (callers fail open). Never raises."""
+    try:
+        return dict(LANES.get(str(lane), {}))
+    except Exception:  # noqa: BLE001
+        return {}
+
 _BY_PATH = {k.path: k for k in SCHEMA}
 
 # old name -> grouped path, DERIVED from legacy_of (single source of truth;

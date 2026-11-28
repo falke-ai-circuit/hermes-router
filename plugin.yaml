@@ -39,11 +39,37 @@ hooks:
   - transform_terminal_output
   - post_tool_call
   - post_llm_call
-middleware:
-  - llm_request
-  - llm_execution
-middleware_schema: hermes.middleware.v1
-observer_schema: hermes.observer.v1
+# m64: `middleware:`, `middleware_schema:` and `observer_schema:` are DELETED.
+# The host parses plugin.yaml against a closed known-field set
+# (hermes_cli/plugins_manifest.py::_KNOWN_MANIFEST_FIELDS) and none of those
+# three names is in it, so every load emitted three "unknown manifest field(s)
+# ignored" warnings. What the plugin actually registers is a RUNTIME fact owned
+# by register(ctx) (gate/registration.py: llm_request + llm_execution
+# middleware, the hooks above) — declaring it in YAML duplicated that fact in a
+# place the host never reads. The absence is pinned by
+# tests/config/test_manifest_loads.py so it cannot quietly come back.
+#
+# config_keys: the HOST-side declaration of the config paths this plugin owns,
+# so a profile carrying them is not reported as an unknown key. Dotted, at
+# least two segments deep (hermes_cli/plugins_manifest.py::_config_key_path).
+# The lane block is uniform by construction: same four fields, every lane.
+config_keys:
+  - hermes_router.lanes.aux.endpoint
+  - hermes_router.lanes.aux.model
+  - hermes_router.lanes.aux.schema
+  - hermes_router.lanes.aux.key_env
+  - hermes_router.lanes.frontier.endpoint
+  - hermes_router.lanes.frontier.model
+  - hermes_router.lanes.frontier.schema
+  - hermes_router.lanes.frontier.key_env
+  - hermes_router.lanes.uncensored.endpoint
+  - hermes_router.lanes.uncensored.model
+  - hermes_router.lanes.uncensored.schema
+  - hermes_router.lanes.uncensored.key_env
+  - hermes_router.lanes.decision.endpoint
+  - hermes_router.lanes.decision.model
+  - hermes_router.lanes.decision.schema
+  - hermes_router.lanes.decision.key_env
 provides_tools:
   - router_status
   - router_control
