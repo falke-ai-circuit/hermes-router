@@ -38,13 +38,22 @@ def test_manifest_parses():
     assert manifest["name"] == "hermes-router"
     assert manifest["version"]
     assert "transform_llm_output" in manifest.get("hooks", [])
-    assert "llm_request" in manifest.get("middleware", [])
+    # m64-B2: `middleware:` is NOT a known manifest field (G5 requires none
+    # outside _KNOWN_MANIFEST_FIELDS), so the declaration moved out of the
+    # manifest. Registration is unchanged: register() calls
+    # ctx.register_middleware("llm_request", ...), asserted on a mock context in
+    # test_register_on_mock_context below. `hooks:` IS a known field and stays.
 
 
-def test_manifest_schema_pins():
+def test_manifest_declares_no_unknown_warning_keys():
+    """m64-B1/B3: `middleware_schema` and `observer_schema` are NOT in Hermes'
+    _KNOWN_MANIFEST_FIELDS, so declaring them warned on EVERY load at
+    manifest_version >= 2. The keys are gone and these pins assert ABSENCE, so
+    a future edit cannot silently reintroduce the warnings. `middleware:` IS a
+    known field and stays declared (see test_manifest_parses)."""
     manifest = _load_manifest()
-    assert manifest.get("middleware_schema") == "hermes.middleware.v1"
-    assert manifest.get("observer_schema") == "hermes.observer.v1"
+    assert "middleware_schema" not in manifest
+    assert "observer_schema" not in manifest
 
 
 def test_register_on_mock_context():

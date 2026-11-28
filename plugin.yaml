@@ -39,14 +39,26 @@ hooks:
   - transform_terminal_output
   - post_tool_call
   - post_llm_call
-middleware:
-  - llm_request
-  - llm_execution
-middleware_schema: hermes.middleware.v1
-observer_schema: hermes.observer.v1
+# m64-B1/B2: `middleware`, `middleware_schema` and `observer_schema` are all
+# absent from Hermes' _KNOWN_MANIFEST_FIELDS, so each warned on every load at
+# manifest_version >= 2. The brief's B2 offers either branch (keep `middleware`
+# and note its warning, or remove it and update the pin at
+# tests/config/test_manifest_loads.py:41); G5 requires NO field outside the
+# known set, so the remove-branch is the only consistent one. Middleware
+# registration itself is unaffected — it happens in register() via
+# ctx.register_middleware("llm_request", ...), which the manifest never governed.
+# The pins in tests/config/test_manifest_loads.py assert ABSENCE for all three.
 provides_tools:
   - router_status
   - router_control
+# m64-B4: manifest_config_keys requires DOTTED paths of >= 2 segments — a
+# 1-segment entry ("hermes_router") warns and is SKIPPED, so the lane block is
+# declared by its section path, one entry per lane.
+config_keys:
+  - hermes_router.lanes.aux
+  - hermes_router.lanes.frontier
+  - hermes_router.lanes.uncensored
+  - hermes_router.lanes.decision
 config_schema:
   risk:
     type: dict
@@ -83,3 +95,29 @@ config_schema:
   decision_head:
     type: dict
     description: "Optional complexity decision head: {backend: heuristic|routellm_mf, threshold: 0.5, weights_path: str} — default heuristic, routellm_mf needs torch + cached weights (RouteLLM mf, Apache-2.0)"
+  # m64-B5: the lane block as REAL typed keys — one entry per
+  # lanes.<lane>.<field>, each with an explicit type + default. The older
+  # type:dict entries above carry field names in PROSE strings, which types
+  # ZERO nested keys; these do not repeat that mistake. Field set is identical
+  # across all four lanes (core/schema.py LANE_FIELDS generates the same rows).
+  lanes:
+    aux:
+      endpoint: {type: str, default: ""}
+      model: {type: str, default: ""}
+      schema: {type: str, default: "openai"}
+      key_env: {type: str, default: ""}
+    frontier:
+      endpoint: {type: str, default: ""}
+      model: {type: str, default: ""}
+      schema: {type: str, default: "openai"}
+      key_env: {type: str, default: ""}
+    uncensored:
+      endpoint: {type: str, default: ""}
+      model: {type: str, default: ""}
+      schema: {type: str, default: "openai"}
+      key_env: {type: str, default: ""}
+    decision:
+      endpoint: {type: str, default: ""}
+      model: {type: str, default: ""}
+      schema: {type: str, default: "typesafe"}
+      key_env: {type: str, default: ""}

@@ -373,7 +373,89 @@ _GROUPED_KEYS: Tuple[Key, ...] = (
     _k("closure_pass.enabled", bool, True),
 )
 
-SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS
+# ---------------------------------------------------------------------------
+# m64 — UNIFORM LANE BLOCK (declaration only; the resolver lives in
+# lanes/resolve.py and nothing in the runtime calls it yet, so no behaviour
+# moves in this unit)
+# ---------------------------------------------------------------------------
+# Four lanes, ONE identical field set each, no lane-specific field names inside
+# the block. `schema` is DECLARED, never inferred from the URL shape: an aux
+# base that happens to end in /v1 is not evidence of an OpenAI dialect, and a
+# decision head is not evidence of one either.
+#
+#   lanes:
+#     aux:        {endpoint: <form>, model: <id>, schema: openai,   key_env: <NAME>}
+#     frontier:   {endpoint: <form>, model: <id>, schema: openai,   key_env: <NAME>}
+#     uncensored: {endpoint: <form>, model: <id>, schema: openai,   key_env: <NAME>}
+#     decision:   {endpoint: <form>, model: <id>, schema: typesafe, key_env: <NAME>}
+#
+# `endpoint` accepts four forms through this ONE key (OpenAI-compatible base
+# URL; <scheme>://<model> pointer, back-compat; shim pointer whose model is a
+# main|aux|vision ROLE; pointer at another Hermes install on this host,
+# local-only included). lanes/resolve.py is the ONE resolver for all four.
+#
+# LEGACY COMPAT: a profile with NO `lanes` block resolves exactly as before
+# from uncensored.endpoint + chain[], anchor_chain, decision_head and the aux
+# endpoint through Hermes core. New block honoured when present, legacy when
+# absent, never both — 11 running profiles are not asked to change.
+LANE_NAMES: Tuple[str, ...] = ("aux", "frontier", "uncensored", "decision")
+
+# The identical field set every lane declares. Order is part of the contract.
+LANE_FIELDS: Tuple[str, ...] = ("endpoint", "model", "schema", "key_env")
+
+# Closed vocabulary of wire dialects a lane may DECLARE.
+LANE_KINDS: Tuple[str, ...] = ("openai", "typesafe")
+
+# The DECLARED dialect per lane — the default when a lane leaves `schema`
+# empty. Never derived from the endpoint's shape.
+LANE_DECLARED_SCHEMA: Dict[str, str] = {
+    "aux": "openai",
+    "frontier": "openai",
+    "uncensored": "openai",
+    "decision": "typesafe",
+}
+
+
+def lanes_spec() -> Dict[str, Tuple[str, ...]]:
+    """{lane: its declared field tuple} for all four lanes — the uniformity
+    table. Every value is the SAME tuple object, so a lane cannot acquire a
+    field the others do not carry. Never raises."""
+    return {name: LANE_FIELDS for name in LANE_NAMES}
+
+
+def lane_paths(name: str) -> Tuple[str, ...]:
+    """The dotted config paths one lane declares ("lanes.aux.endpoint", ...).
+    () for an unknown lane. Never raises."""
+    lane = str(name or "").strip().lower()
+    if lane not in LANE_NAMES:
+        return ()
+    return tuple("lanes." + lane + "." + fld for fld in LANE_FIELDS)
+
+
+def lane_kind(name: str) -> str:
+    """The DECLARED default dialect for a lane ("" for an unknown lane)."""
+    return LANE_DECLARED_SCHEMA.get(str(name or "").strip().lower(), "")
+
+
+# The lane block as typed keys: ONE row per lanes.<lane>.<field>, generated
+# from the table above so the declaration and the uniformity contract cannot
+# drift apart. Defaults: endpoint/model/key_env are empty (per-install), the
+# dialect defaults to the lane's DECLARED kind.
+def _lane_defaults(lane: str) -> Tuple[Tuple[str, str], ...]:
+    return (("endpoint", ""), ("model", ""),
+            ("schema", LANE_DECLARED_SCHEMA[lane]), ("key_env", ""))
+
+
+_LANE_KEYS: Tuple[Key, ...] = (
+    (_k("lanes", dict, {}),)
+    + tuple(
+        _k("lanes." + lane + "." + fld, str, default)
+        for lane in LANE_NAMES
+        for fld, default in _lane_defaults(lane)
+    )
+)
+
+SCHEMA: Tuple[Key, ...] = _V1_KEYS + _GROUPED_KEYS + _LANE_KEYS
 
 _BY_PATH = {k.path: k for k in SCHEMA}
 
